@@ -389,6 +389,47 @@ fn retry_orders(
     }
 }
 
+/// Кот ничего не может сделать сам — для подсветки в UI.
+///
+/// Два случая: замурован в пустоте без проходимых соседей, либо его приказ
+/// сейчас невыполним (второе условие — ровно то, на котором `retry_orders`
+/// раз за разом не находит путь; кот за стройкой не считается застрявшим).
+fn is_stuck(
+    map: &BaseMap,
+    pos: &Position,
+    order: Option<&Order>,
+    path: Option<&Path>,
+    assignment: Option<&Assignment>,
+) -> bool {
+    let entombed = !map.walkable(pos.x, pos.y)
+        && !DIRS
+            .iter()
+            .any(|(dx, dy)| map.walkable(pos.x + dx, pos.y + dy));
+    let order_stalled = order.is_some() && path.is_none() && assignment.is_none();
+    entombed || order_stalled
+}
+
+/// Цепочка систем одного тика. Вынесена отдельно, чтобы тесты гоняли ровно тот
+/// же порядок, что и боевая симуляция.
+///
+/// `escape_voids` — последним: если приказ или джоб уже дали маршрут, он и
+/// выводит кота из ямы, отдельный шаг не нужен.
+fn build_schedule() -> Schedule {
+    let mut schedule = Schedule::default();
+    schedule.add_systems(
+        (
+            advance_time,
+            assign_jobs,
+            move_units,
+            work_jobs,
+            retry_orders,
+            escape_voids,
+        )
+            .chain(),
+    );
+    schedule
+}
+
 /// Выводит кота со снесённой клетки на соседний пол обычным шагом.
 ///
 /// Пересечь пустоту нельзя (`move_units` шагает только на проходимое), поэтому
@@ -561,21 +602,7 @@ impl Sim {
             ));
         }
 
-        let mut schedule = Schedule::default();
-        // `escape_voids` — последним: если приказ или джоб уже дали маршрут,
-        // он и выводит кота из ямы, и отдельный шаг не нужен.
-        schedule.add_systems(
-            (
-                advance_time,
-                assign_jobs,
-                move_units,
-                work_jobs,
-                retry_orders,
-                escape_voids,
-            )
-                .chain(),
-        );
-
+        let schedule = build_schedule();
         Ok(Sim {
             world,
             schedule,
@@ -733,20 +760,12 @@ impl Sim {
             )>();
             let map = self.world.resource::<BaseMap>();
             for (id, r, p, order, path, assignment) in q.iter(&self.world) {
-                // Замурован: стоит в пустоте и шагнуть некуда.
-                let entombed = !map.walkable(p.x, p.y)
-                    && !DIRS
-                        .iter()
-                        .any(|(dx, dy)| map.walkable(p.x + dx, p.y + dy));
-                // Приказ висит без маршрута и кот не занят стройкой — то самое
-                // условие, на котором `retry_orders` раз за разом не находит путь.
-                let order_stalled = order.is_some() && path.is_none() && assignment.is_none();
                 entities.push(EntitySnap {
                     id: id.0.clone(),
                     sprite: r.sprite.clone(),
                     x: p.x,
                     y: p.y,
-                    stuck: entombed || order_stalled,
+                    stuck: is_stuck(map, p, order, path, assignment),
                 });
             }
         }
@@ -771,5 +790,315 @@ impl Sim {
             blueprints,
         })
         .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+}
+
+// ------------------------------------------------------------------
+// Тесты. Гоняют ту же цепочку систем (`build_schedule`), что и боевая
+// симуляция, поэтому проверяют реальные взаимодействия, а не их копию.
+// ------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Собирает `Sim` из ASCII-схемы, минуя YAML: `#` — пустота (непроходимо),
+    /// `.` — пол, любая другая буква — пол с котом под этим id.
+    fn sim_from(rows: &[&str]) -> Sim {
+        let height = rows.len() as i32;
+        let width = rows[0].len() as i32;
+        let mut map = BaseMap::empty(width, height);
+        let mut world = World::new();
+
+        for (y, row) in rows.iter().enumerate() {
+            assert_eq!(row.len() as i32, width, "строки схемы разной длины");
+            for (x, ch) in row.chars().enumerate() {
+                let (x, y) = (x as i32, y as i32);
+                if ch == '#' {
+                    continue;
+                }
+                map.set(x, y, 0);
+                if ch != '.' {
+                    world.spawn((
+                        UnitId(ch.to_string()),
+                        Renderable {
+                            sprite: "cat".to_string(),
+                        },
+                        Position { x, y },
+                    ));
+                }
+            }
+        }
+
+        world.insert_resource(map);
+        world.insert_resource(SimTime { tick: 0 });
+        Sim {
+            world,
+            schedule: build_schedule(),
+            palette: vec![TileDef {
+                id: "floor".to_string(),
+                label: "Пол".to_string(),
+                color: "#000000".to_string(),
+            }],
+            width,
+            height,
+        }
+    }
+
+    impl Sim {
+        fn tick_n(&mut self, n: usize) {
+            for _ in 0..n {
+                self.tick();
+            }
+        }
+
+        fn pos_of(&mut self, unit: &str) -> (i32, i32) {
+            let mut q = self.world.query::<(&UnitId, &Position)>();
+            q.iter(&self.world)
+                .find(|(id, _)| id.0 == unit)
+                .map(|(_, p)| (p.x, p.y))
+                .expect("кот не найден")
+        }
+
+        fn stuck_of(&mut self, unit: &str) -> bool {
+            let mut q = self.world.query::<(
+                &UnitId,
+                &Position,
+                Option<&Order>,
+                Option<&Path>,
+                Option<&Assignment>,
+            )>();
+            let map = self.world.resource::<BaseMap>();
+            q.iter(&self.world)
+                .find(|(id, ..)| id.0 == unit)
+                .map(|(_, p, o, path, a)| is_stuck(map, p, o, path, a))
+                .expect("кот не найден")
+        }
+
+        /// `tried_version` приказа, если приказ ещё висит.
+        fn order_tried_version(&mut self, unit: &str) -> Option<u64> {
+            let mut q = self.world.query::<(&UnitId, Option<&Order>)>();
+            q.iter(&self.world)
+                .find(|(id, _)| id.0 == unit)
+                .and_then(|(_, o)| o.map(|o| o.tried_version))
+        }
+
+        fn has_assignment(&mut self, unit: &str) -> bool {
+            let mut q = self.world.query::<(&UnitId, Option<&Assignment>)>();
+            q.iter(&self.world)
+                .find(|(id, _)| id.0 == unit)
+                .map(|(_, a)| a.is_some())
+                .unwrap_or(false)
+        }
+
+        fn has_path(&mut self, unit: &str) -> bool {
+            let mut q = self.world.query::<(&UnitId, Option<&Path>)>();
+            q.iter(&self.world)
+                .find(|(id, _)| id.0 == unit)
+                .map(|(_, p)| p.is_some())
+                .unwrap_or(false)
+        }
+
+        fn tile(&self, x: i32, y: i32) -> i16 {
+            self.world.resource::<BaseMap>().tile_at(x, y)
+        }
+
+        fn map_ver(&self) -> u64 {
+            self.world.resource::<BaseMap>().version
+        }
+
+        /// Изменить тайл в обход чертежей — для проверки реакции на смену карты.
+        fn force_tile(&mut self, x: i32, y: i32, tile: i16) {
+            self.world.resource_mut::<BaseMap>().set(x, y, tile);
+        }
+    }
+
+    // --- пути -------------------------------------------------------------
+
+    #[test]
+    fn path_crosses_connected_floor() {
+        let sim = sim_from(&["#####", "#...#", "#####"]);
+        let map = sim.world.resource::<BaseMap>();
+        let path = find_path(map, (1, 1), (3, 1)).expect("путь должен быть");
+        // Маршрут развёрнут: последний элемент — следующий шаг, первый — цель.
+        assert_eq!(path.first(), Some(&(3, 1)));
+        assert_eq!(path.last(), Some(&(2, 1)));
+    }
+
+    #[test]
+    fn no_path_across_gap() {
+        let sim = sim_from(&["#####", "#.#.#", "#####"]);
+        let map = sim.world.resource::<BaseMap>();
+        assert!(find_path(map, (1, 1), (3, 1)).is_none());
+    }
+
+    /// Свойство, на котором держится выход из ямы: старт может быть непроходим.
+    /// Кот на снесённой клетке всё ещё умеет проложить маршрут наружу.
+    #[test]
+    fn path_starts_from_unwalkable_tile() {
+        let sim = sim_from(&["#####", "#...#", "#####"]);
+        let mut sim = sim;
+        sim.force_tile(1, 1, -1);
+        let map = sim.world.resource::<BaseMap>();
+        assert!(!map.walkable(1, 1));
+        assert!(find_path(map, (1, 1), (3, 1)).is_some());
+    }
+
+    // --- снос под котом ---------------------------------------------------
+
+    #[test]
+    fn cat_steps_out_of_demolished_tile() {
+        let mut sim = sim_from(&["#####", "#a..#", "#####"]);
+        assert!(sim.demolish(1, 1));
+        sim.tick_n(4);
+        assert_eq!(sim.pos_of("a"), (2, 1), "кот должен уйти на соседний пол");
+        assert!(!sim.stuck_of("a"));
+    }
+
+    #[test]
+    fn entombed_cat_stays_and_is_flagged() {
+        // Одиночная клетка пола: снести её — и шагнуть некуда.
+        let mut sim = sim_from(&["###", "#a#", "###"]);
+        assert!(sim.demolish(1, 1));
+        sim.tick_n(10);
+        assert_eq!(sim.pos_of("a"), (1, 1), "выхода нет — кот остаётся");
+        assert!(sim.stuck_of("a"), "замурованный кот должен помечаться stuck");
+    }
+
+    #[test]
+    fn entombed_cat_recovers_when_floor_returns() {
+        let mut sim = sim_from(&["###", "#a#", "###"]);
+        sim.demolish(1, 1);
+        sim.tick_n(5);
+        assert!(sim.stuck_of("a"));
+
+        sim.force_tile(1, 0, 0); // игрок вернул пол рядом
+        sim.tick_n(6);
+        assert_eq!(sim.pos_of("a"), (1, 0), "кот должен выбраться на новый пол");
+        assert!(!sim.stuck_of("a"));
+    }
+
+    // --- приказы ----------------------------------------------------------
+
+    /// Регрессия errors.md №1: приказ, отданный до появления прохода, должен
+    /// исполниться сам, как только карта откроется.
+    #[test]
+    fn order_resumes_after_map_opens() {
+        let mut sim = sim_from(&["#######", "#a.#..#", "#######"]);
+        assert!(sim.set_target("a", 5, 1), "приказ на проходимую клетку принят");
+        sim.tick_n(10);
+        assert_eq!(sim.pos_of("a"), (1, 1), "пути нет — кот стоит");
+        assert!(sim.stuck_of("a"), "невыполнимый приказ помечается stuck");
+
+        sim.force_tile(3, 1, 0); // построили перемычку
+        sim.tick_n(30);
+        assert_eq!(sim.pos_of("a"), (5, 1), "после открытия прохода кот дошёл");
+        assert!(!sim.stuck_of("a"));
+    }
+
+    /// Регрессия errors.md №2: кот с невыполнимым приказом обязан оставаться
+    /// работоспособным. Чертёж в (0,1) достижим только изнутри левой комнаты,
+    /// так что построить его может только запертый кот — и только если приказ
+    /// не исключает его из назначения на джобы.
+    #[test]
+    fn trapped_cat_with_stalled_order_still_builds() {
+        let mut sim = sim_from(&["#######", "#a.#.b#", "#######"]);
+        sim.set_target("a", 5, 1); // за стеной — недостижимо
+        sim.tick_n(5);
+        assert!(sim.stuck_of("a"));
+
+        assert!(sim.add_blueprint(0, 1, 0));
+        sim.tick_n(200);
+
+        assert_eq!(sim.tile(0, 1), 0, "запертый кот должен построить тайл");
+        assert_eq!(sim.pos_of("a"), (1, 1), "строит из своей комнаты");
+    }
+
+    /// Приказ не должен срывать кота с начатой стройки: сначала джоб, потом
+    /// приказ. Проверяем, что открытие прохода посреди работы не бросает стройку.
+    #[test]
+    fn order_does_not_abandon_active_build() {
+        let mut sim = sim_from(&["#######", "#a.#.b#", "#######"]);
+        sim.set_target("a", 5, 1);
+        sim.add_blueprint(0, 1, 0);
+        sim.tick_n(6);
+        assert!(sim.has_assignment("a"), "кот должен взяться за чертёж");
+
+        assert!(!sim.has_path("a"), "кот на месте, работает");
+
+        sim.force_tile(3, 1, 0); // проход открылся прямо во время работы
+        sim.tick_n(1);
+        // Ключевая проверка: приказ стал выполним, но маршрут выдавать нельзя —
+        // иначе кот уйдёт со стройки. `Assignment` при этом не снимается, так
+        // что проверять надо именно отсутствие маршрута.
+        assert!(
+            !sim.has_path("a"),
+            "приказ не должен срывать кота с начатой стройки"
+        );
+        assert!(sim.has_assignment("a"));
+
+        sim.tick_n(200);
+        assert_eq!(sim.tile(0, 1), 0, "стройка доведена до конца");
+        assert_eq!(sim.pos_of("a"), (5, 1), "после стройки приказ исполнен");
+    }
+
+    /// Гейтинг повторов опирается на `tried_version`: она обязана отмечать
+    /// версию карты, на которой была попытка, и обновляться при её смене.
+    ///
+    /// Внимание: сам факт «лишних BFS нет» отсюда не виден — без гейта состояние
+    /// было бы точно таким же. Это свойство производительности, и тестом оно не
+    /// закрыто; закрыт зато опасный случай — что гейт задушит нужный повтор
+    /// (см. `order_resumes_after_map_opens`).
+    #[test]
+    fn order_retry_tracks_map_version() {
+        let mut sim = sim_from(&["#######", "#a.#..#", "#######"]);
+        sim.set_target("a", 5, 1);
+
+        let v = sim.map_ver();
+        assert_eq!(
+            sim.order_tried_version("a"),
+            Some(v),
+            "первая попытка отмечена текущей версией карты"
+        );
+
+        sim.tick_n(20);
+        assert_eq!(
+            sim.order_tried_version("a"),
+            Some(v),
+            "карта не менялась — отметка попытки остаётся прежней"
+        );
+
+        sim.force_tile(3, 1, 0);
+        let v2 = sim.map_ver();
+        assert_ne!(v, v2, "карта изменилась");
+        sim.tick_n(1);
+        assert_eq!(
+            sim.order_tried_version("a"),
+            Some(v2),
+            "после смены карты попытка повторяется"
+        );
+    }
+
+    /// Приказ переживает серию перестроек: открыли проход, тут же закрыли,
+    /// открыли снова — и он всё равно исполняется. Ловит ошибки в бухгалтерии
+    /// `tried_version`, из-за которых приказ мог бы «залипнуть» после отката.
+    #[test]
+    fn order_survives_repeated_map_changes() {
+        let mut sim = sim_from(&["#######", "#a.#..#", "#######"]);
+        sim.set_target("a", 5, 1);
+        sim.tick_n(5);
+        assert_eq!(sim.pos_of("a"), (1, 1), "пути нет — кот стоит");
+
+        sim.force_tile(3, 1, 0); // открыли
+        sim.tick_n(2);
+        sim.force_tile(3, 1, -1); // и снова закрыли
+        sim.tick_n(20);
+        assert_ne!(sim.pos_of("a"), (5, 1), "проход закрыт — цель недостижима");
+        assert!(sim.stuck_of("a"));
+
+        sim.force_tile(3, 1, 0); // открыли окончательно
+        sim.tick_n(40);
+        assert_eq!(sim.pos_of("a"), (5, 1), "приказ дожил и исполнился");
+        assert!(!sim.stuck_of("a"));
     }
 }
