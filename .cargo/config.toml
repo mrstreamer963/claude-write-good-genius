@@ -1,0 +1,4 @@
+# getrandom 0.3 на wasm32-unknown-unknown требует явного выбора бэкенда.
+# См. https://docs.rs/getrandom/latest/#webassembly-support
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']

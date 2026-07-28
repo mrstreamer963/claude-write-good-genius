@@ -1,0 +1,24 @@
+# core.yaml — минимальный рулсет (стиль OpenXcom Extended: контент = данные, не код).
+
+grid:
+  width: 24
+  height: 16
+
+# Палитра тайлов, доступных для постройки. Порядок = индекс в палитре,
+# который отдаётся рендеру и приходит обратно в командах постройки.
+tiles:
+  - { id: floor,   label: "Пол",         color: "#1b2a3f" }
+  - { id: storage, label: "Склад",       color: "#26506e" }
+  - { id: lab,     label: "Лаборатория", color: "#5a3a6e" }
+  - { id: garage,  label: "Гараж",       color: "#6e5a26" }
+
+# Начальная застройка базы: прямоугольники [x, y, w, h] заданным тайлом.
+build:
+  - { tile: storage, rect: [1, 1, 6, 4] }
+  - { tile: lab,     rect: [9, 1, 6, 4] }
+  - { tile: garage,  rect: [1, 10, 8, 5] }
+
+units:
+  - { id: excellent, sprite: cat_excellent, pos: [4, 8] }
+  - { id: sp2,       sprite: cat_helper,    pos: [6, 9] }
+  - { id: sp3,       sprite: cat_helper,    pos: [7, 7] }

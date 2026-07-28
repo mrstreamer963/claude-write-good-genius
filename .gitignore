@@ -1,0 +1,13 @@
+# Rust
+/target
+# Cargo.lock коммитим — это приложение, а не библиотека (воспроизводимые сборки).
+
+# wasm-pack output (сборочный артефакт, генерируется `make wasm`)
+/web/src/wasm
+
+# node / vite
+/web/node_modules
+/web/dist
+
+# macOS
+.DS_Store

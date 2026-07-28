@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SP / Эсперы — POC</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <header>
+      <span class="title">SP / Эсперы — <em>walking skeleton</em></span>
+      <span class="spacer"></span>
+      <span class="clock">tick <b id="tick">0</b></span>
+      <div class="speeds">
+        <button class="speed" data-speed="0" title="Пауза">⏸</button>
+        <button class="speed" data-speed="1">×1</button>
+        <button class="speed" data-speed="5">×5</button>
+        <button class="speed" data-speed="10">×10</button>
+      </div>
+    </header>
+    <main id="stage"></main>
+    <aside id="toolbar"></aside>
+    <div id="hint">ЛКМ по базе — строить · перетаскивание — рисовать · выбери тип слева</div>
+    <div id="error" hidden></div>
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>
