@@ -11,6 +11,7 @@ const COLORS = {
   gridLine: 0x262c3a,
   select: 0x6cf0a0, // выбор кота / метка цели
   erase: 0xff5566,
+  stuck: 0xff9a3c, // кот замурован / приказ невыполним
   unit: {
     cat_excellent: 0xe0c060,
     cat_helper: 0x8fb8de,
@@ -148,6 +149,7 @@ function renderSnapshot(snap) {
     // TODO(§8b): интерполяция между тиками. Пока — снап к центру тайла.
     c.x = e.x * TILE + TILE / 2;
     c.y = e.y * TILE + TILE / 2;
+    c.stuckRing.visible = !!e.stuck;
     unitTiles.set(e.id, { x: e.x, y: e.y });
   }
   for (const [id, c] of units) {
@@ -174,7 +176,13 @@ function createUnit(e) {
     .circle(0, 0, TILE * 0.3)
     .fill(COLORS.unit[e.sprite] ?? COLORS.unitDefault)
     .stroke({ color: 0x000000, width: 2 });
+  // Кольцо «кот застрял» — шире кольца выбора, чтобы читались вместе.
+  const stuckRing = new Graphics();
+  stuckRing.circle(0, 0, TILE * 0.52).stroke({ color: COLORS.stuck, width: 2, alpha: 0.9 });
+  stuckRing.visible = false;
   c.addChild(body);
+  c.addChild(stuckRing);
+  c.stuckRing = stuckRing;
   unitLayer.addChild(c);
   units.set(e.id, c);
   return c;

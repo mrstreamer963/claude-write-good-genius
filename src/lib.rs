@@ -14,6 +14,12 @@
 //! Проходимость: ходить можно только по построенному полу (индекс тайла >= 0);
 //! пустые клетки (-1) непроходимы. Путь ищется BFS по 4-связной сетке.
 //!
+//! Снос под котом разрешён — это штатная механика (дырки в перекрытиях, см.
+//! `ideas.md`), а не ошибка. Кот со снесённой клетки выходит своим ходом
+//! (`escape_voids`); если выйти некуда, он остаётся в пустоте и помечается
+//! флагом `stuck` в снапшоте. Состояние обратимо: игрок ставит пол рядом,
+//! и кот выбирается — в том числе построив этот пол сам, изнутри.
+//!
 //! Джобы постройки: чертёж — сущность `Blueprint`. Свободный (простаивающий) кот
 //! назначается на ближайший достижимый чертёж, идёт к соседней проходимой клетке
 //! и «работает» BUILD_TIME тиков, после чего тайл возводится.
@@ -107,13 +113,18 @@ struct MoveCooldown(u8);
 #[derive(Component)]
 struct Assignment(Entity);
 
-/// Приказ игрока «иди туда». Хранится, даже если путь сейчас не найден —
-/// `retry_orders` будет пытаться проложить маршрут на каждом тике, пока
-/// приказ не выполнен (например, после постройки коридора).
+/// Приказ игрока «иди туда». Хранится, даже если путь сейчас не найден:
+/// `retry_orders` перепроложит маршрут, как только карта изменится —
+/// например, после постройки коридора.
 #[derive(Component)]
 struct Order {
     x: i32,
     y: i32,
+    /// Версия карты, на которой последний раз пытались проложить маршрут.
+    /// Проходимость зависит только от тайлов (коты друг друга не блокируют),
+    /// поэтому повтор на неизменившейся карте заведомо даст тот же результат —
+    /// и пропускается, чтобы не гонять BFS каждый тик.
+    tried_version: u64,
 }
 
 /// Чертёж — запланированная постройка тайла.
@@ -268,14 +279,16 @@ fn advance_time(mut time: ResMut<SimTime>) {
 
 /// Назначает простаивающих котов (без задачи и без маршрута) на ближайшие
 /// достижимые чертежи и отправляет их к месту постройки.
+///
+/// Кот с невыполнимым сейчас приказом тоже считается свободным. Иначе он бы
+/// никогда не взялся строить — в том числе тот тайл, который открывает ему
+/// выход из запертой комнаты. Приказ при этом не теряется: `retry_orders`
+/// подхватит его, когда кот освободится от задачи.
 fn assign_jobs(
     map: Res<BaseMap>,
     mut commands: Commands,
     mut blueprints: Query<(Entity, &mut Blueprint)>,
-    free_cats: Query<
-        (Entity, &Position),
-        (With<UnitId>, Without<Assignment>, Without<Path>, Without<Order>),
-    >,
+    free_cats: Query<(Entity, &Position), (With<UnitId>, Without<Assignment>, Without<Path>)>,
 ) {
     let mut free: Vec<(Entity, (i32, i32))> =
         free_cats.iter().map(|(e, p)| (e, (p.x, p.y))).collect();
@@ -350,20 +363,58 @@ fn move_units(
 /// Пытается проложить маршрут котам с активным приказом (`Order`), у которых
 /// сейчас нет пути — например, приказ был отдан до постройки коридора.
 /// Снимает `Order`, когда цель достигнута.
+///
+/// Коты за стройкой (`Assignment`) пропускаются: приказ не должен срывать кота
+/// с начатой задачи. Он подхватится сам, как только `work_jobs` снимет задачу.
 fn retry_orders(
     map: Res<BaseMap>,
     mut commands: Commands,
-    q: Query<(Entity, &Position, &Order), Without<Path>>,
+    mut q: Query<(Entity, &Position, &mut Order), (Without<Path>, Without<Assignment>)>,
 ) {
-    for (e, pos, order) in &q {
+    for (e, pos, mut order) in &mut q {
         if (pos.x, pos.y) == (order.x, order.y) {
             commands.entity(e).remove::<Order>();
             continue;
         }
+        // Карта не менялась с прошлой попытки — результат будет тот же.
+        if order.tried_version == map.version {
+            continue;
+        }
+        order.tried_version = map.version;
         if let Some(path) = find_path(&map, (pos.x, pos.y), (order.x, order.y)) {
             commands
                 .entity(e)
                 .insert((Path { steps: path }, MoveCooldown(0)));
+        }
+    }
+}
+
+/// Выводит кота со снесённой клетки на соседний пол обычным шагом.
+///
+/// Пересечь пустоту нельзя (`move_units` шагает только на проходимое), поэтому
+/// «выход» — это всегда шаг на соседа; искать дальше смысла нет. Коты с
+/// маршрутом или задачей выбираются сами: `find_path` не требует проходимости
+/// стартовой клетки. Остаётся простаивающий кот — им и занимается эта система.
+/// Если проходимых соседей нет, кот остаётся в пустоте (честное «замурован»)
+/// и помечается флагом `stuck` в снапшоте.
+fn escape_voids(
+    map: Res<BaseMap>,
+    mut commands: Commands,
+    q: Query<(Entity, &Position), (With<UnitId>, Without<Path>)>,
+) {
+    for (e, pos) in &q {
+        if map.walkable(pos.x, pos.y) {
+            continue;
+        }
+        // Порядок DIRS фиксирован, значит выбор соседа детерминирован (§11).
+        if let Some(step) = DIRS
+            .iter()
+            .map(|(dx, dy)| (pos.x + dx, pos.y + dy))
+            .find(|(nx, ny)| map.walkable(*nx, *ny))
+        {
+            commands
+                .entity(e)
+                .insert((Path { steps: vec![step] }, MoveCooldown(0)));
         }
     }
 }
@@ -428,6 +479,10 @@ struct EntitySnap {
     sprite: String,
     x: i32,
     y: i32,
+    /// Кот ничего не может сделать сам: либо замурован в пустоте без проходимых
+    /// соседей, либо его приказ сейчас невыполним. Для подсветки в UI —
+    /// состояние легальное (см. снос пола), но игрок должен его видеть.
+    stuck: bool,
 }
 
 #[derive(Serialize)]
@@ -507,8 +562,19 @@ impl Sim {
         }
 
         let mut schedule = Schedule::default();
-        schedule
-            .add_systems((advance_time, assign_jobs, move_units, work_jobs, retry_orders).chain());
+        // `escape_voids` — последним: если приказ или джоб уже дали маршрут,
+        // он и выводит кота из ямы, и отдельный шаг не нужен.
+        schedule.add_systems(
+            (
+                advance_time,
+                assign_jobs,
+                move_units,
+                work_jobs,
+                retry_orders,
+                escape_voids,
+            )
+                .chain(),
+        );
 
         Ok(Sim {
             world,
@@ -614,6 +680,7 @@ impl Sim {
         if !self.world.resource::<BaseMap>().walkable(x, y) {
             return false;
         }
+        let map_version = self.world.resource::<BaseMap>().version;
         let path = find_path(self.world.resource::<BaseMap>(), (sx, sy), (x, y));
 
         // Снять текущую задачу постройки (освободить чертёж).
@@ -624,10 +691,14 @@ impl Sim {
             self.world.entity_mut(entity).remove::<Assignment>();
         }
 
-        // Приказ сохраняется даже без пути прямо сейчас — `retry_orders` будет
-        // пытаться проложить маршрут на каждом тике (например, после постройки
-        // коридора, открывающего доступ к цели).
-        self.world.entity_mut(entity).insert(Order { x, y });
+        // Приказ сохраняется даже без пути прямо сейчас — `retry_orders`
+        // перепроложит маршрут при следующем изменении карты (например, после
+        // постройки коридора, открывающего доступ к цели).
+        self.world.entity_mut(entity).insert(Order {
+            x,
+            y,
+            tried_version: map_version,
+        });
         match path {
             Some(p) => {
                 self.world
@@ -652,13 +723,30 @@ impl Sim {
 
         let mut entities = Vec::new();
         {
-            let mut q = self.world.query::<(&UnitId, &Renderable, &Position)>();
-            for (id, r, p) in q.iter(&self.world) {
+            let mut q = self.world.query::<(
+                &UnitId,
+                &Renderable,
+                &Position,
+                Option<&Order>,
+                Option<&Path>,
+                Option<&Assignment>,
+            )>();
+            let map = self.world.resource::<BaseMap>();
+            for (id, r, p, order, path, assignment) in q.iter(&self.world) {
+                // Замурован: стоит в пустоте и шагнуть некуда.
+                let entombed = !map.walkable(p.x, p.y)
+                    && !DIRS
+                        .iter()
+                        .any(|(dx, dy)| map.walkable(p.x + dx, p.y + dy));
+                // Приказ висит без маршрута и кот не занят стройкой — то самое
+                // условие, на котором `retry_orders` раз за разом не находит путь.
+                let order_stalled = order.is_some() && path.is_none() && assignment.is_none();
                 entities.push(EntitySnap {
                     id: id.0.clone(),
                     sprite: r.sprite.clone(),
                     x: p.x,
                     y: p.y,
+                    stuck: entombed || order_stalled,
                 });
             }
         }
