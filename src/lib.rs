@@ -107,6 +107,15 @@ struct MoveCooldown(u8);
 #[derive(Component)]
 struct Assignment(Entity);
 
+/// Приказ игрока «иди туда». Хранится, даже если путь сейчас не найден —
+/// `retry_orders` будет пытаться проложить маршрут на каждом тике, пока
+/// приказ не выполнен (например, после постройки коридора).
+#[derive(Component)]
+struct Order {
+    x: i32,
+    y: i32,
+}
+
 /// Чертёж — запланированная постройка тайла.
 #[derive(Component)]
 struct Blueprint {
@@ -263,7 +272,10 @@ fn assign_jobs(
     map: Res<BaseMap>,
     mut commands: Commands,
     mut blueprints: Query<(Entity, &mut Blueprint)>,
-    free_cats: Query<(Entity, &Position), (With<UnitId>, Without<Assignment>, Without<Path>)>,
+    free_cats: Query<
+        (Entity, &Position),
+        (With<UnitId>, Without<Assignment>, Without<Path>, Without<Order>),
+    >,
 ) {
     let mut free: Vec<(Entity, (i32, i32))> =
         free_cats.iter().map(|(e, p)| (e, (p.x, p.y))).collect();
@@ -331,6 +343,27 @@ fn move_units(
 
         if path.steps.is_empty() {
             commands.entity(e).remove::<(Path, MoveCooldown)>();
+        }
+    }
+}
+
+/// Пытается проложить маршрут котам с активным приказом (`Order`), у которых
+/// сейчас нет пути — например, приказ был отдан до постройки коридора.
+/// Снимает `Order`, когда цель достигнута.
+fn retry_orders(
+    map: Res<BaseMap>,
+    mut commands: Commands,
+    q: Query<(Entity, &Position, &Order), Without<Path>>,
+) {
+    for (e, pos, order) in &q {
+        if (pos.x, pos.y) == (order.x, order.y) {
+            commands.entity(e).remove::<Order>();
+            continue;
+        }
+        if let Some(path) = find_path(&map, (pos.x, pos.y), (order.x, order.y)) {
+            commands
+                .entity(e)
+                .insert((Path { steps: path }, MoveCooldown(0)));
         }
     }
 }
@@ -474,7 +507,8 @@ impl Sim {
         }
 
         let mut schedule = Schedule::default();
-        schedule.add_systems((advance_time, assign_jobs, move_units, work_jobs).chain());
+        schedule
+            .add_systems((advance_time, assign_jobs, move_units, work_jobs, retry_orders).chain());
 
         Ok(Sim {
             world,
@@ -558,7 +592,10 @@ impl Sim {
     }
 
     /// Приказ коту `unit_id` идти в тайл (x, y). Отменяет его джоб постройки, если был.
-    /// Вернёт true, если приказ принят (цель проходима и достижима).
+    /// Приказ сохраняется, даже если путь пока не найден — маршрут будет
+    /// перепроложен автоматически, как только карта изменится (см. `retry_orders`).
+    /// Вернёт true, если приказ принят (цель проходима), false — если цель не тайл-пол
+    /// или юнит не найден.
     pub fn set_target(&mut self, unit_id: &str, x: i32, y: i32) -> bool {
         let mut found = None;
         {
@@ -574,16 +611,10 @@ impl Sim {
             return false;
         };
 
-        let path = {
-            let map = self.world.resource::<BaseMap>();
-            if !map.walkable(x, y) {
-                return false;
-            }
-            match find_path(map, (sx, sy), (x, y)) {
-                Some(p) => p,
-                None => return false,
-            }
-        };
+        if !self.world.resource::<BaseMap>().walkable(x, y) {
+            return false;
+        }
+        let path = find_path(self.world.resource::<BaseMap>(), (sx, sy), (x, y));
 
         // Снять текущую задачу постройки (освободить чертёж).
         if let Some(bp_e) = self.world.get::<Assignment>(entity).map(|a| a.0) {
@@ -593,10 +624,20 @@ impl Sim {
             self.world.entity_mut(entity).remove::<Assignment>();
         }
 
-        self.world.entity_mut(entity).insert((
-            Path { steps: path },
-            MoveCooldown(0),
-        ));
+        // Приказ сохраняется даже без пути прямо сейчас — `retry_orders` будет
+        // пытаться проложить маршрут на каждом тике (например, после постройки
+        // коридора, открывающего доступ к цели).
+        self.world.entity_mut(entity).insert(Order { x, y });
+        match path {
+            Some(p) => {
+                self.world
+                    .entity_mut(entity)
+                    .insert((Path { steps: p }, MoveCooldown(0)));
+            }
+            None => {
+                self.world.entity_mut(entity).remove::<(Path, MoveCooldown)>();
+            }
+        }
         true
     }
 
