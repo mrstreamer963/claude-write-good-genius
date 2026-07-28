@@ -67,6 +67,7 @@ let mode = 'cursor'; // 'cursor' | 'build'
 let buildTile = 0; // индекс палитры, или -1 = стереть (в режиме build)
 let selectedUnit = null;
 let painting = false;
+let lastPaintTile = null; // клетка, обработанная последней в текущем мазке
 
 // --- worker ---------------------------------------------------------------
 
@@ -123,14 +124,27 @@ function drawBlueprints(list) {
   if (!list || !list.length) return;
   const g = new Graphics();
   for (const b of list) {
-    const color = paletteColors[b.tile] ?? 0x888888;
     const x = b.x * TILE;
     const y = b.y * TILE;
-    // призрачная заливка + пунктирная рамка
-    g.rect(x + 1, y + 1, TILE - 2, TILE - 2)
-      .fill({ color, alpha: 0.28 })
-      .stroke({ color, width: 1, alpha: 0.85 });
-    // прогресс-бар постройки
+    const isDemolish = b.tile < 0;
+    const color = isDemolish ? COLORS.erase : (paletteColors[b.tile] ?? 0x888888);
+
+    if (isDemolish) {
+      // Снос: перечёркиваем существующий тайл, не пряча его под заливкой —
+      // игрок должен видеть, что именно уйдёт.
+      g.moveTo(x + 6, y + 6)
+        .lineTo(x + TILE - 6, y + TILE - 6)
+        .moveTo(x + TILE - 6, y + 6)
+        .lineTo(x + 6, y + TILE - 6)
+        .stroke({ color, width: 2, alpha: 0.9 });
+      g.rect(x + 1, y + 1, TILE - 2, TILE - 2).stroke({ color, width: 1, alpha: 0.6 });
+    } else {
+      // Постройка: призрачная заливка будущего тайла + рамка.
+      g.rect(x + 1, y + 1, TILE - 2, TILE - 2)
+        .fill({ color, alpha: 0.28 })
+        .stroke({ color, width: 1, alpha: 0.85 });
+    }
+    // прогресс-бар работы
     const p = b.total > 0 ? Math.min(1, b.progress / b.total) : 0;
     if (p > 0) {
       g.rect(x + 3, y + TILE - 6, (TILE - 6) * p, 3).fill({ color: COLORS.select, alpha: 0.95 });
@@ -232,6 +246,11 @@ function unitAt(tx, ty) {
 function paint(global) {
   const t = tileAt(global);
   if (!t) return;
+  // Одна клетка обрабатывается один раз за мазок: ластик переключает чертёж
+  // сноса, и повторный вызов на том же тайле снял бы только что поставленный.
+  const key = `${t.tx},${t.ty}`;
+  if (key === lastPaintTile) return;
+  lastPaintTile = key;
   worker.postMessage({ type: 'build', x: t.tx, y: t.ty, tile: buildTile });
 }
 
@@ -266,6 +285,7 @@ function updateHover(global) {
 app.stage.on('pointerdown', (e) => {
   if (mode === 'build') {
     painting = true;
+    lastPaintTile = null;
     paint(e.global);
   } else {
     command(e.global);
@@ -275,8 +295,8 @@ app.stage.on('pointermove', (e) => {
   updateHover(e.global);
   if (painting) paint(e.global);
 });
-app.stage.on('pointerup', () => (painting = false));
-app.stage.on('pointerupoutside', () => (painting = false));
+app.stage.on('pointerup', () => ((painting = false), (lastPaintTile = null)));
+app.stage.on('pointerupoutside', () => ((painting = false), (lastPaintTile = null)));
 
 // --- тулбар ---------------------------------------------------------------
 

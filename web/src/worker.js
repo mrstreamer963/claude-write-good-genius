@@ -62,8 +62,10 @@ onmessage = (e) => {
   if (m.type === 'setSpeed') {
     speed = m.speed;
   } else if (m.type === 'build' && sim) {
+    // Ластик не сносит мгновенно: отменяет чертёж либо ставит задачу сноса,
+    // которую выполняет кот (см. `plan_demolish` в ядре).
     if (m.tile >= 0) sim.add_blueprint(m.x, m.y, m.tile);
-    else sim.demolish(m.x, m.y);
+    else sim.plan_demolish(m.x, m.y);
   } else if (m.type === 'move' && sim) {
     sim.set_target(m.id, m.x, m.y);
   }

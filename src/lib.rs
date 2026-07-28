@@ -5,8 +5,9 @@
 //!   * `map_meta()`      — размеры и палитра тайлов (один раз, для рендера);
 //!   * `map_version()`   — счётчик изменений карты (для отправки base_map по требованию);
 //!   * `base_map()`      — текущее состояние тайлов базы;
-//!   * `add_blueprint()` — поставить чертёж (задачу постройки); строят коты, по тикам;
-//!   * `demolish()`      — отменить чертёж / снести готовый тайл (мгновенно);
+//!   * `add_blueprint()` — поставить чертёж (задачу); выполняют коты, по тикам;
+//!   * `plan_demolish()` — ластик: отменить чертёж либо запланировать снос тайла;
+//!   * `demolish()`      — мгновенный снос без котов (тесты/отладка);
 //!   * `set_target()`    — приказ коту идти в тайл (движение по тикам, отменяет его задачу);
 //!   * `tick()`          — один фиксированный шаг симуляции;
 //!   * `snapshot()`      — рендерабельные сущности + чертежи (каждый кадр).
@@ -236,15 +237,21 @@ fn find_path(map: &BaseMap, start: (i32, i32), goal: (i32, i32)) -> Option<Vec<(
     None
 }
 
-/// Найти клетку, откуда можно строить чертёж (сам тайл, если проходим, либо сосед),
-/// и маршрут кота до неё. Возвращает (клетка, маршрут).
+/// Найти клетку, откуда можно выполнить чертёж (сам тайл, если проходим, либо
+/// сосед), и маршрут кота до неё. Возвращает (клетка, маршрут).
+///
+/// `bp_tile` — что планируется на клетке; для сноса (`< 0`) стоять на самой цели
+/// нельзя. Цель сноса всегда проходима, иначе сносить было бы нечего, поэтому без
+/// этого правила кот выбрал бы её первой и снёс пол под собой. В пустоту кот
+/// попадает действием игрока, а не в порядке штатной работы (см. §12.10 concept.md).
 fn path_to_build_spot(
     map: &BaseMap,
     from: (i32, i32),
     bp: (i32, i32),
+    bp_tile: i16,
 ) -> Option<((i32, i32), Vec<(i32, i32)>)> {
     let mut spots = Vec::new();
-    if map.walkable(bp.0, bp.1) {
+    if bp_tile >= 0 && map.walkable(bp.0, bp.1) {
         spots.push(bp);
     }
     for (dx, dy) in DIRS {
@@ -305,7 +312,7 @@ fn assign_jobs(
         }
         let mut chosen = None;
         for (i, (cat_e, cat_pos)) in free.iter().enumerate() {
-            if let Some((_spot, path)) = path_to_build_spot(&map, *cat_pos, (bp.x, bp.y)) {
+            if let Some((_spot, path)) = path_to_build_spot(&map, *cat_pos, (bp.x, bp.y), bp.tile) {
                 chosen = Some((i, *cat_e, path));
                 break;
             }
@@ -563,6 +570,21 @@ impl Sim {
         }
         None
     }
+
+    /// Снять чертёж с клетки и освободить назначенного на него кота.
+    /// Отмена плана мгновенна и бесплатна — строить ещё не начинали.
+    fn cancel_blueprint(&mut self, x: i32, y: i32) -> bool {
+        let Some(e) = self.blueprint_at(x, y) else {
+            return false;
+        };
+        if let Some(cat) = self.world.get::<Blueprint>(e).and_then(|bp| bp.assignee) {
+            self.world
+                .entity_mut(cat)
+                .remove::<(Assignment, Path, MoveCooldown)>();
+        }
+        self.world.entity_mut(e).despawn();
+        true
+    }
 }
 
 #[wasm_bindgen]
@@ -638,7 +660,8 @@ impl Sim {
         serde_wasm_bindgen::to_value(&dto).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
-    /// Поставить чертёж (джоб постройки) `tile` на клетку (x, y). Строят коты, по тикам.
+    /// Поставить чертёж (джоб) `tile` на клетку (x, y). Выполняют коты, по тикам.
+    /// `tile = -1` — чертёж сноса: кот придёт на соседнюю клетку и уберёт пол.
     /// Вернёт true, если чертёж добавлен/обновлён.
     pub fn add_blueprint(&mut self, x: i32, y: i32, tile: i32) -> bool {
         if !self.in_bounds(x, y) {
@@ -666,18 +689,29 @@ impl Sim {
         true
     }
 
-    /// Отменить чертёж на клетке / снести готовый тайл (мгновенно). Вернёт true при изменении.
-    pub fn demolish(&mut self, x: i32, y: i32) -> bool {
-        let mut changed = false;
-        if let Some(e) = self.blueprint_at(x, y) {
-            if let Some(cat) = self.world.get::<Blueprint>(e).and_then(|bp| bp.assignee) {
-                self.world
-                    .entity_mut(cat)
-                    .remove::<(Assignment, Path, MoveCooldown)>();
-            }
-            self.world.entity_mut(e).despawn();
-            changed = true;
+    /// Ластик игрока: отменить чертёж, либо запланировать снос построенного тайла.
+    ///
+    /// Отмена плана мгновенна — строить ещё не начинали, и большая часть «ой, не
+    /// туда» приходится именно на неё. Снос готового тайла идёт через ту же
+    /// очередь, что и стройка: чертёж с `tile = -1`, кот приходит на соседнюю
+    /// клетку и работает. Повторный ластик по клетке с чертежом сноса отменяет
+    /// его. Вернёт true, если что-то изменилось.
+    pub fn plan_demolish(&mut self, x: i32, y: i32) -> bool {
+        if !self.in_bounds(x, y) {
+            return false;
         }
+        if self.cancel_blueprint(x, y) {
+            return true;
+        }
+        self.add_blueprint(x, y, -1)
+    }
+
+    /// Мгновенно снести тайл вместе с чертежом, без участия котов.
+    ///
+    /// Ластик игрока ходит через `plan_demolish`; этот путь оставлен для тестов
+    /// и отладки. Вернёт true при изменении.
+    pub fn demolish(&mut self, x: i32, y: i32) -> bool {
+        let mut changed = self.cancel_blueprint(x, y);
         if self.world.resource_mut::<BaseMap>().set(x, y, -1) {
             changed = true;
         }
@@ -1100,5 +1134,74 @@ mod tests {
         sim.tick_n(40);
         assert_eq!(sim.pos_of("a"), (5, 1), "приказ дожил и исполнился");
         assert!(!sim.stuck_of("a"));
+    }
+
+    // --- снос через очередь -----------------------------------------------
+
+    /// Ключевое правило сноса: кот работает с соседней клетки и не сносит пол
+    /// под собой. Цель сноса всегда проходима, поэтому без правила он выбрал бы
+    /// её как место работы и уронил себя в яму.
+    #[test]
+    fn demolish_job_is_done_from_a_neighbour() {
+        let mut sim = sim_from(&["#####", "#a..#", "#####"]);
+        assert!(sim.plan_demolish(3, 1), "снос построенного тайла ставится в очередь");
+        assert_eq!(sim.tile(3, 1), 0, "мгновенно ничего не сносится");
+
+        // Проверяем каждый тик, а не только итог: если кот встанет на цель и
+        // снесёт пол под собой, `escape_voids` тут же выведет его на соседнюю
+        // клетку — и по конечному состоянию ошибка будет неотличима от нормы.
+        for _ in 0..200 {
+            sim.tick_n(1);
+            assert_ne!(sim.pos_of("a"), (3, 1), "кот встал на клетку, которую сносит");
+        }
+
+        assert_eq!(sim.tile(3, 1), -1, "тайл снесён котом");
+        assert!(!sim.stuck_of("a"), "кот не уронил себя в яму");
+    }
+
+    /// Отмена ещё не начатого плана — мгновенная и бесплатная.
+    #[test]
+    fn cancelling_a_blueprint_is_instant() {
+        let mut sim = sim_from(&["#####", "#a.##", "#####"]);
+        assert!(sim.add_blueprint(3, 1, 0));
+        assert!(sim.plan_demolish(3, 1), "ластик снимает чертёж");
+        sim.tick_n(50);
+        assert_eq!(sim.tile(3, 1), -1, "чертёж снят, строить нечего");
+    }
+
+    /// Повторный ластик по клетке с чертежом сноса отменяет сам снос.
+    #[test]
+    fn second_erase_cancels_pending_demolish() {
+        let mut sim = sim_from(&["#####", "#a..#", "#####"]);
+        sim.plan_demolish(3, 1);
+        assert!(sim.plan_demolish(3, 1), "второй ластик снимает чертёж сноса");
+        sim.tick_n(100);
+        assert_eq!(sim.tile(3, 1), 0, "снос отменён — пол на месте");
+    }
+
+    /// Сносить пустую клетку нечего — чертёж не ставится.
+    #[test]
+    fn erasing_empty_cell_does_nothing() {
+        let mut sim = sim_from(&["###", "#a#", "###"]);
+        assert!(!sim.plan_demolish(0, 0));
+    }
+
+    /// Одинокий тайл без проходимых соседей снести некому: подойти неоткуда.
+    /// Осознанное следствие правила «работать с соседней клетки».
+    #[test]
+    fn lone_tile_cannot_be_demolished_by_a_job() {
+        let mut sim = sim_from(&["#####", "#a.##", "#####"]);
+        sim.force_tile(2, 1, -1); // отрезали одинокий тайл под котом
+        assert!(sim.plan_demolish(1, 1), "чертёж ставится");
+        sim.tick_n(200);
+        assert_eq!(sim.tile(1, 1), 0, "подойти неоткуда — тайл остаётся");
+    }
+
+    /// Мгновенный снос остаётся доступен как отладочный путь.
+    #[test]
+    fn instant_demolish_still_available() {
+        let mut sim = sim_from(&["#####", "#a..#", "#####"]);
+        assert!(sim.demolish(3, 1));
+        assert_eq!(sim.tile(3, 1), -1, "снос без котов и без тиков");
     }
 }
