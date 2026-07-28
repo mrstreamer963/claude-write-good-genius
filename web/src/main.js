@@ -28,9 +28,11 @@ stageEl.appendChild(app.canvas);
 // Мир: тайлы -> юниты -> оверлей (подсветки).
 const world = new Container();
 const tileLayer = new Container();
+const bpLayer = new Container(); // чертежи (призраки будущих тайлов)
 const unitLayer = new Container();
 const overlay = new Container();
 world.addChild(tileLayer);
+world.addChild(bpLayer);
 world.addChild(unitLayer);
 world.addChild(overlay);
 app.stage.addChild(world);
@@ -115,8 +117,30 @@ function drawMap(map) {
   tileLayer.addChild(g);
 }
 
+function drawBlueprints(list) {
+  bpLayer.removeChildren();
+  if (!list || !list.length) return;
+  const g = new Graphics();
+  for (const b of list) {
+    const color = paletteColors[b.tile] ?? 0x888888;
+    const x = b.x * TILE;
+    const y = b.y * TILE;
+    // призрачная заливка + пунктирная рамка
+    g.rect(x + 1, y + 1, TILE - 2, TILE - 2)
+      .fill({ color, alpha: 0.28 })
+      .stroke({ color, width: 1, alpha: 0.85 });
+    // прогресс-бар постройки
+    const p = b.total > 0 ? Math.min(1, b.progress / b.total) : 0;
+    if (p > 0) {
+      g.rect(x + 3, y + TILE - 6, (TILE - 6) * p, 3).fill({ color: COLORS.select, alpha: 0.95 });
+    }
+  }
+  bpLayer.addChild(g);
+}
+
 function renderSnapshot(snap) {
   tickEl.textContent = snap.tick;
+  drawBlueprints(snap.blueprints);
   const seen = new Set();
   for (const e of snap.entities) {
     seen.add(e.id);

@@ -2,7 +2,8 @@
 //
 // Модель времени (§11 concept.md): dt тика постоянный, детерминизм не зависит от
 // скорости. Множитель (0/1/5/10) = сколько сим-тиков в реальную секунду. Пауза = 0.
-// Постройка (set_tile) применяется сразу при получении команды — работает и на паузе.
+// Постройка теперь через чертежи: клик ставит задачу, коты строят по тикам.
+// Карту шлём при росте её версии (правки игрока + завершённые постройки).
 
 import init, { Sim } from './wasm/sp_sim.js';
 import wasmUrl from './wasm/sp_sim_bg.wasm?url';
@@ -15,12 +16,13 @@ let sim = null;
 let speed = 1; // 0 (пауза) | 1 | 5 | 10
 let acc = 0;
 let last = 0;
-let mapDirty = false;
+let lastMapVersion = -1;
 
 async function boot() {
   await init(wasmUrl);
   const yaml = await (await fetch('/rulesets/core.yaml')).text();
   sim = new Sim(yaml);
+  lastMapVersion = sim.map_version();
   postMessage({ type: 'ready', meta: sim.map_meta(), map: sim.base_map() });
   last = performance.now();
   loop();
@@ -45,9 +47,10 @@ function loop() {
   }
 
   if (sim) {
-    if (mapDirty) {
+    const v = sim.map_version();
+    if (v !== lastMapVersion) {
       postMessage({ type: 'map', map: sim.base_map() });
-      mapDirty = false;
+      lastMapVersion = v;
     }
     postMessage({ type: 'snapshot', snap: sim.snapshot() });
   }
@@ -59,7 +62,8 @@ onmessage = (e) => {
   if (m.type === 'setSpeed') {
     speed = m.speed;
   } else if (m.type === 'build' && sim) {
-    if (sim.set_tile(m.x, m.y, m.tile)) mapDirty = true;
+    if (m.tile >= 0) sim.add_blueprint(m.x, m.y, m.tile);
+    else sim.demolish(m.x, m.y);
   } else if (m.type === 'move' && sim) {
     sim.set_target(m.id, m.x, m.y);
   }

@@ -2,18 +2,21 @@
 //!
 //! bevy_ecs-мир крутится в WebWorker (WASM). Контент грузится из YAML-рулсета
 //! (стиль OpenXcom Extended). Наружу отдаём:
-//!   * `map_meta()`  — размеры и палитра тайлов (один раз, для рендера);
-//!   * `base_map()`  — текущее состояние тайлов базы (при изменениях);
-//!   * `set_tile()`  — команда постройки/сноса (мгновенно, работает и на паузе);
-//!   * `set_target()`— приказ коту идти в тайл (движение идёт по тикам);
-//!   * `tick()`      — один фиксированный шаг симуляции;
-//!   * `snapshot()`  — состояние рендерабельных сущностей (каждый кадр).
+//!   * `map_meta()`      — размеры и палитра тайлов (один раз, для рендера);
+//!   * `map_version()`   — счётчик изменений карты (для отправки base_map по требованию);
+//!   * `base_map()`      — текущее состояние тайлов базы;
+//!   * `add_blueprint()` — поставить чертёж (задачу постройки); строят коты, по тикам;
+//!   * `demolish()`      — отменить чертёж / снести готовый тайл (мгновенно);
+//!   * `set_target()`    — приказ коту идти в тайл (движение по тикам, отменяет его задачу);
+//!   * `tick()`          — один фиксированный шаг симуляции;
+//!   * `snapshot()`      — рендерабельные сущности + чертежи (каждый кадр).
 //!
 //! Проходимость: ходить можно только по построенному полу (индекс тайла >= 0);
 //! пустые клетки (-1) непроходимы. Путь ищется BFS по 4-связной сетке.
 //!
-//! Детерминизм: единственный источник случайности — `Rng` в ресурсе (пока не используется
-//! для движения; юниты ходят строго по приказам).
+//! Джобы постройки: чертёж — сущность `Blueprint`. Свободный (простаивающий) кот
+//! назначается на ближайший достижимый чертёж, идёт к соседней проходимой клетке
+//! и «работает» BUILD_TIME тиков, после чего тайл возводится.
 
 use bevy_ecs::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -22,6 +25,10 @@ use wasm_bindgen::prelude::*;
 
 /// Тиков между шагами юнита (при BASE_TPS=6 и периоде 1 — ~3 тайла/сек на ×1).
 const MOVE_PERIOD: u8 = 1;
+/// Тиков работы, чтобы возвести один тайл.
+const BUILD_TIME: i32 = 12;
+
+const DIRS: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
 
 // ------------------------------------------------------------------
 // Рулсет (YAML) — data-driven контент.
@@ -85,13 +92,6 @@ struct Renderable {
 #[derive(Component)]
 struct UnitId(String);
 
-/// Куда юнит идёт (конечная цель приказа).
-#[derive(Component)]
-struct Target {
-    x: i32,
-    y: i32,
-}
-
 /// Оставшийся маршрут. Хранится «развёрнуто»: следующий шаг — последний элемент
 /// (`pop()` = следующая клетка), первый элемент — конечная цель.
 #[derive(Component)]
@@ -103,12 +103,27 @@ struct Path {
 #[derive(Component)]
 struct MoveCooldown(u8);
 
+/// Кот назначен на джоб постройки (ссылка на сущность-чертёж).
+#[derive(Component)]
+struct Assignment(Entity);
+
+/// Чертёж — запланированная постройка тайла.
+#[derive(Component)]
+struct Blueprint {
+    x: i32,
+    y: i32,
+    tile: i16,
+    progress: i32,
+    assignee: Option<Entity>,
+}
+
 /// Тайловая карта базы. Значение ячейки — индекс в палитре тайлов, либо -1 (пусто).
 #[derive(Resource)]
 struct BaseMap {
     width: i32,
     height: i32,
     cells: Vec<i16>,
+    version: u64,
 }
 
 impl BaseMap {
@@ -117,6 +132,7 @@ impl BaseMap {
             width,
             height,
             cells: vec![-1; (width * height) as usize],
+            version: 0,
         }
     }
 
@@ -126,6 +142,10 @@ impl BaseMap {
         } else {
             Some((y * self.width + x) as usize)
         }
+    }
+
+    fn tile_at(&self, x: i32, y: i32) -> i16 {
+        self.index(x, y).map_or(-1, |i| self.cells[i])
     }
 
     /// Проходима ли клетка (построен ли пол).
@@ -138,6 +158,7 @@ impl BaseMap {
         match self.index(x, y) {
             Some(i) if self.cells[i] != tile => {
                 self.cells[i] = tile;
+                self.version += 1;
                 true
             }
             _ => false,
@@ -165,11 +186,10 @@ fn find_path(map: &BaseMap, start: (i32, i32), goal: (i32, i32)) -> Option<Vec<(
     let start_i = idx(start.0, start.1);
 
     let mut came: Vec<i32> = vec![-1; (w * h) as usize];
-    came[start_i] = start_i as i32; // помечаем старт посещённым
+    came[start_i] = start_i as i32;
     let mut queue = VecDeque::new();
     queue.push_back(start);
 
-    const DIRS: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
     while let Some((cx, cy)) = queue.pop_front() {
         for (dx, dy) in DIRS {
             let (nx, ny) = (cx + dx, cy + dy);
@@ -188,9 +208,37 @@ fn find_path(map: &BaseMap, start: (i32, i32), goal: (i32, i32)) -> Option<Vec<(
                     path.push(((cur as i32) % w, (cur as i32) / w));
                     cur = came[cur] as usize;
                 }
-                return Some(path); // [goal, .., first_step]
+                return Some(path);
             }
             queue.push_back((nx, ny));
+        }
+    }
+    None
+}
+
+/// Найти клетку, откуда можно строить чертёж (сам тайл, если проходим, либо сосед),
+/// и маршрут кота до неё. Возвращает (клетка, маршрут).
+fn path_to_build_spot(
+    map: &BaseMap,
+    from: (i32, i32),
+    bp: (i32, i32),
+) -> Option<((i32, i32), Vec<(i32, i32)>)> {
+    let mut spots = Vec::new();
+    if map.walkable(bp.0, bp.1) {
+        spots.push(bp);
+    }
+    for (dx, dy) in DIRS {
+        let n = (bp.0 + dx, bp.1 + dy);
+        if map.walkable(n.0, n.1) {
+            spots.push(n);
+        }
+    }
+    for spot in spots {
+        if spot == from {
+            return Some((spot, Vec::new()));
+        }
+        if let Some(path) = find_path(map, from, spot) {
+            return Some((spot, path));
         }
     }
     None
@@ -201,26 +249,64 @@ struct SimTime {
     tick: u64,
 }
 
-#[derive(Resource)]
-struct Rng {
-    #[allow(dead_code)]
-    state: u64,
-}
-
 // ------------------------------------------------------------------
-// Системы.
+// Системы (гоняются цепочкой каждый тик).
 // ------------------------------------------------------------------
 
 fn advance_time(mut time: ResMut<SimTime>) {
     time.tick += 1;
 }
 
-/// Двигает юнитов по маршруту. Если следующая клетка перестала быть проходимой
-/// (игрок снёс пол), маршрут пересчитывается; если пути нет — юнит останавливается.
-fn move_units(map: Res<BaseMap>, mut q: Query<(&mut Position, &mut Path, &mut MoveCooldown)>) {
-    for (mut pos, mut path, mut cd) in &mut q {
+/// Назначает простаивающих котов (без задачи и без маршрута) на ближайшие
+/// достижимые чертежи и отправляет их к месту постройки.
+fn assign_jobs(
+    map: Res<BaseMap>,
+    mut commands: Commands,
+    mut blueprints: Query<(Entity, &mut Blueprint)>,
+    free_cats: Query<(Entity, &Position), (With<UnitId>, Without<Assignment>, Without<Path>)>,
+) {
+    let mut free: Vec<(Entity, (i32, i32))> =
+        free_cats.iter().map(|(e, p)| (e, (p.x, p.y))).collect();
+    if free.is_empty() {
+        return;
+    }
+
+    for (bp_e, mut bp) in &mut blueprints {
+        if bp.assignee.is_some() {
+            continue;
+        }
+        if free.is_empty() {
+            break;
+        }
+        let mut chosen = None;
+        for (i, (cat_e, cat_pos)) in free.iter().enumerate() {
+            if let Some((_spot, path)) = path_to_build_spot(&map, *cat_pos, (bp.x, bp.y)) {
+                chosen = Some((i, *cat_e, path));
+                break;
+            }
+        }
+        if let Some((i, cat_e, path)) = chosen {
+            free.remove(i);
+            bp.assignee = Some(cat_e);
+            commands.entity(cat_e).insert((
+                Assignment(bp_e),
+                Path { steps: path },
+                MoveCooldown(0),
+            ));
+        }
+    }
+}
+
+/// Двигает юнитов по маршруту; на прибытии снимает компоненты движения.
+fn move_units(
+    map: Res<BaseMap>,
+    mut commands: Commands,
+    mut q: Query<(Entity, &mut Position, &mut Path, &mut MoveCooldown)>,
+) {
+    for (e, mut pos, mut path, mut cd) in &mut q {
         if path.steps.is_empty() {
-            continue; // прибыл / приказа нет
+            commands.entity(e).remove::<(Path, MoveCooldown)>();
+            continue;
         }
         if cd.0 > 0 {
             cd.0 -= 1;
@@ -242,6 +328,39 @@ fn move_units(map: Res<BaseMap>, mut q: Query<(&mut Position, &mut Path, &mut Mo
         pos.x = next.0;
         pos.y = next.1;
         cd.0 = MOVE_PERIOD;
+
+        if path.steps.is_empty() {
+            commands.entity(e).remove::<(Path, MoveCooldown)>();
+        }
+    }
+}
+
+/// Коты, добравшиеся до чертежа, «работают» до готовности; затем тайл возводится.
+fn work_jobs(
+    mut map: ResMut<BaseMap>,
+    mut commands: Commands,
+    cats: Query<(Entity, &Position, &Assignment, Option<&Path>)>,
+    mut blueprints: Query<&mut Blueprint>,
+) {
+    for (cat_e, pos, assign, path) in &cats {
+        let Ok(mut bp) = blueprints.get_mut(assign.0) else {
+            commands.entity(cat_e).remove::<Assignment>();
+            continue;
+        };
+
+        let in_range = (pos.x - bp.x).abs() + (pos.y - bp.y).abs() <= 1;
+        if in_range {
+            bp.progress += 1;
+            if bp.progress >= BUILD_TIME {
+                map.set(bp.x, bp.y, bp.tile);
+                commands.entity(assign.0).despawn();
+                commands.entity(cat_e).remove::<Assignment>();
+            }
+        } else if path.is_none() {
+            // Дошёл, но не в радиусе (маршрут оборвался) — освобождаем джоб.
+            bp.assignee = None;
+            commands.entity(cat_e).remove::<Assignment>();
+        }
     }
 }
 
@@ -267,6 +386,7 @@ struct BaseMapDto<'a> {
 struct Snapshot {
     tick: u64,
     entities: Vec<EntitySnap>,
+    blueprints: Vec<BlueprintSnap>,
 }
 
 #[derive(Serialize)]
@@ -275,6 +395,15 @@ struct EntitySnap {
     sprite: String,
     x: i32,
     y: i32,
+}
+
+#[derive(Serialize)]
+struct BlueprintSnap {
+    x: i32,
+    y: i32,
+    tile: i16,
+    progress: i32,
+    total: i32,
 }
 
 // ------------------------------------------------------------------
@@ -288,6 +417,23 @@ pub struct Sim {
     palette: Vec<TileDef>,
     width: i32,
     height: i32,
+}
+
+impl Sim {
+    fn in_bounds(&self, x: i32, y: i32) -> bool {
+        x >= 0 && y >= 0 && x < self.width && y < self.height
+    }
+
+    /// Сущность-чертёж на клетке (x, y), если есть.
+    fn blueprint_at(&mut self, x: i32, y: i32) -> Option<Entity> {
+        let mut q = self.world.query::<(Entity, &Blueprint)>();
+        for (e, bp) in q.iter(&self.world) {
+            if bp.x == x && bp.y == y {
+                return Some(e);
+            }
+        }
+        None
+    }
 }
 
 #[wasm_bindgen]
@@ -313,9 +459,6 @@ impl Sim {
         let mut world = World::new();
         world.insert_resource(map);
         world.insert_resource(SimTime { tick: 0 });
-        world.insert_resource(Rng {
-            state: 0x9E37_79B9_7F4A_7C15,
-        });
 
         for u in &rs.units {
             world.spawn((
@@ -331,7 +474,7 @@ impl Sim {
         }
 
         let mut schedule = Schedule::default();
-        schedule.add_systems((advance_time, move_units));
+        schedule.add_systems((advance_time, assign_jobs, move_units, work_jobs).chain());
 
         Ok(Sim {
             world,
@@ -352,6 +495,11 @@ impl Sim {
         serde_wasm_bindgen::to_value(&meta).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
+    /// Счётчик изменений карты (воркер шлёт base_map, когда он вырос).
+    pub fn map_version(&self) -> f64 {
+        self.world.resource::<BaseMap>().version as f64
+    }
+
     /// Текущее состояние тайлов базы.
     pub fn base_map(&self) -> Result<JsValue, JsValue> {
         let map = self.world.resource::<BaseMap>();
@@ -363,16 +511,55 @@ impl Sim {
         serde_wasm_bindgen::to_value(&dto).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
-    /// Постройка/снос от игрока. `tile` — индекс палитры или -1 (снести).
-    /// Мгновенно, независимо от тика (строить можно и на паузе). Вернёт true при изменении.
-    pub fn set_tile(&mut self, x: i32, y: i32, tile: i32) -> bool {
-        self.world.resource_mut::<BaseMap>().set(x, y, tile as i16)
+    /// Поставить чертёж (джоб постройки) `tile` на клетку (x, y). Строят коты, по тикам.
+    /// Вернёт true, если чертёж добавлен/обновлён.
+    pub fn add_blueprint(&mut self, x: i32, y: i32, tile: i32) -> bool {
+        if !self.in_bounds(x, y) {
+            return false;
+        }
+        let t = tile as i16;
+        if self.world.resource::<BaseMap>().tile_at(x, y) == t {
+            return false; // уже построено этим тайлом
+        }
+        if let Some(e) = self.blueprint_at(x, y) {
+            let mut bp = self.world.get_mut::<Blueprint>(e).unwrap();
+            if bp.tile != t {
+                bp.tile = t;
+                bp.progress = 0;
+            }
+            return true;
+        }
+        self.world.spawn(Blueprint {
+            x,
+            y,
+            tile: t,
+            progress: 0,
+            assignee: None,
+        });
+        true
     }
 
-    /// Приказ коту `unit_id` идти в тайл (x, y). Само движение идёт по тикам.
+    /// Отменить чертёж на клетке / снести готовый тайл (мгновенно). Вернёт true при изменении.
+    pub fn demolish(&mut self, x: i32, y: i32) -> bool {
+        let mut changed = false;
+        if let Some(e) = self.blueprint_at(x, y) {
+            if let Some(cat) = self.world.get::<Blueprint>(e).and_then(|bp| bp.assignee) {
+                self.world
+                    .entity_mut(cat)
+                    .remove::<(Assignment, Path, MoveCooldown)>();
+            }
+            self.world.entity_mut(e).despawn();
+            changed = true;
+        }
+        if self.world.resource_mut::<BaseMap>().set(x, y, -1) {
+            changed = true;
+        }
+        changed
+    }
+
+    /// Приказ коту `unit_id` идти в тайл (x, y). Отменяет его джоб постройки, если был.
     /// Вернёт true, если приказ принят (цель проходима и достижима).
     pub fn set_target(&mut self, unit_id: &str, x: i32, y: i32) -> bool {
-        // Найти сущность и её позицию.
         let mut found = None;
         {
             let mut q = self.world.query::<(Entity, &UnitId, &Position)>();
@@ -387,7 +574,6 @@ impl Sim {
             return false;
         };
 
-        // Проложить маршрут (границы заимствования ресурса — в блоке).
         let path = {
             let map = self.world.resource::<BaseMap>();
             if !map.walkable(x, y) {
@@ -399,8 +585,15 @@ impl Sim {
             }
         };
 
+        // Снять текущую задачу постройки (освободить чертёж).
+        if let Some(bp_e) = self.world.get::<Assignment>(entity).map(|a| a.0) {
+            if let Some(mut bp) = self.world.get_mut::<Blueprint>(bp_e) {
+                bp.assignee = None;
+            }
+            self.world.entity_mut(entity).remove::<Assignment>();
+        }
+
         self.world.entity_mut(entity).insert((
-            Target { x, y },
             Path { steps: path },
             MoveCooldown(0),
         ));
@@ -412,22 +605,42 @@ impl Sim {
         self.schedule.run(&mut self.world);
     }
 
-    /// Состояние рендерабельных сущностей (для PixiJS).
+    /// Рендерабельные сущности + чертежи (для PixiJS).
     pub fn snapshot(&mut self) -> Result<JsValue, JsValue> {
         let tick = self.world.resource::<SimTime>().tick;
 
         let mut entities = Vec::new();
-        let mut q = self.world.query::<(&UnitId, &Renderable, &Position)>();
-        for (id, r, p) in q.iter(&self.world) {
-            entities.push(EntitySnap {
-                id: id.0.clone(),
-                sprite: r.sprite.clone(),
-                x: p.x,
-                y: p.y,
-            });
+        {
+            let mut q = self.world.query::<(&UnitId, &Renderable, &Position)>();
+            for (id, r, p) in q.iter(&self.world) {
+                entities.push(EntitySnap {
+                    id: id.0.clone(),
+                    sprite: r.sprite.clone(),
+                    x: p.x,
+                    y: p.y,
+                });
+            }
         }
 
-        serde_wasm_bindgen::to_value(&Snapshot { tick, entities })
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        let mut blueprints = Vec::new();
+        {
+            let mut q = self.world.query::<&Blueprint>();
+            for bp in q.iter(&self.world) {
+                blueprints.push(BlueprintSnap {
+                    x: bp.x,
+                    y: bp.y,
+                    tile: bp.tile,
+                    progress: bp.progress,
+                    total: BUILD_TIME,
+                });
+            }
+        }
+
+        serde_wasm_bindgen::to_value(&Snapshot {
+            tick,
+            entities,
+            blueprints,
+        })
+        .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 }
