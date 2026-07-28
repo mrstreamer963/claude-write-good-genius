@@ -2,17 +2,26 @@
 //!
 //! bevy_ecs-мир крутится в WebWorker (WASM). Контент грузится из YAML-рулсета
 //! (стиль OpenXcom Extended). Наружу отдаём:
-//!   * `map_meta()` — размеры и палитра тайлов (один раз, для рендера);
-//!   * `base_map()` — текущее состояние тайлов базы (при изменениях);
-//!   * `set_tile()` — команда постройки/сноса от игрока (работает и на паузе);
-//!   * `tick()`     — один фиксированный шаг симуляции;
-//!   * `snapshot()` — состояние рендерабельных сущностей (каждый кадр).
+//!   * `map_meta()`  — размеры и палитра тайлов (один раз, для рендера);
+//!   * `base_map()`  — текущее состояние тайлов базы (при изменениях);
+//!   * `set_tile()`  — команда постройки/сноса (мгновенно, работает и на паузе);
+//!   * `set_target()`— приказ коту идти в тайл (движение идёт по тикам);
+//!   * `tick()`      — один фиксированный шаг симуляции;
+//!   * `snapshot()`  — состояние рендерабельных сущностей (каждый кадр).
 //!
-//! Детерминизм: единственный источник случайности — `Rng` в ресурсе (xorshift).
+//! Проходимость: ходить можно только по построенному полу (индекс тайла >= 0);
+//! пустые клетки (-1) непроходимы. Путь ищется BFS по 4-связной сетке.
+//!
+//! Детерминизм: единственный источник случайности — `Rng` в ресурсе (пока не используется
+//! для движения; юниты ходят строго по приказам).
 
 use bevy_ecs::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use wasm_bindgen::prelude::*;
+
+/// Тиков между шагами юнита (при BASE_TPS=6 и периоде 1 — ~3 тайла/сек на ×1).
+const MOVE_PERIOD: u8 = 1;
 
 // ------------------------------------------------------------------
 // Рулсет (YAML) — data-driven контент.
@@ -76,9 +85,23 @@ struct Renderable {
 #[derive(Component)]
 struct UnitId(String);
 
-/// Маркер: сущность бродит по базе (заглушка поведения для каркаса).
+/// Куда юнит идёт (конечная цель приказа).
 #[derive(Component)]
-struct Wander;
+struct Target {
+    x: i32,
+    y: i32,
+}
+
+/// Оставшийся маршрут. Хранится «развёрнуто»: следующий шаг — последний элемент
+/// (`pop()` = следующая клетка), первый элемент — конечная цель.
+#[derive(Component)]
+struct Path {
+    steps: Vec<(i32, i32)>,
+}
+
+/// Обратный отсчёт тиков до следующего шага.
+#[derive(Component)]
+struct MoveCooldown(u8);
 
 /// Тайловая карта базы. Значение ячейки — индекс в палитре тайлов, либо -1 (пусто).
 #[derive(Resource)]
@@ -105,7 +128,12 @@ impl BaseMap {
         }
     }
 
-    /// Поставить тайл (`tile` — индекс палитры, `-1` = снести). Вернёт true, если что-то изменилось.
+    /// Проходима ли клетка (построен ли пол).
+    fn walkable(&self, x: i32, y: i32) -> bool {
+        self.index(x, y).is_some_and(|i| self.cells[i] >= 0)
+    }
+
+    /// Поставить тайл (`tile` — индекс палитры, `-1` = снести). Вернёт true при изменении.
     fn set(&mut self, x: i32, y: i32, tile: i16) -> bool {
         match self.index(x, y) {
             Some(i) if self.cells[i] != tile => {
@@ -126,6 +154,48 @@ impl BaseMap {
     }
 }
 
+/// BFS по проходимым клеткам. Возвращает маршрут в «развёрнутом» виде:
+/// `[goal, .., first_step]` (без стартовой клетки), либо None если пути нет.
+fn find_path(map: &BaseMap, start: (i32, i32), goal: (i32, i32)) -> Option<Vec<(i32, i32)>> {
+    if start == goal {
+        return Some(Vec::new());
+    }
+    let (w, h) = (map.width, map.height);
+    let idx = |x: i32, y: i32| (y * w + x) as usize;
+    let start_i = idx(start.0, start.1);
+
+    let mut came: Vec<i32> = vec![-1; (w * h) as usize];
+    came[start_i] = start_i as i32; // помечаем старт посещённым
+    let mut queue = VecDeque::new();
+    queue.push_back(start);
+
+    const DIRS: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+    while let Some((cx, cy)) = queue.pop_front() {
+        for (dx, dy) in DIRS {
+            let (nx, ny) = (cx + dx, cy + dy);
+            if nx < 0 || ny < 0 || nx >= w || ny >= h {
+                continue;
+            }
+            let ni = idx(nx, ny);
+            if came[ni] != -1 || !map.walkable(nx, ny) {
+                continue;
+            }
+            came[ni] = idx(cx, cy) as i32;
+            if (nx, ny) == goal {
+                let mut path = Vec::new();
+                let mut cur = ni;
+                while cur != start_i {
+                    path.push(((cur as i32) % w, (cur as i32) / w));
+                    cur = came[cur] as usize;
+                }
+                return Some(path); // [goal, .., first_step]
+            }
+            queue.push_back((nx, ny));
+        }
+    }
+    None
+}
+
 #[derive(Resource)]
 struct SimTime {
     tick: u64,
@@ -133,29 +203,8 @@ struct SimTime {
 
 #[derive(Resource)]
 struct Rng {
+    #[allow(dead_code)]
     state: u64,
-}
-
-impl Rng {
-    fn next_u64(&mut self) -> u64 {
-        // xorshift64*
-        let mut x = self.state;
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        self.state = x;
-        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
-    }
-
-    fn step(&mut self) -> (i32, i32) {
-        match self.next_u64() % 5 {
-            0 => (1, 0),
-            1 => (-1, 0),
-            2 => (0, 1),
-            3 => (0, -1),
-            _ => (0, 0),
-        }
-    }
 }
 
 // ------------------------------------------------------------------
@@ -166,11 +215,33 @@ fn advance_time(mut time: ResMut<SimTime>) {
     time.tick += 1;
 }
 
-fn wander(mut rng: ResMut<Rng>, map: Res<BaseMap>, mut q: Query<&mut Position, With<Wander>>) {
-    for mut pos in &mut q {
-        let (dx, dy) = rng.step();
-        pos.x = (pos.x + dx).clamp(0, map.width - 1);
-        pos.y = (pos.y + dy).clamp(0, map.height - 1);
+/// Двигает юнитов по маршруту. Если следующая клетка перестала быть проходимой
+/// (игрок снёс пол), маршрут пересчитывается; если пути нет — юнит останавливается.
+fn move_units(map: Res<BaseMap>, mut q: Query<(&mut Position, &mut Path, &mut MoveCooldown)>) {
+    for (mut pos, mut path, mut cd) in &mut q {
+        if path.steps.is_empty() {
+            continue; // прибыл / приказа нет
+        }
+        if cd.0 > 0 {
+            cd.0 -= 1;
+            continue;
+        }
+
+        let next = *path.steps.last().unwrap();
+        if !map.walkable(next.0, next.1) {
+            let goal = *path.steps.first().unwrap();
+            match find_path(&map, (pos.x, pos.y), goal) {
+                Some(p) => path.steps = p,
+                None => path.steps.clear(),
+            }
+            cd.0 = MOVE_PERIOD;
+            continue;
+        }
+
+        path.steps.pop();
+        pos.x = next.0;
+        pos.y = next.1;
+        cd.0 = MOVE_PERIOD;
     }
 }
 
@@ -230,8 +301,6 @@ impl Sim {
             .map_err(|e| JsValue::from_str(&format!("ruleset parse error: {e}")))?;
 
         let (w, h) = (rs.grid.width, rs.grid.height);
-
-        // Индекс палитры по id тайла (для разбора начальной застройки).
         let tile_index = |id: &str| rs.tiles.iter().position(|t| t.id == id).map(|i| i as i16);
 
         let mut map = BaseMap::empty(w, h);
@@ -258,12 +327,11 @@ impl Sim {
                     x: u.pos[0],
                     y: u.pos[1],
                 },
-                Wander,
             ));
         }
 
         let mut schedule = Schedule::default();
-        schedule.add_systems((advance_time, wander));
+        schedule.add_systems((advance_time, move_units));
 
         Ok(Sim {
             world,
@@ -295,10 +363,48 @@ impl Sim {
         serde_wasm_bindgen::to_value(&dto).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
-    /// Команда постройки/сноса от игрока. `tile` — индекс палитры или -1 (снести).
-    /// Работает независимо от тика — строить можно и на паузе. Вернёт true при изменении.
+    /// Постройка/снос от игрока. `tile` — индекс палитры или -1 (снести).
+    /// Мгновенно, независимо от тика (строить можно и на паузе). Вернёт true при изменении.
     pub fn set_tile(&mut self, x: i32, y: i32, tile: i32) -> bool {
         self.world.resource_mut::<BaseMap>().set(x, y, tile as i16)
+    }
+
+    /// Приказ коту `unit_id` идти в тайл (x, y). Само движение идёт по тикам.
+    /// Вернёт true, если приказ принят (цель проходима и достижима).
+    pub fn set_target(&mut self, unit_id: &str, x: i32, y: i32) -> bool {
+        // Найти сущность и её позицию.
+        let mut found = None;
+        {
+            let mut q = self.world.query::<(Entity, &UnitId, &Position)>();
+            for (e, id, p) in q.iter(&self.world) {
+                if id.0 == unit_id {
+                    found = Some((e, p.x, p.y));
+                    break;
+                }
+            }
+        }
+        let Some((entity, sx, sy)) = found else {
+            return false;
+        };
+
+        // Проложить маршрут (границы заимствования ресурса — в блоке).
+        let path = {
+            let map = self.world.resource::<BaseMap>();
+            if !map.walkable(x, y) {
+                return false;
+            }
+            match find_path(map, (sx, sy), (x, y)) {
+                Some(p) => p,
+                None => return false,
+            }
+        };
+
+        self.world.entity_mut(entity).insert((
+            Target { x, y },
+            Path { steps: path },
+            MoveCooldown(0),
+        ));
+        true
     }
 
     /// Один фиксированный шаг симуляции.

@@ -60,6 +60,8 @@ onmessage = (e) => {
     speed = m.speed;
   } else if (m.type === 'build' && sim) {
     if (sim.set_tile(m.x, m.y, m.tile)) mapDirty = true;
+  } else if (m.type === 'move' && sim) {
+    sim.set_target(m.id, m.x, m.y);
   }
 };
 

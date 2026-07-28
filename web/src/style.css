@@ -130,6 +130,10 @@ main#stage canvas { display: block; }
 .sw-erase {
   background: repeating-linear-gradient(45deg, #7a2b3a 0 3px, #40151d 3px 6px);
 }
+.sw-cursor {
+  background: #6cf0a0;
+  border-radius: 50%;
+}
 
 #hint {
   position: fixed;
