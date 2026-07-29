@@ -66,8 +66,8 @@ let mapCells = null; // Int-массив состояния карты
 let mode = 'cursor'; // 'cursor' | 'build'
 let buildTile = 0; // индекс палитры, или -1 = стереть (в режиме build)
 let selectedUnit = null;
-let painting = false;
-let lastPaintTile = null; // клетка, обработанная последней в текущем мазке
+let dragFrom = null; // якорь рамки (клетка, где нажали), null = не тянем
+let dragTo = null; // текущий угол рамки; переживает выход курсора за карту
 
 // --- worker ---------------------------------------------------------------
 
@@ -242,16 +242,33 @@ function unitAt(tx, ty) {
   return null;
 }
 
-// режим постройки
-function paint(global) {
-  const t = tileAt(global);
-  if (!t) return;
-  // Одна клетка обрабатывается один раз за мазок: ластик переключает чертёж
-  // сноса, и повторный вызов на том же тайле снял бы только что поставленный.
-  const key = `${t.tx},${t.ty}`;
-  if (key === lastPaintTile) return;
-  lastPaintTile = key;
-  worker.postMessage({ type: 'build', x: t.tx, y: t.ty, tile: buildTile });
+// режим постройки: игрок тянет рамку, отпускание применяет её целиком
+function rectOf(a, b) {
+  return {
+    x: Math.min(a.tx, b.tx),
+    y: Math.min(a.ty, b.ty),
+    w: Math.abs(a.tx - b.tx) + 1,
+    h: Math.abs(a.ty - b.ty) + 1,
+  };
+}
+
+// Один жест — одно сообщение: решение по рамке принимает ядро, а не рендер.
+// Здесь оно принято быть и не может — список чертежей у нас из последнего
+// снапшота, а на ×10 он отстаёт от симуляции на несколько тиков.
+function applyDrag() {
+  if (!dragFrom || !dragTo) return;
+  worker.postMessage({ type: 'build', ...rectOf(dragFrom, dragTo), tile: buildTile });
+}
+
+// `global` — где отпустили кнопку: подсветка сразу возвращается к одной клетке
+// под курсором. Без этого рамка висела бы на экране до следующего движения мыши
+// и читалась как «что-то ещё выделено».
+function endDrag(apply, global) {
+  if (dragFrom && apply) applyDrag();
+  dragFrom = null;
+  dragTo = null;
+  hoverRect.clear();
+  if (global) updateHover(global);
 }
 
 // режим курсора: выбрать кота / приказать идти
@@ -274,29 +291,42 @@ function command(global) {
 function updateHover(global) {
   const t = tileAt(global);
   hoverRect.clear();
-  if (!t) return;
+  // Во время протяжки показываем всю рамку — даже если курсор ушёл за карту.
+  const r = dragFrom ? rectOf(dragFrom, dragTo) : t && { x: t.tx, y: t.ty, w: 1, h: 1 };
+  if (!r) return;
   const col = mode === 'build' ? (buildTile >= 0 ? paletteColors[buildTile] : COLORS.erase) : COLORS.select;
   hoverRect
-    .rect(t.tx * TILE, t.ty * TILE, TILE, TILE)
+    .rect(r.x * TILE, r.y * TILE, r.w * TILE, r.h * TILE)
     .fill({ color: col, alpha: 0.16 })
     .stroke({ color: col, width: 2, alpha: 0.9 });
 }
 
 app.stage.on('pointerdown', (e) => {
-  if (mode === 'build') {
-    painting = true;
-    lastPaintTile = null;
-    paint(e.global);
-  } else {
+  if (mode !== 'build') {
     command(e.global);
+    return;
   }
+  const t = tileAt(e.global);
+  if (!t) return;
+  dragFrom = t;
+  dragTo = t;
+  updateHover(e.global);
 });
 app.stage.on('pointermove', (e) => {
+  const t = tileAt(e.global);
+  if (dragFrom && t) dragTo = t;
   updateHover(e.global);
-  if (painting) paint(e.global);
 });
-app.stage.on('pointerup', () => ((painting = false), (lastPaintTile = null)));
-app.stage.on('pointerupoutside', () => ((painting = false), (lastPaintTile = null)));
+app.stage.on('pointerup', (e) => endDrag(true, e.global));
+// Курсор ушёл со сцены — применяем последнюю рамку в пределах карты: бросать
+// уже нарисованное выделение обиднее, чем применить его на клетку меньше.
+app.stage.on('pointerupoutside', (e) => endDrag(true, e.global));
+
+// Escape — отмена начатой протяжки: единственный способ передумать, не отпуская
+// кнопку. Уже применённую рамку отменяет ластик (или повторный ластик).
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && dragFrom) endDrag(false);
+});
 
 // --- тулбар ---------------------------------------------------------------
 

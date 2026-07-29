@@ -7,6 +7,7 @@
 //!   * `base_map()`      — текущее состояние тайлов базы;
 //!   * `add_blueprint()` — поставить чертёж (задачу); выполняют коты, по тикам;
 //!   * `plan_demolish()` — ластик: отменить чертёж либо запланировать снос тайла;
+//!   * `*_rect()`        — те же инструменты на рамку; решение — на всю рамку сразу;
 //!   * `demolish()`      — мгновенный снос без котов (тесты/отладка);
 //!   * `set_target()`    — приказ коту идти в тайл (движение по тикам, отменяет его задачу);
 //!   * `tick()`          — один фиксированный шаг симуляции;
@@ -407,6 +408,12 @@ impl DemolitionFront {
         let i = (y * self.width + x) as usize;
         self.depth[i] < 0 || self.depth[i] == self.deepest[self.zone[i] as usize]
     }
+}
+
+/// Клетки прямоугольника [x, y, w, h] построчно. Нулевые и отрицательные
+/// размеры дают пустой обход, выход за карту отсекают вызываемые методы.
+fn rect_cells(x: i32, y: i32, w: i32, h: i32) -> impl Iterator<Item = (i32, i32)> {
+    (0..h).flat_map(move |dy| (0..w).map(move |dx| (x + dx, y + dy)))
 }
 
 #[derive(Resource)]
@@ -852,6 +859,16 @@ impl Sim {
         true
     }
 
+    /// Поставить чертежи `tile` на весь прямоугольник — один жест рамкой.
+    /// Вернёт true, если хоть одна клетка изменилась.
+    pub fn add_blueprint_rect(&mut self, x: i32, y: i32, w: i32, h: i32, tile: i32) -> bool {
+        let mut changed = false;
+        for (cx, cy) in rect_cells(x, y, w, h) {
+            changed |= self.add_blueprint(cx, cy, tile);
+        }
+        changed
+    }
+
     /// Ластик игрока: отменить чертёж, либо запланировать снос построенного тайла.
     ///
     /// Отмена плана мгновенна — строить ещё не начинали, и большая часть «ой, не
@@ -860,13 +877,30 @@ impl Sim {
     /// клетку и работает. Повторный ластик по клетке с чертежом сноса отменяет
     /// его. Вернёт true, если что-то изменилось.
     pub fn plan_demolish(&mut self, x: i32, y: i32) -> bool {
-        if !self.in_bounds(x, y) {
-            return false;
+        self.plan_demolish_rect(x, y, 1, 1)
+    }
+
+    /// Ластик по прямоугольнику. Решение принимается на всю рамку сразу: сперва
+    /// снимаем чертежи, и только если снимать было нечего — планируем снос пола.
+    ///
+    /// Потайловый переключатель на рамке дал бы кашу: там, где часть клеток уже
+    /// запланирована, один жест половину снял бы, а половину поставил, и результат
+    /// зависел бы от того, что игрок делал раньше. Порядок «сначала отмена» ещё и
+    /// безопаснее — отмена ничего не разрушает.
+    pub fn plan_demolish_rect(&mut self, x: i32, y: i32, w: i32, h: i32) -> bool {
+        let cells: Vec<(i32, i32)> = rect_cells(x, y, w, h).collect();
+        let mut cancelled = false;
+        for &(cx, cy) in &cells {
+            cancelled |= self.cancel_blueprint(cx, cy);
         }
-        if self.cancel_blueprint(x, y) {
+        if cancelled {
             return true;
         }
-        self.add_blueprint(x, y, -1)
+        let mut planned = false;
+        for &(cx, cy) in &cells {
+            planned |= self.add_blueprint(cx, cy, -1);
+        }
+        planned
     }
 
     /// Мгновенно снести тайл вместе с чертежом, без участия котов.
@@ -930,7 +964,9 @@ impl Sim {
                     .insert((Path { steps: p }, MoveCooldown(0)));
             }
             None => {
-                self.world.entity_mut(entity).remove::<(Path, MoveCooldown)>();
+                self.world
+                    .entity_mut(entity)
+                    .remove::<(Path, MoveCooldown)>();
             }
         }
         true
@@ -1116,16 +1152,6 @@ mod tests {
             self.world.resource_mut::<BaseMap>().set(x, y, tile);
         }
 
-        /// Мазок ластиком по прямоугольнику [x, y, w, h] — как ведёт мышью игрок.
-        fn plan_demolish_rect(&mut self, rect: [i32; 4]) {
-            let [x, y, w, h] = rect;
-            for dy in 0..h {
-                for dx in 0..w {
-                    self.plan_demolish(x + dx, y + dy);
-                }
-            }
-        }
-
         /// Сколько клеток пола осталось в прямоугольнике.
         fn floors_left(&self, rect: [i32; 4]) -> i32 {
             let [x, y, w, h] = rect;
@@ -1186,7 +1212,10 @@ mod tests {
         assert!(sim.demolish(1, 1));
         sim.tick_n(10);
         assert_eq!(sim.pos_of("a"), (1, 1), "выхода нет — кот остаётся");
-        assert!(sim.stuck_of("a"), "замурованный кот должен помечаться stuck");
+        assert!(
+            sim.stuck_of("a"),
+            "замурованный кот должен помечаться stuck"
+        );
     }
 
     #[test]
@@ -1204,12 +1233,16 @@ mod tests {
 
     // --- приказы ----------------------------------------------------------
 
-    /// Регрессия errors.md №1: приказ, отданный до появления прохода, должен
-    /// исполниться сам, как только карта откроется.
+    /// Регрессия: приказ, отданный до появления прохода, должен исполниться сам,
+    /// как только карта откроется. Раньше маршрут прокладывался один раз, в момент
+    /// `set_target`, и приказ без пути молча терялся.
     #[test]
     fn order_resumes_after_map_opens() {
         let mut sim = sim_from(&["#######", "#a.#..#", "#######"]);
-        assert!(sim.set_target("a", 5, 1), "приказ на проходимую клетку принят");
+        assert!(
+            sim.set_target("a", 5, 1),
+            "приказ на проходимую клетку принят"
+        );
         sim.tick_n(10);
         assert_eq!(sim.pos_of("a"), (1, 1), "пути нет — кот стоит");
         assert!(sim.stuck_of("a"), "невыполнимый приказ помечается stuck");
@@ -1220,10 +1253,12 @@ mod tests {
         assert!(!sim.stuck_of("a"));
     }
 
-    /// Регрессия errors.md №2: кот с невыполнимым приказом обязан оставаться
-    /// работоспособным. Чертёж в (0,1) достижим только изнутри левой комнаты,
-    /// так что построить его может только запертый кот — и только если приказ
-    /// не исключает его из назначения на джобы.
+    /// Регрессия: кот с невыполнимым приказом обязан оставаться работоспособным.
+    /// Раньше `assign_jobs` считал свободными только котов без приказа, и запертый
+    /// кот навсегда выпадал из работы — включая постройку тайла, который открыл бы
+    /// ему выход. Чертёж в (0,1) достижим только изнутри левой комнаты, так что
+    /// построить его может только запертый кот — и только если приказ не исключает
+    /// его из назначения на джобы.
     #[test]
     fn trapped_cat_with_stalled_order_still_builds() {
         let mut sim = sim_from(&["#######", "#a.#.b#", "#######"]);
@@ -1334,7 +1369,10 @@ mod tests {
     #[test]
     fn demolish_job_is_done_from_a_neighbour() {
         let mut sim = sim_from(&["#####", "#a..#", "#####"]);
-        assert!(sim.plan_demolish(3, 1), "снос построенного тайла ставится в очередь");
+        assert!(
+            sim.plan_demolish(3, 1),
+            "снос построенного тайла ставится в очередь"
+        );
         assert_eq!(sim.tile(3, 1), 0, "мгновенно ничего не сносится");
 
         // Проверяем каждый тик, а не только итог: если кот встанет на цель и
@@ -1342,7 +1380,11 @@ mod tests {
         // клетку — и по конечному состоянию ошибка будет неотличима от нормы.
         for _ in 0..200 {
             sim.tick_n(1);
-            assert_ne!(sim.pos_of("a"), (3, 1), "кот встал на клетку, которую сносит");
+            assert_ne!(
+                sim.pos_of("a"),
+                (3, 1),
+                "кот встал на клетку, которую сносит"
+            );
         }
 
         assert_eq!(sim.tile(3, 1), -1, "тайл снесён котом");
@@ -1364,7 +1406,10 @@ mod tests {
     fn second_erase_cancels_pending_demolish() {
         let mut sim = sim_from(&["#####", "#a..#", "#####"]);
         sim.plan_demolish(3, 1);
-        assert!(sim.plan_demolish(3, 1), "второй ластик снимает чертёж сноса");
+        assert!(
+            sim.plan_demolish(3, 1),
+            "второй ластик снимает чертёж сноса"
+        );
         sim.tick_n(100);
         assert_eq!(sim.tile(3, 1), 0, "снос отменён — пол на месте");
     }
@@ -1387,6 +1432,48 @@ mod tests {
         assert_eq!(sim.tile(1, 1), 0, "подойти неоткуда — тайл остаётся");
     }
 
+    // --- рамка ------------------------------------------------------------
+
+    /// Ластик по рамке решает за всю рамку сразу: сперва снимает чертежи, и
+    /// только если снимать было нечего — планирует снос. Потайловый
+    /// переключатель на смешанной области дал бы кашу: половину клеток снял бы,
+    /// половину поставил, а что именно — зависело бы от прошлых действий игрока.
+    #[test]
+    fn erase_rect_cancels_plans_before_planning_demolition() {
+        let mut sim = sim_from(&["######", "#a...#", "#..###", "######"]);
+        // Чертёж постройки внутри будущей рамки: (3, 2) — пустая клетка.
+        assert!(sim.add_blueprint(3, 2, 0));
+
+        assert!(
+            sim.plan_demolish_rect(2, 1, 3, 2),
+            "первый жест снимает план"
+        );
+        sim.tick_n(200);
+        assert_eq!(sim.tile(3, 2), -1, "снятый чертёж не построился");
+        assert_eq!(
+            sim.floors_left([2, 1, 3, 2]),
+            4,
+            "снос при этом не планировался — пол цел"
+        );
+
+        assert!(
+            sim.plan_demolish_rect(2, 1, 3, 2),
+            "снимать нечего — планируем снос"
+        );
+        sim.tick_n(400);
+        assert_eq!(sim.floors_left([2, 1, 3, 2]), 0, "рамка снесена целиком");
+        assert!(!sim.stuck_of("a"), "кот остался на полу за рамкой");
+    }
+
+    /// Рамка постройки ставит чертежи на все пустые клетки под ней.
+    #[test]
+    fn build_rect_plans_every_empty_cell() {
+        let mut sim = sim_from(&["######", "#a...#", "######"]);
+        assert!(sim.add_blueprint_rect(1, 0, 4, 1, 0));
+        sim.tick_n(400);
+        assert_eq!(sim.floors_left([1, 0, 4, 1]), 4, "вся рамка построена");
+    }
+
     // --- порядок сноса ----------------------------------------------------
 
     /// Главная регрессия: комната, стёртая одним мазком, должна исчезнуть
@@ -1398,7 +1485,7 @@ mod tests {
     #[test]
     fn whole_room_is_erased_completely() {
         let mut sim = sim_from(&rows_from(include_str!("test_maps/whole_room.map")));
-        sim.plan_demolish_rect([1, 3, 5, 3]);
+        sim.plan_demolish_rect(1, 3, 5, 3);
         sim.tick_n(1000);
 
         assert_eq!(sim.floors_left([1, 3, 5, 3]), 0, "комната стёрта целиком");
@@ -1410,7 +1497,7 @@ mod tests {
     #[test]
     fn demolition_retreats_from_the_deep_end() {
         let mut sim = sim_from(&["######", "#a...#", "######"]);
-        sim.plan_demolish_rect([2, 1, 3, 1]);
+        sim.plan_demolish_rect(2, 1, 3, 1);
 
         sim.tick_n(20);
         assert_eq!(sim.tile(4, 1), -1, "первой уходит дальняя клетка");
@@ -1450,7 +1537,7 @@ mod tests {
     #[test]
     fn two_cats_erase_a_corridor_from_both_ends() {
         let mut sim = sim_from(&["##########", "#a......b#", "##########"]);
-        sim.plan_demolish_rect([2, 1, 6, 1]);
+        sim.plan_demolish_rect(2, 1, 6, 1);
         sim.tick_n(400);
 
         assert_eq!(sim.floors_left([2, 1, 6, 1]), 0, "коридор стёрт целиком");
@@ -1466,7 +1553,7 @@ mod tests {
     #[test]
     fn fully_erased_area_leaves_the_island_under_the_cat() {
         let mut sim = sim_from(&["#####", "#a..#", "#####"]);
-        sim.plan_demolish_rect([1, 1, 3, 1]);
+        sim.plan_demolish_rect(1, 1, 3, 1);
         sim.tick_n(300);
 
         assert_eq!(sim.floors_left([1, 1, 3, 1]), 1, "остался ровно один тайл");
