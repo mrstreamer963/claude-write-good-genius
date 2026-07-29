@@ -15,6 +15,10 @@
 //! Проходимость: ходить можно только по построенному полу (индекс тайла >= 0);
 //! пустые клетки (-1) непроходимы. Путь ищется BFS по 4-связной сетке.
 //!
+//! Порядок сноса: сносимые клетки убираются с глубины наружу, а не в порядке
+//! мазка игрока. Иначе снос ближней к выходу клетки отрезает доступ к дальним,
+//! и комнату нельзя стереть целиком (`DemolitionFront`).
+//!
 //! Снос под котом разрешён — это штатная механика (дырки в перекрытиях, см.
 //! `ideas.md`), а не ошибка. Кот со снесённой клетки выходит своим ходом
 //! (`escape_voids`); если выйти некуда, он остаётся в пустоте и помечается
@@ -244,11 +248,18 @@ fn find_path(map: &BaseMap, start: (i32, i32), goal: (i32, i32)) -> Option<Vec<(
 /// нельзя. Цель сноса всегда проходима, иначе сносить было бы нечего, поэтому без
 /// этого правила кот выбрал бы её первой и снёс пол под собой. В пустоту кот
 /// попадает действием игрока, а не в порядке штатной работы (см. §12.10 concept.md).
+///
+/// Снос вдобавок разбирается со стороны берега (`front`): встав на клетку глубже
+/// цели, кот работал бы «из-за» дыры и после сноса остался бы по дальнюю её
+/// сторону — отрезанным от остатка собственной работы. Клетка на шаг ближе к
+/// берегу есть у любой цели (это её родитель в волне) и по определению уйдёт
+/// позже неё.
 fn path_to_build_spot(
     map: &BaseMap,
     from: (i32, i32),
     bp: (i32, i32),
     bp_tile: i16,
+    front: Option<&DemolitionFront>,
 ) -> Option<((i32, i32), Vec<(i32, i32)>)> {
     let mut spots = Vec::new();
     if bp_tile >= 0 && map.walkable(bp.0, bp.1) {
@@ -260,6 +271,9 @@ fn path_to_build_spot(
             spots.push(n);
         }
     }
+    if let Some(f) = front.filter(|_| bp_tile < 0) {
+        spots.sort_by_key(|&(x, y)| f.depth_at(x, y));
+    }
     for spot in spots {
         if spot == from {
             return Some((spot, Vec::new()));
@@ -269,6 +283,130 @@ fn path_to_build_spot(
         }
     }
     None
+}
+
+/// Волна сноса: как глубоко каждая клетка сидит в сносимой области и из какого
+/// источника до неё дошла волна. Определяет, какие клетки можно сносить сейчас.
+///
+/// Источники волны («берег») — проходимые клетки, которые остаются: пол без
+/// чертежа сноса. Сносим всегда самую глубокую клетку зоны. Это не эвристика,
+/// а свойство BFS: кратчайший путь к клетке глубины `d` состоит из клеток
+/// глубин `0..d`, значит клетка максимальной глубины не лежит внутри маршрута
+/// ни к одной другой сносимой клетке — и её снос никому не перекрывает доступ.
+/// Обратный порядок (сносить ближнее к берегу) ровно этим и ломался: комната
+/// стиралась частично, а остаток становился недостижим.
+///
+/// Область, которую сносят целиком, берега не имеет — там волну задают коты
+/// внутри неё: снос идёт от них наружу и заканчивается островком пола под
+/// котом (снести клетку под собой кот не может, см. §12.11 concept.md).
+///
+/// Зона — клетка-источник волны. У каждого источника свой фронт: комната с
+/// двумя дверями и несвязные области сносятся параллельно и не мешают друг
+/// другу — маршрут волны от источника до клетки целиком лежит внутри его зоны.
+struct DemolitionFront {
+    width: i32,
+    height: i32,
+    /// Глубина клетки: 0 — берег, -1 — волна не дошла.
+    depth: Vec<i32>,
+    /// Индекс клетки-источника волны.
+    zone: Vec<i32>,
+    /// Глубина самой глубокой сносимой клетки зоны (индексируется зоной).
+    deepest: Vec<i32>,
+}
+
+impl DemolitionFront {
+    /// `doomed` — клетки с чертежом сноса, `cats` — позиции всех котов.
+    fn new(map: &BaseMap, doomed: &[(i32, i32)], cats: &[(i32, i32)]) -> Self {
+        let n = (map.width * map.height) as usize;
+        let mut is_doomed = vec![false; n];
+        for &(x, y) in doomed {
+            if let Some(i) = map.index(x, y) {
+                is_doomed[i] = true;
+            }
+        }
+
+        let mut front = DemolitionFront {
+            width: map.width,
+            height: map.height,
+            depth: vec![-1; n],
+            zone: vec![-1; n],
+            deepest: vec![-1; n],
+        };
+        let mut queue = VecDeque::new();
+
+        // Волна от берега — остающегося пола — вглубь сносимой области.
+        for (i, (&cell, &doomed)) in map.cells.iter().zip(&is_doomed).enumerate() {
+            if cell >= 0 && !doomed {
+                front.seed(i, &mut queue);
+            }
+        }
+        front.spread(map, &mut queue);
+
+        // Куда волна не дошла — область без берега; там источники это коты.
+        for i in cats.iter().filter_map(|&(x, y)| map.index(x, y)) {
+            if map.cells[i] >= 0 && front.depth[i] < 0 {
+                front.seed(i, &mut queue);
+            }
+        }
+        front.spread(map, &mut queue);
+
+        for (i, &doomed) in is_doomed.iter().enumerate() {
+            if doomed && front.depth[i] >= 0 {
+                let z = front.zone[i] as usize;
+                front.deepest[z] = front.deepest[z].max(front.depth[i]);
+            }
+        }
+        front
+    }
+
+    fn seed(&mut self, i: usize, queue: &mut VecDeque<usize>) {
+        self.depth[i] = 0;
+        self.zone[i] = i as i32;
+        queue.push_back(i);
+    }
+
+    fn spread(&mut self, map: &BaseMap, queue: &mut VecDeque<usize>) {
+        while let Some(ci) = queue.pop_front() {
+            let (cx, cy) = ((ci as i32) % self.width, (ci as i32) / self.width);
+            for (dx, dy) in DIRS {
+                let (nx, ny) = (cx + dx, cy + dy);
+                if !map.walkable(nx, ny) {
+                    continue;
+                }
+                let ni = (ny * self.width + nx) as usize;
+                if self.depth[ni] >= 0 {
+                    continue;
+                }
+                self.depth[ni] = self.depth[ci] + 1;
+                self.zone[ni] = self.zone[ci];
+                queue.push_back(ni);
+            }
+        }
+    }
+
+    /// Глубина клетки; недостижимая волной — «бесконечно глубокая», чтобы при
+    /// выборе места работы такая клетка оказывалась последней в очереди.
+    fn depth_at(&self, x: i32, y: i32) -> i32 {
+        if x < 0 || y < 0 || x >= self.width || y >= self.height {
+            return i32::MAX;
+        }
+        match self.depth[(y * self.width + x) as usize] {
+            -1 => i32::MAX,
+            d => d,
+        }
+    }
+
+    /// Пора ли сносить эту клетку: глубже неё в её зоне сносить нечего.
+    ///
+    /// Клетка, до которой волна не дошла (ни берега, ни кота в её области),
+    /// не мешает никому — её никто и не достанет, гейт для неё пропускается.
+    fn is_ready(&self, x: i32, y: i32) -> bool {
+        if x < 0 || y < 0 || x >= self.width || y >= self.height {
+            return true;
+        }
+        let i = (y * self.width + x) as usize;
+        self.depth[i] < 0 || self.depth[i] == self.deepest[self.zone[i] as usize]
+    }
 }
 
 #[derive(Resource)]
@@ -291,28 +429,53 @@ fn advance_time(mut time: ResMut<SimTime>) {
 /// никогда не взялся строить — в том числе тот тайл, который открывает ему
 /// выход из запертой комнаты. Приказ при этом не теряется: `retry_orders`
 /// подхватит его, когда кот освободится от задачи.
+///
+/// Чертежи сноса дополнительно проходят через `DemolitionFront`: сносить можно
+/// только самые глубокие клетки области, иначе снос отрезает доступ к остатку.
+/// Порядок стройки не трогаем — построенный пол доступ не закрывает, а открывает.
 fn assign_jobs(
     map: Res<BaseMap>,
     mut commands: Commands,
     mut blueprints: Query<(Entity, &mut Blueprint)>,
+    cats: Query<&Position, With<UnitId>>,
     free_cats: Query<(Entity, &Position), (With<UnitId>, Without<Assignment>, Without<Path>)>,
 ) {
+    let doomed: Vec<(i32, i32)> = blueprints
+        .iter()
+        .filter(|(_, bp)| bp.tile < 0)
+        .map(|(_, bp)| (bp.x, bp.y))
+        .collect();
+    let front = (!doomed.is_empty()).then(|| {
+        let positions: Vec<(i32, i32)> = cats.iter().map(|p| (p.x, p.y)).collect();
+        DemolitionFront::new(&map, &doomed, &positions)
+    });
+
     let mut free: Vec<(Entity, (i32, i32))> =
         free_cats.iter().map(|(e, p)| (e, (p.x, p.y))).collect();
-    if free.is_empty() {
-        return;
-    }
 
     for (bp_e, mut bp) in &mut blueprints {
-        if bp.assignee.is_some() {
+        // Снос не на фронте своей зоны ждёт: убрать эту клетку сейчас — значит
+        // отрезать доступ к тем, что глубже.
+        let waiting = bp.tile < 0 && front.as_ref().is_some_and(|f| !f.is_ready(bp.x, bp.y));
+        if let Some(cat) = bp.assignee {
+            // Игрок мог дорисовать область уже начатого сноса — тогда джоб
+            // встаёт на паузу (прогресс сохраняется), а кот освобождается.
+            if waiting {
+                bp.assignee = None;
+                commands
+                    .entity(cat)
+                    .remove::<(Assignment, Path, MoveCooldown)>();
+            }
             continue;
         }
-        if free.is_empty() {
-            break;
+        if waiting || free.is_empty() {
+            continue;
         }
         let mut chosen = None;
         for (i, (cat_e, cat_pos)) in free.iter().enumerate() {
-            if let Some((_spot, path)) = path_to_build_spot(&map, *cat_pos, (bp.x, bp.y), bp.tile) {
+            if let Some((_spot, path)) =
+                path_to_build_spot(&map, *cat_pos, (bp.x, bp.y), bp.tile, front.as_ref())
+            {
                 chosen = Some((i, *cat_e, path));
                 break;
             }
@@ -836,6 +999,13 @@ impl Sim {
 mod tests {
     use super::*;
 
+    /// Строки ASCII-схемы из файла `src/test_maps/*.map` (через `include_str!`
+    /// на вызывающей стороне) — для схем, которые `rustfmt` иначе схлопывает
+    /// в одну строку и делает нечитаемыми.
+    fn rows_from(text: &'static str) -> Vec<&'static str> {
+        text.lines().filter(|l| !l.is_empty()).collect()
+    }
+
     /// Собирает `Sim` из ASCII-схемы, минуя YAML: `#` — пустота (непроходимо),
     /// `.` — пол, любая другая буква — пол с котом под этим id.
     fn sim_from(rows: &[&str]) -> Sim {
@@ -944,6 +1114,26 @@ mod tests {
         /// Изменить тайл в обход чертежей — для проверки реакции на смену карты.
         fn force_tile(&mut self, x: i32, y: i32, tile: i16) {
             self.world.resource_mut::<BaseMap>().set(x, y, tile);
+        }
+
+        /// Мазок ластиком по прямоугольнику [x, y, w, h] — как ведёт мышью игрок.
+        fn plan_demolish_rect(&mut self, rect: [i32; 4]) {
+            let [x, y, w, h] = rect;
+            for dy in 0..h {
+                for dx in 0..w {
+                    self.plan_demolish(x + dx, y + dy);
+                }
+            }
+        }
+
+        /// Сколько клеток пола осталось в прямоугольнике.
+        fn floors_left(&self, rect: [i32; 4]) -> i32 {
+            let [x, y, w, h] = rect;
+            let map = self.world.resource::<BaseMap>();
+            (0..h)
+                .flat_map(|dy| (0..w).map(move |dx| (dx, dy)))
+                .filter(|(dx, dy)| map.tile_at(x + dx, y + dy) >= 0)
+                .count() as i32
         }
     }
 
@@ -1195,6 +1385,94 @@ mod tests {
         assert!(sim.plan_demolish(1, 1), "чертёж ставится");
         sim.tick_n(200);
         assert_eq!(sim.tile(1, 1), 0, "подойти неоткуда — тайл остаётся");
+    }
+
+    // --- порядок сноса ----------------------------------------------------
+
+    /// Главная регрессия: комната, стёртая одним мазком, должна исчезнуть
+    /// целиком. Раньше чертежи разбирались в порядке мазка, кот убирал клетку
+    /// у двери раньше глубины — и остаток комнаты становился недостижим.
+    ///
+    /// Схема в `test_maps/whole_room.map`: единственная дверь в комнату — на
+    /// строке 2 (`###.###`), клетка (3, 2).
+    #[test]
+    fn whole_room_is_erased_completely() {
+        let mut sim = sim_from(&rows_from(include_str!("test_maps/whole_room.map")));
+        sim.plan_demolish_rect([1, 3, 5, 3]);
+        sim.tick_n(1000);
+
+        assert_eq!(sim.floors_left([1, 3, 5, 3]), 0, "комната стёрта целиком");
+        assert_eq!(sim.tile(3, 2), 0, "дверь не трогали — она осталась");
+        assert!(!sim.stuck_of("a"), "кот не заперся внутри");
+    }
+
+    /// Направление сноса: сначала дальняя от берега клетка, ближняя — последней.
+    #[test]
+    fn demolition_retreats_from_the_deep_end() {
+        let mut sim = sim_from(&["######", "#a...#", "######"]);
+        sim.plan_demolish_rect([2, 1, 3, 1]);
+
+        sim.tick_n(20);
+        assert_eq!(sim.tile(4, 1), -1, "первой уходит дальняя клетка");
+        assert_eq!(sim.tile(2, 1), 0, "ближняя к коту ещё на месте");
+
+        sim.tick_n(200);
+        assert_eq!(sim.floors_left([2, 1, 3, 1]), 0, "остальное снесено следом");
+        assert_eq!(sim.pos_of("a"), (1, 1), "кот отступил на берег");
+    }
+
+    /// Мазок рисуется не мгновенно: сим тикает, пока игрок ведёт мышь, и кот
+    /// успевает взяться за первую клетку. Дорисованная глубина обязана
+    /// перебить уже начатый ближний снос, иначе он отрежет её.
+    #[test]
+    fn extending_the_area_pauses_the_started_job() {
+        let mut sim = sim_from(&["######", "#a...#", "######"]);
+        sim.plan_demolish(2, 1);
+        sim.tick_n(6);
+        assert!(sim.has_assignment("a"), "кот взялся за единственный снос");
+
+        sim.plan_demolish(3, 1);
+        sim.plan_demolish(4, 1);
+
+        sim.tick_n(24);
+        // Прогресса по (2,1) оставалось меньше, чем ушло тиков: не будь паузы,
+        // кот бы её давно доломал.
+        assert_eq!(sim.tile(2, 1), 0, "начатый ближний снос встал на паузу");
+        assert_eq!(sim.tile(4, 1), -1, "глубина ушла первой");
+
+        sim.tick_n(300);
+        assert_eq!(sim.floors_left([2, 1, 3, 1]), 0, "в итоге снесено всё");
+    }
+
+    /// Два кота с разных концов коридора: у каждого своя зона и свой фронт,
+    /// оба работают одновременно и сходятся к середине. Ошибка в выборе места
+    /// работы разрубила бы коридор пополам и заперла бы кота не с той стороны.
+    #[test]
+    fn two_cats_erase_a_corridor_from_both_ends() {
+        let mut sim = sim_from(&["##########", "#a......b#", "##########"]);
+        sim.plan_demolish_rect([2, 1, 6, 1]);
+        sim.tick_n(400);
+
+        assert_eq!(sim.floors_left([2, 1, 6, 1]), 0, "коридор стёрт целиком");
+        assert_eq!(sim.pos_of("a"), (1, 1), "каждый отступил на свой берег");
+        assert_eq!(sim.pos_of("b"), (8, 1));
+    }
+
+    /// У области, которую сносят целиком, берега нет — волну задаёт кот внутри.
+    /// Снос идёт от него наружу и упирается в клетку под ним: снести её некому
+    /// (§12.11), поэтому островок пола под котом — ожидаемый остаток. Где
+    /// именно он окажется, не фиксируем: кот ходит, и вместе с ним едет
+    /// источник волны.
+    #[test]
+    fn fully_erased_area_leaves_the_island_under_the_cat() {
+        let mut sim = sim_from(&["#####", "#a..#", "#####"]);
+        sim.plan_demolish_rect([1, 1, 3, 1]);
+        sim.tick_n(300);
+
+        assert_eq!(sim.floors_left([1, 1, 3, 1]), 1, "остался ровно один тайл");
+        let (x, y) = sim.pos_of("a");
+        assert_eq!(sim.tile(x, y), 0, "и это клетка под котом");
+        assert!(!sim.stuck_of("a"), "кот стоит на полу, а не в пустоте");
     }
 
     /// Мгновенный снос остаётся доступен как отладочный путь.
