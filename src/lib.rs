@@ -201,67 +201,124 @@ impl BaseMap {
     }
 }
 
+/// Дерево кратчайших путей: BFS от клетки по проходимым соседям.
+///
+/// Один обход отвечает сразу на два вопроса — «далеко ли» и «как дойти» — и
+/// сразу для всех целей. На этом стоит выбор ближайшего чертежа в `assign_jobs`:
+/// сравнить десяток мест работы одним обходом дешевле, чем звать BFS на каждое.
+///
+/// Проходимость **стартовой** клетки не требуется — на этом свойстве держится
+/// выход кота из ямы (шаг наружу из пустоты), менять осторожно.
+struct Reach {
+    width: i32,
+    start: usize,
+    /// Предыдущая клетка на кратчайшем пути; -1 — клетка не достигнута.
+    came: Vec<i32>,
+    /// Число шагов от старта; -1 — клетка не достигнута.
+    dist: Vec<i32>,
+}
+
+impl Reach {
+    /// Обход всей достижимой области.
+    fn all(map: &BaseMap, start: (i32, i32)) -> Self {
+        Self::explore(map, start, None)
+    }
+
+    /// Обход с ранним выходом: как только цель достигнута, дальше не идём.
+    fn to(map: &BaseMap, start: (i32, i32), goal: (i32, i32)) -> Self {
+        Self::explore(map, start, Some(goal))
+    }
+
+    fn explore(map: &BaseMap, start: (i32, i32), stop_at: Option<(i32, i32)>) -> Self {
+        let (w, h) = (map.width, map.height);
+        let start_i = (start.1 * w + start.0) as usize;
+        let mut r = Reach {
+            width: w,
+            start: start_i,
+            came: vec![-1; (w * h) as usize],
+            dist: vec![-1; (w * h) as usize],
+        };
+        r.came[start_i] = start_i as i32;
+        r.dist[start_i] = 0;
+        if stop_at == Some(start) {
+            return r;
+        }
+
+        let mut queue = VecDeque::new();
+        queue.push_back(start);
+        while let Some((cx, cy)) = queue.pop_front() {
+            let ci = (cy * w + cx) as usize;
+            for (dx, dy) in DIRS {
+                let (nx, ny) = (cx + dx, cy + dy);
+                if nx < 0 || ny < 0 || nx >= w || ny >= h {
+                    continue;
+                }
+                let ni = (ny * w + nx) as usize;
+                if r.came[ni] != -1 || !map.walkable(nx, ny) {
+                    continue;
+                }
+                r.came[ni] = ci as i32;
+                r.dist[ni] = r.dist[ci] + 1;
+                if stop_at == Some((nx, ny)) {
+                    return r;
+                }
+                queue.push_back((nx, ny));
+            }
+        }
+        r
+    }
+
+    /// Число шагов до клетки; `None` — недостижима (или вне карты).
+    fn dist_at(&self, x: i32, y: i32) -> Option<i32> {
+        if x < 0 || y < 0 || x >= self.width {
+            return None;
+        }
+        self.dist
+            .get((y * self.width + x) as usize)
+            .copied()
+            .filter(|&d| d >= 0)
+    }
+
+    /// Маршрут в «развёрнутом» виде: `[goal, .., first_step]` (без стартовой
+    /// клетки); для цели, равной старту, — пустой.
+    fn path_to(&self, x: i32, y: i32) -> Option<Vec<(i32, i32)>> {
+        self.dist_at(x, y)?;
+        let mut path = Vec::new();
+        let mut cur = (y * self.width + x) as usize;
+        while cur != self.start {
+            path.push(((cur as i32) % self.width, (cur as i32) / self.width));
+            cur = self.came[cur] as usize;
+        }
+        Some(path)
+    }
+}
+
 /// BFS по проходимым клеткам. Возвращает маршрут в «развёрнутом» виде:
 /// `[goal, .., first_step]` (без стартовой клетки), либо None если пути нет.
 fn find_path(map: &BaseMap, start: (i32, i32), goal: (i32, i32)) -> Option<Vec<(i32, i32)>> {
-    if start == goal {
-        return Some(Vec::new());
-    }
-    let (w, h) = (map.width, map.height);
-    let idx = |x: i32, y: i32| (y * w + x) as usize;
-    let start_i = idx(start.0, start.1);
-
-    let mut came: Vec<i32> = vec![-1; (w * h) as usize];
-    came[start_i] = start_i as i32;
-    let mut queue = VecDeque::new();
-    queue.push_back(start);
-
-    while let Some((cx, cy)) = queue.pop_front() {
-        for (dx, dy) in DIRS {
-            let (nx, ny) = (cx + dx, cy + dy);
-            if nx < 0 || ny < 0 || nx >= w || ny >= h {
-                continue;
-            }
-            let ni = idx(nx, ny);
-            if came[ni] != -1 || !map.walkable(nx, ny) {
-                continue;
-            }
-            came[ni] = idx(cx, cy) as i32;
-            if (nx, ny) == goal {
-                let mut path = Vec::new();
-                let mut cur = ni;
-                while cur != start_i {
-                    path.push(((cur as i32) % w, (cur as i32) / w));
-                    cur = came[cur] as usize;
-                }
-                return Some(path);
-            }
-            queue.push_back((nx, ny));
-        }
-    }
-    None
+    Reach::to(map, start, goal).path_to(goal.0, goal.1)
 }
 
-/// Найти клетку, откуда можно выполнить чертёж (сам тайл, если проходим, либо
-/// сосед), и маршрут кота до неё. Возвращает (клетка, маршрут).
+/// Найти клетку, откуда кот выполнит чертёж (сам тайл, если проходим, либо
+/// сосед), и её цену — число шагов от кота. Возвращает (клетка, шаги).
 ///
 /// `bp_tile` — что планируется на клетке; для сноса (`< 0`) стоять на самой цели
 /// нельзя. Цель сноса всегда проходима, иначе сносить было бы нечего, поэтому без
 /// этого правила кот выбрал бы её первой и снёс пол под собой. В пустоту кот
 /// попадает действием игрока, а не в порядке штатной работы (см. §12.10 concept.md).
 ///
-/// Снос вдобавок разбирается со стороны берега (`front`): встав на клетку глубже
-/// цели, кот работал бы «из-за» дыры и после сноса остался бы по дальнюю её
-/// сторону — отрезанным от остатка собственной работы. Клетка на шаг ближе к
-/// берегу есть у любой цели (это её родитель в волне) и по определению уйдёт
-/// позже неё.
-fn path_to_build_spot(
+/// Из подходящих клеток берём **ближайшую** к коту, кроме сноса: там порядок
+/// задаёт берег (`front`), а не расстояние. Встав на клетку глубже цели, кот
+/// работал бы «из-за» дыры и после сноса остался бы по дальнюю её сторону —
+/// отрезанным от остатка собственной работы. Клетка на шаг ближе к берегу есть
+/// у любой цели (это её родитель в волне) и по определению уйдёт позже неё.
+fn build_spot(
     map: &BaseMap,
-    from: (i32, i32),
+    reach: &Reach,
     bp: (i32, i32),
     bp_tile: i16,
     front: Option<&DemolitionFront>,
-) -> Option<((i32, i32), Vec<(i32, i32)>)> {
+) -> Option<((i32, i32), i32)> {
     let mut spots = Vec::new();
     if bp_tile >= 0 && map.walkable(bp.0, bp.1) {
         spots.push(bp);
@@ -272,18 +329,13 @@ fn path_to_build_spot(
             spots.push(n);
         }
     }
-    if let Some(f) = front.filter(|_| bp_tile < 0) {
-        spots.sort_by_key(|&(x, y)| f.depth_at(x, y));
+    let reachable = spots
+        .into_iter()
+        .filter_map(|s| reach.dist_at(s.0, s.1).map(|d| (s, d)));
+    match front.filter(|_| bp_tile < 0) {
+        Some(f) => reachable.min_by_key(|&((x, y), d)| (f.depth_at(x, y), d)),
+        None => reachable.min_by_key(|&(_, d)| d),
     }
-    for spot in spots {
-        if spot == from {
-            return Some((spot, Vec::new()));
-        }
-        if let Some(path) = find_path(map, from, spot) {
-            return Some((spot, path));
-        }
-    }
-    None
 }
 
 /// Волна сноса: как глубоко каждая клетка сидит в сносимой области и из какого
@@ -432,6 +484,9 @@ fn advance_time(mut time: ResMut<SimTime>) {
 /// Назначает простаивающих котов (без задачи и без маршрута) на ближайшие
 /// достижимые чертежи и отправляет их к месту постройки.
 ///
+/// «Ближайший» — по числу шагов пути, а не по прямой, и выбирается жадно по
+/// всем парам (кот, чертёж) сразу, а не в порядке чертежей (§12.14).
+///
 /// Кот с невыполнимым сейчас приказом тоже считается свободным. Иначе он бы
 /// никогда не взялся строить — в том числе тот тайл, который открывает ему
 /// выход из запертой комнаты. Приказ при этом не теряется: `retry_orders`
@@ -457,9 +512,8 @@ fn assign_jobs(
         DemolitionFront::new(&map, &doomed, &positions)
     });
 
-    let mut free: Vec<(Entity, (i32, i32))> =
-        free_cats.iter().map(|(e, p)| (e, (p.x, p.y))).collect();
-
+    // Чертежи, которые сейчас можно раздать.
+    let mut open: Vec<(Entity, (i32, i32), i16)> = Vec::new();
     for (bp_e, mut bp) in &mut blueprints {
         // Снос не на фронте своей зоны ждёт: убрать эту клетку сейчас — значит
         // отрезать доступ к тем, что глубже.
@@ -473,29 +527,53 @@ fn assign_jobs(
                     .entity(cat)
                     .remove::<(Assignment, Path, MoveCooldown)>();
             }
-            continue;
+        } else if !waiting {
+            open.push((bp_e, (bp.x, bp.y), bp.tile));
         }
-        if waiting || free.is_empty() {
-            continue;
-        }
-        let mut chosen = None;
-        for (i, (cat_e, cat_pos)) in free.iter().enumerate() {
-            if let Some((_spot, path)) =
-                path_to_build_spot(&map, *cat_pos, (bp.x, bp.y), bp.tile, front.as_ref())
-            {
-                chosen = Some((i, *cat_e, path));
-                break;
-            }
-        }
-        if let Some((i, cat_e, path)) = chosen {
-            free.remove(i);
+    }
+
+    if open.is_empty() {
+        return;
+    }
+
+    // Достижимость считаем по разу на кота: одного обхода хватает, чтобы
+    // сравнить между собой все доступные ему места работы.
+    let (map, front) = (&*map, front.as_ref());
+    let mut idle: Vec<(Entity, Reach)> = free_cats
+        .iter()
+        .map(|(e, p)| (e, Reach::all(map, (p.x, p.y))))
+        .collect();
+
+    // Жадно разбираем самые дешёвые пары (кот, чертёж). Раздача в порядке
+    // самих чертежей гнала кота с только что законченной клетки через
+    // полкарты — к следующему по счёту чертежу, мимо соседнего (§12.14).
+    while !idle.is_empty() && !open.is_empty() {
+        let chosen = idle
+            .iter()
+            .enumerate()
+            .flat_map(|(ci, (_, reach))| {
+                open.iter()
+                    .enumerate()
+                    .filter_map(move |(oi, &(_, bp_xy, bp_tile))| {
+                        build_spot(map, reach, bp_xy, bp_tile, front)
+                            .map(|(spot, steps)| (steps, ci, oi, spot))
+                    })
+            })
+            .min_by_key(|&(steps, ..)| steps);
+        // Ни одна пара не сошлась — оставшиеся чертежи никому не достать.
+        let Some((_, ci, oi, spot)) = chosen else {
+            break;
+        };
+
+        let (cat_e, reach) = idle.remove(ci);
+        let (bp_e, _, _) = open.remove(oi);
+        let path = reach.path_to(spot.0, spot.1).unwrap_or_default();
+        if let Ok((_, mut bp)) = blueprints.get_mut(bp_e) {
             bp.assignee = Some(cat_e);
-            commands.entity(cat_e).insert((
-                Assignment(bp_e),
-                Path { steps: path },
-                MoveCooldown(0),
-            ));
         }
+        commands
+            .entity(cat_e)
+            .insert((Assignment(bp_e), Path { steps: path }, MoveCooldown(0)));
     }
 }
 
@@ -1472,6 +1550,35 @@ mod tests {
         assert!(sim.add_blueprint_rect(1, 0, 4, 1, 0));
         sim.tick_n(400);
         assert_eq!(sim.floors_left([1, 0, 4, 1]), 4, "вся рамка построена");
+    }
+
+    /// Кот берёт ближайший чертёж, а не первый по счёту: закончив клетку, он
+    /// не должен уходить через полкарты мимо соседней (§12.14).
+    #[test]
+    fn cat_takes_the_nearest_blueprint_first() {
+        let mut sim = sim_from(&["#########", "#a......#", "#########"]);
+        sim.add_blueprint(7, 2, 0); // дальний конец коридора — размечен первым
+        sim.add_blueprint(2, 2, 0); // в шаге от кота
+
+        sim.tick_n(BUILD_TIME as usize + 2);
+        assert_eq!(sim.tile(2, 2), 0, "ближний чертёж построен первым");
+        assert_eq!(sim.tile(7, 2), -1, "дальний ждёт очереди");
+
+        sim.tick_n(BUILD_TIME as usize + 8);
+        assert_eq!(sim.tile(7, 2), 0, "дальний построен следом");
+    }
+
+    /// Двое котов не должны драться за один чертёж: пары (кот, чертёж)
+    /// разбираются от самой дешёвой, а не в порядке самих чертежей.
+    #[test]
+    fn each_cat_takes_the_blueprint_next_to_it() {
+        let mut sim = sim_from(&["#########", "#a.....b#", "#########"]);
+        sim.add_blueprint(7, 2, 0); // у ног 'b'
+        sim.add_blueprint(1, 2, 0); // у ног 'a'
+
+        sim.tick_n(BUILD_TIME as usize + 2);
+        assert_eq!(sim.tile(1, 2), 0, "'a' построил свою клетку");
+        assert_eq!(sim.tile(7, 2), 0, "'b' построил свою — параллельно");
     }
 
     // --- порядок сноса ----------------------------------------------------
