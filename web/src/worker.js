@@ -67,6 +67,12 @@ onmessage = (e) => {
     // планирует снос, который выполняют коты (см. `plan_demolish_rect` в ядре).
     if (m.tile >= 0) sim.add_blueprint_rect(m.x, m.y, m.w, m.h, m.tile);
     else sim.plan_demolish_rect(m.x, m.y, m.w, m.h);
+  } else if (m.type === 'store' && sim) {
+    // Разметка уборки: кота не выбираем — как и чертёж, задачу возьмёт любой
+    // свободный. Повторный жест по помеченному снимает пометку.
+    sim.mark_to_store_rect(m.x, m.y, m.w, m.h);
+  } else if (m.type === 'setAutoTidy' && sim) {
+    sim.set_auto_tidy(m.on);
   } else if (m.type === 'move' && sim) {
     sim.set_target(m.id, m.x, m.y);
   }

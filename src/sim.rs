@@ -7,10 +7,12 @@
 //!   * `add_blueprint()` — поставить чертёж (задачу); выполняют коты, по тикам;
 //!   * `plan_demolish()` — ластик: отменить чертёж либо запланировать снос тайла;
 //!   * `*_rect()`        — те же инструменты на рамку; решение — на всю рамку сразу;
+//!   * `mark_to_store_rect()` — пометить кучи «на склад» (или снять пометку);
+//!   * `set_auto_tidy()` — убирать ли лом с пола без приказа;
 //!   * `demolish()`      — мгновенный снос без котов (тесты/отладка);
 //!   * `set_target()`    — приказ коту идти в тайл (движение по тикам, отменяет его задачу);
 //!   * `tick()`          — один фиксированный шаг симуляции;
-//!   * `snapshot()`      — рендерабельные сущности + чертежи (каждый кадр).
+//!   * `snapshot()`      — сущности, чертежи и кучи лома (каждый кадр).
 
 use bevy_ecs::prelude::*;
 use wasm_bindgen::prelude::*;
@@ -22,7 +24,7 @@ use crate::movement::is_stuck;
 use crate::path::find_path;
 use crate::ruleset::{Ruleset, TileDef};
 use crate::schedule::build_schedule;
-use crate::snapshot::{BaseMapDto, BlueprintSnap, EntitySnap, MapMeta, Snapshot};
+use crate::snapshot::{BaseMapDto, BlueprintSnap, EntitySnap, MapMeta, Snapshot, StackSnap};
 
 #[wasm_bindgen]
 pub struct Sim {
@@ -49,16 +51,27 @@ impl Sim {
         None
     }
 
-    /// Снять чертёж с клетки и освободить назначенного на него кота.
+    /// Снять чертёж с клетки и освободить и строителя, и носильщика.
     /// Отмена плана мгновенна и бесплатна — строить ещё не начинали.
+    ///
+    /// Уже завезённый лом при отмене не пропадает и на пол не сыплется: он
+    /// остаётся на руках у носильщика, если тот не успел его сдать, а сданный
+    /// списывается вместе с чертежом — на POC это цена поспешной разметки.
     fn cancel_blueprint(&mut self, x: i32, y: i32) -> bool {
         let Some(e) = self.blueprint_at(x, y) else {
             return false;
         };
-        if let Some(cat) = self.world.get::<Blueprint>(e).and_then(|bp| bp.assignee) {
+        let bp = self.world.get::<Blueprint>(e);
+        let (assignee, hauler) = (bp.and_then(|b| b.assignee), bp.and_then(|b| b.hauler));
+        if let Some(cat) = assignee {
             self.world
                 .entity_mut(cat)
                 .remove::<(Assignment, Path, MoveCooldown)>();
+        }
+        if let Some(cat) = hauler {
+            self.world
+                .entity_mut(cat)
+                .remove::<(Haul, Path, MoveCooldown)>();
         }
         self.world.entity_mut(e).despawn();
         true
@@ -88,6 +101,28 @@ impl Sim {
         let mut world = World::new();
         world.insert_resource(map);
         world.insert_resource(SimTime { tick: 0 });
+        world.insert_resource(TileRules(
+            rs.tiles
+                .iter()
+                .map(|t| TileRule {
+                    cost: t.cost,
+                    capacity: t.capacity,
+                })
+                .collect(),
+        ));
+        world.insert_resource(AutoTidy(true));
+
+        // Стартовый лом. Стартовая застройка (`build`) при этом бесплатна —
+        // это уже существующая база, а не работа котов.
+        for s in &rs.scrap {
+            world.spawn((
+                Position {
+                    x: s.at[0],
+                    y: s.at[1],
+                },
+                Stack { count: s.count },
+            ));
+        }
 
         for u in &rs.units {
             world.spawn((
@@ -163,6 +198,8 @@ impl Sim {
             tile: t,
             progress: 0,
             assignee: None,
+            delivered: 0,
+            hauler: None,
         });
         true
     }
@@ -211,6 +248,73 @@ impl Sim {
         planned
     }
 
+    /// Убирать ли лом с пола без приказа игрока.
+    ///
+    /// Выключение снимает все пометки и разворачивает котов, которые шли за
+    /// кучей: иначе переключатель выглядел бы сломанным — коты продолжали бы
+    /// разбирать помеченное. Кот, уже несущий груз, свою ходку доводит до
+    /// конца: бросать лом посреди базы хуже, чем донести (§12.16).
+    pub fn set_auto_tidy(&mut self, on: bool) {
+        self.world.resource_mut::<AutoTidy>().0 = on;
+        if on {
+            return;
+        }
+
+        let mut marked = self.world.query_filtered::<Entity, With<ToStore>>();
+        for e in marked.iter(&self.world).collect::<Vec<_>>() {
+            self.world.entity_mut(e).remove::<ToStore>();
+        }
+
+        let mut q = self.world.query::<(Entity, &Haul, Option<&Carrying>)>();
+        let going: Vec<Entity> = q
+            .iter(&self.world)
+            .filter(|(_, haul, load)| matches!(haul.0, HaulTo::Store(_)) && load.is_none())
+            .map(|(e, ..)| e)
+            .collect();
+        for e in going {
+            self.world
+                .entity_mut(e)
+                .remove::<(Haul, Path, MoveCooldown)>();
+        }
+    }
+
+    /// Пометить кучи под рамкой «на склад» — или снять пометку.
+    ///
+    /// Решение принимается на всю рамку сразу, по правилу ластика (§12.13):
+    /// есть под рамкой хоть одна помеченная куча — снимаем все пометки, нет —
+    /// помечаем все. Кота выбирать не нужно: как и чертёж, это разметка работы,
+    /// а возьмёт её любой свободный.
+    ///
+    /// Вернёт true, если что-то изменилось.
+    pub fn mark_to_store_rect(&mut self, x: i32, y: i32, w: i32, h: i32) -> bool {
+        let cells: Vec<(i32, i32)> = rect_cells(x, y, w, h).collect();
+        let mut q = self
+            .world
+            .query::<(Entity, &Position, Option<&ToStore>, &Stack)>();
+        let under: Vec<(Entity, bool)> = q
+            .iter(&self.world)
+            .filter(|(_, p, ..)| cells.contains(&(p.x, p.y)))
+            .map(|(e, _, mark, _)| (e, mark.is_some()))
+            .collect();
+        if under.is_empty() {
+            return false;
+        }
+
+        let unmark = under.iter().any(|&(_, marked)| marked);
+        for (e, marked) in under {
+            match (unmark, marked) {
+                (true, true) => {
+                    self.world.entity_mut(e).remove::<ToStore>();
+                }
+                (false, false) => {
+                    self.world.entity_mut(e).insert(ToStore::default());
+                }
+                _ => {}
+            }
+        }
+        true
+    }
+
     /// Мгновенно снести тайл вместе с чертежом, без участия котов.
     ///
     /// Ластик игрока ходит через `plan_demolish`; этот путь оставлен для тестов
@@ -249,12 +353,29 @@ impl Sim {
         let map_version = self.world.resource::<BaseMap>().version;
         let path = find_path(self.world.resource::<BaseMap>(), (sx, sy), (x, y));
 
-        // Снять текущую задачу постройки (освободить чертёж).
+        // Снять текущую задачу — стройку или перенос (освободить чертёж).
+        // Груз кот при этом не бросает: донесёт, когда снова возьмётся за
+        // доставку (§12.15).
         if let Some(bp_e) = self.world.get::<Assignment>(entity).map(|a| a.0) {
             if let Some(mut bp) = self.world.get_mut::<Blueprint>(bp_e) {
                 bp.assignee = None;
             }
             self.world.entity_mut(entity).remove::<Assignment>();
+        }
+        match self.world.get::<Haul>(entity).map(|h| h.0) {
+            Some(HaulTo::Site(bp_e)) => {
+                if let Some(mut bp) = self.world.get_mut::<Blueprint>(bp_e) {
+                    bp.hauler = None;
+                }
+                self.world.entity_mut(entity).remove::<Haul>();
+            }
+            Some(HaulTo::Store(pile)) => {
+                if let Some(mut mark) = pile.and_then(|e| self.world.get_mut::<ToStore>(e)) {
+                    mark.hauler = None;
+                }
+                self.world.entity_mut(entity).remove::<Haul>();
+            }
+            None => {}
         }
 
         // Приказ сохраняется даже без пути прямо сейчас — `retry_orders`
@@ -298,15 +419,18 @@ impl Sim {
                 Option<&Order>,
                 Option<&Path>,
                 Option<&Assignment>,
+                Option<&Haul>,
+                Option<&Carrying>,
             )>();
             let map = self.world.resource::<BaseMap>();
-            for (id, r, p, order, path, assignment) in q.iter(&self.world) {
+            for (id, r, p, order, path, assignment, haul, load) in q.iter(&self.world) {
                 entities.push(EntitySnap {
                     id: id.0.clone(),
                     sprite: r.sprite.clone(),
                     x: p.x,
                     y: p.y,
-                    stuck: is_stuck(map, p, order, path, assignment),
+                    stuck: is_stuck(map, p, order, path, assignment, haul),
+                    carrying: load.map_or(0, |c| c.0),
                 });
             }
         }
@@ -314,6 +438,7 @@ impl Sim {
         let mut blueprints = Vec::new();
         {
             let mut q = self.world.query::<&Blueprint>();
+            let rules = self.world.resource::<TileRules>();
             for bp in q.iter(&self.world) {
                 blueprints.push(BlueprintSnap {
                     x: bp.x,
@@ -321,6 +446,21 @@ impl Sim {
                     tile: bp.tile,
                     progress: bp.progress,
                     total: BUILD_TIME,
+                    need: rules.cost_of(bp.tile),
+                    delivered: bp.delivered,
+                });
+            }
+        }
+
+        let mut stacks = Vec::new();
+        {
+            let mut q = self.world.query::<(&Position, &Stack, Option<&ToStore>)>();
+            for (p, s, mark) in q.iter(&self.world) {
+                stacks.push(StackSnap {
+                    x: p.x,
+                    y: p.y,
+                    count: s.count,
+                    marked: mark.is_some(),
                 });
             }
         }
@@ -329,6 +469,7 @@ impl Sim {
             tick,
             entities,
             blueprints,
+            stacks,
         })
         .map_err(|e| JsValue::from_str(&e.to_string()))
     }

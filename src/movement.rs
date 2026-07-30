@@ -51,12 +51,16 @@ pub(crate) fn move_units(
 /// сейчас нет пути — например, приказ был отдан до постройки коридора.
 /// Снимает `Order`, когда цель достигнута.
 ///
-/// Коты за стройкой (`Assignment`) пропускаются: приказ не должен срывать кота
-/// с начатой задачи. Он подхватится сам, как только `work_jobs` снимет задачу.
+/// Коты за работой — стройкой (`Assignment`) или переносом (`Haul`) —
+/// пропускаются: приказ не должен срывать кота с начатой задачи. Он подхватится
+/// сам, как только задача снимется.
 pub(crate) fn retry_orders(
     map: Res<BaseMap>,
     mut commands: Commands,
-    mut q: Query<(Entity, &Position, &mut Order), (Without<Path>, Without<Assignment>)>,
+    mut q: Query<
+        (Entity, &Position, &mut Order),
+        (Without<Path>, Without<Assignment>, Without<Haul>),
+    >,
 ) {
     for (e, pos, mut order) in &mut q {
         if (pos.x, pos.y) == (order.x, order.y) {
@@ -114,18 +118,19 @@ pub(crate) fn escape_voids(
 ///
 /// Два случая: замурован в пустоте без проходимых соседей, либо его приказ
 /// сейчас невыполним (второе условие — ровно то, на котором `retry_orders`
-/// раз за разом не находит путь; кот за стройкой не считается застрявшим).
+/// раз за разом не находит путь; кот за работой застрявшим не считается).
 pub(crate) fn is_stuck(
     map: &BaseMap,
     pos: &Position,
     order: Option<&Order>,
     path: Option<&Path>,
     assignment: Option<&Assignment>,
+    haul: Option<&Haul>,
 ) -> bool {
     let entombed = !map.walkable(pos.x, pos.y)
         && !DIRS
             .iter()
             .any(|(dx, dy)| map.walkable(pos.x + dx, pos.y + dy));
-    let order_stalled = order.is_some() && path.is_none() && assignment.is_none();
+    let order_stalled = order.is_some() && path.is_none() && assignment.is_none() && haul.is_none();
     entombed || order_stalled
 }

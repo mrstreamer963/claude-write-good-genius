@@ -3,11 +3,15 @@
 //! Чертёж — сущность `Blueprint`. Свободный (простаивающий) кот назначается на
 //! ближайший достижимый чертёж, идёт к месту работы и «работает» `BUILD_TIME`
 //! тиков, после чего тайл возводится (или сносится, если `tile < 0`).
+//!
+//! Про материал здесь известно ровно одно: хватает ли его на площадке. Доставку
+//! ведёт `hauling` — отдельной задачей и, возможно, другим котом (§12.15).
 
 use bevy_ecs::prelude::*;
 
 use crate::components::*;
 use crate::demolition::DemolitionFront;
+use crate::hauling::spill;
 use crate::map::{BaseMap, DIRS};
 use crate::path::Reach;
 
@@ -27,7 +31,7 @@ pub(crate) const BUILD_TIME: i32 = 12;
 /// работал бы «из-за» дыры и после сноса остался бы по дальнюю её сторону —
 /// отрезанным от остатка собственной работы. Клетка на шаг ближе к берегу есть
 /// у любой цели (это её родитель в волне) и по определению уйдёт позже неё.
-fn build_spot(
+pub(crate) fn build_spot(
     map: &BaseMap,
     reach: &Reach,
     bp: (i32, i32),
@@ -67,12 +71,24 @@ fn build_spot(
 /// Чертежи сноса дополнительно проходят через `DemolitionFront`: сносить можно
 /// только самые глубокие клетки области, иначе снос отрезает доступ к остатку.
 /// Порядок стройки не трогаем — построенный пол доступ не закрывает, а открывает.
+///
+/// Чертежи без материала не раздаются вовсе: строитель не ждёт на площадке, а
+/// берётся за то, что уже обеспечено, — пока носильщик везёт лом (§12.15).
 pub(crate) fn assign_jobs(
     map: Res<BaseMap>,
+    rules: Res<TileRules>,
     mut commands: Commands,
     mut blueprints: Query<(Entity, &mut Blueprint)>,
     cats: Query<&Position, With<UnitId>>,
-    free_cats: Query<(Entity, &Position), (With<UnitId>, Without<Assignment>, Without<Path>)>,
+    free_cats: Query<
+        (Entity, &Position),
+        (
+            With<UnitId>,
+            Without<Assignment>,
+            Without<Haul>,
+            Without<Path>,
+        ),
+    >,
 ) {
     let doomed: Vec<(i32, i32)> = blueprints
         .iter()
@@ -99,7 +115,7 @@ pub(crate) fn assign_jobs(
                     .entity(cat)
                     .remove::<(Assignment, Path, MoveCooldown)>();
             }
-        } else if !waiting {
+        } else if !waiting && bp.delivered >= rules.cost_of(bp.tile) {
             open.push((bp_e, (bp.x, bp.y), bp.tile));
         }
     }
@@ -150,11 +166,17 @@ pub(crate) fn assign_jobs(
 }
 
 /// Коты, добравшиеся до чертежа, «работают» до готовности; затем тайл возводится.
+///
+/// Снос возвращает всю цену тайла ломом — под ноги коту-сносильщику. Он стоит
+/// на полу со стороны берега (§12.12), поэтому куча заведомо не окажется в
+/// пустоте, которую сам же снос и создаёт.
 pub(crate) fn work_jobs(
     mut map: ResMut<BaseMap>,
+    rules: Res<TileRules>,
     mut commands: Commands,
     cats: Query<(Entity, &Position, &Assignment, Option<&Path>)>,
     mut blueprints: Query<&mut Blueprint>,
+    mut stacks: Query<(Entity, &Position, &mut Stack)>,
 ) {
     for (cat_e, pos, assign, path) in &cats {
         let Ok(mut bp) = blueprints.get_mut(assign.0) else {
@@ -166,7 +188,15 @@ pub(crate) fn work_jobs(
         if in_range {
             bp.progress += 1;
             if bp.progress >= BUILD_TIME {
+                let refund = if bp.tile < 0 {
+                    rules.cost_of(map.tile_at(bp.x, bp.y))
+                } else {
+                    0
+                };
                 map.set(bp.x, bp.y, bp.tile);
+                if refund > 0 {
+                    spill(&mut commands, &mut stacks, (pos.x, pos.y), refund);
+                }
                 commands.entity(assign.0).despawn();
                 commands.entity(cat_e).remove::<Assignment>();
             }

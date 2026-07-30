@@ -6,6 +6,7 @@
 use bevy_ecs::prelude::*;
 
 use crate::components::SimTime;
+use crate::hauling::{assign_hauls, assign_tidy, mark_loose_scrap, settle_stacks, work_hauls};
 use crate::jobs::{assign_jobs, work_jobs};
 use crate::movement::{escape_voids, move_units, retry_orders};
 
@@ -16,18 +17,34 @@ fn advance_time(mut time: ResMut<SimTime>) {
 /// Цепочка систем одного тика. Вынесена отдельно, чтобы тесты гоняли ровно тот
 /// же порядок, что и боевая симуляция.
 ///
-/// `escape_voids` — последним: если приказ или джоб уже дали маршрут, он и
-/// выводит кота из ямы, отдельный шаг не нужен.
+/// Три раздатчика берут котов из одного пула свободных, поэтому их порядок —
+/// это и есть приоритет работ (§12.15, §12.16):
+///   1. `assign_hauls` — подвоз на площадки. Иначе бригада разбирает уже
+///      обеспеченные чертежи, а за ломом для остальных никто не идёт, и база
+///      встаёт тем вернее, чем больше на ней работы.
+///   2. `assign_jobs` — стройка и снос.
+///   3. `assign_tidy` — уборка пола. Последняя: подбирать мусор, пока стоит
+///      настоящая работа, — это ровно то, чего игрок не ждёт.
+///
+/// `escape_voids` — предпоследним: если приказ или джоб уже дали маршрут, он и
+/// выводит кота из ямы, отдельный шаг не нужен. `settle_stacks` в самом конце и
+/// после `work_jobs`: обе системы разбирают последствия только что снесённого
+/// тайла — кота в яме и кучу лома в ней же.
 pub(crate) fn build_schedule() -> Schedule {
     let mut schedule = Schedule::default();
     schedule.add_systems(
         (
             advance_time,
+            assign_hauls,
             assign_jobs,
+            mark_loose_scrap,
+            assign_tidy,
             move_units,
+            work_hauls,
             work_jobs,
             retry_orders,
             escape_voids,
+            settle_stacks,
         )
             .chain(),
     );

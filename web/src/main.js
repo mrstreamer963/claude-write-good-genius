@@ -12,6 +12,7 @@ const COLORS = {
   select: 0x6cf0a0, // выбор кота / метка цели
   erase: 0xff5566,
   stuck: 0xff9a3c, // кот замурован / приказ невыполним
+  scrap: 0xc9a227, // лом: кучи на полу, груз в лапах, полоса подвоза
   unit: {
     cat_excellent: 0xe0c060,
     cat_helper: 0x8fb8de,
@@ -21,18 +22,21 @@ const COLORS = {
 
 const stageEl = document.getElementById('stage');
 const tickEl = document.getElementById('tick');
+const scrapEl = document.getElementById('scrap');
 
 const app = new Application();
 await app.init({ background: COLORS.bg, antialias: true, resizeTo: stageEl });
 stageEl.appendChild(app.canvas);
 
-// Мир: тайлы -> юниты -> оверлей (подсветки).
+// Мир: тайлы -> лом -> чертежи -> юниты -> оверлей (подсветки).
 const world = new Container();
 const tileLayer = new Container();
+const scrapLayer = new Container(); // кучи лома на полу
 const bpLayer = new Container(); // чертежи (призраки будущих тайлов)
 const unitLayer = new Container();
 const overlay = new Container();
 world.addChild(tileLayer);
+world.addChild(scrapLayer);
 world.addChild(bpLayer);
 world.addChild(unitLayer);
 world.addChild(overlay);
@@ -63,8 +67,9 @@ const orders = new Map(); // id -> { x, y } (заданная цель, для �
 let meta = null; // { width, height, palette: [{id,label,color}] }
 let paletteColors = []; // number[]
 let mapCells = null; // Int-массив состояния карты
-let mode = 'cursor'; // 'cursor' | 'build'
+let mode = 'cursor'; // 'cursor' | 'build' | 'store'
 let buildTile = 0; // индекс палитры, или -1 = стереть (в режиме build)
+let autoTidy = true; // коты сами свозят лом на склад (см. ядро, §12.16)
 let selectedUnit = null;
 let dragFrom = null; // якорь рамки (клетка, где нажали), null = не тянем
 let dragTo = null; // текущий угол рамки; переживает выход курсора за карту
@@ -119,6 +124,32 @@ function drawMap(map) {
   tileLayer.addChild(g);
 }
 
+// Кучи лома на полу. Точное количество — в шапке; здесь только «сколько
+// примерно», чтобы куча читалась одним взглядом и не спорила с тайлом под ней.
+function drawScrap(list) {
+  scrapLayer.removeChildren();
+  if (!list || !list.length) return;
+  const g = new Graphics();
+  for (const s of list) {
+    const x = s.x * TILE;
+    const y = s.y * TILE;
+    const chips = s.count >= 15 ? 3 : s.count >= 5 ? 2 : 1;
+    for (let i = 0; i < chips; i++) {
+      const w = TILE * 0.4 - i * 4;
+      g.rect(x + (TILE - w) / 2, y + TILE * 0.62 - i * 4, w, 3).fill({
+        color: COLORS.scrap,
+        alpha: 0.95,
+      });
+    }
+    // Помечена «на склад» — за ней придёт свободный кот. При автоуборке помечено
+    // всё, что лежит вне склада, так что метка заодно показывает, что режим включён.
+    if (s.marked) {
+      g.circle(x + TILE / 2, y + TILE * 0.3, 2.5).fill({ color: COLORS.select, alpha: 0.9 });
+    }
+  }
+  scrapLayer.addChild(g);
+}
+
 function drawBlueprints(list) {
   bpLayer.removeChildren();
   if (!list || !list.length) return;
@@ -128,6 +159,7 @@ function drawBlueprints(list) {
     const y = b.y * TILE;
     const isDemolish = b.tile < 0;
     const color = isDemolish ? COLORS.erase : (paletteColors[b.tile] ?? 0x888888);
+    const supplied = b.delivered >= b.need;
 
     if (isDemolish) {
       // Снос: перечёркиваем существующий тайл, не пряча его под заливкой —
@@ -139,10 +171,22 @@ function drawBlueprints(list) {
         .stroke({ color, width: 2, alpha: 0.9 });
       g.rect(x + 1, y + 1, TILE - 2, TILE - 2).stroke({ color, width: 1, alpha: 0.6 });
     } else {
-      // Постройка: призрачная заливка будущего тайла + рамка.
+      // Постройка: призрачная заливка будущего тайла + рамка. Пока лом не
+      // завезли, площадка бледная — работа туда ещё не назначена.
       g.rect(x + 1, y + 1, TILE - 2, TILE - 2)
-        .fill({ color, alpha: 0.28 })
-        .stroke({ color, width: 1, alpha: 0.85 });
+        .fill({ color, alpha: supplied ? 0.28 : 0.1 })
+        .stroke({ color, width: 1, alpha: supplied ? 0.85 : 0.35 });
+    }
+
+    if (!supplied) {
+      // Полоса подвоза материала — на месте полосы работы: пока она не полна,
+      // работа и не начнётся.
+      const m = b.need > 0 ? b.delivered / b.need : 1;
+      g.rect(x + 3, y + TILE - 6, TILE - 6, 3).fill({ color: COLORS.scrap, alpha: 0.2 });
+      if (m > 0) {
+        g.rect(x + 3, y + TILE - 6, (TILE - 6) * m, 3).fill({ color: COLORS.scrap, alpha: 0.95 });
+      }
+      continue;
     }
     // прогресс-бар работы
     const p = b.total > 0 ? Math.min(1, b.progress / b.total) : 0;
@@ -155,17 +199,25 @@ function drawBlueprints(list) {
 
 function renderSnapshot(snap) {
   tickEl.textContent = snap.tick;
+  drawScrap(snap.stacks);
   drawBlueprints(snap.blueprints);
+  // Весь лом мира: и лежащий, и уже поднятый — иначе счётчик проседает,
+  // пока кот несёт груз, и это читается как потеря материала.
+  let scrapTotal = 0;
+  for (const s of snap.stacks) scrapTotal += s.count;
   const seen = new Set();
   for (const e of snap.entities) {
     seen.add(e.id);
+    scrapTotal += e.carrying;
     const c = units.get(e.id) ?? createUnit(e);
     // TODO(§8b): интерполяция между тиками. Пока — снап к центру тайла.
     c.x = e.x * TILE + TILE / 2;
     c.y = e.y * TILE + TILE / 2;
     c.stuckRing.visible = !!e.stuck;
+    c.load.visible = e.carrying > 0;
     unitTiles.set(e.id, { x: e.x, y: e.y });
   }
+  scrapEl.textContent = scrapTotal;
   for (const [id, c] of units) {
     if (!seen.has(id)) {
       c.destroy({ children: true });
@@ -194,9 +246,18 @@ function createUnit(e) {
   const stuckRing = new Graphics();
   stuckRing.circle(0, 0, TILE * 0.52).stroke({ color: COLORS.stuck, width: 2, alpha: 0.9 });
   stuckRing.visible = false;
+  // Груз лома — брусок над котом, той же краской, что и кучи на полу.
+  const load = new Graphics();
+  load
+    .rect(-TILE * 0.16, -TILE * 0.5, TILE * 0.32, 4)
+    .fill(COLORS.scrap)
+    .stroke({ color: 0x000000, width: 1 });
+  load.visible = false;
   c.addChild(body);
   c.addChild(stuckRing);
+  c.addChild(load);
   c.stuckRing = stuckRing;
+  c.load = load;
   unitLayer.addChild(c);
   units.set(e.id, c);
   return c;
@@ -253,11 +314,13 @@ function rectOf(a, b) {
 }
 
 // Один жест — одно сообщение: решение по рамке принимает ядро, а не рендер.
-// Здесь оно принято быть и не может — список чертежей у нас из последнего
+// Здесь оно принято быть и не может — списки чертежей и куч у нас из последнего
 // снапшота, а на ×10 он отстаёт от симуляции на несколько тиков.
 function applyDrag() {
   if (!dragFrom || !dragTo) return;
-  worker.postMessage({ type: 'build', ...rectOf(dragFrom, dragTo), tile: buildTile });
+  const rect = rectOf(dragFrom, dragTo);
+  if (mode === 'store') worker.postMessage({ type: 'store', ...rect });
+  else worker.postMessage({ type: 'build', ...rect, tile: buildTile });
 }
 
 // `global` — где отпустили кнопку: подсветка сразу возвращается к одной клетке
@@ -294,7 +357,14 @@ function updateHover(global) {
   // Во время протяжки показываем всю рамку — даже если курсор ушёл за карту.
   const r = dragFrom ? rectOf(dragFrom, dragTo) : t && { x: t.tx, y: t.ty, w: 1, h: 1 };
   if (!r) return;
-  const col = mode === 'build' ? (buildTile >= 0 ? paletteColors[buildTile] : COLORS.erase) : COLORS.select;
+  const col =
+    mode === 'store'
+      ? COLORS.scrap
+      : mode === 'build'
+        ? buildTile >= 0
+          ? paletteColors[buildTile]
+          : COLORS.erase
+        : COLORS.select;
   hoverRect
     .rect(r.x * TILE, r.y * TILE, r.w * TILE, r.h * TILE)
     .fill({ color: col, alpha: 0.16 })
@@ -302,7 +372,7 @@ function updateHover(global) {
 }
 
 app.stage.on('pointerdown', (e) => {
-  if (mode !== 'build') {
+  if (mode === 'cursor') {
     command(e.global);
     return;
   }
@@ -345,8 +415,10 @@ function buildToolbar() {
   el.appendChild(tt);
 
   meta.palette.forEach((p, i) => {
+    // Цена в ломе — рядом с образцом: сколько нужно завезти на клетку.
+    const cost = p.cost > 0 ? `<span class="cost">${p.cost}</span>` : '';
     const b = mkTool(
-      `<span class="sw" style="background:${p.color}"></span><span>${p.label || p.id}</span>`,
+      `<span class="sw" style="background:${p.color}"></span><span>${p.label || p.id}</span>${cost}`,
       () => selectBuild(i, b),
     );
     el.appendChild(b);
@@ -354,6 +426,26 @@ function buildToolbar() {
 
   const er = mkTool('<span class="sw sw-erase"></span><span>Стереть</span>', () => selectBuild(-1, er));
   el.appendChild(er);
+
+  const tl = document.createElement('div');
+  tl.className = 'tt';
+  tl.textContent = 'Лом';
+  el.appendChild(tl);
+
+  // Разметка уборки рамкой: повторный жест по помеченному снимает пометку.
+  // Кот не выбирается — задачу возьмёт любой свободный.
+  const st = mkTool('<span class="sw sw-scrap"></span><span>На склад</span>', () => selectStore(st));
+  el.appendChild(st);
+
+  // Автоуборка — не режим ввода, а правило симуляции, поэтому кнопка не входит
+  // в общую группу инструментов и своей подсветкой их не сбивает.
+  const auto = mkTool('<span class="sw sw-scrap"></span><span>Убирать сам</span>', () => {
+    autoTidy = !autoTidy;
+    auto.classList.toggle('on', autoTidy);
+    worker.postMessage({ type: 'setAutoTidy', on: autoTidy });
+  });
+  auto.classList.add('toggle', 'on');
+  el.appendChild(auto);
 
   selectCursor(cursorBtn); // режим по умолчанию
 }
@@ -367,7 +459,9 @@ function mkTool(html, onClick) {
 }
 
 function activate(btn) {
-  for (const b of document.querySelectorAll('#toolbar .tool')) b.classList.remove('active');
+  for (const b of document.querySelectorAll('#toolbar .tool:not(.toggle)')) {
+    b.classList.remove('active');
+  }
   if (btn) btn.classList.add('active');
 }
 
@@ -378,6 +472,10 @@ function selectCursor(btn) {
 function selectBuild(i, btn) {
   mode = 'build';
   buildTile = i;
+  activate(btn);
+}
+function selectStore(btn) {
+  mode = 'store';
   activate(btn);
 }
 

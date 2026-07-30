@@ -35,8 +35,9 @@ cargo test whole_room_is_erased_completely -- --nocapture
 
 - **`src/`** — ядро по модулям; `lib.rs` держит только крейт-док, сборку модулей и `pub use Sim`.
   Данные: `ruleset` (YAML → структуры) · `map` (тайлы, проходимость, версия) · `path` (BFS) ·
-  `components` (компоненты ECS без поведения). Поведение: `schedule` (цепочка тика) ·
-  `jobs` (чертежи) · `movement` (шаги, приказы, выход из пустоты) · `demolition` (порядок сноса).
+  `components` (компоненты ECS и ресурсы, без поведения). Поведение: `schedule` (цепочка тика) ·
+  `jobs` (чертежи) · `hauling` (перенос лома: подвоз на площадку и уборка на склад) ·
+  `movement` (шаги, приказы, выход из пустоты) · `demolition` (порядок сноса).
   Наружу: `snapshot` (DTO) · `sim` (`#[wasm_bindgen]`-фасад). Модули приватные, публичен один `Sim`,
   поэтому внутрикрейтовые элементы помечаются `pub(crate)`.
 - **`web/src/worker.js`** — WebWorker: фиксированный тик, `BASE_TPS = 6` тиков/сек на ×1,
@@ -53,12 +54,18 @@ cargo test whole_room_is_erased_completely -- --nocapture
 | worker → main | `map {map}` | только когда вырос `map_version()` |
 | worker → main | `snapshot {snap}` | каждый кадр (~16 мс) |
 | main → worker | `setSpeed {speed}` | кнопки ⏸/×1/×5/×10 |
-| main → worker | `build {x, y, tile}` | `tile >= 0` → `add_blueprint`, иначе `plan_demolish` |
+| main → worker | `build {x, y, w, h, tile}` | `tile >= 0` → `add_blueprint_rect`, иначе `plan_demolish_rect` |
+| main → worker | `store {x, y, w, h}` | рамка «на склад»: `mark_to_store_rect` |
+| main → worker | `setAutoTidy {on}` | кнопка «Убирать сам» |
 | main → worker | `move {id, x, y}` | приказ выбранному коту |
 
 **Цепочка систем одного тика** (`schedule.rs::build_schedule()`, `.chain()` — порядок значим):
-`advance_time → assign_jobs → move_units → work_jobs → retry_orders → escape_voids`.
+`advance_time → assign_hauls → assign_jobs → mark_loose_scrap → assign_tidy → move_units →
+work_hauls → work_jobs → retry_orders → escape_voids → settle_stacks`.
 Тесты гоняют ровно эту функцию, поэтому новую систему добавлять только сюда, а не в тестовую копию.
+**Порядок трёх раздатчиков = приоритет работ** (§12.15, §12.16): все берут котов из одного пула
+свободных, поэтому подвоз на площадки идёт первым (иначе за ломом никто не пойдёт, пока есть
+обеспеченная работа), стройка и снос — вторыми, уборка пола — последней.
 
 ## Инварианты ядра
 
@@ -80,11 +87,24 @@ cargo test whole_room_is_erased_completely -- --nocapture
    `assign_jobs` и `retry_orders` подобраны именно под неё.
 6. **`stuck` — легальное состояние, а не ошибка**: кот замурован в пустоте или его приказ пока
    невыполним. Состояние обратимо (игрок ставит пол рядом) и только подсвечивается в UI.
+7. **Занятость кота — это набор фильтров, а не флаг.** Задач уже две (`Assignment` — стройка,
+   `Haul` — перенос), и каждая новая обязана попасть во все места, где кот считается свободным:
+   `assign_jobs`, `assign_hauls`, `retry_orders`, `is_stuck`. Пропущенный `Without<…>` даёт не
+   падение, а тихое перехватывание кота посреди работы.
+8. **Ничего не остаётся в пустоте.** Кот выходит сам (`escape_voids`), куча лома сдвигается на
+   соседний пол (`settle_stacks`, он же сливает две кучи на одной клетке). Правило одно на обоих:
+   пустоту не пересечь, значит оставленное в ней недостижимо, — но кот виден флагом `stuck`,
+   а лом молча пропал бы (§12.15).
+9. **Лом не исчезает с пола «в лапы».** Кот поднимает кучу, только если знает, куда её деть, и
+   берёт не больше, чем влезет в адресат. Груз в лапах игроку не виден как ресурс и не
+   размечается — то, что лежит на полу, всегда можно достать (§12.16). Сумма
+   «кучи + лапы + `delivered`» сохраняется; на ней держатся тесты уборки.
 
 ## Тесты
 
-26 тестов живут в `src/tests/` по механикам (`paths` · `voids` · `orders` · `jobs` · `demolition`);
-общие хелперы и сборка мира — в `tests/mod.rs`. Мир собирается из ASCII-схем, минуя YAML:
+48 тестов живут в `src/tests/` по механикам (`paths` · `voids` · `orders` · `jobs` · `demolition` ·
+`hauling` · `tidying`); общие хелперы и сборка мира — в `tests/mod.rs`. Мир собирается из ASCII-схем,
+минуя YAML:
 
 ```rust
 let mut sim = sim_from(&["#####", "#a..#", "#####"]); // '#' пустота, '.' пол, буква — кот с этим id
@@ -93,7 +113,15 @@ let mut sim = sim_from(&["#####", "#a..#", "#####"]); // '#' пустота, '.'
 - Крупные схемы — в `src/test_maps/*.map` через `include_str!("../test_maps/…")` + `rows_from()`:
   `rustfmt` схлопывает многострочные массивы строк в одну строку и делает схему нечитаемой.
 - Хелперы на `Sim` под `#[cfg(test)]`: `tick_n`, `pos_of`, `stuck_of`, `has_assignment`, `has_path`,
-  `tile`, `force_tile`, `map_ver`, `order_tried_version`, `plan_demolish_rect`, `floors_left`.
+  `has_haul`, `tile`, `force_tile`, `map_ver`, `order_tried_version`, `plan_demolish_rect`,
+  `floors_left`; по материалу — `set_cost`, `set_capacity`, `put_scrap`, `scrap_at`, `scrap_total`,
+  `scrap_is_on_floor`, `scrap_is_in_storage`, `carrying_of`, `delivered_at`.
+- Тайл в `sim_from` **бесплатен и не склад** (`TileRules` = нули): цена и ёмкость — контент
+  рулсета, и тесты механик, не связанных с материалом, о нём не знают. Тесты переноса и уборки
+  задают свойства явно (`set_cost`, `set_capacity` + `force_tile`).
+- `the_shipped_ruleset_tidies_demolition_scrap` — единственный тест на боевом `core.yaml`: ловит
+  рассогласование кода и контента (пропавшую `capacity`, склад без прохода), которое синтетические
+  схемы не увидят.
 - Баги здесь живут во взаимодействии систем и ECS-фильтров, а не в отдельных функциях — покрывать
   механику прогоном полной цепочки (`tick_n`), а не юнит-тестом функции.
 - Если конечное состояние маскирует ошибку, проверять инвариант **на каждом тике** — как в

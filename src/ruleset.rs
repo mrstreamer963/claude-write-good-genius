@@ -14,6 +14,8 @@ pub(crate) struct Ruleset {
     #[serde(default)]
     pub(crate) build: Vec<BuildRect>,
     #[serde(default)]
+    pub(crate) scrap: Vec<ScrapDef>,
+    #[serde(default)]
     pub(crate) units: Vec<UnitDef>,
 }
 
@@ -29,6 +31,14 @@ pub(crate) struct TileDef {
     #[serde(default)]
     pub(crate) label: String,
     pub(crate) color: String,
+    /// Сколько лома нужно завезти, чтобы возвести тайл; снос возвращает столько же
+    /// (§12.15 concept.md). Ноль = бесплатно, стройка начинается сразу.
+    #[serde(default)]
+    pub(crate) cost: i32,
+    /// Сколько лома клетка хранит. Больше нуля = это склад: коты сами свозят
+    /// сюда всё, что валяется на полу (§12.16). Ноль = обычный пол.
+    #[serde(default)]
+    pub(crate) capacity: i32,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -36,6 +46,14 @@ pub(crate) struct BuildRect {
     pub(crate) tile: String,
     /// [x, y, w, h] в тайлах
     pub(crate) rect: [i32; 4],
+}
+
+/// Стартовая куча лома на клетке пола.
+#[derive(Debug, Deserialize, Clone)]
+pub(crate) struct ScrapDef {
+    /// [x, y] в тайлах
+    pub(crate) at: [i32; 2],
+    pub(crate) count: i32,
 }
 
 #[derive(Debug, Deserialize, Clone)]

@@ -127,12 +127,39 @@ main#stage canvas { display: block; }
   border-radius: 3px;
   border: 1px solid rgba(0, 0, 0, 0.5);
 }
+/* цена тайла в ломе */
+.cost {
+  margin-left: auto;
+  padding-left: 8px;
+  color: #c9a227;
+  font-variant-numeric: tabular-nums;
+}
 .sw-erase {
   background: repeating-linear-gradient(45deg, #7a2b3a 0 3px, #40151d 3px 6px);
 }
 .sw-cursor {
   background: #6cf0a0;
   border-radius: 50%;
+}
+.sw-scrap {
+  background: repeating-linear-gradient(90deg, #c9a227 0 3px, #6b5615 3px 6px);
+}
+
+/* Переключатель правила симуляции, а не режим ввода: не участвует в общей
+   подсветке инструментов, поэтому и вид у него другой. */
+.tool.toggle {
+  color: var(--muted);
+}
+.tool.toggle .sw {
+  filter: grayscale(1);
+  opacity: 0.5;
+}
+.tool.toggle.on {
+  color: var(--text);
+}
+.tool.toggle.on .sw {
+  filter: none;
+  opacity: 1;
 }
 
 #hint {
