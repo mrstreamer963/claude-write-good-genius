@@ -9,6 +9,7 @@
 mod demolition;
 mod hauling;
 mod jobs;
+mod needs;
 mod orders;
 mod paths;
 mod skills;
@@ -77,6 +78,7 @@ fn sim_from(rows: &[&str]) -> Sim {
     world.insert_resource(TileRules(vec![TileRule::default()]));
     world.insert_resource(AutoTidy(true));
     world.insert_resource(SkillRules::default());
+    world.insert_resource(NeedRules::default());
     Sim {
         world,
         schedule: build_schedule(),
@@ -86,6 +88,7 @@ fn sim_from(rows: &[&str]) -> Sim {
             color: "#000000".to_string(),
             cost: 0,
             capacity: 0,
+            rest: 0,
         }],
         skills: Vec::new(),
         perks: Vec::new(),
@@ -117,11 +120,12 @@ impl Sim {
             Option<&Path>,
             Option<&Assignment>,
             Option<&Haul>,
+            Option<&Rest>,
         )>();
         let map = self.world.resource::<BaseMap>();
         q.iter(&self.world)
             .find(|(id, ..)| id.0 == unit)
-            .map(|(_, p, o, path, a, h)| is_stuck(map, p, o, path, a, h))
+            .map(|(_, p, o, path, a, h, r)| is_stuck(map, p, o, path, a, h, r))
             .expect("кот не найден")
     }
 
@@ -302,6 +306,37 @@ impl Sim {
     /// Индекс домена по имени — для тестов на боевом рулсете.
     fn skill_index(&self, id: &str) -> Option<usize> {
         self.world.resource::<SkillRules>().index_of(id)
+    }
+
+    /// Включить усталость: потолок бодрости, порог «пора спать» и скорость
+    /// восстановления вне лежанки. Всем котам выдаётся полная бодрость.
+    fn set_needs(&mut self, max: i32, tired: i32, floor: i32) {
+        self.world.insert_resource(NeedRules { max, tired, floor });
+        let mut q = self.world.query_filtered::<Entity, With<UnitId>>();
+        for cat in q.iter(&self.world).collect::<Vec<_>>() {
+            self.world.entity_mut(cat).insert(Energy(max));
+        }
+    }
+
+    /// Сделать тайл лежанкой: сколько бодрости он возвращает за тик.
+    fn set_rest(&mut self, tile: i16, rate: i32) {
+        self.tile_rule(tile, |r| r.rest = rate);
+    }
+
+    fn set_energy(&mut self, unit: &str, value: i32) {
+        let cat = self.entity_of(unit);
+        self.world.entity_mut(cat).insert(Energy(value));
+    }
+
+    fn energy_of(&mut self, unit: &str) -> i32 {
+        let cat = self.entity_of(unit);
+        self.world.get::<Energy>(cat).map_or(0, |e| e.0)
+    }
+
+    /// Кот занят отдыхом — спит или идёт к лежанке.
+    fn is_resting(&mut self, unit: &str) -> bool {
+        let cat = self.entity_of(unit);
+        self.world.get::<Rest>(cat).is_some()
     }
 
     /// Сколько клеток пола осталось в прямоугольнике.

@@ -94,6 +94,7 @@ pub(crate) fn assign_jobs(
             With<UnitId>,
             Without<Assignment>,
             Without<Haul>,
+            Without<Rest>,
             Without<Path>,
         ),
     >,

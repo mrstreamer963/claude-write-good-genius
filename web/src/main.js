@@ -13,6 +13,7 @@ const COLORS = {
   erase: 0xff5566,
   stuck: 0xff9a3c, // кот замурован / приказ невыполним
   scrap: 0xc9a227, // лом: кучи на полу, груз в лапах, полоса подвоза
+  rest: 0x7fd6b5, // сон: бодрость в панели и «зззз» над спящим котом
   unit: {
     cat_excellent: 0xe0c060,
     cat_helper: 0x8fb8de,
@@ -216,6 +217,9 @@ function renderSnapshot(snap) {
     c.y = e.y * TILE + TILE / 2;
     c.stuckRing.visible = !!e.stuck;
     c.load.visible = e.carrying > 0;
+    // Спящий кот пригашен: игрок должен видеть, почему тот не работает.
+    c.alpha = e.sleeping ? 0.55 : 1;
+    c.sleepMark.visible = !!e.sleeping;
     unitTiles.set(e.id, { x: e.x, y: e.y });
   }
   scrapEl.textContent = scrapTotal;
@@ -255,11 +259,23 @@ function createUnit(e) {
     .fill(COLORS.scrap)
     .stroke({ color: 0x000000, width: 1 });
   load.visible = false;
+  // «Зззз» — три пузырька над спящим, выше бруска груза: спать можно и с ломом.
+  const sleepMark = new Graphics();
+  sleepMark
+    .circle(-4, -TILE * 0.62, 1.5)
+    .fill(COLORS.rest)
+    .circle(1, -TILE * 0.7, 2)
+    .fill(COLORS.rest)
+    .circle(7, -TILE * 0.78, 2.5)
+    .fill(COLORS.rest);
+  sleepMark.visible = false;
   c.addChild(body);
   c.addChild(stuckRing);
   c.addChild(load);
+  c.addChild(sleepMark);
   c.stuckRing = stuckRing;
   c.load = load;
+  c.sleepMark = sleepMark;
   unitLayer.addChild(c);
   units.set(e.id, c);
   return c;
@@ -307,6 +323,16 @@ function renderCatPanel(entities) {
         `<div class="cat-row"><span>${esc(defs[i].label || defs[i].id)}</span><b>${s.level}</b></div>` +
         `<div class="bar"><i style="width:${pct}%"></i></div>` +
         `<div class="cat-sub">${s.next > 0 ? `${s.xp} / ${s.next}` : 'потолок'}</div>` +
+        '</div>',
+    );
+  }
+  if (e.energy_max > 0) {
+    const pct = Math.round((e.energy / e.energy_max) * 100);
+    parts.push(
+      '<div class="cat-skill">' +
+        `<div class="cat-row"><span>Бодрость</span><b>${pct}%</b></div>` +
+        `<div class="bar"><i class="rest" style="width:${pct}%"></i></div>` +
+        (e.sleeping ? '<div class="cat-sub">спит</div>' : '') +
         '</div>',
     );
   }

@@ -25,6 +25,23 @@ pub(crate) struct Ruleset {
     /// выключено), как `cost: 0` у тайла. Перк «Носильщик» удваивает (§12.17).
     #[serde(default)]
     pub(crate) carry: i32,
+    #[serde(default)]
+    pub(crate) energy: EnergyDef,
+}
+
+/// Усталость (§12.20). `max: 0` — механика выключена: бодрости у котов нет,
+/// спать они не ходят. Так живут тесты чужих механик.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub(crate) struct EnergyDef {
+    /// Полная бодрость; тратится по очку за тик бодрствования.
+    #[serde(default)]
+    pub(crate) max: i32,
+    /// Ниже этого свободный кот идёт спать сам.
+    #[serde(default)]
+    pub(crate) tired: i32,
+    /// Восстановление там, где лежанки нет, — цена базы без зоны отдыха.
+    #[serde(default)]
+    pub(crate) floor: i32,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -47,6 +64,10 @@ pub(crate) struct TileDef {
     /// сюда всё, что валяется на полу (§12.16). Ноль = обычный пол.
     #[serde(default)]
     pub(crate) capacity: i32,
+    /// Сколько бодрости кот восстанавливает здесь за тик. Больше нуля = лежанка,
+    /// уставшие коты идут спать сюда (§12.20). Ноль = спать можно, но медленно.
+    #[serde(default)]
+    pub(crate) rest: i32,
 }
 
 #[derive(Debug, Deserialize, Clone)]

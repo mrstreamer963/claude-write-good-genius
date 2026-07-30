@@ -59,7 +59,12 @@ pub(crate) fn retry_orders(
     mut commands: Commands,
     mut q: Query<
         (Entity, &Position, &mut Order),
-        (Without<Path>, Without<Assignment>, Without<Haul>),
+        (
+            Without<Path>,
+            Without<Assignment>,
+            Without<Haul>,
+            Without<Rest>,
+        ),
     >,
 ) {
     for (e, pos, mut order) in &mut q {
@@ -118,7 +123,9 @@ pub(crate) fn escape_voids(
 ///
 /// Два случая: замурован в пустоте без проходимых соседей, либо его приказ
 /// сейчас невыполним (второе условие — ровно то, на котором `retry_orders`
-/// раз за разом не находит путь; кот за работой застрявшим не считается).
+/// раз за разом не находит путь; кот за работой или за сном застрявшим не
+/// считается). Замурованный в пустоте виден даже спящим: выбираться ему
+/// всё равно придётся, и игрок должен это видеть.
 pub(crate) fn is_stuck(
     map: &BaseMap,
     pos: &Position,
@@ -126,11 +133,16 @@ pub(crate) fn is_stuck(
     path: Option<&Path>,
     assignment: Option<&Assignment>,
     haul: Option<&Haul>,
+    rest: Option<&Rest>,
 ) -> bool {
     let entombed = !map.walkable(pos.x, pos.y)
         && !DIRS
             .iter()
             .any(|(dx, dy)| map.walkable(pos.x + dx, pos.y + dy));
-    let order_stalled = order.is_some() && path.is_none() && assignment.is_none() && haul.is_none();
+    let order_stalled = order.is_some()
+        && path.is_none()
+        && assignment.is_none()
+        && haul.is_none()
+        && rest.is_none();
     entombed || order_stalled
 }

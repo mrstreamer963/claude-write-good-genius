@@ -108,6 +108,19 @@ pub(crate) struct Haul(pub(crate) HaulTo);
 #[derive(Component)]
 pub(crate) struct Carry(pub(crate) i32);
 
+/// Бодрость: тратится по очку за тик бодрствования, восстанавливается сном.
+/// Компонента нет — кот не устаёт вовсе (§12.20).
+#[derive(Component)]
+pub(crate) struct Energy(pub(crate) i32);
+
+/// Кот отдыхает. Фаза отдельно не хранится, её задаёт наличие маршрута: с
+/// `Path` кот идёт к лежанке, без — уже спит (так же устроен `Haul`, §12.15).
+///
+/// Это третья задача общего слоя, поэтому `Without<Rest>` обязан стоять всюду,
+/// где кот считается свободным, — иначе спящего тихо перехватит работа.
+#[derive(Component)]
+pub(crate) struct Rest;
+
 /// Перки — статичные теги из рулсета. В отличие от навыка, не растут: это
 /// сложение кота, а не его мастерство (§12.17).
 #[derive(Component, Default)]
@@ -204,6 +217,7 @@ pub(crate) struct TileRules(pub(crate) Vec<TileRule>);
 pub(crate) struct TileRule {
     pub(crate) cost: i32,
     pub(crate) capacity: i32,
+    pub(crate) rest: i32,
 }
 
 impl TileRules {
@@ -224,4 +238,18 @@ impl TileRules {
     pub(crate) fn capacity_of(&self, tile: i16) -> i32 {
         self.of(tile).capacity
     }
+
+    pub(crate) fn rest_of(&self, tile: i16) -> i32 {
+        self.of(tile).rest
+    }
+}
+
+/// Правила усталости из рулсета. `max = 0` — механика выключена целиком.
+#[derive(Resource, Default)]
+pub(crate) struct NeedRules {
+    pub(crate) max: i32,
+    /// Порог, ниже которого свободный кот уходит спать сам.
+    pub(crate) tired: i32,
+    /// Восстановление вне лежанки: спать можно где угодно, просто дольше.
+    pub(crate) floor: i32,
 }

@@ -111,10 +111,16 @@ impl Sim {
                 .map(|t| TileRule {
                     cost: t.cost,
                     capacity: t.capacity,
+                    rest: t.rest,
                 })
                 .collect(),
         ));
         world.insert_resource(AutoTidy(true));
+        world.insert_resource(NeedRules {
+            max: rs.energy.max,
+            tired: rs.energy.tired,
+            floor: rs.energy.floor,
+        });
         world.insert_resource(SkillRules(
             rs.skills
                 .iter()
@@ -154,6 +160,9 @@ impl Sim {
             ));
             if rs.carry > 0 {
                 cat.insert(Carry(rs.carry * if hauler { 2 } else { 1 }));
+            }
+            if rs.energy.max > 0 {
+                cat.insert(Energy(rs.energy.max));
             }
         }
 
@@ -405,6 +414,9 @@ impl Sim {
         // Приказ сохраняется даже без пути прямо сейчас — `retry_orders`
         // перепроложит маршрут при следующем изменении карты (например, после
         // постройки коридора, открывающего доступ к цели).
+        // Приказ будит: это осознанное действие игрока (§12.20). Кот на нуле
+        // бодрости ляжет снова — и это честный ответ.
+        self.world.entity_mut(entity).remove::<Rest>();
         self.world.entity_mut(entity).insert(Order {
             x,
             y,
@@ -448,18 +460,38 @@ impl Sim {
                 Option<&Carry>,
                 Option<&Skills>,
                 Option<&Perks>,
+                Option<&Energy>,
+                Option<&Rest>,
             )>();
             let map = self.world.resource::<BaseMap>();
             let rules = self.world.resource::<SkillRules>();
-            for (id, r, p, order, path, assignment, haul, load, carry, skills, perks) in
-                q.iter(&self.world)
+            let needs = self.world.resource::<NeedRules>();
+            for (
+                id,
+                r,
+                p,
+                order,
+                path,
+                assignment,
+                haul,
+                load,
+                carry,
+                skills,
+                perks,
+                energy,
+                rest,
+            ) in q.iter(&self.world)
             {
                 entities.push(EntitySnap {
                     id: id.0.clone(),
                     sprite: r.sprite.clone(),
                     x: p.x,
                     y: p.y,
-                    stuck: is_stuck(map, p, order, path, assignment, haul),
+                    stuck: is_stuck(map, p, order, path, assignment, haul, rest),
+                    energy: energy.map_or(0, |e| e.0),
+                    energy_max: needs.max,
+                    // Спит, а не идёт спать: маршрут ещё есть — значит в пути.
+                    sleeping: rest.is_some() && path.is_none(),
                     carrying: load.map_or(0, |c| c.0),
                     carry_max: carry.map_or(0, |c| c.0),
                     skills: (0..rules.0.len())

@@ -9,6 +9,7 @@ use crate::components::SimTime;
 use crate::hauling::{assign_hauls, assign_tidy, mark_loose_scrap, settle_stacks, work_hauls};
 use crate::jobs::{assign_jobs, work_jobs};
 use crate::movement::{escape_voids, move_units, retry_orders};
+use crate::needs::{assign_rest, collapse_exhausted, sleep, tire};
 use crate::skills::train_skills;
 
 fn advance_time(mut time: ResMut<SimTime>) {
@@ -40,6 +41,8 @@ pub(crate) fn build_schedule() -> Schedule {
     schedule.add_systems(
         (
             advance_time,
+            collapse_exhausted,
+            assign_rest,
             assign_hauls,
             assign_jobs,
             mark_loose_scrap,
@@ -50,6 +53,8 @@ pub(crate) fn build_schedule() -> Schedule {
             retry_orders,
             escape_voids,
             settle_stacks,
+            sleep,
+            tire,
             train_skills,
         )
             .chain(),

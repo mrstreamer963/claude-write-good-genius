@@ -48,6 +48,7 @@ pub(crate) fn assign_hauls(
             With<UnitId>,
             Without<Assignment>,
             Without<Haul>,
+            Without<Rest>,
             Without<Path>,
         ),
     >,
@@ -172,6 +173,7 @@ pub(crate) fn assign_tidy(
             With<UnitId>,
             Without<Assignment>,
             Without<Haul>,
+            Without<Rest>,
             Without<Path>,
         ),
     >,
@@ -394,7 +396,7 @@ fn keep_rest(commands: &mut Commands, cat: Entity, left: i32) {
 
 /// Снять с кучи претензию носильщика (сама пометка остаётся). Кучи может уже не
 /// быть — её и подняли; это штатный конец задачи, а не ошибка.
-fn release_claim(marks: &mut Query<&mut ToStore>, pile: Option<Entity>) {
+pub(crate) fn release_claim(marks: &mut Query<&mut ToStore>, pile: Option<Entity>) {
     if let Some(Ok(mut mark)) = pile.map(|e| marks.get_mut(e)) {
         mark.hauler = None;
     }
