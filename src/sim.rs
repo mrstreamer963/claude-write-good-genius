@@ -18,19 +18,23 @@ use bevy_ecs::prelude::*;
 use wasm_bindgen::prelude::*;
 
 use crate::components::*;
-use crate::jobs::BUILD_TIME;
+use crate::jobs::BUILD_WORK;
 use crate::map::{BaseMap, rect_cells};
 use crate::movement::is_stuck;
 use crate::path::find_path;
-use crate::ruleset::{Ruleset, TileDef};
+use crate::ruleset::{PerkDef, Ruleset, SkillDef, TileDef};
 use crate::schedule::build_schedule;
-use crate::snapshot::{BaseMapDto, BlueprintSnap, EntitySnap, MapMeta, Snapshot, StackSnap};
+use crate::snapshot::{
+    BaseMapDto, BlueprintSnap, EntitySnap, MapMeta, SkillSnap, Snapshot, StackSnap,
+};
 
 #[wasm_bindgen]
 pub struct Sim {
     pub(crate) world: World,
     pub(crate) schedule: Schedule,
     pub(crate) palette: Vec<TileDef>,
+    pub(crate) skills: Vec<SkillDef>,
+    pub(crate) perks: Vec<PerkDef>,
     pub(crate) width: i32,
     pub(crate) height: i32,
 }
@@ -111,6 +115,15 @@ impl Sim {
                 .collect(),
         ));
         world.insert_resource(AutoTidy(true));
+        world.insert_resource(SkillRules(
+            rs.skills
+                .iter()
+                .map(|s| SkillRule {
+                    id: s.id.clone(),
+                    levels: s.levels.clone(),
+                })
+                .collect(),
+        ));
 
         // Стартовый лом. Стартовая застройка (`build`) при этом бесплатна —
         // это уже существующая база, а не работа котов.
@@ -124,8 +137,11 @@ impl Sim {
             ));
         }
 
+        // Перк — статичный тег из рулсета; в числа он превращается один раз,
+        // здесь: расти ему всё равно некуда (§12.17).
         for u in &rs.units {
-            world.spawn((
+            let hauler = u.perks.iter().any(|p| p == PERK_HAULER);
+            let mut cat = world.spawn((
                 UnitId(u.id.clone()),
                 Renderable {
                     sprite: u.sprite.clone(),
@@ -134,7 +150,11 @@ impl Sim {
                     x: u.pos[0],
                     y: u.pos[1],
                 },
+                Perks(u.perks.clone()),
             ));
+            if rs.carry > 0 {
+                cat.insert(Carry(rs.carry * if hauler { 2 } else { 1 }));
+            }
         }
 
         let schedule = build_schedule();
@@ -142,6 +162,8 @@ impl Sim {
             world,
             schedule,
             palette: rs.tiles,
+            skills: rs.skills,
+            perks: rs.perks,
             width: w,
             height: h,
         })
@@ -153,6 +175,8 @@ impl Sim {
             width: self.width,
             height: self.height,
             palette: self.palette.clone(),
+            skills: self.skills.clone(),
+            perks: self.perks.clone(),
         };
         serde_wasm_bindgen::to_value(&meta).map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -421,9 +445,15 @@ impl Sim {
                 Option<&Assignment>,
                 Option<&Haul>,
                 Option<&Carrying>,
+                Option<&Carry>,
+                Option<&Skills>,
+                Option<&Perks>,
             )>();
             let map = self.world.resource::<BaseMap>();
-            for (id, r, p, order, path, assignment, haul, load) in q.iter(&self.world) {
+            let rules = self.world.resource::<SkillRules>();
+            for (id, r, p, order, path, assignment, haul, load, carry, skills, perks) in
+                q.iter(&self.world)
+            {
                 entities.push(EntitySnap {
                     id: id.0.clone(),
                     sprite: r.sprite.clone(),
@@ -431,6 +461,18 @@ impl Sim {
                     y: p.y,
                     stuck: is_stuck(map, p, order, path, assignment, haul),
                     carrying: load.map_or(0, |c| c.0),
+                    carry_max: carry.map_or(0, |c| c.0),
+                    skills: (0..rules.0.len())
+                        .map(|i| {
+                            let xp = skills.map_or(0, |s| s.xp_of(i));
+                            SkillSnap {
+                                level: rules.level(i, xp),
+                                xp,
+                                next: rules.next_threshold(i, xp),
+                            }
+                        })
+                        .collect(),
+                    perks: perks.map(|p| p.0.clone()).unwrap_or_default(),
                 });
             }
         }
@@ -445,7 +487,7 @@ impl Sim {
                     y: bp.y,
                     tile: bp.tile,
                     progress: bp.progress,
-                    total: BUILD_TIME,
+                    total: BUILD_WORK,
                     need: rules.cost_of(bp.tile),
                     delivered: bp.delivered,
                 });

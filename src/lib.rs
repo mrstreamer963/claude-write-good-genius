@@ -14,6 +14,7 @@
 //!   * `hauling`    — перенос лома: доставка на площадку и возврат при сносе;
 //!   * `movement`   — шаги по маршруту, повтор приказов, выход из пустоты;
 //!   * `demolition` — порядок сноса (волна от берега вглубь);
+//!   * `skills`     — навыки: рост от работы, скорость работы;
 //!   * `snapshot`   — DTO наружу (worker → main);
 //!   * `sim`        — `#[wasm_bindgen]`-фасад.
 //!
@@ -38,6 +39,7 @@ mod path;
 mod ruleset;
 mod schedule;
 mod sim;
+mod skills;
 mod snapshot;
 
 #[cfg(test)]

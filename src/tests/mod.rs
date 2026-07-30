@@ -11,17 +11,23 @@ mod hauling;
 mod jobs;
 mod orders;
 mod paths;
+mod skills;
 mod tidying;
 mod voids;
 
 use bevy_ecs::prelude::*;
 
 use crate::components::*;
+use crate::jobs::{BUILD_WORK, WORK_RATE};
 use crate::map::BaseMap;
 use crate::movement::is_stuck;
 use crate::ruleset::TileDef;
 use crate::schedule::build_schedule;
 use crate::sim::Sim;
+
+/// Тиков на один тайл при нулевом навыке. Работа считается в очках (§12.17),
+/// но тесты меряют время тиками, поэтому пересчёт держим здесь.
+const BUILD_TICKS: usize = (BUILD_WORK / WORK_RATE) as usize;
 
 /// Строки ASCII-схемы из файла `src/test_maps/*.map` (через `include_str!`
 /// на вызывающей стороне) — для схем, которые `rustfmt` иначе схлопывает
@@ -33,9 +39,13 @@ fn rows_from(text: &'static str) -> Vec<&'static str> {
 /// Собирает `Sim` из ASCII-схемы, минуя YAML: `#` — пустота (непроходимо),
 /// `.` — пол, любая другая буква — пол с котом под этим id.
 ///
-/// Тайл схемы бесплатен (`TileCosts` = 0): цена — это контент рулсета, и тесты
-/// механик, не связанных с материалом, не должны о нём знать. Тесты переноса
-/// задают цену явно (`set_cost`).
+/// Тайл схемы бесплатен и не склад (`TileRules` = нули): цена — это контент
+/// рулсета, и тесты механик, не связанных с материалом, не должны о нём знать.
+/// Тесты переноса задают свойства явно (`set_cost`, `set_capacity`).
+///
+/// Навыков в мире тоже нет (`SkillRules` пуст), и лапы у котов без предела:
+/// работа идёт с базовой скоростью, а тесты навыков включают их сами
+/// (`set_skill`, `set_carry`) — §12.17.
 fn sim_from(rows: &[&str]) -> Sim {
     let height = rows.len() as i32;
     let width = rows[0].len() as i32;
@@ -66,6 +76,7 @@ fn sim_from(rows: &[&str]) -> Sim {
     world.insert_resource(SimTime { tick: 0 });
     world.insert_resource(TileRules(vec![TileRule::default()]));
     world.insert_resource(AutoTidy(true));
+    world.insert_resource(SkillRules::default());
     Sim {
         world,
         schedule: build_schedule(),
@@ -76,6 +87,8 @@ fn sim_from(rows: &[&str]) -> Sim {
             cost: 0,
             capacity: 0,
         }],
+        skills: Vec::new(),
+        perks: Vec::new(),
         width,
         height,
     }
@@ -232,6 +245,63 @@ impl Sim {
             .find(|(id, _)| id.0 == unit)
             .map(|(_, h)| h.is_some())
             .unwrap_or(false)
+    }
+
+    fn entity_of(&mut self, unit: &str) -> Entity {
+        let mut q = self.world.query::<(Entity, &UnitId)>();
+        q.iter(&self.world)
+            .find(|(_, id)| id.0 == unit)
+            .map(|(e, _)| e)
+            .expect("кот не найден")
+    }
+
+    /// Завести навык в мире теста: пороги уровней. Вернёт индекс домена.
+    fn set_skill(&mut self, id: &str, levels: &[i32]) -> usize {
+        let mut rules = self.world.resource_mut::<SkillRules>();
+        rules.0.push(SkillRule {
+            id: id.to_string(),
+            levels: levels.to_vec(),
+        });
+        rules.0.len() - 1
+    }
+
+    /// Выдать коту опыт — стартовый навык без отработки тиков.
+    fn set_xp(&mut self, unit: &str, skill: usize, xp: i32) {
+        let cat = self.entity_of(unit);
+        let mut skills = self
+            .world
+            .entity_mut(cat)
+            .take::<Skills>()
+            .unwrap_or_default();
+        skills.add_xp(skill, xp, xp);
+        self.world.entity_mut(cat).insert(skills);
+    }
+
+    fn xp_of(&mut self, unit: &str, skill: usize) -> i32 {
+        let cat = self.entity_of(unit);
+        self.world.get::<Skills>(cat).map_or(0, |s| s.xp_of(skill))
+    }
+
+    fn level_of(&mut self, unit: &str, skill: usize) -> i32 {
+        let xp = self.xp_of(unit, skill);
+        self.world.resource::<SkillRules>().level(skill, xp)
+    }
+
+    /// Ограничить лапы кота: сколько лома он берёт за ходку.
+    fn set_carry(&mut self, unit: &str, cap: i32) {
+        let cat = self.entity_of(unit);
+        self.world.entity_mut(cat).insert(Carry(cap));
+    }
+
+    /// Предел лап кота; 0 — предела нет.
+    fn carry_max_of(&mut self, unit: &str) -> i32 {
+        let cat = self.entity_of(unit);
+        self.world.get::<Carry>(cat).map_or(0, |c| c.0)
+    }
+
+    /// Индекс домена по имени — для тестов на боевом рулсете.
+    fn skill_index(&self, id: &str) -> Option<usize> {
+        self.world.resource::<SkillRules>().index_of(id)
     }
 
     /// Сколько клеток пола осталось в прямоугольнике.

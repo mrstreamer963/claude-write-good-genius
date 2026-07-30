@@ -103,6 +103,46 @@ pub(crate) enum HaulTo {
 #[derive(Component)]
 pub(crate) struct Haul(pub(crate) HaulTo);
 
+/// Сколько лома кот берёт за одну ходку. Компонента нет — предела нет: так
+/// живут тесты механик, которым до объёма лап дела нет (§12.17).
+#[derive(Component)]
+pub(crate) struct Carry(pub(crate) i32);
+
+/// Перки — статичные теги из рулсета. В отличие от навыка, не растут: это
+/// сложение кота, а не его мастерство (§12.17).
+#[derive(Component, Default)]
+pub(crate) struct Perks(pub(crate) Vec<String>);
+
+/// Перк «Носильщик»: удваивает объём лап. Единственный перк POC.
+pub(crate) const PERK_HAULER: &str = "hauler";
+
+/// Опыт кота по доменам работы; индекс — номер записи в `skills:` рулсета.
+/// Уровень не хранится: он выводится из опыта по порогам (`SkillRules`), и
+/// второе место, где его можно забыть обновить, не заводится.
+#[derive(Component, Default)]
+pub(crate) struct Skills {
+    pub(crate) xp: Vec<i32>,
+}
+
+impl Skills {
+    pub(crate) fn xp_of(&self, skill: usize) -> i32 {
+        self.xp.get(skill).copied().unwrap_or(0)
+    }
+
+    pub(crate) fn add_xp(&mut self, skill: usize, amount: i32, cap: i32) {
+        if self.xp.len() <= skill {
+            self.xp.resize(skill + 1, 0);
+        }
+        self.xp[skill] = (self.xp[skill] + amount).min(cap);
+    }
+}
+
+/// «Кот работал в этом тике по такому-то домену». Ставит система работы, снимает
+/// `train_skills`: правило роста живёт в одном месте и не копируется в каждую
+/// новую работу (§12.17).
+#[derive(Component)]
+pub(crate) struct Worked(pub(crate) usize);
+
 #[derive(Resource)]
 pub(crate) struct SimTime {
     pub(crate) tick: u64,
@@ -112,6 +152,48 @@ pub(crate) struct SimTime {
 /// оставлен у стройки (§12.16).
 #[derive(Resource)]
 pub(crate) struct AutoTidy(pub(crate) bool);
+
+/// Пороги уровней по индексу домена. Пустой ресурс = навыков в мире нет, и
+/// работа идёт с базовой скоростью: тесты чужих механик о навыках не знают.
+#[derive(Resource, Default)]
+pub(crate) struct SkillRules(pub(crate) Vec<SkillRule>);
+
+#[derive(Default, Clone)]
+pub(crate) struct SkillRule {
+    pub(crate) id: String,
+    pub(crate) levels: Vec<i32>,
+}
+
+impl SkillRules {
+    /// Индекс домена по имени. Систем работы будет больше одной, и каждая знает
+    /// имя своего домена, а не его номер: порядок записей — дело рулсета.
+    pub(crate) fn index_of(&self, id: &str) -> Option<usize> {
+        self.0.iter().position(|s| s.id == id)
+    }
+
+    /// Уровень навыка — сколько порогов пройдено. Потолок = число порогов.
+    pub(crate) fn level(&self, skill: usize, xp: i32) -> i32 {
+        self.0
+            .get(skill)
+            .map_or(0, |s| s.levels.iter().filter(|&&t| xp >= t).count() as i32)
+    }
+
+    /// Порог следующего уровня; ноль — навык на потолке. Для полоски в UI.
+    pub(crate) fn next_threshold(&self, skill: usize, xp: i32) -> i32 {
+        self.0
+            .get(skill)
+            .and_then(|s| s.levels.iter().find(|&&t| xp < t).copied())
+            .unwrap_or(0)
+    }
+
+    /// Опыт, выше которого копить незачем: последний порог.
+    pub(crate) fn xp_cap(&self, skill: usize) -> i32 {
+        self.0
+            .get(skill)
+            .and_then(|s| s.levels.last().copied())
+            .unwrap_or(0)
+    }
+}
 
 /// Свойства тайлов по индексу палитры. Ресурс, а не константы: и цена, и
 /// ёмкость — контент из рулсета, как и сама палитра (§11).

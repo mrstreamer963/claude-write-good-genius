@@ -1,8 +1,8 @@
 //! Джобы: раздача чертежей котам и работа над ними.
 //!
 //! Чертёж — сущность `Blueprint`. Свободный (простаивающий) кот назначается на
-//! ближайший достижимый чертёж, идёт к месту работы и «работает» `BUILD_TIME`
-//! тиков, после чего тайл возводится (или сносится, если `tile < 0`).
+//! ближайший достижимый чертёж, идёт к месту работы и набивает `BUILD_WORK`
+//! очков работы, после чего тайл возводится (или сносится, если `tile < 0`).
 //!
 //! Про материал здесь известно ровно одно: хватает ли его на площадке. Доставку
 //! ведёт `hauling` — отдельной задачей и, возможно, другим котом (§12.15).
@@ -14,9 +14,17 @@ use crate::demolition::DemolitionFront;
 use crate::hauling::spill;
 use crate::map::{BaseMap, DIRS};
 use crate::path::Reach;
+use crate::skills::{SKILL_BUILD, level_of};
 
-/// Тиков работы, чтобы возвести один тайл.
-pub(crate) const BUILD_TIME: i32 = 12;
+/// Очков работы, чтобы возвести один тайл.
+pub(crate) const BUILD_WORK: i32 = 120;
+
+/// Базовая скорость: очков работы за тик на нулевом навыке, +1 за уровень.
+///
+/// Работа считается в очках, а не в тиках, ради гранулярности: при `progress
+/// += 1` минимальный шаг навыка — двукратное ускорение. На нулевом навыке
+/// выходят те же 12 тиков на тайл, что и до навыков (§12.17).
+pub(crate) const WORK_RATE: i32 = 10;
 
 /// Найти клетку, откуда кот выполнит чертёж (сам тайл, если проходим, либо
 /// сосед), и её цену — число шагов от кота. Возвращает (клетка, шаги).
@@ -167,18 +175,31 @@ pub(crate) fn assign_jobs(
 
 /// Коты, добравшиеся до чертежа, «работают» до готовности; затем тайл возводится.
 ///
+/// Скорость работы — `WORK_RATE` плюс уровень навыка «Стройка»; сам навык при
+/// этом растёт, но здесь только вешается маркер `Worked`, а начисляет опыт
+/// `train_skills` (§12.17). На выбор исполнителя навык не влияет вовсе — это
+/// вернуло бы кота, бегущего через полкарты мимо соседнего чертежа (§12.14).
+///
 /// Снос возвращает всю цену тайла ломом — под ноги коту-сносильщику. Он стоит
 /// на полу со стороны берега (§12.12), поэтому куча заведомо не окажется в
 /// пустоте, которую сам же снос и создаёт.
 pub(crate) fn work_jobs(
     mut map: ResMut<BaseMap>,
     rules: Res<TileRules>,
+    skill_rules: Res<SkillRules>,
     mut commands: Commands,
-    cats: Query<(Entity, &Position, &Assignment, Option<&Path>)>,
+    cats: Query<(
+        Entity,
+        &Position,
+        &Assignment,
+        Option<&Path>,
+        Option<&Skills>,
+    )>,
     mut blueprints: Query<&mut Blueprint>,
     mut stacks: Query<(Entity, &Position, &mut Stack)>,
 ) {
-    for (cat_e, pos, assign, path) in &cats {
+    let build_skill = skill_rules.index_of(SKILL_BUILD);
+    for (cat_e, pos, assign, path, skills) in &cats {
         let Ok(mut bp) = blueprints.get_mut(assign.0) else {
             commands.entity(cat_e).remove::<Assignment>();
             continue;
@@ -186,8 +207,12 @@ pub(crate) fn work_jobs(
 
         let in_range = (pos.x - bp.x).abs() + (pos.y - bp.y).abs() <= 1;
         if in_range {
-            bp.progress += 1;
-            if bp.progress >= BUILD_TIME {
+            let level = build_skill.map_or(0, |s| level_of(&skill_rules, skills, s));
+            bp.progress += WORK_RATE + level;
+            if let Some(skill) = build_skill {
+                commands.entity(cat_e).insert(Worked(skill));
+            }
+            if bp.progress >= BUILD_WORK {
                 let refund = if bp.tile < 0 {
                     rules.cost_of(map.tile_at(bp.x, bp.y))
                 } else {

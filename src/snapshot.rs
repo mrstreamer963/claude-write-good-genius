@@ -5,13 +5,18 @@
 
 use serde::Serialize;
 
-use crate::ruleset::TileDef;
+use crate::ruleset::{PerkDef, SkillDef, TileDef};
 
 #[derive(Serialize)]
 pub(crate) struct MapMeta {
     pub(crate) width: i32,
     pub(crate) height: i32,
     pub(crate) palette: Vec<TileDef>,
+    /// Палитра навыков: имена и подписи уходят один раз, как палитра тайлов, —
+    /// в снапшоте от навыка остаётся только номер (§12.17).
+    pub(crate) skills: Vec<SkillDef>,
+    /// Подписи перков; в снапшоте у кота лежат только их `id`.
+    pub(crate) perks: Vec<PerkDef>,
 }
 
 #[derive(Serialize)]
@@ -41,6 +46,22 @@ pub(crate) struct EntitySnap {
     pub(crate) stuck: bool,
     /// Сколько лома кот несёт (0 — пустой).
     pub(crate) carrying: i32,
+    /// Сколько лома кот берёт за ходку (0 — без предела).
+    pub(crate) carry_max: i32,
+    /// Навыки в порядке палитры из `map_meta`. Рост, которого не видно, не
+    /// существует, — панель выбранного кота единственное место, где он заметен.
+    pub(crate) skills: Vec<SkillSnap>,
+    /// Статичные перки: они не растут, но объясняют игроку, почему этот кот
+    /// таскает больше соседа (§12.17).
+    pub(crate) perks: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct SkillSnap {
+    pub(crate) level: i32,
+    pub(crate) xp: i32,
+    /// Порог следующего уровня; 0 — навык на потолке.
+    pub(crate) next: i32,
 }
 
 #[derive(Serialize)]

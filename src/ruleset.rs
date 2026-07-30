@@ -17,6 +17,14 @@ pub(crate) struct Ruleset {
     pub(crate) scrap: Vec<ScrapDef>,
     #[serde(default)]
     pub(crate) units: Vec<UnitDef>,
+    #[serde(default)]
+    pub(crate) skills: Vec<SkillDef>,
+    #[serde(default)]
+    pub(crate) perks: Vec<PerkDef>,
+    /// Сколько лома кот уносит за одну ходку. Ноль = без предела (правило
+    /// выключено), как `cost: 0` у тайла. Перк «Носильщик» удваивает (§12.17).
+    #[serde(default)]
+    pub(crate) carry: i32,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -62,4 +70,34 @@ pub(crate) struct UnitDef {
     pub(crate) sprite: String,
     /// [x, y] в тайлах
     pub(crate) pos: [i32; 2],
+    /// Статичные теги-перки: свойства сложения, которые даны коту и не растут
+    /// (§12.17). Код знает по имени только те, для которых у него есть эффект.
+    #[serde(default)]
+    pub(crate) perks: Vec<String>,
+}
+
+/// Перк: коту он выдаётся по `id` в `units:`, здесь лежит только подпись для
+/// интерфейса. Эффект перка знает код — как и у `cost`/`capacity` у тайлов.
+#[derive(Debug, Deserialize, Clone, Serialize)]
+pub(crate) struct PerkDef {
+    pub(crate) id: String,
+    #[serde(default)]
+    pub(crate) label: String,
+}
+
+/// Навык — домен работы, а не действие игрока: стройка и снос это один навык,
+/// потому что и джоб у них один (§12.17).
+///
+/// Порядок записей `skills:` — индекс домена, как порядок `tiles:` для палитры:
+/// он лежит в `Skills::xp` и уходит в снапшот. Код обращается к навыку по `id`,
+/// поэтому записи можно переставлять, но не переименовывать.
+#[derive(Debug, Deserialize, Clone, Serialize)]
+pub(crate) struct SkillDef {
+    pub(crate) id: String,
+    #[serde(default)]
+    pub(crate) label: String,
+    /// Пороги опыта: сколько всего очков нужно на 1-й, 2-й, … уровень. Длина
+    /// списка — потолок навыка, выше него опыт не копится.
+    #[serde(default)]
+    pub(crate) levels: Vec<i32>,
 }

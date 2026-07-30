@@ -1,7 +1,6 @@
 //! Раздача джобов и рамочные жесты игрока.
 
-use super::sim_from;
-use crate::jobs::BUILD_TIME;
+use super::{BUILD_TICKS, sim_from};
 
 /// Ластик по рамке решает за всю рамку сразу: сперва снимает чертежи, и
 /// только если снимать было нечего — планирует снос. Потайловый
@@ -51,11 +50,11 @@ fn cat_takes_the_nearest_blueprint_first() {
     sim.add_blueprint(7, 2, 0); // дальний конец коридора — размечен первым
     sim.add_blueprint(2, 2, 0); // в шаге от кота
 
-    sim.tick_n(BUILD_TIME as usize + 2);
+    sim.tick_n(BUILD_TICKS + 2);
     assert_eq!(sim.tile(2, 2), 0, "ближний чертёж построен первым");
     assert_eq!(sim.tile(7, 2), -1, "дальний ждёт очереди");
 
-    sim.tick_n(BUILD_TIME as usize + 8);
+    sim.tick_n(BUILD_TICKS + 8);
     assert_eq!(sim.tile(7, 2), 0, "дальний построен следом");
 }
 
@@ -67,7 +66,7 @@ fn each_cat_takes_the_blueprint_next_to_it() {
     sim.add_blueprint(7, 2, 0); // у ног 'b'
     sim.add_blueprint(1, 2, 0); // у ног 'a'
 
-    sim.tick_n(BUILD_TIME as usize + 2);
+    sim.tick_n(BUILD_TICKS + 2);
     assert_eq!(sim.tile(1, 2), 0, "'a' построил свою клетку");
     assert_eq!(sim.tile(7, 2), 0, "'b' построил свою — параллельно");
 }

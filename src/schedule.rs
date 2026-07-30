@@ -9,6 +9,7 @@ use crate::components::SimTime;
 use crate::hauling::{assign_hauls, assign_tidy, mark_loose_scrap, settle_stacks, work_hauls};
 use crate::jobs::{assign_jobs, work_jobs};
 use crate::movement::{escape_voids, move_units, retry_orders};
+use crate::skills::train_skills;
 
 fn advance_time(mut time: ResMut<SimTime>) {
     time.tick += 1;
@@ -27,9 +28,13 @@ fn advance_time(mut time: ResMut<SimTime>) {
 ///      настоящая работа, — это ровно то, чего игрок не ждёт.
 ///
 /// `escape_voids` — предпоследним: если приказ или джоб уже дали маршрут, он и
-/// выводит кота из ямы, отдельный шаг не нужен. `settle_stacks` в самом конце и
-/// после `work_jobs`: обе системы разбирают последствия только что снесённого
+/// выводит кота из ямы, отдельный шаг не нужен. `settle_stacks` после
+/// `work_jobs`: обе системы разбирают последствия только что снесённого
 /// тайла — кота в яме и кучу лома в ней же.
+///
+/// `train_skills` замыкает цепочку: он превращает в опыт маркеры `Worked`,
+/// которые за тик оставили системы работы, — и потому должен идти после любой
+/// из них, включая будущие (§12.17).
 pub(crate) fn build_schedule() -> Schedule {
     let mut schedule = Schedule::default();
     schedule.add_systems(
@@ -45,6 +50,7 @@ pub(crate) fn build_schedule() -> Schedule {
             retry_orders,
             escape_voids,
             settle_stacks,
+            train_skills,
         )
             .chain(),
     );

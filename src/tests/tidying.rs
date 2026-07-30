@@ -4,8 +4,7 @@
 //! (`set_capacity`), и нужные клетки переводятся в него через `force_tile`.
 //! Тайл `0` (обычный пол) ёмкости не имеет, как и в рулсете.
 
-use super::sim_from;
-use crate::jobs::BUILD_TIME;
+use super::{BUILD_TICKS, sim_from};
 use crate::sim::Sim;
 
 const CORRIDOR: [&str; 3] = ["#########", "#a......#", "#########"];
@@ -53,7 +52,7 @@ fn tidying_never_outranks_building() {
         "бесплатный чертёж (цена тайла 0)"
     );
 
-    sim.tick_n(BUILD_TIME as usize / 2);
+    sim.tick_n(BUILD_TICKS / 2);
     assert!(sim.has_assignment("a"), "кот занят стройкой");
     assert_eq!(sim.scrap_at(2, 1), 4, "к куче он не притронулся");
 

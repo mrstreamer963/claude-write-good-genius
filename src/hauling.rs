@@ -11,6 +11,10 @@
 //! Адресатов два (`HaulTo`): площадка, которой не хватает материала, и склад —
 //! клетка с ёмкостью. Уборка (`assign_tidy`) раздаётся **после** стройки и
 //! сноса: она не должна отбирать котов у настоящей работы (§12.16).
+//!
+//! Объём лап (`Carry`, §12.17) режет только подъём: сколько кот уже несёт, он
+//! донесёт. Остаток кучи честнее оставить лежать — раздатчик пришлёт за ним
+//! следующую ходку.
 
 use bevy_ecs::prelude::*;
 
@@ -249,12 +253,19 @@ pub(crate) fn work_hauls(
     map: Res<BaseMap>,
     rules: Res<TileRules>,
     mut commands: Commands,
-    cats: Query<(Entity, &Position, &Haul, Option<&Carrying>, Option<&Path>)>,
+    cats: Query<(
+        Entity,
+        &Position,
+        &Haul,
+        Option<&Carrying>,
+        Option<&Path>,
+        Option<&Carry>,
+    )>,
     mut blueprints: Query<&mut Blueprint>,
     mut stacks: Query<(Entity, &Position, &mut Stack)>,
     mut marks: Query<&mut ToStore>,
 ) {
-    for (cat_e, pos, haul, load, path) in &cats {
+    for (cat_e, pos, haul, load, path, carry) in &cats {
         match haul.0 {
             HaulTo::Site(bp_e) => {
                 // Чертёж отменили, пока кот был в пути.
@@ -268,8 +279,11 @@ pub(crate) fn work_hauls(
                 let need = (rules.cost_of(bp.tile) - bp.delivered).max(0);
 
                 let Some(load) = load else {
-                    // Пришёл к куче: берём ровно столько, сколько не хватает.
-                    let taken = take_from_pile(&mut commands, &mut stacks, (pos.x, pos.y), need);
+                    // Пришёл к куче: берём ровно столько, сколько не хватает —
+                    // и не больше, чем влезает в лапы. Не хватило на всю цену —
+                    // площадку дозаправит следующая ходка.
+                    let want = portion(carry, need);
+                    let taken = take_from_pile(&mut commands, &mut stacks, (pos.x, pos.y), want);
                     if taken <= 0 {
                         bp.hauler = None;
                         commands.entity(cat_e).remove::<Haul>();
@@ -327,9 +341,9 @@ pub(crate) fn work_hauls(
                         continue;
                     };
 
-                    // Берём ровно столько, сколько влезет в адресат: остаток
-                    // честнее оставить на полу, чем таскать по базе.
-                    let free = free_space(&map, &rules, &scrap, cell);
+                    // Берём ровно столько, сколько влезет в адресат и в лапы:
+                    // остаток честнее оставить на полу, чем таскать по базе.
+                    let free = portion(carry, free_space(&map, &rules, &scrap, cell));
                     let taken = take_from_pile(&mut commands, &mut stacks, (pos.x, pos.y), free);
                     if taken <= 0 {
                         release_claim(&mut marks, pile_e);
@@ -357,6 +371,15 @@ pub(crate) fn work_hauls(
                 commands.entity(cat_e).remove::<Haul>();
             }
         }
+    }
+}
+
+/// Сколько кот унесёт за эту ходку: `Carry` — предел лап, его отсутствие (и
+/// ноль) читается как «без предела», по правилу нулей у тайлов (§12.17).
+fn portion(carry: Option<&Carry>, want: i32) -> i32 {
+    match carry {
+        Some(&Carry(cap)) if cap > 0 => want.min(cap),
+        _ => want,
     }
 }
 

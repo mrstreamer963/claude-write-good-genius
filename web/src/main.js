@@ -23,6 +23,7 @@ const COLORS = {
 const stageEl = document.getElementById('stage');
 const tickEl = document.getElementById('tick');
 const scrapEl = document.getElementById('scrap');
+const catEl = document.getElementById('cat');
 
 const app = new Application();
 await app.init({ background: COLORS.bg, antialias: true, resizeTo: stageEl });
@@ -233,6 +234,7 @@ function renderSnapshot(snap) {
   }
 
   updateSelectionOverlay();
+  renderCatPanel(snap.entities);
 }
 
 function createUnit(e) {
@@ -281,6 +283,50 @@ function updateSelectionOverlay() {
   } else {
     orderMarker.visible = false;
   }
+}
+
+// Панель выбранного кота. Навык растёт молча, и это единственное место, где
+// рост виден игроку (§12.17): уровень, полоска до следующего, лапы и перки.
+function renderCatPanel(entities) {
+  const e = selectedUnit ? entities.find((u) => u.id === selectedUnit) : null;
+  if (!e || !meta) {
+    catEl.hidden = true;
+    return;
+  }
+  const defs = meta.skills ?? [];
+  const parts = [`<div class="cat-name">${esc(e.id)}</div>`];
+  for (let i = 0; i < defs.length; i++) {
+    const s = e.skills?.[i];
+    if (!s) continue;
+    const levels = defs[i].levels ?? [];
+    const from = s.level > 0 ? levels[s.level - 1] : 0;
+    // next = 0 — навык на потолке: полоска полная, порога дальше нет.
+    const pct = s.next > from ? Math.round(((s.xp - from) / (s.next - from)) * 100) : 100;
+    parts.push(
+      '<div class="cat-skill">' +
+        `<div class="cat-row"><span>${esc(defs[i].label || defs[i].id)}</span><b>${s.level}</b></div>` +
+        `<div class="bar"><i style="width:${pct}%"></i></div>` +
+        `<div class="cat-sub">${s.next > 0 ? `${s.xp} / ${s.next}` : 'потолок'}</div>` +
+        '</div>',
+    );
+  }
+  const paws = e.carry_max > 0 ? `лапы ${e.carrying}/${e.carry_max}` : `в лапах ${e.carrying}`;
+  const tags = (e.perks ?? []).map((id) => esc(perkLabel(id)));
+  parts.push(`<div class="cat-sub">${[paws, ...tags].join(' · ')}</div>`);
+  catEl.innerHTML = parts.join('');
+  catEl.hidden = false;
+}
+
+function perkLabel(id) {
+  const def = (meta.perks ?? []).find((p) => p.id === id);
+  return def?.label || id;
+}
+
+function esc(s) {
+  return String(s).replace(
+    /[&<>"]/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c],
+  );
 }
 
 // --- ввод -----------------------------------------------------------------

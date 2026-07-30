@@ -162,6 +162,61 @@ main#stage canvas { display: block; }
   opacity: 1;
 }
 
+/* Панель выбранного кота: рост навыка не виден в поле, поэтому у него есть
+   единственное место, где он заметен (§12.17). */
+#cat {
+  position: fixed;
+  right: 12px;
+  top: 60px;
+  width: 190px;
+  padding: 10px 12px;
+  background: rgba(21, 23, 31, 0.92);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  backdrop-filter: blur(4px);
+  font-size: 13px;
+}
+#cat[hidden] { display: none; }
+
+.cat-name {
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+
+.cat-skill { margin-bottom: 8px; }
+
+.cat-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.cat-row b {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.bar {
+  height: 4px;
+  margin: 4px 0 2px;
+  background: #1b1f2a;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.bar i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.cat-sub {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
 #hint {
   position: fixed;
   left: 50%;
