@@ -392,6 +392,12 @@ impl Sim {
         self.world.get::<Rest>(cat).is_some()
     }
 
+    /// Лежанка, которую кот занял; `None` — не отдыхает или упал где стоял.
+    fn rest_spot_of(&mut self, unit: &str) -> Option<(i32, i32)> {
+        let cat = self.entity_of(unit);
+        self.world.get::<Rest>(cat).and_then(|r| r.spot)
+    }
+
     /// Сколько клеток пола осталось в прямоугольнике.
     fn floors_left(&self, rect: [i32; 4]) -> i32 {
         let [x, y, w, h] = rect;

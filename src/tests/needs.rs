@@ -141,6 +141,88 @@ fn a_bed_restores_faster_than_bare_floor() {
     );
 }
 
+// --- лежанка как место ------------------------------------------------------
+
+/// Лежанку занимает ровно один кот: второму уставшему места нет, и он работает
+/// дальше. Иначе число лежанок ни на что не влияет и строить их незачем.
+#[test]
+fn a_bed_takes_only_one_cat() {
+    let mut sim = sim_from(&["#########", "#a.....b#", "#########"]);
+    sim.set_rest(1, 1); // спит долго — место занято надолго
+    sim.force_tile(4, 1, 1);
+    sim.set_needs(1000, 900, 1);
+    sim.set_energy("a", 100);
+    sim.set_energy("b", 100);
+
+    sim.tick_n(20);
+    let spots = [sim.rest_spot_of("a"), sim.rest_spot_of("b")];
+    assert_eq!(
+        spots.iter().filter(|s| **s == Some((4, 1))).count(),
+        1,
+        "лежанку занял ровно один кот"
+    );
+    assert!(
+        sim.is_resting("a") != sim.is_resting("b"),
+        "второй остался на ногах"
+    );
+}
+
+/// Освободившаяся лежанка достаётся следующему: занятость снимается вместе
+/// с задачей, отдельного «отпустить место» не требуется.
+#[test]
+fn a_freed_bed_goes_to_the_next_cat() {
+    let mut sim = sim_from(&["#########", "#a.....b#", "#########"]);
+    sim.set_rest(1, 100); // просыпается быстро
+    sim.force_tile(4, 1, 1);
+    sim.set_needs(1000, 900, 1);
+    sim.set_energy("a", 100);
+    sim.set_energy("b", 100);
+
+    sim.tick_n(10);
+    let first = if sim.rest_spot_of("a").is_some() {
+        "a"
+    } else {
+        "b"
+    };
+    let second = if first == "a" { "b" } else { "a" };
+    assert_eq!(
+        sim.rest_spot_of(first),
+        Some((4, 1)),
+        "первый занял лежанку"
+    );
+    assert_eq!(sim.rest_spot_of(second), None, "второму места не досталось");
+
+    let mut took_bed = false;
+    for _ in 0..300 {
+        sim.tick_n(1);
+        if sim.rest_spot_of(second) == Some((4, 1)) {
+            took_bed = true;
+            break;
+        }
+    }
+    assert!(took_bed, "как только место освободилось, лёг второй");
+}
+
+/// Двум котам — две лежанки, каждому своя.
+#[test]
+fn two_beds_take_two_cats() {
+    let mut sim = sim_from(&["#########", "#a.....b#", "#########"]);
+    sim.set_rest(1, 1);
+    sim.force_tile(4, 1, 1);
+    sim.force_tile(5, 1, 1);
+    sim.set_needs(1000, 900, 1);
+    sim.set_energy("a", 100);
+    sim.set_energy("b", 100);
+
+    sim.tick_n(20);
+    assert!(sim.is_resting("a") && sim.is_resting("b"), "спят оба");
+    assert_ne!(
+        sim.rest_spot_of("a"),
+        sim.rest_spot_of("b"),
+        "каждый на своей лежанке"
+    );
+}
+
 // --- границы механики ------------------------------------------------------
 
 /// Приказ игрока будит: это осознанное действие, а не автоматика. Но усталость
