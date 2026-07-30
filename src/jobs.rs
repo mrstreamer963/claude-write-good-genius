@@ -124,7 +124,7 @@ pub(crate) fn assign_jobs(
                     .entity(cat)
                     .remove::<(Assignment, Path, MoveCooldown)>();
             }
-        } else if !waiting && bp.delivered >= rules.cost_of(bp.tile) {
+        } else if !waiting && missing(&rules, &bp).is_empty() {
             open.push((bp_e, (bp.x, bp.y), bp.tile));
         }
     }
@@ -214,14 +214,15 @@ pub(crate) fn work_jobs(
                 commands.entity(cat_e).insert(Worked(skill));
             }
             if bp.progress >= BUILD_WORK {
-                let refund = if bp.tile < 0 {
-                    rules.cost_of(map.tile_at(bp.x, bp.y))
+                // Снос возвращает всю цену снесённого тайла, по каждому типу.
+                let refund: Vec<(usize, i32)> = if bp.tile < 0 {
+                    rules.cost_of(map.tile_at(bp.x, bp.y)).to_vec()
                 } else {
-                    0
+                    Vec::new()
                 };
                 map.set(bp.x, bp.y, bp.tile);
-                if refund > 0 {
-                    spill(&mut commands, &mut stacks, (pos.x, pos.y), refund);
+                for (item, count) in refund {
+                    spill(&mut commands, &mut stacks, (pos.x, pos.y), item, count);
                 }
                 commands.entity(assign.0).despawn();
                 commands.entity(cat_e).remove::<Assignment>();

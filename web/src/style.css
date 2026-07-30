@@ -36,8 +36,24 @@ header {
 .title em { color: var(--muted); font-style: normal; font-weight: 400; }
 .spacer { flex: 1; }
 
-.clock { color: var(--muted); font-variant-numeric: tabular-nums; }
+.clock {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .clock b { color: var(--text); }
+
+/* Фишка предмета: одна краска на кучу, на цену в палитре и на счётчик в шапке. */
+.chip {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  border: 1px solid rgba(0, 0, 0, 0.5);
+}
 
 .speeds { display: flex; gap: 6px; }
 
@@ -127,13 +143,18 @@ main#stage canvas { display: block; }
   border-radius: 3px;
   border: 1px solid rgba(0, 0, 0, 0.5);
 }
-/* цена тайла в ломе */
+/* цена тайла: фишка предмета + количество */
 .cost {
+  display: flex;
+  align-items: center;
+  gap: 3px;
   margin-left: auto;
   padding-left: 8px;
-  color: #c9a227;
+  color: var(--muted);
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
+.cost .chip { width: 7px; height: 7px; }
 .sw-erase {
   background: repeating-linear-gradient(45deg, #7a2b3a 0 3px, #40151d 3px 6px);
 }

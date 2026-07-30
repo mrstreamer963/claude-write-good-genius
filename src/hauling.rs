@@ -1,4 +1,4 @@
-//! Перенос лома: доставка материала на площадку, уборка пола и возврат при сносе.
+//! Перенос предметов: доставка материала на площадку, уборка пола и возврат при сносе.
 //!
 //! Перенос — **отдельный тип задачи**, а не фаза стройки (§12.15 concept.md):
 //! носильщиком и строителем могут быть разные коты, а `jobs` знает про материал
@@ -6,7 +6,11 @@
 //!
 //! Кот без груза идёт к куче, с грузом — к адресату; фазу задаёт наличие
 //! `Carrying`, отдельного состояния нет. Груз сам не падает: пока кот его не
-//! сдал, лом на руках, и такой кот дешевле любого другого для новой доставки.
+//! сдал, груз в лапах, и такой кот дешевле любого другого для новой доставки.
+//!
+//! Тип предмета лежит в самой куче и в грузе, поэтому раздача сводит их: коту с
+//! грузом годится лишь площадка, которой нужен этот тип, а пустому — лишь куча
+//! нужного типа. За ходку кот везёт один тип (§12.21).
 //!
 //! Адресатов два (`HaulTo`): площадка, которой не хватает материала, и склад —
 //! клетка с ёмкостью. Уборка (`assign_tidy`) раздаётся **после** стройки и
@@ -25,7 +29,7 @@ use crate::path::Reach;
 
 // --- доставка на площадку --------------------------------------------------
 
-/// Назначает свободных котов на доставку лома к чертежам, которым его не хватает.
+/// Назначает свободных котов на доставку материала к чертежам, которым его не хватает.
 ///
 /// Стоимость назначения — длина всего маршрута: `кот → куча → площадка`. Вторая
 /// нога считается честным обходом от кучи, а не расстоянием от кота: иначе при
@@ -53,36 +57,41 @@ pub(crate) fn assign_hauls(
         ),
     >,
 ) {
-    // Площадки, которым не хватает лома и к которым сейчас никто не едет.
-    let mut needy: Vec<(Entity, (i32, i32), i16)> = blueprints
+    // Площадки, которым чего-то не хватает и к которым сейчас никто не едет.
+    let mut needy: Vec<(Entity, (i32, i32), i16, Vec<(usize, i32)>)> = blueprints
         .iter()
-        .filter(|(_, bp)| bp.hauler.is_none() && bp.delivered < rules.cost_of(bp.tile))
-        .map(|(e, bp)| (e, (bp.x, bp.y), bp.tile))
+        .filter(|(_, bp)| bp.hauler.is_none())
+        .filter_map(|(e, bp)| {
+            let miss = missing(&rules, bp);
+            (!miss.is_empty()).then(|| (e, (bp.x, bp.y), bp.tile, miss))
+        })
         .collect();
     if needy.is_empty() {
         return;
     }
 
     let map = &*map;
-    let mut idle: Vec<(Entity, bool, Reach)> = free_cats
+    let mut idle: Vec<(Entity, Option<usize>, Reach)> = free_cats
         .iter()
-        .map(|(e, p, load)| (e, load.is_some(), Reach::all(map, (p.x, p.y))))
+        .map(|(e, p, load)| (e, load.map(|l| l.item), Reach::all(map, (p.x, p.y))))
         .collect();
 
     // Обходы от куч нужны только пустым котам — гружёный идёт сразу на площадку.
-    let piles: Vec<((i32, i32), Reach)> = if idle.iter().any(|(_, loaded, _)| !loaded) {
+    let piles: Vec<((i32, i32), usize, Reach)> = if idle.iter().any(|(_, load, _)| load.is_none()) {
         stacks
             .iter()
             .filter(|(_, s)| s.count > 0)
-            .map(|(p, _)| ((p.x, p.y), Reach::all(map, (p.x, p.y))))
+            .map(|(p, s)| ((p.x, p.y), s.item, Reach::all(map, (p.x, p.y))))
             .collect()
     } else {
         Vec::new()
     };
-    let piles: &[((i32, i32), Reach)] = &piles;
+    let piles: &[((i32, i32), usize, Reach)] = &piles;
 
     while !idle.is_empty() && !needy.is_empty() {
-        // Куда идти первым шагом: гружёный — на площадку, пустой — к куче.
+        // Куда идти первым шагом: гружёный — на площадку, пустой — к куче. Тип
+        // связывает обоих: гружёный годится только той площадке, которой нужен
+        // его груз, пустой идёт лишь к куче нужного типа (§12.21).
         let chosen = idle
             .iter()
             .enumerate()
@@ -90,30 +99,35 @@ pub(crate) fn assign_hauls(
                 needy
                     .iter()
                     .enumerate()
-                    .filter_map(move |(ni, &(_, bp_xy, bp_tile))| {
-                        if *loaded {
-                            let (spot, steps) = build_spot(map, reach, bp_xy, bp_tile, None)?;
+                    .filter_map(move |(ni, (_, bp_xy, bp_tile, miss))| {
+                        let wanted = |item: usize| miss.iter().any(|&(i, _)| i == item);
+                        if let Some(item) = *loaded {
+                            if !wanted(item) {
+                                return None;
+                            }
+                            let (spot, steps) = build_spot(map, reach, *bp_xy, *bp_tile, None)?;
                             return Some((steps, ci, ni, spot));
                         }
                         piles
                             .iter()
-                            .filter_map(|(pile, from_pile)| {
+                            .filter(|&&(_, item, _)| wanted(item))
+                            .filter_map(|(pile, _, from_pile)| {
                                 let to_pile = reach.dist_at(pile.0, pile.1)?;
-                                let (_, rest) = build_spot(map, from_pile, bp_xy, bp_tile, None)?;
+                                let (_, rest) = build_spot(map, from_pile, *bp_xy, *bp_tile, None)?;
                                 Some((to_pile + rest, ci, ni, *pile))
                             })
                             .min_by_key(|&(steps, ..)| steps)
                     })
             })
             .min_by_key(|&(steps, ..)| steps);
-        // Ни одна пара не сошлась: лома нет вовсе или до него не дойти. Коты
+        // Ни одна пара не сошлась: нужного нет вовсе или до него не дойти. Коты
         // остаются свободными — `assign_jobs` найдёт им бесплатную работу.
         let Some((_, ci, ni, goal)) = chosen else {
             break;
         };
 
         let (cat_e, _, reach) = idle.remove(ci);
-        let (bp_e, _, _) = needy.remove(ni);
+        let (bp_e, ..) = needy.remove(ni);
         let path = reach.path_to(goal.0, goal.1).unwrap_or_default();
         if let Ok((_, mut bp)) = blueprints.get_mut(bp_e) {
             bp.hauler = Some(cat_e);
@@ -154,7 +168,7 @@ pub(crate) fn mark_loose_scrap(
     }
 }
 
-/// Раздаёт уборку: гружёные коты несут лом на склад, пустые идут за помеченными
+/// Раздаёт уборку: гружёные коты несут груз на склад, пустые идут за помеченными
 /// кучами.
 ///
 /// Стоит **после** `assign_jobs` в цепочке — уборка не отбирает котов у стройки
@@ -182,10 +196,10 @@ pub(crate) fn assign_tidy(
         return;
     }
     let map = &*map;
-    let scrap = scrap_grid(map, stacks.iter().map(|(p, s)| ((p.x, p.y), s.count)));
+    let stock = stock_grid(map, stacks.iter().map(|(p, s)| ((p.x, p.y), s.count)));
     // Склада нет или он забит — уборки не будет вовсе. Без этой проверки коты
     // ходили бы к кучам и возвращались ни с чем, тик за тиком.
-    if !any_store_room(map, &rules, &scrap) {
+    if !any_store_room(map, &rules, &stock) {
         return;
     }
 
@@ -198,7 +212,7 @@ pub(crate) fn assign_tidy(
             empty.push((cat_e, reach));
             continue;
         }
-        if let Some((cell, _)) = nearest_store(map, &rules, &reach, &scrap) {
+        if let Some((cell, _)) = nearest_store(map, &rules, &reach, &stock) {
             let path = reach.path_to(cell.0, cell.1).unwrap_or_default();
             commands.entity(cat_e).insert((
                 Haul(HaulTo::Store(None)),
@@ -278,37 +292,37 @@ pub(crate) fn work_hauls(
                 if path.is_some() {
                     continue; // ещё в дороге
                 }
-                let need = (rules.cost_of(bp.tile) - bp.delivered).max(0);
+                let miss = missing(&rules, &bp);
 
                 let Some(load) = load else {
-                    // Пришёл к куче: берём ровно столько, сколько не хватает —
-                    // и не больше, чем влезает в лапы. Не хватило на всю цену —
-                    // площадку дозаправит следующая ходка.
-                    let want = portion(carry, need);
-                    let taken = take_from_pile(&mut commands, &mut stacks, (pos.x, pos.y), want);
-                    if taken <= 0 {
+                    // Пришёл к куче: берём тот тип, которого площадке не хватает,
+                    // и ровно столько, сколько не хватает и влезает в лапы. Какая
+                    // именно куча под ногами — решается здесь, а не при раздаче.
+                    let taken =
+                        take_needed(&mut commands, &mut stacks, (pos.x, pos.y), &miss, carry);
+                    let Some((item, taken)) = taken else {
                         bp.hauler = None;
                         commands.entity(cat_e).remove::<Haul>();
                         continue;
-                    }
+                    };
 
                     let reach = Reach::all(&map, (pos.x, pos.y));
                     match build_spot(&map, &reach, (bp.x, bp.y), bp.tile, None) {
                         Some((spot, _)) => {
                             let path = reach.path_to(spot.0, spot.1).unwrap_or_default();
                             commands.entity(cat_e).insert((
-                                Carrying(taken),
+                                Carrying { item, count: taken },
                                 Path { steps: path },
                                 MoveCooldown(0),
                             ));
                         }
-                        // Площадка стала недостижима, пока кот шёл за ломом:
+                        // Площадка стала недостижима, пока кот шёл за грузом:
                         // груз при нём, задача отпущена.
                         None => {
                             bp.hauler = None;
                             commands
                                 .entity(cat_e)
-                                .insert(Carrying(taken))
+                                .insert(Carrying { item, count: taken })
                                 .remove::<Haul>();
                         }
                     }
@@ -317,9 +331,13 @@ pub(crate) fn work_hauls(
 
                 // Пришёл на площадку — сдаём груз (излишек уносит с собой).
                 if (pos.x - bp.x).abs() + (pos.y - bp.y).abs() <= 1 {
-                    let given = load.0.min(need);
-                    bp.delivered += given;
-                    keep_rest(&mut commands, cat_e, load.0 - given);
+                    let need = miss
+                        .iter()
+                        .find(|&&(i, _)| i == load.item)
+                        .map_or(0, |&(_, n)| n);
+                    let given = load.count.min(need);
+                    add_delivered(&mut bp.delivered, load.item, given);
+                    keep_rest(&mut commands, cat_e, load.item, load.count - given);
                 }
                 bp.hauler = None;
                 commands.entity(cat_e).remove::<Haul>();
@@ -335,9 +353,9 @@ pub(crate) fn work_hauls(
                     // куча остаётся лежать на виду, а не переезжает в лапы,
                     // откуда игрок её уже не достанет.
                     let reach = Reach::all(&map, (pos.x, pos.y));
-                    let scrap =
-                        scrap_grid(&map, stacks.iter().map(|(_, p, s)| ((p.x, p.y), s.count)));
-                    let Some((cell, _)) = nearest_store(&map, &rules, &reach, &scrap) else {
+                    let stock =
+                        stock_grid(&map, stacks.iter().map(|(_, p, s)| ((p.x, p.y), s.count)));
+                    let Some((cell, _)) = nearest_store(&map, &rules, &reach, &stock) else {
                         release_claim(&mut marks, pile_e);
                         commands.entity(cat_e).remove::<Haul>();
                         continue;
@@ -345,16 +363,19 @@ pub(crate) fn work_hauls(
 
                     // Берём ровно столько, сколько влезет в адресат и в лапы:
                     // остаток честнее оставить на полу, чем таскать по базе.
-                    let free = portion(carry, free_space(&map, &rules, &scrap, cell));
-                    let taken = take_from_pile(&mut commands, &mut stacks, (pos.x, pos.y), free);
-                    if taken <= 0 {
+                    // Берём именно ту кучу, за которой шли: на клетке могут
+                    // лежать разные типы, а помечена была одна (§12.21).
+                    let free = portion(carry, free_space(&map, &rules, &stock, cell));
+                    let taken =
+                        take_from_pile(&mut commands, &mut stacks, pile_e, (pos.x, pos.y), free);
+                    let Some((item, taken)) = taken else {
                         release_claim(&mut marks, pile_e);
                         commands.entity(cat_e).remove::<Haul>();
                         continue;
-                    }
+                    };
                     let path = reach.path_to(cell.0, cell.1).unwrap_or_default();
                     commands.entity(cat_e).insert((
-                        Carrying(taken),
+                        Carrying { item, count: taken },
                         Path { steps: path },
                         MoveCooldown(0),
                     ));
@@ -362,12 +383,12 @@ pub(crate) fn work_hauls(
                 };
 
                 // Пришёл на склад — сдаём, сколько влезло.
-                let scrap = scrap_grid(&map, stacks.iter().map(|(_, p, s)| ((p.x, p.y), s.count)));
-                let free = free_space(&map, &rules, &scrap, (pos.x, pos.y));
+                let stock = stock_grid(&map, stacks.iter().map(|(_, p, s)| ((p.x, p.y), s.count)));
+                let free = free_space(&map, &rules, &stock, (pos.x, pos.y));
                 if free > 0 {
-                    let given = load.0.min(free);
-                    spill(&mut commands, &mut stacks, (pos.x, pos.y), given);
-                    keep_rest(&mut commands, cat_e, load.0 - given);
+                    let given = load.count.min(free);
+                    spill(&mut commands, &mut stacks, (pos.x, pos.y), load.item, given);
+                    keep_rest(&mut commands, cat_e, load.item, load.count - given);
                 }
                 release_claim(&mut marks, pile_e);
                 commands.entity(cat_e).remove::<Haul>();
@@ -386,9 +407,9 @@ fn portion(carry: Option<&Carry>, want: i32) -> i32 {
 }
 
 /// Оставить коту остаток груза; пусто — снять `Carrying`.
-fn keep_rest(commands: &mut Commands, cat: Entity, left: i32) {
+fn keep_rest(commands: &mut Commands, cat: Entity, item: usize, left: i32) {
     if left > 0 {
-        commands.entity(cat).insert(Carrying(left));
+        commands.entity(cat).insert(Carrying { item, count: left });
     } else {
         commands.entity(cat).remove::<Carrying>();
     }
@@ -402,31 +423,59 @@ pub(crate) fn release_claim(marks: &mut Query<&mut ToStore>, pile: Option<Entity
     }
 }
 
-/// Взять с кучи под ногами не больше `want`; вернёт сколько взято.
+/// Взять из конкретной кучи, если она ещё есть и лежит под котом. Кучи может
+/// уже не быть — её разобрали раньше; это штатный конец задачи, а не ошибка.
 fn take_from_pile(
     commands: &mut Commands,
     stacks: &mut Query<(Entity, &Position, &mut Stack)>,
+    pile: Option<Entity>,
     at: (i32, i32),
     want: i32,
-) -> i32 {
-    stacks
-        .iter_mut()
-        .find(|(_, p, _)| (p.x, p.y) == at)
-        .map(|(stack_e, _, mut stack)| {
-            let taken = want.min(stack.count);
-            stack.count -= taken;
-            if stack.count <= 0 {
-                commands.entity(stack_e).despawn();
-            }
-            taken
-        })
-        .unwrap_or(0)
+) -> Option<(usize, i32)> {
+    let (stack_e, pos, mut stack) = pile.and_then(|e| stacks.get_mut(e).ok())?;
+    if (pos.x, pos.y) != at {
+        return None;
+    }
+    let taken = want.min(stack.count);
+    if taken <= 0 {
+        return None;
+    }
+    stack.count -= taken;
+    let item = stack.item;
+    if stack.count <= 0 {
+        commands.entity(stack_e).despawn();
+    }
+    Some((item, taken))
+}
+
+/// Взять из-под ног тот тип, которого не хватает площадке, — сколько не хватает
+/// и сколько влезает в лапы. Перебор идёт по недостаче, а не по кучам: порядок
+/// цены детерминирован (§12.21), порядок сущностей — нет.
+fn take_needed(
+    commands: &mut Commands,
+    stacks: &mut Query<(Entity, &Position, &mut Stack)>,
+    at: (i32, i32),
+    miss: &[(usize, i32)],
+    carry: Option<&Carry>,
+) -> Option<(usize, i32)> {
+    for &(item, need) in miss {
+        let found = stacks
+            .iter()
+            .find(|(_, p, s)| (p.x, p.y) == at && s.item == item && s.count > 0)
+            .map(|(e, ..)| e);
+        if let Some(taken) = take_from_pile(commands, stacks, found, at, portion(carry, need)) {
+            return Some(taken);
+        }
+    }
+    None
 }
 
 // --- склад и кучи ----------------------------------------------------------
 
-/// Сколько лома лежит на каждой клетке — сеткой, чтобы не искать линейно.
-fn scrap_grid(map: &BaseMap, piles: impl Iterator<Item = ((i32, i32), i32)>) -> Vec<i32> {
+/// Сколько всего добра лежит на каждой клетке — сеткой, чтобы не искать
+/// линейно. Тип здесь не важен: склад типо-агностичен, ёмкость считает штуки
+/// (§12.21).
+fn stock_grid(map: &BaseMap, piles: impl Iterator<Item = ((i32, i32), i32)>) -> Vec<i32> {
     let mut grid = vec![0; (map.width * map.height) as usize];
     for ((x, y), count) in piles {
         if let Some(i) = map.index(x, y) {
@@ -436,11 +485,11 @@ fn scrap_grid(map: &BaseMap, piles: impl Iterator<Item = ((i32, i32), i32)>) -> 
     grid
 }
 
-/// Сколько лома ещё влезет на клетку. Склад — это тайл с ёмкостью, отдельного
+/// Сколько ещё влезет на клетку. Склад — это тайл с ёмкостью, отдельного
 /// слоя зон нет (§12.16); у обычного пола ёмкость нулевая.
-fn free_space(map: &BaseMap, rules: &TileRules, scrap: &[i32], at: (i32, i32)) -> i32 {
+fn free_space(map: &BaseMap, rules: &TileRules, stock: &[i32], at: (i32, i32)) -> i32 {
     map.index(at.0, at.1)
-        .map_or(0, |i| rules.capacity_of(map.cells[i]) - scrap[i])
+        .map_or(0, |i| rules.capacity_of(map.cells[i]) - stock[i])
 }
 
 /// Ближайшая клетка склада, куда влезет хоть сколько-то лома, и путь до неё
@@ -449,12 +498,12 @@ fn nearest_store(
     map: &BaseMap,
     rules: &TileRules,
     reach: &Reach,
-    scrap: &[i32],
+    stock: &[i32],
 ) -> Option<((i32, i32), i32)> {
     let mut best: Option<((i32, i32), i32)> = None;
     for y in 0..map.height {
         for x in 0..map.width {
-            if free_space(map, rules, scrap, (x, y)) <= 0 {
+            if free_space(map, rules, stock, (x, y)) <= 0 {
                 continue;
             }
             let Some(d) = reach.dist_at(x, y) else {
@@ -468,10 +517,10 @@ fn nearest_store(
     best
 }
 
-/// Есть ли на базе хоть одно место под лом. Дешёвая проверка без обхода: без
+/// Есть ли на базе хоть одно место под груз. Дешёвая проверка без обхода: без
 /// неё коты ходили бы к кучам и возвращались ни с чем, пока склада нет.
-fn any_store_room(map: &BaseMap, rules: &TileRules, scrap: &[i32]) -> bool {
-    (0..scrap.len()).any(|i| rules.capacity_of(map.cells[i]) - scrap[i] > 0)
+fn any_store_room(map: &BaseMap, rules: &TileRules, stock: &[i32]) -> bool {
+    (0..stock.len()).any(|i| rules.capacity_of(map.cells[i]) - stock[i] > 0)
 }
 
 /// Приводит кучи в порядок: снимает их с пустоты и сливает те, что оказались
@@ -486,16 +535,16 @@ fn any_store_room(map: &BaseMap, rules: &TileRules, scrap: &[i32]) -> bool {
 /// котом, а он стоит на полу. Соседа нет — куча остаётся в яме, обратимо.
 ///
 /// **Двойники.** `spill` не видит куч, заспавненных в этом же тике через
-/// `Commands`, поэтому два кота, сдавшие груз на одну пустую клетку, создают
-/// две кучи. Носильщик берёт лом с той клетки, где стоит, и вторую бы просто не
-/// заметил — сливаем. Живут двойники не дольше тика.
+/// `Commands`, поэтому два кота, сдавшие одинаковый груз на одну клетку, создают
+/// две кучи — сливаем; живут двойники не дольше тика. Кучи **разных** типов на
+/// одной клетке двойниками не считаются и остаются лежать рядом (§12.21).
 pub(crate) fn settle_stacks(
     map: Res<BaseMap>,
     mut commands: Commands,
     mut stacks: Query<(Entity, &mut Position, &mut Stack, Option<&ToStore>)>,
 ) {
-    // Первая куча на клетке остаётся, остальные вливаются в неё.
-    let mut keepers: Vec<((i32, i32), Entity, bool)> = Vec::new();
+    // Первая куча своего типа на клетке остаётся, остальные вливаются в неё.
+    let mut keepers: Vec<(((i32, i32), usize), Entity, bool)> = Vec::new();
     let mut moves: Vec<(Entity, (i32, i32))> = Vec::new();
     let mut merges: Vec<(Entity, Entity, i32, bool)> = Vec::new();
 
@@ -503,6 +552,7 @@ pub(crate) fn settle_stacks(
         let Some(home) = home_of(&map, (pos.x, pos.y)) else {
             continue; // замуровано вместе с ямой — обратимо
         };
+        let home = (home, stack.item);
         match keepers.iter().find(|(cell, ..)| *cell == home) {
             // Пометка переживает слияние: иначе жест игрока молча пропадал бы.
             Some(&(_, keeper, kept_mark)) => {
@@ -510,8 +560,8 @@ pub(crate) fn settle_stacks(
             }
             None => {
                 keepers.push((home, e, mark.is_some()));
-                if (pos.x, pos.y) != home {
-                    moves.push((e, home));
+                if (pos.x, pos.y) != home.0 {
+                    moves.push((e, home.0));
                 }
             }
         }
@@ -550,11 +600,15 @@ pub(crate) fn spill(
     commands: &mut Commands,
     stacks: &mut Query<(Entity, &Position, &mut Stack)>,
     at: (i32, i32),
+    item: usize,
     count: i32,
 ) {
-    if let Some((_, _, mut stack)) = stacks.iter_mut().find(|(_, p, _)| (p.x, p.y) == at) {
+    if let Some((_, _, mut stack)) = stacks
+        .iter_mut()
+        .find(|(_, p, s)| (p.x, p.y) == at && s.item == item)
+    {
         stack.count += count;
         return;
     }
-    commands.spawn((Position { x: at.0, y: at.1 }, Stack { count }));
+    commands.spawn((Position { x: at.0, y: at.1 }, Stack { item, count }));
 }

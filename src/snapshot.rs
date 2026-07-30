@@ -5,13 +5,15 @@
 
 use serde::Serialize;
 
-use crate::ruleset::{PerkDef, SkillDef, TileDef};
+use crate::ruleset::{ItemDef, PerkDef, SkillDef, TileDef};
 
 #[derive(Serialize)]
 pub(crate) struct MapMeta {
     pub(crate) width: i32,
     pub(crate) height: i32,
     pub(crate) palette: Vec<TileDef>,
+    /// Палитра предметов: тип в снапшоте — это её индекс (§12.21).
+    pub(crate) items: Vec<ItemDef>,
     /// Палитра навыков: имена и подписи уходят один раз, как палитра тайлов, —
     /// в снапшоте от навыка остаётся только номер (§12.17).
     pub(crate) skills: Vec<SkillDef>,
@@ -44,8 +46,9 @@ pub(crate) struct EntitySnap {
     /// соседей, либо его приказ сейчас невыполним. Для подсветки в UI —
     /// состояние легальное (см. снос пола), но игрок должен его видеть.
     pub(crate) stuck: bool,
-    /// Сколько лома кот несёт (0 — пустой).
+    /// Сколько кот несёт (0 — пустой) и чего именно (-1 — пустой).
     pub(crate) carrying: i32,
+    pub(crate) carrying_item: i32,
     /// Сколько лома кот берёт за ходку (0 — без предела).
     pub(crate) carry_max: i32,
     /// Навыки в порядке палитры из `map_meta`. Рост, которого не видно, не
@@ -77,17 +80,18 @@ pub(crate) struct BlueprintSnap {
     pub(crate) tile: i16,
     pub(crate) progress: i32,
     pub(crate) total: i32,
-    /// Сколько лома нужно площадке и сколько уже завезли: пока `delivered < need`,
-    /// стройка не начата и чертёж рисуется как ждущий материал.
+    /// Сколько всего штук нужно площадке и сколько уже завезли: пока
+    /// `delivered < need`, стройка не начата и чертёж ждёт материал.
     pub(crate) need: i32,
     pub(crate) delivered: i32,
 }
 
-/// Куча лома на полу.
+/// Куча предметов на полу; `item` — индекс палитры из `map_meta`.
 #[derive(Serialize)]
 pub(crate) struct StackSnap {
     pub(crate) x: i32,
     pub(crate) y: i32,
+    pub(crate) item: usize,
     pub(crate) count: i32,
     /// Помечена «на склад» — за ней придёт свободный кот. При включённой
     /// автоуборке помечено всё, что лежит вне склада.

@@ -10,7 +10,7 @@
     <header>
       <span class="title">SP / Эсперы — <em>walking skeleton</em></span>
       <span class="spacer"></span>
-      <span class="clock">лом <b id="scrap">0</b></span>
+      <span class="clock" id="scrap"></span>
       <span class="clock">tick <b id="tick">0</b></span>
       <div class="speeds">
         <button class="speed" data-speed="0" title="Пауза">⏸</button>
@@ -22,7 +22,7 @@
     <main id="stage"></main>
     <aside id="toolbar"></aside>
     <aside id="cat" hidden></aside>
-    <div id="hint">Курсор: клик по коту — выбрать (справа его навыки), клик по полу — идти · Постройка: протяните рамку (Esc — отмена) — свободные коты придут и сделают · Стройка стоит лом (цифра на кнопке), снос его возвращает · Чем больше кот строит, тем быстрее работает · Коты устают: уставший уходит на лежанку сам, а без неё падает где стоял</div>
+    <div id="hint">Курсор: клик по коту — выбрать (справа его навыки), клик по полу — идти · Постройка: протяните рамку (Esc — отмена) — свободные коты придут и сделают · Тайл стоит набор предметов (фишки на кнопке), снос возвращает его целиком; деталь берётся только из разбора базы · Чем больше кот строит, тем быстрее работает · Коты устают: уставший уходит на лежанку сам, а без неё падает где стоял</div>
     <div id="error" hidden></div>
     <script type="module" src="./src/main.js"></script>
   </body>

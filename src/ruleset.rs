@@ -4,17 +4,21 @@
 //! обратно в командах постройки и лежит в клетках карты. Переставить записи в
 //! рулсете = переназначить смысл всех уже записанных индексов.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct Ruleset {
     pub(crate) grid: GridDef,
     #[serde(default)]
+    pub(crate) items: Vec<ItemDef>,
+    #[serde(default)]
     pub(crate) tiles: Vec<TileDef>,
     #[serde(default)]
     pub(crate) build: Vec<BuildRect>,
     #[serde(default)]
-    pub(crate) scrap: Vec<ScrapDef>,
+    pub(crate) stock: Vec<StockDef>,
     #[serde(default)]
     pub(crate) units: Vec<UnitDef>,
     #[serde(default)]
@@ -56,10 +60,13 @@ pub(crate) struct TileDef {
     #[serde(default)]
     pub(crate) label: String,
     pub(crate) color: String,
-    /// Сколько лома нужно завезти, чтобы возвести тайл; снос возвращает столько же
-    /// (§12.15 concept.md). Ноль = бесплатно, стройка начинается сразу.
+    /// Что нужно завезти, чтобы возвести тайл: `{ предмет: сколько }`; снос
+    /// возвращает то же самое (§12.15, §12.21). Пусто = бесплатно.
+    ///
+    /// `BTreeMap`, а не `HashMap`: порядок обхода цены доходит до раздачи задач,
+    /// а недетерминизм ломает и тесты, и модель времени (§11).
     #[serde(default)]
-    pub(crate) cost: i32,
+    pub(crate) cost: BTreeMap<String, i32>,
     /// Сколько лома клетка хранит. Больше нуля = это склад: коты сами свозят
     /// сюда всё, что валяется на полу (§12.16). Ноль = обычный пол.
     #[serde(default)]
@@ -77,12 +84,23 @@ pub(crate) struct BuildRect {
     pub(crate) rect: [i32; 4],
 }
 
-/// Стартовая куча лома на клетке пола.
+/// Стартовая куча на клетке пола.
 #[derive(Debug, Deserialize, Clone)]
-pub(crate) struct ScrapDef {
+pub(crate) struct StockDef {
     /// [x, y] в тайлах
     pub(crate) at: [i32; 2],
+    pub(crate) item: String,
     pub(crate) count: i32,
+}
+
+/// Предмет. Порядок записей `items:` — индекс, который лежит в кучах, в лапах
+/// и в ценах тайлов и уходит в снапшот (§12.21).
+#[derive(Debug, Deserialize, Clone, Serialize)]
+pub(crate) struct ItemDef {
+    pub(crate) id: String,
+    #[serde(default)]
+    pub(crate) label: String,
+    pub(crate) color: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]

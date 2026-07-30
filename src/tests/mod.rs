@@ -8,6 +8,7 @@
 
 mod demolition;
 mod hauling;
+mod items;
 mod jobs;
 mod needs;
 mod orders;
@@ -22,6 +23,8 @@ use crate::components::*;
 use crate::jobs::{BUILD_WORK, WORK_RATE};
 use crate::map::BaseMap;
 use crate::movement::is_stuck;
+use std::collections::BTreeMap;
+
 use crate::ruleset::TileDef;
 use crate::schedule::build_schedule;
 use crate::sim::Sim;
@@ -86,10 +89,11 @@ fn sim_from(rows: &[&str]) -> Sim {
             id: "floor".to_string(),
             label: "Пол".to_string(),
             color: "#000000".to_string(),
-            cost: 0,
+            cost: BTreeMap::new(),
             capacity: 0,
             rest: 0,
         }],
+        items: Vec::new(),
         skills: Vec::new(),
         perks: Vec::new(),
         width,
@@ -166,8 +170,16 @@ impl Sim {
         self.world.resource_mut::<BaseMap>().set(x, y, tile);
     }
 
-    /// Назначить цену тайлу палитры — включает материал в тесте.
+    /// Назначить цену тайлу палитры в предмете 0 — включает материал в тесте.
+    /// Тесты, которым нужны разные типы, зовут `set_cost_items`.
     fn set_cost(&mut self, tile: i16, cost: i32) {
+        self.set_cost_items(tile, &[(0, cost)]);
+    }
+
+    /// Цена набором: `(предмет, сколько)`. Нулевые позиции отбрасываются, как и
+    /// в рулсете, где отсутствие записи значит «не нужен».
+    fn set_cost_items(&mut self, tile: i16, cost: &[(usize, i32)]) {
+        let cost: Vec<(usize, i32)> = cost.iter().copied().filter(|&(_, n)| n > 0).collect();
         self.tile_rule(tile, |r| r.cost = cost);
     }
 
@@ -185,27 +197,52 @@ impl Sim {
         edit(&mut rules.0[slot]);
     }
 
-    /// Весь лом мира: и в кучах, и в лапах, и уже завезённый на площадки.
+    /// Всё добро мира: и в кучах, и в лапах, и уже завезённое на площадки.
     /// Величина сохраняется — на этом держатся проверки «ничего не пропало».
     fn scrap_total(&mut self) -> i32 {
         let mut piles = self.world.query::<&Stack>();
         let mut loads = self.world.query::<&Carrying>();
         let mut sites = self.world.query::<&Blueprint>();
         piles.iter(&self.world).map(|s| s.count).sum::<i32>()
-            + loads.iter(&self.world).map(|c| c.0).sum::<i32>()
-            + sites.iter(&self.world).map(|bp| bp.delivered).sum::<i32>()
+            + loads.iter(&self.world).map(|c| c.count).sum::<i32>()
+            + sites
+                .iter(&self.world)
+                .flat_map(|bp| bp.delivered.iter().map(|&(_, n)| n))
+                .sum::<i32>()
     }
 
-    /// Положить кучу лома на клетку.
+    /// Положить кучу предмета 0 на клетку.
     fn put_scrap(&mut self, x: i32, y: i32, count: i32) {
-        self.world.spawn((Position { x, y }, Stack { count }));
+        self.put_item(x, y, 0, count);
     }
 
-    /// Сколько лома лежит на клетке.
+    fn put_item(&mut self, x: i32, y: i32, item: usize, count: i32) {
+        self.world.spawn((Position { x, y }, Stack { item, count }));
+    }
+
+    /// Сколько всего добра лежит на клетке, всех типов разом.
     fn scrap_at(&mut self, x: i32, y: i32) -> i32 {
         let mut q = self.world.query::<(&Position, &Stack)>();
         q.iter(&self.world)
             .filter(|(p, _)| (p.x, p.y) == (x, y))
+            .map(|(_, s)| s.count)
+            .sum()
+    }
+
+    /// Сколько предмета данного типа лежит по всему миру, во всех кучах.
+    fn item_total(&mut self, item: usize) -> i32 {
+        let mut q = self.world.query::<&Stack>();
+        q.iter(&self.world)
+            .filter(|s| s.item == item)
+            .map(|s| s.count)
+            .sum()
+    }
+
+    /// Сколько предмета данного типа лежит на клетке.
+    fn item_at(&mut self, x: i32, y: i32, item: usize) -> i32 {
+        let mut q = self.world.query::<(&Position, &Stack)>();
+        q.iter(&self.world)
+            .filter(|(p, s)| (p.x, p.y) == (x, y) && s.item == item)
             .map(|(_, s)| s.count)
             .sum()
     }
@@ -226,21 +263,37 @@ impl Sim {
             .all(|(p, _)| rules.capacity_of(map.tile_at(p.x, p.y)) > 0)
     }
 
-    /// Сколько лома кот несёт в лапах.
+    /// Сколько кот несёт в лапах (любого типа).
     fn carrying_of(&mut self, unit: &str) -> i32 {
         let mut q = self.world.query::<(&UnitId, Option<&Carrying>)>();
         q.iter(&self.world)
             .find(|(id, _)| id.0 == unit)
-            .and_then(|(_, c)| c.map(|c| c.0))
+            .and_then(|(_, c)| c.map(|c| c.count))
             .unwrap_or(0)
     }
 
-    /// Сколько лома завезли на площадку; `None` — чертежа на клетке нет.
+    /// Что именно кот несёт; `None` — лапы пусты.
+    fn carrying_item_of(&mut self, unit: &str) -> Option<usize> {
+        let mut q = self.world.query::<(&UnitId, Option<&Carrying>)>();
+        q.iter(&self.world)
+            .find(|(id, _)| id.0 == unit)
+            .and_then(|(_, c)| c.map(|c| c.item))
+    }
+
+    /// Сколько всего завезли на площадку; `None` — чертежа на клетке нет.
     fn delivered_at(&mut self, x: i32, y: i32) -> Option<i32> {
         let mut q = self.world.query::<&Blueprint>();
         q.iter(&self.world)
             .find(|bp| (bp.x, bp.y) == (x, y))
-            .map(|bp| bp.delivered)
+            .map(|bp| bp.delivered.iter().map(|&(_, n)| n).sum())
+    }
+
+    /// Сколько предмета данного типа завезли на площадку.
+    fn delivered_item_at(&mut self, x: i32, y: i32, item: usize) -> i32 {
+        let mut q = self.world.query::<&Blueprint>();
+        q.iter(&self.world)
+            .find(|bp| (bp.x, bp.y) == (x, y))
+            .map_or(0, |bp| delivered_of(&bp.delivered, item))
     }
 
     fn has_haul(&mut self, unit: &str) -> bool {

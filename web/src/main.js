@@ -12,7 +12,7 @@ const COLORS = {
   select: 0x6cf0a0, // выбор кота / метка цели
   erase: 0xff5566,
   stuck: 0xff9a3c, // кот замурован / приказ невыполним
-  scrap: 0xc9a227, // лом: кучи на полу, груз в лапах, полоса подвоза
+  scrap: 0xc9a227, // материал по умолчанию, если палитра предметов пуста
   rest: 0x7fd6b5, // сон: бодрость в панели и «зззз» над спящим котом
   unit: {
     cat_excellent: 0xe0c060,
@@ -66,8 +66,9 @@ const units = new Map(); // id -> Container
 const unitTiles = new Map(); // id -> { x, y } (в тайлах)
 const orders = new Map(); // id -> { x, y } (заданная цель, для метки)
 
-let meta = null; // { width, height, palette: [{id,label,color}] }
+let meta = null; // { width, height, palette, items, skills, perks }
 let paletteColors = []; // number[]
+let itemColors = []; // number[] — цвет предмета по индексу палитры items
 let mapCells = null; // Int-массив состояния карты
 let mode = 'cursor'; // 'cursor' | 'build' | 'store'
 let buildTile = 0; // индекс палитры, или -1 = стереть (в режиме build)
@@ -85,6 +86,7 @@ worker.onmessage = (e) => {
   if (m.type === 'ready') {
     meta = m.meta;
     paletteColors = meta.palette.map((p) => hex(p.color));
+    itemColors = (meta.items ?? []).map((i) => hex(i.color));
     buildToolbar();
     layout();
     drawMap(m.map);
@@ -128,6 +130,11 @@ function drawMap(map) {
 
 // Кучи лома на полу. Точное количество — в шапке; здесь только «сколько
 // примерно», чтобы куча читалась одним взглядом и не спорила с тайлом под ней.
+// Цвет предмета по индексу палитры; палитры может не быть (схема без items).
+function itemColor(item) {
+  return itemColors[item] ?? COLORS.scrap;
+}
+
 function drawScrap(list) {
   scrapLayer.removeChildren();
   if (!list || !list.length) return;
@@ -139,7 +146,7 @@ function drawScrap(list) {
     for (let i = 0; i < chips; i++) {
       const w = TILE * 0.4 - i * 4;
       g.rect(x + (TILE - w) / 2, y + TILE * 0.62 - i * 4, w, 3).fill({
-        color: COLORS.scrap,
+        color: itemColor(s.item),
         alpha: 0.95,
       });
     }
@@ -203,26 +210,36 @@ function renderSnapshot(snap) {
   tickEl.textContent = snap.tick;
   drawScrap(snap.stacks);
   drawBlueprints(snap.blueprints);
-  // Весь лом мира: и лежащий, и уже поднятый — иначе счётчик проседает,
-  // пока кот несёт груз, и это читается как потеря материала.
-  let scrapTotal = 0;
-  for (const s of snap.stacks) scrapTotal += s.count;
+  // Всё добро мира по типам: и лежащее, и уже поднятое — иначе счётчик
+  // проседает, пока кот несёт груз, и это читается как потеря материала.
+  const totals = new Map();
+  const add = (item, n) => totals.set(item, (totals.get(item) ?? 0) + n);
+  for (const s of snap.stacks) add(s.item, s.count);
   const seen = new Set();
   for (const e of snap.entities) {
     seen.add(e.id);
-    scrapTotal += e.carrying;
+    if (e.carrying > 0) add(e.carrying_item, e.carrying);
     const c = units.get(e.id) ?? createUnit(e);
     // TODO(§8b): интерполяция между тиками. Пока — снап к центру тайла.
     c.x = e.x * TILE + TILE / 2;
     c.y = e.y * TILE + TILE / 2;
     c.stuckRing.visible = !!e.stuck;
     c.load.visible = e.carrying > 0;
+    if (e.carrying > 0) c.load.tint = itemColor(e.carrying_item);
     // Спящий кот пригашен: игрок должен видеть, почему тот не работает.
     c.alpha = e.sleeping ? 0.55 : 1;
     c.sleepMark.visible = !!e.sleeping;
     unitTiles.set(e.id, { x: e.x, y: e.y });
   }
-  scrapEl.textContent = scrapTotal;
+  // В шапке — только фишка и число: подписи распирают её, а цвет тот же, что
+  // у куч на полу и у цены в палитре.
+  scrapEl.innerHTML = (meta.items ?? [])
+    .map(
+      (it, i) =>
+        `<i class="chip" style="background:${it.color}" title="${esc(it.label || it.id)}"></i>` +
+        `<b>${totals.get(i) ?? 0}</b>`,
+    )
+    .join(' ');
   for (const [id, c] of units) {
     if (!seen.has(id)) {
       c.destroy({ children: true });
@@ -256,7 +273,7 @@ function createUnit(e) {
   const load = new Graphics();
   load
     .rect(-TILE * 0.16, -TILE * 0.5, TILE * 0.32, 4)
-    .fill(COLORS.scrap)
+    .fill(0xffffff)
     .stroke({ color: 0x000000, width: 1 });
   load.visible = false;
   // «Зззз» — три пузырька над спящим, выше бруска груза: спать можно и с ломом.
@@ -336,11 +353,18 @@ function renderCatPanel(entities) {
         '</div>',
     );
   }
-  const paws = e.carry_max > 0 ? `лапы ${e.carrying}/${e.carry_max}` : `в лапах ${e.carrying}`;
+  const held = e.carrying > 0 ? ` ${esc(itemLabel(e.carrying_item))}` : '';
+  const paws =
+    (e.carry_max > 0 ? `лапы ${e.carrying}/${e.carry_max}` : `в лапах ${e.carrying}`) + held;
   const tags = (e.perks ?? []).map((id) => esc(perkLabel(id)));
   parts.push(`<div class="cat-sub">${[paws, ...tags].join(' · ')}</div>`);
   catEl.innerHTML = parts.join('');
   catEl.hidden = false;
+}
+
+function itemLabel(item) {
+  const def = (meta.items ?? [])[item];
+  return def?.label || def?.id || '?';
 }
 
 function perkLabel(id) {
@@ -472,6 +496,24 @@ window.addEventListener('keydown', (e) => {
 
 // --- тулбар ---------------------------------------------------------------
 
+// Цена тайла: по цветной фишке на каждый нужный предмет. Порядок — как в
+// палитре предметов, чтобы он совпадал со счётчиками в шапке (в самой цене
+// он алфавитный: в рулсете это отображение).
+function costChips(cost) {
+  // serde-wasm-bindgen отдаёт YAML-отображение настоящим `Map`, а не объектом:
+  // цена приходит как `Map { "scrap" => 1 }`.
+  const entries = cost instanceof Map ? [...cost.entries()] : Object.entries(cost ?? {});
+  if (!entries.length) return '';
+  const chips = (meta.items ?? [])
+    .map((it) => {
+      const found = entries.find(([id]) => id === it.id);
+      return found ? `<i class="chip" style="background:${it.color}"></i>${found[1]}` : '';
+    })
+    .filter(Boolean)
+    .join(' ');
+  return `<span class="cost">${chips}</span>`;
+}
+
 function buildToolbar() {
   const el = document.getElementById('toolbar');
   el.innerHTML = '';
@@ -487,8 +529,8 @@ function buildToolbar() {
   el.appendChild(tt);
 
   meta.palette.forEach((p, i) => {
-    // Цена в ломе — рядом с образцом: сколько нужно завезти на клетку.
-    const cost = p.cost > 0 ? `<span class="cost">${p.cost}</span>` : '';
+    // Цена набором — рядом с образцом: что и сколько завезти на клетку.
+    const cost = costChips(p.cost);
     const b = mkTool(
       `<span class="sw" style="background:${p.color}"></span><span>${p.label || p.id}</span>${cost}`,
       () => selectBuild(i, b),
@@ -496,7 +538,9 @@ function buildToolbar() {
     el.appendChild(b);
   });
 
-  const er = mkTool('<span class="sw sw-erase"></span><span>Стереть</span>', () => selectBuild(-1, er));
+  const er = mkTool('<span class="sw sw-erase"></span><span>Стереть</span>', () =>
+    selectBuild(-1, er),
+  );
   el.appendChild(er);
 
   const tl = document.createElement('div');

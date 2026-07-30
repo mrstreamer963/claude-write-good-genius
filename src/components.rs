@@ -57,25 +57,30 @@ pub(crate) struct Blueprint {
     pub(crate) tile: i16,
     pub(crate) progress: i32,
     pub(crate) assignee: Option<Entity>,
-    /// Сколько лома уже завезли на площадку. Пока меньше цены тайла, чертёж
-    /// строителю не раздаётся — сперва носильщик (§12.15).
-    pub(crate) delivered: i32,
+    /// Что уже завезли на площадку: `(предмет, сколько)`. Пока набор не покрыл
+    /// цену тайла, чертёж строителю не раздаётся — сперва носильщик (§12.15).
+    pub(crate) delivered: Vec<(usize, i32)>,
     /// Носильщик, который сейчас везёт сюда лом. Один за раз: цена тайла мала,
     /// а резервировать кучи дороже, чем изредка сходить впустую.
     pub(crate) hauler: Option<Entity>,
 }
 
-/// Куча лома на клетке пола. Лом — единственный материал POC: в нём и цена
-/// постройки, и возврат со сноса (§12.15).
+/// Куча предметов на клетке пола. Тип живёт в самой куче, поэтому на одной
+/// клетке спокойно лежат разные (§12.21); сливаются только одинаковые.
 #[derive(Component)]
 pub(crate) struct Stack {
+    pub(crate) item: usize,
     pub(crate) count: i32,
 }
 
-/// Лом на руках у кота. Груз сам не падает: кот держит его, пока не донесёт, и
-/// поэтому первым берётся за следующую доставку — ему не нужно идти к куче.
+/// Груз в лапах: **один тип за ходку** (§12.21) — иначе лапы превращаются в
+/// инвентарь, а раздатчик в планировщик маршрутов. Груз сам не падает: кот
+/// держит его, пока не донесёт, и потому первым берётся за следующую доставку.
 #[derive(Component)]
-pub(crate) struct Carrying(pub(crate) i32);
+pub(crate) struct Carrying {
+    pub(crate) item: usize,
+    pub(crate) count: i32,
+}
 
 /// Пометка «эту кучу — на склад»; она же задача уборки. Без пометки куча просто
 /// лежит. Вешает её автоуборка или рамка игрока (§12.16).
@@ -213,9 +218,11 @@ impl SkillRules {
 #[derive(Resource, Default)]
 pub(crate) struct TileRules(pub(crate) Vec<TileRule>);
 
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone)]
 pub(crate) struct TileRule {
-    pub(crate) cost: i32,
+    /// Цена постройки набором `(предмет, сколько)`, упорядоченным по имени
+    /// предмета в рулсете: порядок обхода детерминирован (§11, §12.21).
+    pub(crate) cost: Vec<(usize, i32)>,
     pub(crate) capacity: i32,
     pub(crate) rest: i32,
 }
@@ -223,24 +230,48 @@ pub(crate) struct TileRule {
 impl TileRules {
     /// Свойства тайла. У пустоты (`< 0`) и неизвестного индекса всё по нулям:
     /// снос сам по себе материала не требует, он его возвращает.
-    fn of(&self, tile: i16) -> TileRule {
-        if tile < 0 {
-            TileRule::default()
-        } else {
-            self.0.get(tile as usize).copied().unwrap_or_default()
-        }
+    fn of(&self, tile: i16) -> Option<&TileRule> {
+        (tile >= 0).then(|| self.0.get(tile as usize))?
     }
 
-    pub(crate) fn cost_of(&self, tile: i16) -> i32 {
-        self.of(tile).cost
+    /// Из чего строится тайл; пусто — бесплатно.
+    pub(crate) fn cost_of(&self, tile: i16) -> &[(usize, i32)] {
+        self.of(tile).map_or(&[], |r| &r.cost)
     }
 
     pub(crate) fn capacity_of(&self, tile: i16) -> i32 {
-        self.of(tile).capacity
+        self.of(tile).map_or(0, |r| r.capacity)
     }
 
     pub(crate) fn rest_of(&self, tile: i16) -> i32 {
-        self.of(tile).rest
+        self.of(tile).map_or(0, |r| r.rest)
+    }
+}
+
+/// Чего площадке ещё не хватает: цена тайла минус завезённое, только недостача.
+pub(crate) fn missing(rules: &TileRules, bp: &Blueprint) -> Vec<(usize, i32)> {
+    rules
+        .cost_of(bp.tile)
+        .iter()
+        .filter_map(|&(item, need)| {
+            let have = delivered_of(&bp.delivered, item);
+            (need > have).then_some((item, need - have))
+        })
+        .collect()
+}
+
+pub(crate) fn delivered_of(delivered: &[(usize, i32)], item: usize) -> i32 {
+    delivered
+        .iter()
+        .find(|&&(i, _)| i == item)
+        .map_or(0, |&(_, n)| n)
+}
+
+/// Записать доставку в набор площадки.
+pub(crate) fn add_delivered(delivered: &mut Vec<(usize, i32)>, item: usize, count: i32) {
+    match delivered.iter_mut().find(|(i, _)| *i == item) {
+        Some((_, have)) => *have += count,
+        None => delivered.push((item, count)),
     }
 }
 

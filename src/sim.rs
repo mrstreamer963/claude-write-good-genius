@@ -22,7 +22,7 @@ use crate::jobs::BUILD_WORK;
 use crate::map::{BaseMap, rect_cells};
 use crate::movement::is_stuck;
 use crate::path::find_path;
-use crate::ruleset::{PerkDef, Ruleset, SkillDef, TileDef};
+use crate::ruleset::{ItemDef, PerkDef, Ruleset, SkillDef, TileDef};
 use crate::schedule::build_schedule;
 use crate::snapshot::{
     BaseMapDto, BlueprintSnap, EntitySnap, MapMeta, SkillSnap, Snapshot, StackSnap,
@@ -33,6 +33,7 @@ pub struct Sim {
     pub(crate) world: World,
     pub(crate) schedule: Schedule,
     pub(crate) palette: Vec<TileDef>,
+    pub(crate) items: Vec<ItemDef>,
     pub(crate) skills: Vec<SkillDef>,
     pub(crate) perks: Vec<PerkDef>,
     pub(crate) width: i32,
@@ -94,6 +95,7 @@ impl Sim {
 
         let (w, h) = (rs.grid.width, rs.grid.height);
         let tile_index = |id: &str| rs.tiles.iter().position(|t| t.id == id).map(|i| i as i16);
+        let item_index = |id: &str| rs.items.iter().position(|i| i.id == id);
 
         let mut map = BaseMap::empty(w, h);
         for b in &rs.build {
@@ -105,11 +107,17 @@ impl Sim {
         let mut world = World::new();
         world.insert_resource(map);
         world.insert_resource(SimTime { tick: 0 });
+        // Цена из рулсета — имена предметов; в правилах остаются индексы палитры.
+        // Порядок пар задан `BTreeMap` (по имени), то есть детерминирован (§12.21).
         world.insert_resource(TileRules(
             rs.tiles
                 .iter()
                 .map(|t| TileRule {
-                    cost: t.cost,
+                    cost: t
+                        .cost
+                        .iter()
+                        .filter_map(|(id, &n)| item_index(id).map(|i| (i, n)))
+                        .collect(),
                     capacity: t.capacity,
                     rest: t.rest,
                 })
@@ -131,15 +139,21 @@ impl Sim {
                 .collect(),
         ));
 
-        // Стартовый лом. Стартовая застройка (`build`) при этом бесплатна —
+        // Стартовый запас. Стартовая застройка (`build`) при этом бесплатна —
         // это уже существующая база, а не работа котов.
-        for s in &rs.scrap {
+        for s in &rs.stock {
+            let Some(item) = item_index(&s.item) else {
+                continue; // предмета нет в палитре — запись контента мимо
+            };
             world.spawn((
                 Position {
                     x: s.at[0],
                     y: s.at[1],
                 },
-                Stack { count: s.count },
+                Stack {
+                    item,
+                    count: s.count,
+                },
             ));
         }
 
@@ -171,6 +185,7 @@ impl Sim {
             world,
             schedule,
             palette: rs.tiles,
+            items: rs.items,
             skills: rs.skills,
             perks: rs.perks,
             width: w,
@@ -184,6 +199,7 @@ impl Sim {
             width: self.width,
             height: self.height,
             palette: self.palette.clone(),
+            items: self.items.clone(),
             skills: self.skills.clone(),
             perks: self.perks.clone(),
         };
@@ -231,7 +247,7 @@ impl Sim {
             tile: t,
             progress: 0,
             assignee: None,
-            delivered: 0,
+            delivered: Vec::new(),
             hauler: None,
         });
         true
@@ -492,7 +508,8 @@ impl Sim {
                     energy_max: needs.max,
                     // Спит, а не идёт спать: маршрут ещё есть — значит в пути.
                     sleeping: rest.is_some() && path.is_none(),
-                    carrying: load.map_or(0, |c| c.0),
+                    carrying: load.map_or(0, |c| c.count),
+                    carrying_item: load.map_or(-1, |c| c.item as i32),
                     carry_max: carry.map_or(0, |c| c.0),
                     skills: (0..rules.0.len())
                         .map(|i| {
@@ -520,8 +537,10 @@ impl Sim {
                     tile: bp.tile,
                     progress: bp.progress,
                     total: BUILD_WORK,
-                    need: rules.cost_of(bp.tile),
-                    delivered: bp.delivered,
+                    // Полоска подвоза показывает набор целиком: сколько всего
+                    // штук нужно и сколько уже лежит на площадке.
+                    need: rules.cost_of(bp.tile).iter().map(|&(_, n)| n).sum(),
+                    delivered: bp.delivered.iter().map(|&(_, n)| n).sum(),
                 });
             }
         }
@@ -533,6 +552,7 @@ impl Sim {
                 stacks.push(StackSnap {
                     x: p.x,
                     y: p.y,
+                    item: s.item,
                     count: s.count,
                     marked: mark.is_some(),
                 });
