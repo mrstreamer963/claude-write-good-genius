@@ -174,6 +174,10 @@ main#stage canvas { display: block; }
 .sw-gate {
   background: linear-gradient(135deg, #6e5a26 50%, #b08c3a 50%);
 }
+/* Наука: колба — той же краской, что и лаборатория в палитре. */
+.sw-lab {
+  background: radial-gradient(circle at 50% 65%, #a86fd6 0 40%, #5a3a6e 45% 100%);
+}
 /* Обучение: книжка — той же краской, что и метка над сидящим за партой. */
 .sw-study {
   background: linear-gradient(180deg, #b08fde 0 45%, #4a4f7a 55% 100%);
@@ -251,6 +255,23 @@ main#stage canvas { display: block; }
 }
 #mission[hidden] { display: none; }
 #mission .mission-cancel { width: 100%; margin-top: 8px; justify-content: center; }
+
+/* Панель темы — той же колонкой, ниже миссии: работа идёт молча в комнате, и
+   без панели видно только кота, который «зачем-то стоит в лаборатории». */
+#research {
+  position: fixed;
+  right: 12px;
+  top: 430px;
+  width: 190px;
+  padding: 10px 12px;
+  background: rgba(21, 23, 31, 0.92);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  backdrop-filter: blur(4px);
+  font-size: 13px;
+}
+#research[hidden] { display: none; }
+#research .research-cancel { width: 100%; margin-top: 8px; justify-content: center; }
 
 .cat-name {
   font-weight: 600;

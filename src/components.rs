@@ -147,6 +147,24 @@ pub(crate) struct Study {
     pub(crate) spot: (i32, i32),
 }
 
+/// Тема исследования в работе. Это **разметка работы**, как чертёж: игрок
+/// выбирает, что изучать, а исполнителя берёт симуляция — но только из тех, у
+/// кого хватает «Науки» (§12.16, §12.26).
+#[derive(Component)]
+pub(crate) struct Research {
+    /// Индекс записи в `research:` рулсета.
+    pub(crate) def: usize,
+    /// Очки работы, как у чертежа: скорость даёт навык исполнителя (§12.17).
+    pub(crate) progress: i32,
+    pub(crate) assignee: Option<Entity>,
+    /// Клетка лаборатории, за которой идёт работа; `None` — исполнителя ещё нет.
+    pub(crate) spot: Option<(i32, i32)>,
+}
+
+/// Кот занят темой (ссылка на сущность-тему) — **седьмая задача общего слоя**.
+#[derive(Component)]
+pub(crate) struct Researching(pub(crate) Entity);
+
 /// Миссия — вылазка за пределы базы. Это **разметка работы**, как чертёж: игрок
 /// говорит «идём туда», а исполнителей набирает симуляция (§12.16, §12.22).
 #[derive(Component)]
@@ -298,6 +316,9 @@ pub(crate) struct TileRule {
     /// Парта: какому домену учит эта клетка (индекс в `skills:`). `None` —
     /// не учит ничему. Пятый случай той же схемы (§12.18).
     pub(crate) teaches: Option<usize>,
+    /// Лаборатория: здесь идёт работа над темой. Шестой случай той же схемы —
+    /// у комнаты появляется смысл сверх цвета, а карта остаётся одним слоем.
+    pub(crate) lab: bool,
 }
 
 impl TileRules {
@@ -327,6 +348,10 @@ impl TileRules {
     /// Какому домену учит клетка; `None` — обычный пол.
     pub(crate) fn teaches_of(&self, tile: i16) -> Option<usize> {
         self.of(tile).and_then(|r| r.teaches)
+    }
+
+    pub(crate) fn is_lab(&self, tile: i16) -> bool {
+        self.of(tile).is_some_and(|r| r.lab)
     }
 }
 
@@ -388,6 +413,44 @@ pub(crate) struct MissionRule {
 /// почему доступная вчера вылазка сегодня исчезла.
 #[derive(Resource, Default)]
 pub(crate) struct Fame(pub(crate) i32);
+
+/// Темы исследования из рулсета по индексу записи. Пустой ресурс = изучать
+/// нечего: так живут тесты чужих механик.
+#[derive(Resource, Default)]
+pub(crate) struct ResearchRules(pub(crate) Vec<ResearchRule>);
+
+#[derive(Default, Clone)]
+pub(crate) struct ResearchRule {
+    /// Он же id технологии на выходе: у темы и результата одно имя, второе
+    /// значило бы два списка, которые однажды разойдутся.
+    pub(crate) id: String,
+    /// Уровень «Науки», ниже которого кот за тему не берётся вовсе. Это
+    /// **допуск**, а не скорость (§12.18): без навыка нельзя, а не медленно.
+    pub(crate) level: i32,
+    /// Очки работы, как у чертежа: скорость даёт навык исполнителя (§12.17).
+    pub(crate) work: i32,
+    /// Чем платим — набор `(предмет, сколько)` со склада, как у найма (§12.24).
+    pub(crate) cost: Vec<(usize, i32)>,
+    /// Технологии, без которых темы не существует: дерево в §4.3.
+    pub(crate) requires: Vec<String>,
+}
+
+/// Изученные технологии. **Только растёт и только открывает** — та же шкала-
+/// ворота, что и известность (§12.24): технология, которая может пропасть,
+/// закрыла бы уже доступное, и игрок прочтёт это как баг.
+#[derive(Resource, Default)]
+pub(crate) struct Techs(pub(crate) Vec<String>);
+
+impl Techs {
+    pub(crate) fn knows(&self, tech: &str) -> bool {
+        self.0.iter().any(|t| t == tech)
+    }
+
+    /// Известны ли все технологии набора; пустой набор известен всегда.
+    pub(crate) fn covers(&self, techs: &[String]) -> bool {
+        techs.iter().all(|t| self.knows(t))
+    }
+}
 
 /// Кандидаты на найм по индексу записи в рулсете. Пустой ресурс = нанимать
 /// некого: так живут тесты чужих механик.

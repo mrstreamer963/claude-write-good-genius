@@ -82,6 +82,12 @@ onmessage = (e) => {
     sim.launch(m.mission, m.units);
   } else if (m.type === 'cancelMission' && sim) {
     sim.cancel_mission();
+  } else if (m.type === 'research' && sim) {
+    // Тема — разметка работы: кота не выбираем, за неё сядет ближайший, кому
+    // хватает «Науки» (см. `start_research` в ядре, §12.26). Платит склад.
+    sim.start_research(m.topic);
+  } else if (m.type === 'cancelResearch' && sim) {
+    sim.cancel_research();
   } else if (m.type === 'teach' && sim) {
     // Обучение адресно: игрок решает судьбу конкретного кота, а не размечает
     // работу базе (см. `teach` в ядре, §12.18).

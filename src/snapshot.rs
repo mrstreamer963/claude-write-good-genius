@@ -5,7 +5,7 @@
 
 use serde::Serialize;
 
-use crate::ruleset::{ItemDef, MissionDef, PerkDef, RecruitDef, SkillDef, TileDef};
+use crate::ruleset::{ItemDef, MissionDef, PerkDef, RecruitDef, ResearchDef, SkillDef, TileDef};
 
 #[derive(Serialize)]
 pub(crate) struct MapMeta {
@@ -23,6 +23,8 @@ pub(crate) struct MapMeta {
     pub(crate) missions: Vec<MissionDef>,
     /// Кандидаты на найм; найм ходит по индексу в этом списке (§12.24).
     pub(crate) recruits: Vec<RecruitDef>,
+    /// Темы исследования; заявка ходит по индексу в этом списке (§12.26).
+    pub(crate) research: Vec<ResearchDef>,
 }
 
 #[derive(Serialize)]
@@ -45,6 +47,44 @@ pub(crate) struct Snapshot {
     pub(crate) fame: i32,
     /// Кандидаты в порядке палитры из `map_meta`.
     pub(crate) recruits: Vec<RecruitSnap>,
+    /// Тема в работе; список, а не одна запись, — но фасад пока пускает по
+    /// одной за раз, как и вылазку (§12.26).
+    pub(crate) research: Vec<ResearchSnap>,
+    /// Темы в порядке палитры: можно ли взяться и если нет, то почему.
+    pub(crate) topics: Vec<TopicSnap>,
+    /// Изученные технологии. Только растут и только открывают (§12.24, §12.26).
+    pub(crate) techs: Vec<String>,
+}
+
+/// Тема в работе: сколько сделано и кто этим занят.
+#[derive(Serialize)]
+pub(crate) struct ResearchSnap {
+    /// Индекс записи в палитре тем из `map_meta`.
+    pub(crate) def: usize,
+    pub(crate) progress: i32,
+    pub(crate) total: i32,
+    /// Кто сейчас за темой; пусто — исполнитель ещё не нашёлся.
+    pub(crate) unit: String,
+}
+
+/// Можно ли взяться за тему прямо сейчас — и если нет, то почему.
+///
+/// Считает ядро, а не интерфейс, по той же причине, что и у кандидатов
+/// (§12.24): «есть ли на складе образцы» и «хватает ли кому-то „Науки“» — это
+/// знание ядра, и дублировать его в JS значит однажды показать кнопку, которую
+/// ядро отклонит.
+#[derive(Serialize)]
+pub(crate) struct TopicSnap {
+    /// Технология уже изучена — второй раз тему не берут.
+    pub(crate) known: bool,
+    /// Предыдущие технологии на месте: тема вообще существует.
+    pub(crate) unlocked: bool,
+    /// На складе есть чем заплатить.
+    pub(crate) affordable: bool,
+    /// На базе есть кот с нужным уровнем «Науки» — это допуск (§12.18).
+    pub(crate) staffed: bool,
+    /// И есть лаборатория, в которой работать.
+    pub(crate) lab: bool,
 }
 
 /// Можно ли нанять кандидата прямо сейчас — и если нет, то почему.

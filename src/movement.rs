@@ -52,7 +52,8 @@ pub(crate) fn move_units(
 /// Снимает `Order`, когда цель достигнута.
 ///
 /// Коты за работой — стройкой (`Assignment`), переносом (`Haul`), сном (`Rest`)
-/// или в отряде (`Squad`) — пропускаются: приказ не должен срывать кота с
+/// учёбой (`Study`), наукой (`Researching`) или в отряде (`Squad`) —
+/// пропускаются: приказ не должен срывать кота с
 /// начатой задачи. Он подхватится сам, как только задача снимется.
 pub(crate) fn retry_orders(
     map: Res<BaseMap>,
@@ -65,6 +66,7 @@ pub(crate) fn retry_orders(
             Without<Haul>,
             Without<Rest>,
             Without<Study>,
+            Without<Researching>,
             Without<Squad>,
         ),
     >,
@@ -144,9 +146,9 @@ pub(crate) fn is_stuck(map: &BaseMap, pos: &Position, tasks: Busy) -> bool {
 
 /// Чем кот занят — в том же наборе, что и фильтры `Without<…>` раздатчиков.
 ///
-/// Отдельная структура, а не восемь аргументов: список задач общего слоя растёт
-/// (`Assignment`, `Haul`, `Rest`, `Study`, `Squad` — и это не конец), и собирать
-/// его в каждой точке вызова заново значит однажды забыть одну.
+/// Отдельная структура, а не девять аргументов: список задач общего слоя растёт
+/// (`Assignment`, `Haul`, `Rest`, `Study`, `Researching`, `Squad` — и это не
+/// конец), и собирать его в каждой точке вызова заново значит однажды забыть одну.
 #[derive(Clone, Copy)]
 pub(crate) struct Busy {
     /// Приказ игрока висит, но маршрута под него сейчас нет.
@@ -164,6 +166,7 @@ impl Busy {
         haul: Option<&Haul>,
         rest: Option<&Rest>,
         study: Option<&Study>,
+        researching: Option<&Researching>,
         squad: Option<&Squad>,
         away: Option<&Away>,
     ) -> Self {
@@ -173,6 +176,7 @@ impl Busy {
                 && haul.is_none()
                 && rest.is_none()
                 && study.is_none()
+                && researching.is_none()
                 && squad.is_none(),
             away: away.is_some(),
         }

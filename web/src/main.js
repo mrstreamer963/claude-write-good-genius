@@ -27,6 +27,7 @@ const tickEl = document.getElementById('tick');
 const scrapEl = document.getElementById('scrap');
 const catEl = document.getElementById('cat');
 const missionEl = document.getElementById('mission');
+const researchEl = document.getElementById('research');
 
 const app = new Application();
 await app.init({ background: COLORS.bg, antialias: true, resizeTo: stageEl });
@@ -80,10 +81,12 @@ let selectedUnits = [];
 let dragFrom = null; // якорь рамки (клетка, где нажали), null = не тянем
 let dragTo = null; // текущий угол рамки; переживает выход курсора за карту
 let missionRunning = false; // миссия на POC одна за раз (§12.22)
+let researchRunning = false; // и тема тоже одна за раз (§12.26)
 let fame = 0; // известность: копится от вылазок, открывает доступ (§12.24)
 const missionButtons = []; // кнопки запуска — их гасим, пока миссия идёт
 const recruitButtons = []; // кнопки найма — гасим по известности и складу
 const teachButtons = []; // кнопки обучения — живы, когда выбран ровно один кот
+const topicButtons = []; // кнопки тем — гасим по технологиям, складу и допуску
 
 // --- worker ---------------------------------------------------------------
 
@@ -279,7 +282,9 @@ function renderSnapshot(snap) {
   updateSelectionOverlay();
   renderCatPanel(snap.entities);
   renderMissionPanel(snap.missions);
+  renderResearchPanel(snap.research);
   syncRecruitButtons(snap.recruits);
+  syncTopicButtons(snap.topics);
 }
 
 function createUnit(e) {
@@ -459,6 +464,35 @@ function renderMissionPanel(list) {
   missionEl.hidden = false;
   const cancel = missionEl.querySelector('.mission-cancel');
   if (cancel) cancel.addEventListener('click', () => worker.postMessage({ type: 'cancelMission' }));
+}
+
+// Панель темы. Исследование идёт молча в дальней комнате, и без панели видно
+// только кота, который зачем-то стоит в лаборатории (§12.26).
+function renderResearchPanel(list) {
+  const r = (list ?? [])[0];
+  researchRunning = !!r;
+  if (!r || !meta) {
+    researchEl.hidden = true;
+    return;
+  }
+  const def = (meta.research ?? [])[r.def];
+  const pct = r.total > 0 ? Math.round((r.progress / r.total) * 100) : 0;
+  const parts = [
+    `<div class="cat-name">${esc(def?.label || def?.id || 'Тема')}</div>`,
+    '<div class="cat-skill">' +
+      `<div class="cat-row"><span>Изучено</span><b>${pct}%</b></div>` +
+      `<div class="bar"><i style="width:${pct}%"></i></div>` +
+      '</div>',
+    // Пусто — исполнитель ещё не нашёлся: тема ждёт, а не идёт. Разница
+    // важная, и в полоске её не видно.
+    `<div class="cat-sub">${r.unit ? esc(r.unit) : 'ждёт исполнителя'}</div>`,
+    '<button class="tool research-cancel"><span>Бросить</span></button>',
+  ];
+  researchEl.innerHTML = parts.join('');
+  researchEl.hidden = false;
+  researchEl
+    .querySelector('.research-cancel')
+    .addEventListener('click', () => worker.postMessage({ type: 'cancelResearch' }));
 }
 
 function itemLabel(item) {
@@ -694,6 +728,28 @@ function buildToolbar() {
     syncMissionButtons();
   }
 
+  // Наука. Тема — разметка работы, как чертёж: кота не выбираем (§12.26).
+  // Цена теми же фишками, что у тайлов и найма: образцы — обычный предмет.
+  const topics = meta.research ?? [];
+  if (topics.length) {
+    const tn = document.createElement('div');
+    tn.className = 'tt';
+    tn.textContent = 'Наука';
+    el.appendChild(tn);
+
+    topicButtons.length = 0;
+    topics.forEach((r, i) => {
+      const b = mkTool(
+        `<span class="sw sw-lab"></span><span>${esc(r.label || r.id)}</span>${costChips(r.cost)}`,
+        () => worker.postMessage({ type: 'research', topic: i }),
+      );
+      b.classList.add('toggle');
+      b.dataset.level = r.level ?? 0;
+      topicButtons.push(b);
+      el.appendChild(b);
+    });
+  }
+
   // Обучение. Кнопка адресная, а не разметка работы: игрок отправляет за парту
   // конкретного кота, и это решение о его судьбе (§12.18). Домены без `taught`
   // сюда не попадают — «Стройке» парта не нужна.
@@ -771,6 +827,32 @@ function syncRecruitButtons(list) {
 // Кнопка живая, только когда выделено ровно столько котов, сколько уходит:
 // ядро неполную заявку отклоняет молча (§12.23), а молчащая кнопка читается
 // как сломанная. Заодно подсказка объясняет, чего не хватает.
+// Доступность темы считает ядро (технологии, склад, допуск, лаборатория), здесь
+// только показываем — и объясняем, чего не хватает: молчащая кнопка читается как
+// сломанная, а закрытая цель, наоборот, тянет (§4.4).
+function syncTopicButtons(list) {
+  topicButtons.forEach((b, i) => {
+    const t = (list ?? [])[i];
+    if (!t) return;
+    const ready = !t.known && t.unlocked && t.affordable && t.staffed && t.lab && !researchRunning;
+    b.disabled = !ready;
+    b.classList.toggle('on', ready);
+    b.title = t.known
+      ? 'Уже изучено'
+      : !t.unlocked
+        ? 'Нужны предыдущие технологии'
+        : !t.lab
+          ? 'Нет лаборатории'
+          : !t.staffed
+            ? `Нужен кот с «Наукой» ${b.dataset.level} уровня`
+            : !t.affordable
+              ? 'На складе нет образцов'
+              : researchRunning
+                ? 'Тема уже изучается'
+                : 'Взяться за тему';
+  });
+}
+
 // Учат по одному: обучение адресно, и «учить троих разом» — это уже не решение
 // о судьбе кота, а разметка работы, которой обучение как раз не является.
 function syncTeachButtons() {

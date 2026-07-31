@@ -11,6 +11,7 @@ use crate::jobs::{assign_jobs, work_jobs};
 use crate::missions::{gather_squad, run_missions};
 use crate::movement::{escape_voids, move_units, retry_orders};
 use crate::needs::{assign_rest, collapse_exhausted, sleep, tire};
+use crate::research::{assign_research, work_research};
 use crate::skills::{study, train_skills};
 
 fn advance_time(mut time: ResMut<SimTime>) {
@@ -20,14 +21,17 @@ fn advance_time(mut time: ResMut<SimTime>) {
 /// Цепочка систем одного тика. Вынесена отдельно, чтобы тесты гоняли ровно тот
 /// же порядок, что и боевая симуляция.
 ///
-/// Четыре раздатчика берут котов из одного пула свободных, поэтому их порядок —
-/// это и есть приоритет работ (§12.15, §12.16, §12.20):
+/// Пять раздатчиков берут котов из одного пула свободных, поэтому их порядок —
+/// это и есть приоритет работ (§12.15, §12.16, §12.20, §12.26):
 ///   1. `assign_rest` — отдых. Иначе уставшего кота тут же уводит работа.
 ///   2. `assign_hauls` — подвоз на площадки. Иначе бригада разбирает уже
 ///      обеспеченные чертежи, а за ломом для остальных никто не идёт, и база
 ///      встаёт тем вернее, чем больше на ней работы.
-///   3. `assign_jobs` — стройка и снос.
-///   4. `assign_tidy` — уборка пола. Последняя: подбирать мусор, пока стоит
+///   3. `assign_research` — наука. Раньше стройки: за тему уже заплачено
+///      образцами, а чертёж на базе есть почти всегда, и наука не двинулась бы
+///      никогда. Это же и есть специализация (§12.17): учёный не строит.
+///   4. `assign_jobs` — стройка и снос.
+///   5. `assign_tidy` — уборка пола. Последняя: подбирать мусор, пока стоит
 ///      настоящая работа, — это ровно то, чего игрок не ждёт.
 ///
 /// Вылазки и учёба в этот порядок не входят: отряд назначает игрок в момент
@@ -50,31 +54,40 @@ fn advance_time(mut time: ResMut<SimTime>) {
 /// `train_skills` замыкает цепочку: он превращает в опыт маркеры `Worked`,
 /// которые за тик оставили системы работы, — и потому должен идти после любой
 /// из них, включая будущие (§12.17).
+/// Цепочка разбита на две группы **только из-за предела арности** у кортежа
+/// систем: порядок ровно тот же, что и одним списком, — сперва кто за что
+/// берётся, потом что из этого выходит.
 pub(crate) fn build_schedule() -> Schedule {
     let mut schedule = Schedule::default();
-    schedule.add_systems(
-        (
-            advance_time,
-            collapse_exhausted,
-            assign_rest,
-            gather_squad,
-            assign_hauls,
-            assign_jobs,
-            mark_loose_scrap,
-            assign_tidy,
-            move_units,
-            work_hauls,
-            work_jobs,
-            study,
-            run_missions,
-            retry_orders,
-            escape_voids,
-            settle_stacks,
-            sleep,
-            tire,
-            train_skills,
-        )
-            .chain(),
-    );
+    // Кто чем занят: раздача работы и сбор тех, кого назначил игрок.
+    let assign = (
+        advance_time,
+        collapse_exhausted,
+        assign_rest,
+        gather_squad,
+        assign_hauls,
+        assign_research,
+        assign_jobs,
+        mark_loose_scrap,
+        assign_tidy,
+    )
+        .chain();
+    // Что из этого вышло: шаги, работа, последствия и опыт.
+    let act = (
+        move_units,
+        work_hauls,
+        work_jobs,
+        work_research,
+        study,
+        run_missions,
+        retry_orders,
+        escape_voids,
+        settle_stacks,
+        sleep,
+        tire,
+        train_skills,
+    )
+        .chain();
+    schedule.add_systems((assign, act).chain());
     schedule
 }

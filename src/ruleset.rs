@@ -29,6 +29,8 @@ pub(crate) struct Ruleset {
     pub(crate) missions: Vec<MissionDef>,
     #[serde(default)]
     pub(crate) recruits: Vec<RecruitDef>,
+    #[serde(default)]
+    pub(crate) research: Vec<ResearchDef>,
     /// Сколько лома кот уносит за одну ходку. Ноль = без предела (правило
     /// выключено), как `cost: 0` у тайла. Перк «Носильщик» удваивает (§12.17).
     #[serde(default)]
@@ -89,6 +91,36 @@ pub(crate) struct TileDef {
     /// место, а не отдельный экран.
     #[serde(default)]
     pub(crate) teaches: String,
+    /// Лаборатория: здесь идёт работа над темой исследования (§12.26).
+    #[serde(default)]
+    pub(crate) lab: bool,
+}
+
+/// Тема исследования. Порядок записей `research:` — индекс, который уходит в
+/// интерфейс и приходит обратно в команде запуска, как у миссий.
+///
+/// Кого посадить за тему, рулсет не описывает: исполнителя берёт симуляция —
+/// но только из тех, кому хватает «Науки» (§12.26).
+#[derive(Debug, Deserialize, Clone, Serialize)]
+pub(crate) struct ResearchDef {
+    /// Он же имя технологии на выходе: у темы и результата одно имя.
+    pub(crate) id: String,
+    #[serde(default)]
+    pub(crate) label: String,
+    /// Уровень «Науки», ниже которого за тему не берутся. Это допуск (§12.18):
+    /// без навыка нельзя вовсе, а не медленно. Ноль — возьмётся любой кот.
+    #[serde(default)]
+    pub(crate) level: i32,
+    /// Очки работы, как у чертежа: `WORK_RATE` плюс уровень исполнителя за тик.
+    #[serde(default)]
+    pub(crate) work: i32,
+    /// Чем платим: `{ предмет: сколько }` со склада — образцы с вылазок и
+    /// детали. `BTreeMap` по той же причине, что и цена тайла (§12.21).
+    #[serde(default)]
+    pub(crate) cost: BTreeMap<String, i32>,
+    /// Технологии, без которых темы не существует: дерево из §4.3.
+    #[serde(default)]
+    pub(crate) requires: Vec<String>,
 }
 
 /// Миссия — вылазка за пределы базы. Порядок записей `missions:` — индекс,

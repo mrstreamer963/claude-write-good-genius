@@ -15,6 +15,7 @@ mod missions;
 mod needs;
 mod orders;
 mod paths;
+mod research;
 mod skills;
 mod study;
 mod tidying;
@@ -87,6 +88,8 @@ fn sim_from(rows: &[&str]) -> Sim {
     world.insert_resource(NeedRules::default());
     world.insert_resource(MissionRules::default());
     world.insert_resource(RecruitRules::default());
+    world.insert_resource(ResearchRules::default());
+    world.insert_resource(Techs::default());
     world.insert_resource(Fame::default());
     world.insert_resource(UnitRules::default());
     Sim {
@@ -101,12 +104,14 @@ fn sim_from(rows: &[&str]) -> Sim {
             rest: 0,
             gate: false,
             teaches: String::new(),
+            lab: false,
         }],
         items: Vec::new(),
         skills: Vec::new(),
         perks: Vec::new(),
         missions: Vec::new(),
         recruits: Vec::new(),
+        research: Vec::new(),
         width,
         height,
     }
@@ -137,14 +142,15 @@ impl Sim {
             Option<&Haul>,
             Option<&Rest>,
             Option<&Study>,
+            Option<&Researching>,
             Option<&Squad>,
             Option<&Away>,
         )>();
         let map = self.world.resource::<BaseMap>();
         q.iter(&self.world)
             .find(|(id, ..)| id.0 == unit)
-            .map(|(_, p, o, path, a, h, r, st, s, away)| {
-                is_stuck(map, p, Busy::of(o, path, a, h, r, st, s, away))
+            .map(|(_, p, o, path, a, h, r, st, re, s, away)| {
+                is_stuck(map, p, Busy::of(o, path, a, h, r, st, re, s, away))
             })
             .expect("кот не найден")
     }
@@ -352,6 +358,56 @@ impl Sim {
     /// Сделать тайл партой: какому домену он учит.
     fn set_teaches(&mut self, tile: i16, skill: usize) {
         self.tile_rule(tile, |r| r.teaches = Some(skill));
+    }
+
+    /// Сделать тайл лабораторией: в ней идёт работа над темой.
+    fn set_lab(&mut self, tile: i16, on: bool) {
+        self.tile_rule(tile, |r| r.lab = on);
+    }
+
+    /// Завести тему исследования: допуск по «Науке», объём работы, цена и
+    /// нужные технологии. Вернёт её индекс — им же зовётся `start_research`.
+    fn set_topic(
+        &mut self,
+        id: &str,
+        level: i32,
+        work: i32,
+        cost: &[(usize, i32)],
+        requires: &[&str],
+    ) -> usize {
+        let mut rules = self.world.resource_mut::<ResearchRules>();
+        rules.0.push(ResearchRule {
+            id: id.to_string(),
+            level,
+            work,
+            cost: cost.to_vec(),
+            requires: requires.iter().map(|t| t.to_string()).collect(),
+        });
+        rules.0.len() - 1
+    }
+
+    /// Изучена ли технология.
+    fn knows_tech(&self, tech: &str) -> bool {
+        self.world.resource::<Techs>().knows(tech)
+    }
+
+    /// Очки работы, набитые по теме; `None` — темы нет.
+    fn research_progress(&mut self) -> Option<i32> {
+        let mut q = self.world.query::<&Research>();
+        q.iter(&self.world).next().map(|t| t.progress)
+    }
+
+    /// Кот занят темой — идёт в лабораторию или уже работает.
+    fn is_researching(&mut self, unit: &str) -> bool {
+        let cat = self.entity_of(unit);
+        self.world.get::<Researching>(cat).is_some()
+    }
+
+    /// Кто сейчас за темой; `None` — исполнителя нет или темы нет.
+    fn researcher(&mut self) -> Option<String> {
+        let mut q = self.world.query::<&Research>();
+        let assignee = q.iter(&self.world).next().and_then(|t| t.assignee)?;
+        self.world.get::<UnitId>(assignee).map(|u| u.0.clone())
     }
 
     /// Кот учится — сидит за партой или идёт к ней.

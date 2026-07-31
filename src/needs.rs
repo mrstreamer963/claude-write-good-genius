@@ -38,13 +38,20 @@ const TIRE_PER_TICK: i32 = 1;
 pub(crate) fn collapse_exhausted(
     mut commands: Commands,
     cats: Query<
-        (Entity, &Energy, Option<&Assignment>, Option<&Haul>),
+        (
+            Entity,
+            &Energy,
+            Option<&Assignment>,
+            Option<&Haul>,
+            Option<&Researching>,
+        ),
         (With<UnitId>, Without<Rest>, Without<Away>),
     >,
     mut blueprints: Query<&mut Blueprint>,
     mut marks: Query<&mut ToStore>,
+    mut topics: Query<&mut Research>,
 ) {
-    for (cat_e, energy, assignment, haul) in &cats {
+    for (cat_e, energy, assignment, haul, researching) in &cats {
         if energy.0 > 0 {
             continue;
         }
@@ -62,6 +69,10 @@ pub(crate) fn collapse_exhausted(
             Some(HaulTo::Store(pile)) => release_claim(&mut marks, pile),
             None => {}
         }
+        if let Some(mut topic) = researching.and_then(|r| topics.get_mut(r.0).ok()) {
+            topic.assignee = None;
+            topic.spot = None;
+        }
         // Груз кот не роняет: донесёт, когда выспится (§12.15). Лежанку он
         // при этом не занимает — падает где стоит, а не идёт к месту. А вот
         // парту отпускает: занятость держит сам `Study`, и уснувший ученик
@@ -69,7 +80,7 @@ pub(crate) fn collapse_exhausted(
         commands
             .entity(cat_e)
             .insert(Rest { spot: None })
-            .remove::<(Assignment, Haul, Study, Path, MoveCooldown)>();
+            .remove::<(Assignment, Haul, Study, Researching, Path, MoveCooldown)>();
     }
 }
 
@@ -101,6 +112,7 @@ pub(crate) fn assign_rest(
             Without<Haul>,
             Without<Rest>,
             Without<Study>,
+            Without<Researching>,
             Without<Squad>,
             Without<Path>,
         ),
