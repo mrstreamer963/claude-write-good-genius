@@ -82,6 +82,9 @@ onmessage = (e) => {
     sim.launch(m.mission, m.units);
   } else if (m.type === 'cancelMission' && sim) {
     sim.cancel_mission();
+  } else if (m.type === 'hire' && sim) {
+    // Известность открывает кандидата, платит склад (см. `hire` в ядре, §12.24).
+    sim.hire(m.recruit);
   }
 };
 

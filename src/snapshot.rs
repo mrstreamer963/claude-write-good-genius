@@ -5,7 +5,7 @@
 
 use serde::Serialize;
 
-use crate::ruleset::{ItemDef, MissionDef, PerkDef, SkillDef, TileDef};
+use crate::ruleset::{ItemDef, MissionDef, PerkDef, RecruitDef, SkillDef, TileDef};
 
 #[derive(Serialize)]
 pub(crate) struct MapMeta {
@@ -21,6 +21,8 @@ pub(crate) struct MapMeta {
     pub(crate) perks: Vec<PerkDef>,
     /// Палитра миссий: запуск ходит по индексу в этом списке (§12.22).
     pub(crate) missions: Vec<MissionDef>,
+    /// Кандидаты на найм; найм ходит по индексу в этом списке (§12.24).
+    pub(crate) recruits: Vec<RecruitDef>,
 }
 
 #[derive(Serialize)]
@@ -39,6 +41,25 @@ pub(crate) struct Snapshot {
     /// Миссия в работе; список, а не одна запись, — но фасад пока пускает по
     /// одной за раз (§12.22).
     pub(crate) missions: Vec<MissionSnap>,
+    /// Известность базы: копится от вылазок, открывает вылазки и кандидатов.
+    pub(crate) fame: i32,
+    /// Кандидаты в порядке палитры из `map_meta`.
+    pub(crate) recruits: Vec<RecruitSnap>,
+}
+
+/// Можно ли нанять кандидата прямо сейчас — и если нет, то почему.
+///
+/// Считает ядро, а не интерфейс: «хватает ли на складе» — это знание о том, что
+/// склад и есть казна (§12.24), и дублировать его в JS значит однажды показать
+/// кнопку, которую ядро отклонит.
+#[derive(Serialize)]
+pub(crate) struct RecruitSnap {
+    /// Уже на базе — нанять второй раз нельзя, коты уникальны (§4.2).
+    pub(crate) hired: bool,
+    /// Известности хватает: кандидат откликается.
+    pub(crate) unlocked: bool,
+    /// И на складе есть чем заплатить.
+    pub(crate) affordable: bool,
 }
 
 #[derive(Serialize)]

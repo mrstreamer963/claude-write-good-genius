@@ -7,6 +7,7 @@
 //! YAML; общие хелперы — в этом файле, сами тесты разложены по механикам.
 
 mod demolition;
+mod fame;
 mod hauling;
 mod items;
 mod jobs;
@@ -84,6 +85,9 @@ fn sim_from(rows: &[&str]) -> Sim {
     world.insert_resource(SkillRules::default());
     world.insert_resource(NeedRules::default());
     world.insert_resource(MissionRules::default());
+    world.insert_resource(RecruitRules::default());
+    world.insert_resource(Fame::default());
+    world.insert_resource(UnitRules::default());
     Sim {
         world,
         schedule: build_schedule(),
@@ -100,6 +104,7 @@ fn sim_from(rows: &[&str]) -> Sim {
         skills: Vec::new(),
         perks: Vec::new(),
         missions: Vec::new(),
+        recruits: Vec::new(),
         width,
         height,
     }
@@ -435,8 +440,52 @@ impl Sim {
             danger,
             toll,
             loot: loot.to_vec(),
+            ..MissionRule::default()
         });
         rules.0.len() - 1
+    }
+
+    /// Дописать миссии известность: сколько даёт и сколько требует (§12.24).
+    fn set_mission_fame(&mut self, mission: usize, gives: i32, requires: i32) {
+        let mut rules = self.world.resource_mut::<MissionRules>();
+        if let Some(rule) = rules.0.get_mut(mission) {
+            rule.fame = gives;
+            rule.requires = requires;
+        }
+    }
+
+    fn fame(&self) -> i32 {
+        self.world.resource::<Fame>().0
+    }
+
+    fn set_fame(&mut self, value: i32) {
+        self.world.resource_mut::<Fame>().0 = value;
+    }
+
+    /// Завести кандидата на найм. Вернёт его индекс — им же зовётся `hire`.
+    fn set_recruit(
+        &mut self,
+        id: &str,
+        requires: i32,
+        cost: &[(usize, i32)],
+        skills: &[(usize, i32)],
+    ) -> usize {
+        let mut rules = self.world.resource_mut::<RecruitRules>();
+        rules.0.push(RecruitRule {
+            id: id.to_string(),
+            sprite: "cat".to_string(),
+            requires,
+            cost: cost.to_vec(),
+            skills: skills.to_vec(),
+            perks: Vec::new(),
+        });
+        rules.0.len() - 1
+    }
+
+    /// Есть ли такой кот на базе.
+    fn has_unit(&mut self, unit: &str) -> bool {
+        let mut q = self.world.query::<&UnitId>();
+        q.iter(&self.world).any(|u| u.0 == unit)
     }
 
     /// Кот записан в отряд — идёт к шлюзу, ждёт на нём или уже ушёл.

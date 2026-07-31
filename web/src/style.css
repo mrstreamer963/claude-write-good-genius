@@ -174,6 +174,23 @@ main#stage canvas { display: block; }
 .sw-gate {
   background: linear-gradient(135deg, #6e5a26 50%, #b08c3a 50%);
 }
+/* Найм: новый кот — той же краской, что и коты на карте. */
+.sw-hire {
+  background: #8fb8de;
+  border-radius: 50%;
+}
+
+/* Известность: не предмет, но живёт в том же счётчике — она решает, что базе
+   доступно, и смотреть на неё игрок будет так же часто (§12.24). */
+.fame {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 6px;
+  padding-left: 8px;
+  border-left: 1px solid var(--line);
+  color: var(--accent);
+}
 
 .tool:disabled {
   cursor: default;

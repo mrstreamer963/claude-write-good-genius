@@ -462,6 +462,9 @@ fn the_shipped_ruleset_has_a_mission_that_is_out_of_reach() {
     let mut sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
     let before = sim.scrap_total();
 
+    // Известность выдаём напрямую: здесь проверяется потолок сложности, а не
+    // лестница ворот — её ведёт `the_shipped_ruleset_has_a_reachable_ladder`.
+    sim.set_fame(60);
     assert!(
         sim.launch(2, squad(&["excellent", "sp2"])),
         "«Логово» заявлено"

@@ -79,7 +79,9 @@ let selectedUnits = [];
 let dragFrom = null; // якорь рамки (клетка, где нажали), null = не тянем
 let dragTo = null; // текущий угол рамки; переживает выход курсора за карту
 let missionRunning = false; // миссия на POC одна за раз (§12.22)
+let fame = 0; // известность: копится от вылазок, открывает доступ (§12.24)
 const missionButtons = []; // кнопки запуска — их гасим, пока миссия идёт
+const recruitButtons = []; // кнопки найма — гасим по известности и складу
 
 // --- worker ---------------------------------------------------------------
 
@@ -244,14 +246,17 @@ function renderSnapshot(snap) {
     unitTiles.set(e.id, { x: e.x, y: e.y });
   }
   // В шапке — только фишка и число: подписи распирают её, а цвет тот же, что
-  // у куч на полу и у цены в палитре.
-  scrapEl.innerHTML = (meta.items ?? [])
-    .map(
-      (it, i) =>
-        `<i class="chip" style="background:${it.color}" title="${esc(it.label || it.id)}"></i>` +
-        `<b>${totals.get(i) ?? 0}</b>`,
-    )
-    .join(' ');
+  // у куч на полу и у цены в палитре. Известность рядом: она не предмет, но
+  // считается так же и решает, что базе вообще доступно.
+  fame = snap.fame ?? 0;
+  scrapEl.innerHTML =
+    (meta.items ?? [])
+      .map(
+        (it, i) =>
+          `<i class="chip" style="background:${it.color}" title="${esc(it.label || it.id)}"></i>` +
+          `<b>${totals.get(i) ?? 0}</b>`,
+      )
+      .join(' ') + `<span class="fame" title="Известность">★<b>${fame}</b></span>`;
   for (const [id, c] of units) {
     if (!seen.has(id)) {
       c.destroy({ children: true });
@@ -269,6 +274,7 @@ function renderSnapshot(snap) {
   updateSelectionOverlay();
   renderCatPanel(snap.entities);
   renderMissionPanel(snap.missions);
+  syncRecruitButtons(snap.recruits);
 }
 
 function createUnit(e) {
@@ -659,6 +665,7 @@ function buildToolbar() {
       );
       b.classList.add('toggle');
       b.dataset.squad = m.squad;
+      b.dataset.requires = m.requires ?? 0;
       b.dataset.hint = `${m.squad} кота · ${m.ticks} тиков · сложность ${m.danger ?? 0}`;
       missionButtons.push(b);
       el.appendChild(b);
@@ -666,7 +673,49 @@ function buildToolbar() {
     syncMissionButtons();
   }
 
+  // Найм. Кандидаты уникальны (§4.2): каждый приходит один раз, известность
+  // открывает, а платит склад — цена теми же фишками, что и у тайлов (§12.24).
+  const recruits = meta.recruits ?? [];
+  if (recruits.length) {
+    const tr = document.createElement('div');
+    tr.className = 'tt';
+    tr.textContent = 'Найм';
+    el.appendChild(tr);
+
+    recruitButtons.length = 0;
+    recruits.forEach((r, i) => {
+      const b = mkTool(
+        `<span class="sw sw-hire"></span><span>${esc(r.label || r.id)}</span>${costChips(r.cost)}`,
+        () => worker.postMessage({ type: 'hire', recruit: i }),
+      );
+      b.classList.add('toggle');
+      b.dataset.requires = r.requires ?? 0;
+      recruitButtons.push(b);
+      el.appendChild(b);
+    });
+  }
+
   selectCursor(cursorBtn); // режим по умолчанию
+}
+
+// Доступность кандидата считает ядро (известность + содержимое склада), здесь
+// только показываем: дублировать правило в JS значит однажды показать кнопку,
+// которую ядро отклонит.
+function syncRecruitButtons(list) {
+  recruitButtons.forEach((b, i) => {
+    const r = (list ?? [])[i];
+    if (!r) return;
+    const ready = !r.hired && r.unlocked && r.affordable;
+    b.disabled = !ready;
+    b.classList.toggle('on', ready);
+    b.title = r.hired
+      ? 'Уже на базе'
+      : !r.unlocked
+        ? `Откликнется при известности ${b.dataset.requires}`
+        : !r.affordable
+          ? 'На складе нечем заплатить'
+          : 'Нанять';
+  });
 }
 
 // Кнопка живая, только когда выделено ровно столько котов, сколько уходит:
@@ -675,12 +724,18 @@ function buildToolbar() {
 function syncMissionButtons() {
   for (const b of missionButtons) {
     const need = Number(b.dataset.squad);
-    const ready = !missionRunning && selectedUnits.length === need;
+    const requires = Number(b.dataset.requires);
+    const known = fame >= requires;
+    const ready = !missionRunning && known && selectedUnits.length === need;
     b.disabled = !ready;
     b.classList.toggle('on', ready);
+    // Закрытые вылазки видны, а не спрятаны: лестница ответственности — это то,
+    // к чему игрок идёт, и невидимая цель не тянет (§4.4).
     b.title = missionRunning
       ? 'Вылазка уже идёт'
-      : `${b.dataset.hint} · выбрано ${selectedUnits.length} из ${need}`;
+      : !known
+        ? `${b.dataset.hint} · нужна известность ${requires}`
+        : `${b.dataset.hint} · выбрано ${selectedUnits.length} из ${need}`;
   }
 }
 

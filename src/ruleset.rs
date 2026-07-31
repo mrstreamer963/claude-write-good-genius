@@ -27,6 +27,8 @@ pub(crate) struct Ruleset {
     pub(crate) perks: Vec<PerkDef>,
     #[serde(default)]
     pub(crate) missions: Vec<MissionDef>,
+    #[serde(default)]
+    pub(crate) recruits: Vec<RecruitDef>,
     /// Сколько лома кот уносит за одну ходку. Ноль = без предела (правило
     /// выключено), как `cost: 0` у тайла. Перк «Носильщик» удваивает (§12.17).
     #[serde(default)]
@@ -113,6 +115,38 @@ pub(crate) struct MissionDef {
     /// тайла, — порядок обхода должен быть детерминирован (§12.21).
     #[serde(default)]
     pub(crate) loot: BTreeMap<String, i32>,
+    /// Сколько известности приносит полный успех; доля добычи — та же доля
+    /// известности. Провал не приносит ничего, но и не отнимает (§12.24).
+    #[serde(default)]
+    pub(crate) fame: i32,
+    /// Сколько известности нужно, чтобы взяться. Ворота, а не подсказка:
+    /// заявку ниже порога ядро отклоняет.
+    #[serde(default)]
+    pub(crate) requires: i32,
+}
+
+/// Кандидат на найм. Коты уникальны (§4.2), поэтому это не «юнит такого-то
+/// типа», а конкретный кот со своей биографией: нанимается один раз и приходит
+/// уже умеющим — ровно тот «навык из найма», который предсказал §12.18.
+#[derive(Debug, Deserialize, Clone, Serialize)]
+pub(crate) struct RecruitDef {
+    pub(crate) id: String,
+    #[serde(default)]
+    pub(crate) label: String,
+    pub(crate) sprite: String,
+    /// Сколько известности нужно, чтобы он вообще откликнулся.
+    #[serde(default)]
+    pub(crate) requires: i32,
+    /// Чем платим: `{ предмет: сколько }` со склада. Известность не тратится —
+    /// она открывает, а платят предметами (§12.24).
+    #[serde(default)]
+    pub(crate) cost: BTreeMap<String, i32>,
+    /// С каким опытом приходит: `{ навык: очки }`. Уровень выводится из опыта
+    /// по порогам, второго места для него не заводится (§12.17).
+    #[serde(default)]
+    pub(crate) skills: BTreeMap<String, i32>,
+    #[serde(default)]
+    pub(crate) perks: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

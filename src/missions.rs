@@ -179,6 +179,7 @@ pub(crate) fn pick_gate(map: &BaseMap, tiles: &TileRules, at: &[(i32, i32)]) -> 
 pub(crate) fn run_missions(
     rules: Res<MissionRules>,
     skill_rules: Res<SkillRules>,
+    mut fame: ResMut<Fame>,
     mut commands: Commands,
     mut missions: Query<(Entity, &mut Mission)>,
     mut crew: Query<(
@@ -250,6 +251,11 @@ pub(crate) fn run_missions(
                     spill(&mut commands, &mut stacks, gate, item, got);
                 }
             }
+            // Известность идёт той же долей, что и добыча: слухи расходятся по
+            // сделанному, а не по задуманному. Провал не приносит ничего — но и
+            // не отнимает: ворота, которые закрываются, читаются как поломка
+            // (§12.24).
+            fame.0 += rule.fame * out.share / 100;
             commands.entity(mission_e).despawn();
             continue;
         }

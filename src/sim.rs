@@ -9,8 +9,9 @@
 //!   * `*_rect()`        — те же инструменты на рамку; решение — на всю рамку сразу;
 //!   * `mark_to_store_rect()` — пометить кучи «на склад» (или снять пометку);
 //!   * `set_auto_tidy()` — убирать ли лом с пола без приказа;
-//!   * `launch()`        — отправить отряд на миссию; отряд наберётся сам;
+//!   * `launch()`        — отправить названных котов на вылазку;
 //!   * `cancel_mission()`— распустить отряд, пока он ещё не ушёл с базы;
+//!   * `hire()`          — нанять кандидата: известность открывает, склад платит;
 //!   * `demolish()`      — мгновенный снос без котов (тесты/отладка);
 //!   * `set_target()`    — приказ коту идти в тайл (движение по тикам, отменяет его задачу);
 //!   * `tick()`          — один фиксированный шаг симуляции;
@@ -25,11 +26,12 @@ use crate::map::{BaseMap, rect_cells};
 use crate::missions::{outcome, pick_gate};
 use crate::movement::{Busy, is_stuck};
 use crate::path::find_path;
-use crate::ruleset::{ItemDef, MissionDef, PerkDef, Ruleset, SkillDef, TileDef};
+use crate::ruleset::{ItemDef, MissionDef, PerkDef, RecruitDef, Ruleset, SkillDef, TileDef};
 use crate::schedule::build_schedule;
 use crate::skills::{SKILL_RAID, level_of};
 use crate::snapshot::{
-    BaseMapDto, BlueprintSnap, EntitySnap, MapMeta, MissionSnap, SkillSnap, Snapshot, StackSnap,
+    BaseMapDto, BlueprintSnap, EntitySnap, MapMeta, MissionSnap, RecruitSnap, SkillSnap, Snapshot,
+    StackSnap,
 };
 
 #[wasm_bindgen]
@@ -41,6 +43,7 @@ pub struct Sim {
     pub(crate) skills: Vec<SkillDef>,
     pub(crate) perks: Vec<PerkDef>,
     pub(crate) missions: Vec<MissionDef>,
+    pub(crate) recruits: Vec<RecruitDef>,
     pub(crate) width: i32,
     pub(crate) height: i32,
 }
@@ -114,6 +117,65 @@ impl Sim {
         self.world.entity_mut(mission).despawn();
     }
 
+    /// Что лежит на складе: кучи на клетках с ёмкостью, в порядке обхода карты.
+    ///
+    /// Порядок задан явно, а не порядком сущностей: обход ECS зависит от истории
+    /// вставок, а любой недетерминизм ломает и тесты, и модель времени (§11).
+    fn storage_piles(&mut self) -> Vec<(Entity, usize, i32)> {
+        let mut q = self.world.query::<(Entity, &Position, &Stack)>();
+        let map = self.world.resource::<BaseMap>();
+        let rules = self.world.resource::<TileRules>();
+        let mut piles: Vec<(i32, i32, Entity, usize, i32)> = q
+            .iter(&self.world)
+            .filter(|(_, p, _)| rules.capacity_of(map.tile_at(p.x, p.y)) > 0)
+            .map(|(e, p, s)| (p.y, p.x, e, s.item, s.count))
+            .collect();
+        piles.sort_unstable_by_key(|&(y, x, ..)| (y, x));
+        piles.into_iter().map(|(_, _, e, i, n)| (e, i, n)).collect()
+    }
+
+    /// Сколько предмета лежит на складе — им и платят (§12.24).
+    fn in_storage(&mut self, item: usize) -> i32 {
+        self.storage_piles()
+            .iter()
+            .filter(|&&(_, i, _)| i == item)
+            .map(|&(_, _, n)| n)
+            .sum()
+    }
+
+    /// Хватает ли на складе на весь набор.
+    fn storage_covers(&mut self, cost: &[(usize, i32)]) -> bool {
+        cost.iter()
+            .all(|&(item, need)| self.in_storage(item) >= need)
+    }
+
+    /// Списать набор со склада. Либо снимается всё, либо ничего: половинчатая
+    /// оплата оставила бы игрока и без предметов, и без кота.
+    fn spend_from_storage(&mut self, cost: &[(usize, i32)]) -> bool {
+        if !self.storage_covers(cost) {
+            return false;
+        }
+        for &(item, need) in cost {
+            let mut left = need;
+            for (pile_e, pile_item, count) in self.storage_piles() {
+                if left <= 0 {
+                    break;
+                }
+                if pile_item != item {
+                    continue;
+                }
+                let taken = left.min(count);
+                left -= taken;
+                if taken >= count {
+                    self.world.entity_mut(pile_e).despawn();
+                } else if let Some(mut stack) = self.world.get_mut::<Stack>(pile_e) {
+                    stack.count -= taken;
+                }
+            }
+        }
+        true
+    }
+
     /// Снять с кота текущую задачу, освободив всё, что она держала.
     ///
     /// Одно место на всех, кто задачу отбирает — приказ игрока и заявка на
@@ -144,6 +206,54 @@ impl Sim {
             .entity_mut(cat)
             .remove::<(Assignment, Haul, Rest, Path, MoveCooldown)>();
     }
+}
+
+/// Собрать кота по правилам рулсета.
+///
+/// Одно место на стартовую тройку и на любого новичка с найма (§12.24): иначе
+/// нанятый однажды приедет с лапами другого размера или без бодрости, и понять
+/// это можно будет только по странному поведению.
+///
+/// Перк превращается в числа здесь, один раз: расти ему всё равно некуда
+/// (§12.17). Опыт — стартовый багаж кандидата, у стартовой тройки он пуст.
+fn spawn_cat(
+    world: &mut World,
+    id: &str,
+    sprite: &str,
+    at: (i32, i32),
+    perks: &[String],
+    skills: &[(usize, i32)],
+) -> Entity {
+    let carry = world.resource::<UnitRules>().carry;
+    let energy_max = world.resource::<NeedRules>().max;
+    let caps: Vec<(usize, i32)> = {
+        let rules = world.resource::<SkillRules>();
+        skills.iter().map(|&(s, _)| (s, rules.xp_cap(s))).collect()
+    };
+
+    let hauler = perks.iter().any(|p| p == PERK_HAULER);
+    let mut cat = world.spawn((
+        UnitId(id.to_string()),
+        Renderable {
+            sprite: sprite.to_string(),
+        },
+        Position { x: at.0, y: at.1 },
+        Perks(perks.to_vec()),
+    ));
+    if carry > 0 {
+        cat.insert(Carry(carry * if hauler { 2 } else { 1 }));
+    }
+    if energy_max > 0 {
+        cat.insert(Energy(energy_max));
+    }
+    if !skills.is_empty() {
+        let mut xp = Skills::default();
+        for (&(skill, amount), &(_, cap)) in skills.iter().zip(&caps) {
+            xp.add_xp(skill, amount, cap.max(amount));
+        }
+        cat.insert(xp);
+    }
+    cat.id()
 }
 
 #[wasm_bindgen]
@@ -200,9 +310,35 @@ impl Sim {
                         .iter()
                         .filter_map(|(id, &n)| item_index(id).map(|i| (i, n)))
                         .collect(),
+                    fame: m.fame,
+                    requires: m.requires,
                 })
                 .collect(),
         ));
+        let skill_index = |id: &str| rs.skills.iter().position(|s| s.id == id);
+        world.insert_resource(RecruitRules(
+            rs.recruits
+                .iter()
+                .map(|r| RecruitRule {
+                    id: r.id.clone(),
+                    sprite: r.sprite.clone(),
+                    requires: r.requires,
+                    cost: r
+                        .cost
+                        .iter()
+                        .filter_map(|(id, &n)| item_index(id).map(|i| (i, n)))
+                        .collect(),
+                    skills: r
+                        .skills
+                        .iter()
+                        .filter_map(|(id, &xp)| skill_index(id).map(|i| (i, xp)))
+                        .collect(),
+                    perks: r.perks.clone(),
+                })
+                .collect(),
+        ));
+        world.insert_resource(Fame::default());
+        world.insert_resource(UnitRules { carry: rs.carry });
         world.insert_resource(AutoTidy(true));
         world.insert_resource(NeedRules {
             max: rs.energy.max,
@@ -237,27 +373,15 @@ impl Sim {
             ));
         }
 
-        // Перк — статичный тег из рулсета; в числа он превращается один раз,
-        // здесь: расти ему всё равно некуда (§12.17).
         for u in &rs.units {
-            let hauler = u.perks.iter().any(|p| p == PERK_HAULER);
-            let mut cat = world.spawn((
-                UnitId(u.id.clone()),
-                Renderable {
-                    sprite: u.sprite.clone(),
-                },
-                Position {
-                    x: u.pos[0],
-                    y: u.pos[1],
-                },
-                Perks(u.perks.clone()),
-            ));
-            if rs.carry > 0 {
-                cat.insert(Carry(rs.carry * if hauler { 2 } else { 1 }));
-            }
-            if rs.energy.max > 0 {
-                cat.insert(Energy(rs.energy.max));
-            }
+            spawn_cat(
+                &mut world,
+                &u.id,
+                &u.sprite,
+                (u.pos[0], u.pos[1]),
+                &u.perks,
+                &[],
+            );
         }
 
         let schedule = build_schedule();
@@ -269,6 +393,7 @@ impl Sim {
             skills: rs.skills,
             perks: rs.perks,
             missions: rs.missions,
+            recruits: rs.recruits,
             width: w,
             height: h,
         })
@@ -284,6 +409,7 @@ impl Sim {
             skills: self.skills.clone(),
             perks: self.perks.clone(),
             missions: self.missions.clone(),
+            recruits: self.recruits.clone(),
         };
         serde_wasm_bindgen::to_value(&meta).map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -467,6 +593,11 @@ impl Sim {
         if self.mission().is_some() || units.len() != rule.squad {
             return false;
         }
+        // Известность — ворота: за дело, о котором ещё не слышали, не берутся,
+        // сколько бы сильным ни был отряд (§12.24).
+        if self.world.resource::<Fame>().0 < rule.requires {
+            return false;
+        }
 
         // Ушедших в списке быть не может — их нет на базе; дубликаты отсекаем
         // сравнением длины, иначе «три раза excellent» сошло бы за отряд.
@@ -527,6 +658,56 @@ impl Sim {
             return false;
         }
         self.disband(mission_e);
+        true
+    }
+
+    /// Нанять кандидата `def` (индекс в палитре из `map_meta`).
+    ///
+    /// **Известность открывает, платят предметами** (§12.24). Одна шкала и
+    /// ворота, и валюта была бы ловушкой: наняв кота, игрок обнаружил бы, что
+    /// у него закрылась вылазка, — и прочитал бы это как поломку.
+    ///
+    /// Платит **склад**: то, что валяется на полу, ещё не сосчитано, а склад —
+    /// учтённое имущество базы. Это третий смысл клетки с `capacity` после
+    /// ёмкости и места назначения, и первая причина убираться не из аккуратности.
+    ///
+    /// Новичок появляется у шлюза: гараж — точка контакта базы с миром (§12.22).
+    /// Вернёт false, если кандидата нет, известности не хватает, он уже нанят,
+    /// на складе нет цены или на базе нет шлюза.
+    pub fn hire(&mut self, def: usize) -> bool {
+        let Some(rule) = self.world.resource::<RecruitRules>().0.get(def).cloned() else {
+            return false;
+        };
+        if self.world.resource::<Fame>().0 < rule.requires {
+            return false;
+        }
+        // Нанят ли — спрашиваем у самого кота: список нанятых был бы вторым
+        // источником правды, который однажды разойдётся с миром.
+        let mut units = self.world.query::<&UnitId>();
+        if units.iter(&self.world).any(|u| u.0 == rule.id) {
+            return false;
+        }
+
+        // Отряда нет, поэтому «ближайший» вырождается в первый по обходу карты —
+        // детерминированно, и этого достаточно: новичок просто приходит.
+        let Some(gate) = pick_gate(
+            self.world.resource::<BaseMap>(),
+            self.world.resource::<TileRules>(),
+            &[],
+        ) else {
+            return false; // шлюза нет — новичку неоткуда взяться
+        };
+        if !self.spend_from_storage(&rule.cost) {
+            return false;
+        }
+        spawn_cat(
+            &mut self.world,
+            &rule.id,
+            &rule.sprite,
+            gate,
+            &rule.perks,
+            &rule.skills,
+        );
         true
     }
 
@@ -761,12 +942,31 @@ impl Sim {
             }
         }
 
+        let fame = self.world.resource::<Fame>().0;
+        let mut recruits = Vec::new();
+        {
+            let rules = self.world.resource::<RecruitRules>().0.clone();
+            let hired: Vec<String> = {
+                let mut q = self.world.query::<&UnitId>();
+                q.iter(&self.world).map(|u| u.0.clone()).collect()
+            };
+            for rule in &rules {
+                recruits.push(RecruitSnap {
+                    hired: hired.contains(&rule.id),
+                    unlocked: fame >= rule.requires,
+                    affordable: self.storage_covers(&rule.cost),
+                });
+            }
+        }
+
         serde_wasm_bindgen::to_value(&Snapshot {
             tick,
             entities,
             blueprints,
             stacks,
             missions,
+            fame,
+            recruits,
         })
         .map_err(|e| JsValue::from_str(&e.to_string()))
     }
