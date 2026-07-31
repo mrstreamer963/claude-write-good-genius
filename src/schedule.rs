@@ -11,7 +11,7 @@ use crate::jobs::{assign_jobs, work_jobs};
 use crate::missions::{gather_squad, run_missions};
 use crate::movement::{escape_voids, move_units, retry_orders};
 use crate::needs::{assign_rest, collapse_exhausted, sleep, tire};
-use crate::skills::train_skills;
+use crate::skills::{study, train_skills};
 
 fn advance_time(mut time: ResMut<SimTime>) {
     time.tick += 1;
@@ -30,9 +30,10 @@ fn advance_time(mut time: ResMut<SimTime>) {
 ///   4. `assign_tidy` — уборка пола. Последняя: подбирать мусор, пока стоит
 ///      настоящая работа, — это ровно то, чего игрок не ждёт.
 ///
-/// Вылазки в этот порядок не входят: отряд назначает игрок в момент заявки, и
-/// раздавать там нечего (§12.23). `gather_squad` только держит выбранных котов
-/// идущими к шлюзу, поэтому стоит рядом с раздатчиками, но пула не трогает.
+/// Вылазки и учёба в этот порядок не входят: отряд назначает игрок в момент
+/// заявки (§12.23), ученика — в момент команды (§12.18), и раздавать там нечего.
+/// `gather_squad` и `study` только держат выбранных котов идущими к месту,
+/// поэтому стоят рядом с раздатчиками, но пула не трогают.
 ///
 /// `run_missions` — после `move_units`: кот, шагнувший на шлюз в этом тике,
 /// засчитывается в отряд сразу. И до `settle_stacks`: добыча ложится кучей на
@@ -42,6 +43,9 @@ fn advance_time(mut time: ResMut<SimTime>) {
 /// выводит кота из ямы, отдельный шаг не нужен. `settle_stacks` после
 /// `work_jobs`: обе системы разбирают последствия только что снесённого
 /// тайла — кота в яме и кучу лома в ней же.
+///
+/// `study` — после `move_units`, по той же причине, что и `run_missions`: кот,
+/// шагнувший к парте в этом тике, тикает сразу, а не со следующего.
 ///
 /// `train_skills` замыкает цепочку: он превращает в опыт маркеры `Worked`,
 /// которые за тик оставили системы работы, — и потому должен идти после любой
@@ -61,6 +65,7 @@ pub(crate) fn build_schedule() -> Schedule {
             move_units,
             work_hauls,
             work_jobs,
+            study,
             run_missions,
             retry_orders,
             escape_voids,

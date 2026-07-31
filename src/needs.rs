@@ -63,11 +63,13 @@ pub(crate) fn collapse_exhausted(
             None => {}
         }
         // Груз кот не роняет: донесёт, когда выспится (§12.15). Лежанку он
-        // при этом не занимает — падает где стоит, а не идёт к месту.
+        // при этом не занимает — падает где стоит, а не идёт к месту. А вот
+        // парту отпускает: занятость держит сам `Study`, и уснувший ученик
+        // держал бы её вечно (§12.18).
         commands
             .entity(cat_e)
             .insert(Rest { spot: None })
-            .remove::<(Assignment, Haul, Path, MoveCooldown)>();
+            .remove::<(Assignment, Haul, Study, Path, MoveCooldown)>();
     }
 }
 
@@ -98,6 +100,7 @@ pub(crate) fn assign_rest(
             Without<Assignment>,
             Without<Haul>,
             Without<Rest>,
+            Without<Study>,
             Without<Squad>,
             Without<Path>,
         ),

@@ -1,16 +1,24 @@
-//! Навыки: рост от работы (§12.17 concept.md).
+//! Навыки: рост от работы и от обучения (§12.17, §12.18 concept.md).
 //!
 //! Навык — домен работы, а не действие игрока: стройка и снос это один навык,
 //! потому что и джоб у них один. Растёт навык от самой работы, поэтому набор
 //! навыков задаётся рулсетом, а не полями компонента — иначе каждый новый
-//! домен (наука, §12.18) лез бы в компонент, снапшот и UI.
+//! домен лез бы в компонент, снапшот и UI.
 //!
 //! Начисление живёт здесь одной системой: система работы только вешает маркер
 //! `Worked`. Правило роста, потолок и кривая не расползаются по работам.
+//!
+//! **Обучение — вторая система этого же модуля**, потому что это работа,
+//! продукт которой сам навык (§12.18). Рост от работы не умеет стартовать сам:
+//! чтобы набрать опыт исследования, надо уже уметь исследовать, — а «Наука»
+//! ещё и допуск, без неё кот не исследует никак, а не медленно. Кот идёт на
+//! клетку с `teaches`, стоит и тикает; `Worked` и `train_skills` те же самые.
 
 use bevy_ecs::prelude::*;
 
 use crate::components::*;
+use crate::map::BaseMap;
+use crate::path::{Reach, find_path};
 
 /// Домен «Стройка» — он же снос.
 pub(crate) const SKILL_BUILD: &str = "build";
@@ -29,6 +37,107 @@ const XP_PER_TICK: i32 = 1;
 /// механик, коты из ASCII-схем) — это нулевой уровень, а не ошибка.
 pub(crate) fn level_of(rules: &SkillRules, skills: Option<&Skills>, skill: usize) -> i32 {
     rules.level(skill, skills.map_or(0, |s| s.xp_of(skill)))
+}
+
+/// Ближайшая свободная парта нужного домена; `None` — их нет или не дойти.
+///
+/// Занятые перечисляет вызывающий: занятость парты держит `Study` ученика, как
+/// занятость лежанки держит `Rest` спящего (§12.20). Делить парту нельзя по той
+/// же причине — иначе их число ни на что не влияет.
+pub(crate) fn nearest_desk(
+    map: &BaseMap,
+    tiles: &TileRules,
+    skill: usize,
+    from: (i32, i32),
+    taken: &[(i32, i32)],
+) -> Option<(i32, i32)> {
+    let reach = Reach::all(map, from);
+    (0..map.height)
+        .flat_map(|y| (0..map.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| tiles.teaches_of(map.tile_at(x, y)) == Some(skill))
+        .filter(|cell| !taken.contains(cell))
+        .filter_map(|(x, y)| reach.dist_at(x, y).map(|d| (d, (x, y))))
+        .min_by_key(|&(d, _)| d)
+        .map(|(_, cell)| cell)
+}
+
+/// Учеников за партой — держит и доводит до порога.
+///
+/// Раздатчика у обучения нет: **оно адресно** (§12.18). Правило §12.16 «игрок
+/// размечает работу, исполнителя берёт симуляция» не нарушается, а получает
+/// вторую границу после вылазки: обучение — не работа над базой, а решение о
+/// судьбе конкретного кота, тот же случай, что приказ «иди туда».
+///
+/// Поэтому система делает ровно две вещи: держит ученика идущим к парте,
+/// переживая изменения карты (как `gather_squad` держит отряд), и вешает
+/// `Worked`, пока тот сидит. Опыт начисляет `train_skills` в конце цепочки —
+/// одно правило роста на работу и на учёбу.
+///
+/// Дойдя до `taught`, кот встаёт сам: парта — вход в домен, дальше только
+/// практика, иначе она заменяет работу и «чем больше делает, тем лучше»
+/// перестаёт что-либо значить.
+pub(crate) fn study(
+    map: Res<BaseMap>,
+    tiles: Res<TileRules>,
+    rules: Res<SkillRules>,
+    mut commands: Commands,
+    mut students: Query<(
+        Entity,
+        &Position,
+        &mut Study,
+        Option<&Path>,
+        Option<&Skills>,
+    )>,
+) {
+    let taken: Vec<(i32, i32)> = students.iter().map(|(_, _, s, ..)| s.spot).collect();
+
+    for (cat_e, pos, mut task, path, skills) in &mut students {
+        // Доучился: дальше парта не помогает, и держать за ней кота — значит
+        // молча отнимать у базы работника.
+        if skills.map_or(0, |s| s.xp_of(task.skill)) >= rules.taught_cap(task.skill) {
+            commands.entity(cat_e).remove::<Study>();
+            continue;
+        }
+
+        // Парту могли снести, пока кот шёл: ищем другую свободную, а нет её —
+        // учёба кончилась. Занятой считаем и свою, поэтому сравниваем с целью.
+        if tiles.teaches_of(map.tile_at(task.spot.0, task.spot.1)) != Some(task.skill) {
+            let others: Vec<(i32, i32)> =
+                taken.iter().copied().filter(|&c| c != task.spot).collect();
+            let Some(spot) = nearest_desk(&map, &tiles, task.skill, (pos.x, pos.y), &others) else {
+                commands
+                    .entity(cat_e)
+                    .remove::<(Study, Path, MoveCooldown)>();
+                continue;
+            };
+            task.spot = spot;
+            // Старый маршрут вёл к снесённой парте: оставить его — значит
+            // сперва сходить туда, где учиться уже нечему.
+            match find_path(&map, (pos.x, pos.y), spot) {
+                Some(steps) if !steps.is_empty() => {
+                    commands
+                        .entity(cat_e)
+                        .insert((Path { steps }, MoveCooldown(0)));
+                }
+                _ => {
+                    commands.entity(cat_e).remove::<(Path, MoveCooldown)>();
+                }
+            }
+            continue;
+        }
+
+        if path.is_some() {
+            continue; // ещё идёт
+        }
+        if (pos.x, pos.y) == task.spot {
+            commands.entity(cat_e).insert(Worked(task.skill));
+        } else if let Some(steps) = find_path(&map, (pos.x, pos.y), task.spot) {
+            // Маршрут оборвался — кота выбросило из ямы или парту перенесли.
+            commands
+                .entity(cat_e)
+                .insert((Path { steps }, MoveCooldown(0)));
+        }
+    }
 }
 
 /// Превращает маркеры «работал в этом тике» в опыт и снимает их.

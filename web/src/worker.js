@@ -82,6 +82,10 @@ onmessage = (e) => {
     sim.launch(m.mission, m.units);
   } else if (m.type === 'cancelMission' && sim) {
     sim.cancel_mission();
+  } else if (m.type === 'teach' && sim) {
+    // Обучение адресно: игрок решает судьбу конкретного кота, а не размечает
+    // работу базе (см. `teach` в ядре, §12.18).
+    sim.teach(m.id, m.skill);
   } else if (m.type === 'hire' && sim) {
     // Известность открывает кандидата, платит склад (см. `hire` в ядре, §12.24).
     sim.hire(m.recruit);

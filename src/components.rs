@@ -134,6 +134,19 @@ pub(crate) struct Rest {
     pub(crate) spot: Option<(i32, i32)>,
 }
 
+/// Кот учится у парты: стоит и тикает, а на выходе не построенная клетка, а
+/// опыт в навыке (§12.18). **Шестая задача общего слоя** — как и пять
+/// остальных, обязана попасть во все фильтры «кот свободен».
+#[derive(Component)]
+pub(crate) struct Study {
+    /// Домен, которому кот учится: он же тот, которому учит парта.
+    pub(crate) skill: usize,
+    /// Занятая парта: клетка, к которой кот идёт или у которой уже сидит.
+    /// Занятость живёт здесь, а не отдельным claim, — ровно как у лежанки
+    /// (§12.20): снимается вместе с задачей, чем бы её ни сняли.
+    pub(crate) spot: (i32, i32),
+}
+
 /// Миссия — вылазка за пределы базы. Это **разметка работы**, как чертёж: игрок
 /// говорит «идём туда», а исполнителей набирает симуляция (§12.16, §12.22).
 #[derive(Component)]
@@ -214,6 +227,9 @@ pub(crate) struct SkillRules(pub(crate) Vec<SkillRule>);
 pub(crate) struct SkillRule {
     pub(crate) id: String,
     pub(crate) levels: Vec<i32>,
+    /// До какого уровня доводит парта. Ноль — домен не преподаётся вовсе: так
+    /// живёт «Стройка», которой учиться незачем (§12.18).
+    pub(crate) taught: i32,
 }
 
 impl SkillRules {
@@ -235,6 +251,22 @@ impl SkillRules {
         self.0
             .get(skill)
             .and_then(|s| s.levels.iter().find(|&&t| xp < t).copied())
+            .unwrap_or(0)
+    }
+
+    /// Опыт, на котором парта останавливается: порог уровня `taught`.
+    ///
+    /// Ноль — домену не учат (парта не поможет), и это не то же самое, что
+    /// потолок навыка: обучение — вход в домен, мастерство — из домена
+    /// (§12.18). Уровень выше длины списка порогов упирается в последний.
+    pub(crate) fn taught_cap(&self, skill: usize) -> i32 {
+        let Some(rule) = self.0.get(skill).filter(|r| r.taught > 0) else {
+            return 0;
+        };
+        let last = rule.levels.len().saturating_sub(1);
+        rule.levels
+            .get((rule.taught as usize - 1).min(last))
+            .copied()
             .unwrap_or(0)
     }
 
@@ -263,6 +295,9 @@ pub(crate) struct TileRule {
     /// случай той же схемы после `capacity`, `teaches` и `rest` — комната
     /// получает смысл сверх цвета в палитре, а не новый слой карты (§12.22).
     pub(crate) gate: bool,
+    /// Парта: какому домену учит эта клетка (индекс в `skills:`). `None` —
+    /// не учит ничему. Пятый случай той же схемы (§12.18).
+    pub(crate) teaches: Option<usize>,
 }
 
 impl TileRules {
@@ -287,6 +322,11 @@ impl TileRules {
 
     pub(crate) fn is_gate(&self, tile: i16) -> bool {
         self.of(tile).is_some_and(|r| r.gate)
+    }
+
+    /// Какому домену учит клетка; `None` — обычный пол.
+    pub(crate) fn teaches_of(&self, tile: i16) -> Option<usize> {
+        self.of(tile).and_then(|r| r.teaches)
     }
 }
 

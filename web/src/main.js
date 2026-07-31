@@ -14,6 +14,7 @@ const COLORS = {
   stuck: 0xff9a3c, // кот замурован / приказ невыполним
   scrap: 0xc9a227, // материал по умолчанию, если палитра предметов пуста
   rest: 0x7fd6b5, // сон: бодрость в панели и «зззз» над спящим котом
+  study: 0xb08fde, // учёба: книжка над котом, сидящим за партой
   unit: {
     cat_excellent: 0xe0c060,
     cat_helper: 0x8fb8de,
@@ -82,6 +83,7 @@ let missionRunning = false; // миссия на POC одна за раз (§12.
 let fame = 0; // известность: копится от вылазок, открывает доступ (§12.24)
 const missionButtons = []; // кнопки запуска — их гасим, пока миссия идёт
 const recruitButtons = []; // кнопки найма — гасим по известности и складу
+const teachButtons = []; // кнопки обучения — живы, когда выбран ровно один кот
 
 // --- worker ---------------------------------------------------------------
 
@@ -243,6 +245,9 @@ function renderSnapshot(snap) {
     // Спящий кот пригашен: игрок должен видеть, почему тот не работает.
     c.alpha = e.sleeping ? 0.55 : 1;
     c.sleepMark.visible = !!e.sleeping;
+    // Учёба — потраченное котовремя, и это вся её цена (§12.18): не видно её —
+    // игрок просто недосчитается рабочих лап.
+    c.studyMark.visible = !!e.studying;
     unitTiles.set(e.id, { x: e.x, y: e.y });
   }
   // В шапке — только фишка и число: подписи распирают её, а цвет тот же, что
@@ -305,13 +310,26 @@ function createUnit(e) {
     .circle(7, -TILE * 0.78, 2.5)
     .fill(COLORS.rest);
   sleepMark.visible = false;
+  // Книжка — на месте «зззз»: спать и учиться одновременно нельзя, а состояния
+  // читаются одинаково («кот занят собой, а не базой»).
+  const studyMark = new Graphics();
+  studyMark
+    .rect(-TILE * 0.18, -TILE * 0.74, TILE * 0.36, TILE * 0.2)
+    .fill(COLORS.study)
+    .stroke({ color: 0x000000, width: 1 })
+    .moveTo(0, -TILE * 0.74)
+    .lineTo(0, -TILE * 0.54)
+    .stroke({ color: 0x000000, width: 1 });
+  studyMark.visible = false;
   c.addChild(body);
   c.addChild(stuckRing);
   c.addChild(load);
   c.addChild(sleepMark);
+  c.addChild(studyMark);
   c.stuckRing = stuckRing;
   c.load = load;
   c.sleepMark = sleepMark;
+  c.studyMark = studyMark;
   unitLayer.addChild(c);
   units.set(e.id, c);
   return c;
@@ -330,6 +348,8 @@ function updateSelectionOverlay() {
     ring.y = at.y * TILE + TILE / 2;
     selectionRings.addChild(ring);
   }
+
+  syncTeachButtons();
 
   const last = selectedUnits[selectedUnits.length - 1];
   const so = last ? orders.get(last) : null;
@@ -382,6 +402,7 @@ function renderCatPanel(entities) {
     );
   }
   if (e.away) parts.push('<div class="cat-sub">на вылазке</div>');
+  if (e.studying) parts.push('<div class="cat-sub">учится</div>');
   const held = e.carrying > 0 ? ` ${esc(itemLabel(e.carrying_item))}` : '';
   const paws =
     (e.carry_max > 0 ? `лапы ${e.carrying}/${e.carry_max}` : `в лапах ${e.carrying}`) + held;
@@ -673,6 +694,35 @@ function buildToolbar() {
     syncMissionButtons();
   }
 
+  // Обучение. Кнопка адресная, а не разметка работы: игрок отправляет за парту
+  // конкретного кота, и это решение о его судьбе (§12.18). Домены без `taught`
+  // сюда не попадают — «Стройке» парта не нужна.
+  const taught = (meta.skills ?? []).filter((s) => (s.taught ?? 0) > 0);
+  if (taught.length) {
+    const ts = document.createElement('div');
+    ts.className = 'tt';
+    ts.textContent = 'Обучение';
+    el.appendChild(ts);
+
+    teachButtons.length = 0;
+    for (const s of taught) {
+      const b = mkTool(
+        `<span class="sw sw-study"></span><span>Учить: ${esc(s.label || s.id)}</span>`,
+        () => {
+          if (selectedUnits.length === 1) {
+            worker.postMessage({ type: 'teach', id: selectedUnits[0], skill: s.id });
+          }
+        },
+      );
+      b.classList.add('toggle');
+      b.dataset.skill = s.id;
+      b.dataset.hint = `до ${s.taught}-го уровня, дальше только практика`;
+      teachButtons.push(b);
+      el.appendChild(b);
+    }
+    syncTeachButtons();
+  }
+
   // Найм. Кандидаты уникальны (§4.2): каждый приходит один раз, известность
   // открывает, а платит склад — цена теми же фишками, что и у тайлов (§12.24).
   const recruits = meta.recruits ?? [];
@@ -721,6 +771,17 @@ function syncRecruitButtons(list) {
 // Кнопка живая, только когда выделено ровно столько котов, сколько уходит:
 // ядро неполную заявку отклоняет молча (§12.23), а молчащая кнопка читается
 // как сломанная. Заодно подсказка объясняет, чего не хватает.
+// Учат по одному: обучение адресно, и «учить троих разом» — это уже не решение
+// о судьбе кота, а разметка работы, которой обучение как раз не является.
+function syncTeachButtons() {
+  const ready = selectedUnits.length === 1;
+  for (const b of teachButtons) {
+    b.disabled = !ready;
+    b.classList.toggle('on', ready);
+    b.title = ready ? `${selectedUnits[0]} — ${b.dataset.hint}` : 'Выберите одного кота';
+  }
+}
+
 function syncMissionButtons() {
   for (const b of missionButtons) {
     const need = Number(b.dataset.squad);

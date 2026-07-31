@@ -16,6 +16,7 @@ mod needs;
 mod orders;
 mod paths;
 mod skills;
+mod study;
 mod tidying;
 mod voids;
 
@@ -99,6 +100,7 @@ fn sim_from(rows: &[&str]) -> Sim {
             capacity: 0,
             rest: 0,
             gate: false,
+            teaches: String::new(),
         }],
         items: Vec::new(),
         skills: Vec::new(),
@@ -134,14 +136,15 @@ impl Sim {
             Option<&Assignment>,
             Option<&Haul>,
             Option<&Rest>,
+            Option<&Study>,
             Option<&Squad>,
             Option<&Away>,
         )>();
         let map = self.world.resource::<BaseMap>();
         q.iter(&self.world)
             .find(|(id, ..)| id.0 == unit)
-            .map(|(_, p, o, path, a, h, r, s, away)| {
-                is_stuck(map, p, Busy::of(o, path, a, h, r, s, away))
+            .map(|(_, p, o, path, a, h, r, st, s, away)| {
+                is_stuck(map, p, Busy::of(o, path, a, h, r, st, s, away))
             })
             .expect("кот не найден")
     }
@@ -326,13 +329,41 @@ impl Sim {
     }
 
     /// Завести навык в мире теста: пороги уровней. Вернёт индекс домена.
+    /// Парта такому домену не учит (`taught: 0`), как и «Стройка» в рулсете, —
+    /// обучение включают отдельно (`set_taught`).
     fn set_skill(&mut self, id: &str, levels: &[i32]) -> usize {
         let mut rules = self.world.resource_mut::<SkillRules>();
         rules.0.push(SkillRule {
             id: id.to_string(),
             levels: levels.to_vec(),
+            taught: 0,
         });
         rules.0.len() - 1
+    }
+
+    /// До какого уровня доводит домен парта; 0 — домену не учат (§12.18).
+    fn set_taught(&mut self, skill: usize, taught: i32) {
+        let mut rules = self.world.resource_mut::<SkillRules>();
+        if let Some(rule) = rules.0.get_mut(skill) {
+            rule.taught = taught;
+        }
+    }
+
+    /// Сделать тайл партой: какому домену он учит.
+    fn set_teaches(&mut self, tile: i16, skill: usize) {
+        self.tile_rule(tile, |r| r.teaches = Some(skill));
+    }
+
+    /// Кот учится — сидит за партой или идёт к ней.
+    fn is_studying(&mut self, unit: &str) -> bool {
+        let cat = self.entity_of(unit);
+        self.world.get::<Study>(cat).is_some()
+    }
+
+    /// Парта, которую занял ученик; `None` — кот не учится.
+    fn desk_of(&mut self, unit: &str) -> Option<(i32, i32)> {
+        let cat = self.entity_of(unit);
+        self.world.get::<Study>(cat).map(|s| s.spot)
     }
 
     /// Выдать коту опыт — стартовый навык без отработки тиков.

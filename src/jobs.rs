@@ -95,6 +95,7 @@ pub(crate) fn assign_jobs(
             Without<Assignment>,
             Without<Haul>,
             Without<Rest>,
+            Without<Study>,
             Without<Squad>,
             Without<Path>,
         ),

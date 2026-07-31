@@ -28,7 +28,7 @@ use crate::movement::{Busy, is_stuck};
 use crate::path::find_path;
 use crate::ruleset::{ItemDef, MissionDef, PerkDef, RecruitDef, Ruleset, SkillDef, TileDef};
 use crate::schedule::build_schedule;
-use crate::skills::{SKILL_RAID, level_of};
+use crate::skills::{SKILL_RAID, level_of, nearest_desk};
 use crate::snapshot::{
     BaseMapDto, BlueprintSnap, EntitySnap, MapMeta, MissionSnap, RecruitSnap, SkillSnap, Snapshot,
     StackSnap,
@@ -201,10 +201,17 @@ impl Sim {
             None => {}
         }
         // Груз кот при этом не бросает: донесёт, когда снова возьмётся за
-        // доставку (§12.15). Сон снимается — это осознанное действие (§12.20).
+        // доставку (§12.15). Сон и учёба снимаются — это осознанные действия
+        // (§12.20, §12.18); парту при этом отпускает сам снятый `Study`.
         self.world
             .entity_mut(cat)
-            .remove::<(Assignment, Haul, Rest, Path, MoveCooldown)>();
+            .remove::<(Assignment, Haul, Rest, Study, Path, MoveCooldown)>();
+    }
+
+    /// Клетки, занятые учениками: и та, за которой сидят, и та, к которой идут.
+    fn taken_desks(&mut self) -> Vec<(i32, i32)> {
+        let mut q = self.world.query::<&Study>();
+        q.iter(&self.world).map(|s| s.spot).collect()
     }
 }
 
@@ -280,6 +287,19 @@ impl Sim {
         let mut world = World::new();
         world.insert_resource(map);
         world.insert_resource(SimTime { tick: 0 });
+        // Навыки заводим до тайлов: парта ссылается на домен по имени, а в
+        // правилах остаётся его индекс — как цена ссылается на предмет.
+        let skill_index = |id: &str| rs.skills.iter().position(|s| s.id == id);
+        world.insert_resource(SkillRules(
+            rs.skills
+                .iter()
+                .map(|s| SkillRule {
+                    id: s.id.clone(),
+                    levels: s.levels.clone(),
+                    taught: s.taught,
+                })
+                .collect(),
+        ));
         // Цена из рулсета — имена предметов; в правилах остаются индексы палитры.
         // Порядок пар задан `BTreeMap` (по имени), то есть детерминирован (§12.21).
         world.insert_resource(TileRules(
@@ -294,6 +314,7 @@ impl Sim {
                     capacity: t.capacity,
                     rest: t.rest,
                     gate: t.gate,
+                    teaches: skill_index(&t.teaches),
                 })
                 .collect(),
         ));
@@ -315,7 +336,6 @@ impl Sim {
                 })
                 .collect(),
         ));
-        let skill_index = |id: &str| rs.skills.iter().position(|s| s.id == id);
         world.insert_resource(RecruitRules(
             rs.recruits
                 .iter()
@@ -345,15 +365,6 @@ impl Sim {
             tired: rs.energy.tired,
             floor: rs.energy.floor,
         });
-        world.insert_resource(SkillRules(
-            rs.skills
-                .iter()
-                .map(|s| SkillRule {
-                    id: s.id.clone(),
-                    levels: s.levels.clone(),
-                })
-                .collect(),
-        ));
 
         // Стартовый запас. Стартовая застройка (`build`) при этом бесплатна —
         // это уже существующая база, а не работа котов.
@@ -711,6 +722,74 @@ impl Sim {
         true
     }
 
+    /// Отправить кота `unit_id` учиться домену `skill_id`.
+    ///
+    /// **Обучение адресно** (§12.18) — как приказ «иди туда» и как заявка на
+    /// вылазку: правило §12.16 «игрок размечает работу, исполнителя берёт
+    /// симуляция» здесь не нарушается, а получает вторую границу. Обучение —
+    /// не работа над базой, а решение о судьбе конкретного кота: это он
+    /// перестанет строить на ближайшие пару сотен тиков.
+    ///
+    /// Команда снимает с кота текущую задачу и распускает его вылазку — ровно
+    /// как приказ игрока (§12.23). Вернёт false, если кота нет, он в поле,
+    /// домену не учат, коту уже нечему учиться за партой или парты нет.
+    pub fn teach(&mut self, unit_id: &str, skill_id: &str) -> bool {
+        let rules = self.world.resource::<SkillRules>();
+        let Some(skill) = rules.index_of(skill_id) else {
+            return false;
+        };
+        // Ноль — домену не учат вовсе («Стройка»): парта ему не поможет.
+        let cap = rules.taught_cap(skill);
+        if cap <= 0 {
+            return false;
+        }
+
+        let mut found = None;
+        {
+            let mut q = self
+                .world
+                .query::<(Entity, &UnitId, &Position, Option<&Skills>, Option<&Away>)>();
+            for (e, id, p, skills, away) in q.iter(&self.world) {
+                if id.0 == unit_id && away.is_none() {
+                    found = Some((e, (p.x, p.y), skills.map_or(0, |s| s.xp_of(skill))));
+                    break;
+                }
+            }
+        }
+        // Кота нет на базе — учить некого: его позиция это шлюз, с которого он
+        // ушёл (§12.22).
+        let Some((cat_e, from, xp)) = found else {
+            return false;
+        };
+        // Парта — вход в домен, а не тренажёр: доученного она не берёт.
+        if xp >= cap {
+            return false;
+        }
+
+        let taken = self.taken_desks();
+        let Some(spot) = nearest_desk(
+            self.world.resource::<BaseMap>(),
+            self.world.resource::<TileRules>(),
+            skill,
+            from,
+            &taken,
+        ) else {
+            return false; // парт нет, все заняты или до них не добраться
+        };
+
+        self.release_task(cat_e);
+        if let Some(mission_e) = self.world.get::<Squad>(cat_e).map(|s| s.0) {
+            self.disband(mission_e);
+        }
+        let path = find_path(self.world.resource::<BaseMap>(), from, spot).unwrap_or_default();
+        self.world.entity_mut(cat_e).insert((
+            Study { skill, spot },
+            Path { steps: path },
+            MoveCooldown(0),
+        ));
+        true
+    }
+
     /// Мгновенно снести тайл вместе с чертежом, без участия котов.
     ///
     /// Ластик игрока ходит через `plan_demolish`; этот путь оставлен для тестов
@@ -801,45 +880,35 @@ impl Sim {
 
         let mut entities = Vec::new();
         {
+            // Задачи кота собраны вложенным кортежем: их ровно столько, сколько
+            // берёт `Busy::of`, и растут они вместе — а плоский запрос упёрся бы
+            // в предел арности `QueryData`.
             let mut q = self.world.query::<(
                 &UnitId,
                 &Renderable,
                 &Position,
-                Option<&Order>,
-                Option<&Path>,
-                Option<&Assignment>,
-                Option<&Haul>,
                 Option<&Carrying>,
                 Option<&Carry>,
                 Option<&Skills>,
                 Option<&Perks>,
                 Option<&Energy>,
-                Option<&Rest>,
-                Option<&Squad>,
-                Option<&Away>,
+                (
+                    Option<&Order>,
+                    Option<&Path>,
+                    Option<&Assignment>,
+                    Option<&Haul>,
+                    Option<&Rest>,
+                    Option<&Study>,
+                    Option<&Squad>,
+                    Option<&Away>,
+                ),
             )>();
             let map = self.world.resource::<BaseMap>();
             let rules = self.world.resource::<SkillRules>();
             let needs = self.world.resource::<NeedRules>();
-            for (
-                id,
-                r,
-                p,
-                order,
-                path,
-                assignment,
-                haul,
-                load,
-                carry,
-                skills,
-                perks,
-                energy,
-                rest,
-                squad,
-                away,
-            ) in q.iter(&self.world)
-            {
-                let busy = Busy::of(order, path, assignment, haul, rest, squad, away);
+            for (id, r, p, load, carry, skills, perks, energy, tasks) in q.iter(&self.world) {
+                let (order, path, assignment, haul, rest, study, squad, away) = tasks;
+                let busy = Busy::of(order, path, assignment, haul, rest, study, squad, away);
                 entities.push(EntitySnap {
                     id: id.0.clone(),
                     sprite: r.sprite.clone(),
@@ -851,6 +920,8 @@ impl Sim {
                     energy_max: needs.max,
                     // Спит, а не идёт спать: маршрут ещё есть — значит в пути.
                     sleeping: rest.is_some() && path.is_none(),
+                    // Учится, а не идёт к парте — по тому же признаку.
+                    studying: study.is_some() && path.is_none(),
                     carrying: load.map_or(0, |c| c.count),
                     carrying_item: load.map_or(-1, |c| c.item as i32),
                     carry_max: carry.map_or(0, |c| c.0),
