@@ -29,6 +29,9 @@ items:
 # teaches — парта: какому навыку учит клетка. Кот сидит за ней и получает опыт
 # вместо построенного тайла — так заводится домен, работы по которому ещё нет.
 # lab — лаборатория: здесь идёт работа над темой исследования.
+# tech — технология, без которой тайл не построить. Пусто = доступен сразу.
+# Это вторые ворота прогрессии после известности: та открывает вылазки и котов,
+# эта — саму базу, и открывается только своей же наукой.
 tiles:
   - { id: floor,   label: "Пол",         color: "#1b2a3f", cost: { scrap: 1 } }
   - { id: storage, label: "Склад",       color: "#26506e", cost: { scrap: 2, part: 1 }, capacity: 20 }
@@ -36,6 +39,8 @@ tiles:
   - { id: garage,  label: "Гараж",       color: "#6e5a26", cost: { scrap: 2, part: 1 }, gate: true }
   - { id: bed,     label: "Лежанка",     color: "#3f5a3a", cost: { scrap: 1, part: 1 }, rest: 12 }
   - { id: desk,    label: "Парта",       color: "#4a4f7a", cost: { scrap: 2, part: 1 }, teaches: science }
+  - { id: rack,    label: "Стеллаж",     color: "#2f6f8e", cost: { scrap: 4, part: 3 }, capacity: 60, tech: materials }
+  - { id: nest,    label: "Гнездо",      color: "#4d7a44", cost: { scrap: 2, part: 2 }, rest: 30,     tech: comfort }
 
 # Начальная застройка: комнаты + коридоры (связная сеть, чтобы коты могли ходить).
 build:
@@ -201,9 +206,11 @@ research:
     level: 1
     work: 2200
     cost: { sample: 4 }
+    # открывает «Стеллаж»: втрое вместительнее склада
   - id: comfort
     label: "Быт колонии"
     level: 2
     work: 3000
     cost: { sample: 6, part: 2 }
     requires: [materials]
+    # открывает «Гнездо»: вдвое быстрее лежанки

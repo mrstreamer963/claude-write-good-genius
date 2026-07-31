@@ -105,6 +105,7 @@ fn sim_from(rows: &[&str]) -> Sim {
             gate: false,
             teaches: String::new(),
             lab: false,
+            tech: String::new(),
         }],
         items: Vec::new(),
         skills: Vec::new(),
@@ -358,6 +359,11 @@ impl Sim {
     /// Сделать тайл партой: какому домену он учит.
     fn set_teaches(&mut self, tile: i16, skill: usize) {
         self.tile_rule(tile, |r| r.teaches = Some(skill));
+    }
+
+    /// Закрыть постройку тайла технологией (пустая строка — открыт всегда).
+    fn set_tile_tech(&mut self, tile: i16, tech: &str) {
+        self.tile_rule(tile, |r| r.tech = tech.to_string());
     }
 
     /// Сделать тайл лабораторией: в ней идёт работа над темой.

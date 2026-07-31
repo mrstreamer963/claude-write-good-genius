@@ -87,6 +87,7 @@ const missionButtons = []; // кнопки запуска — их гасим, �
 const recruitButtons = []; // кнопки найма — гасим по известности и складу
 const teachButtons = []; // кнопки обучения — живы, когда выбран ровно один кот
 const topicButtons = []; // кнопки тем — гасим по технологиям, складу и допуску
+const tileButtons = []; // кнопки палитры, закрытые технологией (§12.27)
 
 // --- worker ---------------------------------------------------------------
 
@@ -285,6 +286,7 @@ function renderSnapshot(snap) {
   renderResearchPanel(snap.research);
   syncRecruitButtons(snap.recruits);
   syncTopicButtons(snap.topics);
+  syncTileButtons(snap.techs);
 }
 
 function createUnit(e) {
@@ -666,6 +668,7 @@ function buildToolbar() {
   tt.textContent = 'Постройка';
   el.appendChild(tt);
 
+  tileButtons.length = 0;
   meta.palette.forEach((p, i) => {
     // Цена набором — рядом с образцом: что и сколько завезти на клетку.
     const cost = costChips(p.cost);
@@ -673,6 +676,9 @@ function buildToolbar() {
       `<span class="sw" style="background:${p.color}"></span><span>${p.label || p.id}</span>${cost}`,
       () => selectBuild(i, b),
     );
+    // Закрытый технологией тайл виден, но не размечается: невидимая цель не
+    // тянет, а ядро такую разметку всё равно отклонит (§12.27, §4.4).
+    if (p.tech) tileButtons.push({ btn: b, tech: p.tech });
     el.appendChild(b);
   });
 
@@ -851,6 +857,18 @@ function syncTopicButtons(list) {
                 ? 'Тема уже изучается'
                 : 'Взяться за тему';
   });
+}
+
+// Палитра, закрытая технологией: кнопка видна и объясняет, чем открывается.
+// Название темы берём из палитры тем — второго списка технологий не заводим.
+function syncTileButtons(techs) {
+  const known = techs ?? [];
+  for (const { btn, tech } of tileButtons) {
+    const open = known.includes(tech);
+    btn.disabled = !open;
+    const def = (meta.research ?? []).find((r) => r.id === tech);
+    btn.title = open ? '' : `Откроет тема «${def?.label || tech}»`;
+  }
 }
 
 // Учат по одному: обучение адресно, и «учить троих разом» — это уже не решение

@@ -319,6 +319,8 @@ pub(crate) struct TileRule {
     /// Лаборатория: здесь идёт работа над темой. Шестой случай той же схемы —
     /// у комнаты появляется смысл сверх цвета, а карта остаётся одним слоем.
     pub(crate) lab: bool,
+    /// Технология, открывающая постройку; пусто — доступен сразу (§12.27).
+    pub(crate) tech: String,
 }
 
 impl TileRules {
@@ -352,6 +354,14 @@ impl TileRules {
 
     pub(crate) fn is_lab(&self, tile: i16) -> bool {
         self.of(tile).is_some_and(|r| r.lab)
+    }
+
+    /// Технология, без которой тайл не построить; `None` — доступен сразу.
+    /// У сноса (`tile < 0`) ворот нет: разбирать можно что угодно и всегда.
+    pub(crate) fn tech_of(&self, tile: i16) -> Option<&str> {
+        self.of(tile)
+            .map(|r| r.tech.as_str())
+            .filter(|t| !t.is_empty())
     }
 }
 

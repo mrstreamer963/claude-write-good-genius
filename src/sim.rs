@@ -226,6 +226,15 @@ impl Sim {
         )>();
     }
 
+    /// Открыта ли постройка этого тайла: технология изучена или не нужна.
+    fn tech_allows(&self, tile: i16) -> bool {
+        let rules = self.world.resource::<TileRules>();
+        match rules.tech_of(tile) {
+            Some(tech) => self.world.resource::<Techs>().knows(tech),
+            None => true,
+        }
+    }
+
     /// Тема, которую сейчас изучают (на POC не больше одной).
     fn research(&mut self) -> Option<Entity> {
         let mut q = self.world.query_filtered::<Entity, With<Research>>();
@@ -361,6 +370,7 @@ impl Sim {
                     gate: t.gate,
                     teaches: skill_index(&t.teaches),
                     lab: t.lab,
+                    tech: t.tech.clone(),
                 })
                 .collect(),
         ));
@@ -514,6 +524,13 @@ impl Sim {
             return false;
         }
         let t = tile as i16;
+        // Технология — ворота палитры (§12.27). Проверяем в момент разметки, а
+        // не в момент работы: чертёж, который никто никогда не возьмёт, игрок
+        // прочтёт как поломку, а не как «сперва изучите». У сноса ворот нет —
+        // разбирать можно что угодно и всегда.
+        if !self.tech_allows(t) {
+            return false;
+        }
         if self.world.resource::<BaseMap>().tile_at(x, y) == t {
             return false; // уже построено этим тайлом
         }
