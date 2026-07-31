@@ -28,6 +28,7 @@ const scrapEl = document.getElementById('scrap');
 const catEl = document.getElementById('cat');
 const missionEl = document.getElementById('mission');
 const researchEl = document.getElementById('research');
+const noteEl = document.getElementById('note');
 
 const app = new Application();
 await app.init({ background: COLORS.bg, antialias: true, resizeTo: stageEl });
@@ -287,6 +288,7 @@ function renderSnapshot(snap) {
   syncRecruitButtons(snap.recruits);
   syncTopicButtons(snap.topics);
   syncTileButtons(snap.techs);
+  renderNotePanel(snap.notes);
 }
 
 function createUnit(e) {
@@ -495,6 +497,46 @@ function renderResearchPanel(list) {
   researchEl
     .querySelector('.research-cancel')
     .addEventListener('click', () => worker.postMessage({ type: 'cancelResearch' }));
+}
+
+// Записка (§4.6, §12.28). Что известно о будущем — решает ядро: пока детали не
+// проступили, их в снапшоте просто нет, и показывать тут нечего. Прошедшее не
+// стирается — записка заодно и журнал: видно, чем кончился каждый срок.
+function renderNotePanel(list) {
+  const notes = list ?? [];
+  if (!notes.length || !meta) {
+    noteEl.hidden = true;
+    return;
+  }
+  const rows = notes.map((n) => {
+    const when = n.done
+      ? n.succeeded
+        ? '<span class="good">успели</span>'
+        : '<span class="warn">не успели</span>'
+      : `через ${n.left}`;
+    const parts = [
+      `<div class="cat-row"><span>${esc(n.label)}</span><b>${when}</b></div>`,
+      `<div class="cat-sub">${esc(n.detail || n.hint)}</div>`,
+    ];
+    // Требование показываем, только пока событие впереди: после срока важно уже
+    // не «чего не хватало», а чем всё кончилось.
+    if (!n.done && n.revealed && n.requires.length) {
+      const needs = n.requires.map(techLabel).join(' · ');
+      parts.push(
+        n.ready
+          ? `<div class="cat-sub good">готовы: ${esc(needs)}</div>`
+          : `<div class="cat-sub warn">нужно: ${esc(needs)}</div>`,
+      );
+    }
+    return `<div class="row${n.done ? ' past' : ''}">${parts.join('')}</div>`;
+  });
+  noteEl.innerHTML = `<div class="cat-name">Записка</div>${rows.join('')}`;
+  noteEl.hidden = false;
+}
+
+function techLabel(id) {
+  const def = (meta.research ?? []).find((r) => r.id === id);
+  return def?.label || id;
 }
 
 function itemLabel(item) {

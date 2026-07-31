@@ -30,14 +30,15 @@ use crate::missions::{outcome, pick_gate};
 use crate::movement::{Busy, is_stuck};
 use crate::path::find_path;
 use crate::ruleset::{
-    ItemDef, MissionDef, PerkDef, RecruitDef, ResearchDef, Ruleset, SkillDef, TileDef,
+    EventDef, ItemDef, MissionDef, PerkDef, RecruitDef, ResearchDef, Ruleset, SkillDef, TileDef,
 };
 use crate::schedule::build_schedule;
 use crate::skills::{SKILL_RAID, SKILL_SCIENCE, level_of, nearest_desk};
 use crate::snapshot::{
-    BaseMapDto, BlueprintSnap, EntitySnap, MapMeta, MissionSnap, RecruitSnap, ResearchSnap,
-    SkillSnap, Snapshot, StackSnap, TopicSnap,
+    BaseMapDto, BlueprintSnap, EntitySnap, MapMeta, MissionSnap, NoteSnap, RecruitSnap,
+    ResearchSnap, SkillSnap, Snapshot, StackSnap, TopicSnap,
 };
+use crate::timeline::{ready_for, revealed};
 
 #[wasm_bindgen]
 pub struct Sim {
@@ -50,6 +51,7 @@ pub struct Sim {
     pub(crate) missions: Vec<MissionDef>,
     pub(crate) recruits: Vec<RecruitDef>,
     pub(crate) research: Vec<ResearchDef>,
+    pub(crate) timeline: Vec<EventDef>,
     pub(crate) width: i32,
     pub(crate) height: i32,
 }
@@ -391,6 +393,24 @@ impl Sim {
                 .collect(),
         ));
         world.insert_resource(Techs::default());
+        world.insert_resource(TimelineRules(
+            rs.timeline
+                .iter()
+                .map(|e| EventRule {
+                    at: e.at,
+                    reveal: e.reveal,
+                    requires: e.requires.clone(),
+                    gift: e
+                        .gift
+                        .iter()
+                        .filter_map(|(id, &n)| item_index(id).map(|i| (i, n)))
+                        .collect(),
+                    fame: e.fame,
+                    toll: e.toll,
+                })
+                .collect(),
+        ));
+        world.insert_resource(Chronicle::default());
         world.insert_resource(MissionRules(
             rs.missions
                 .iter()
@@ -479,6 +499,7 @@ impl Sim {
             missions: rs.missions,
             recruits: rs.recruits,
             research: rs.research,
+            timeline: rs.timeline,
             width: w,
             height: h,
         })
@@ -1234,6 +1255,39 @@ impl Sim {
             }
         }
 
+        // Записка. Что игрок знает о будущем — решает ядро: до `reveal` детали
+        // в снапшот просто не кладутся (§4.6, §12.28).
+        let mut notes = Vec::new();
+        {
+            let rules = self.world.resource::<TimelineRules>().0.clone();
+            for (def, rule) in rules.iter().enumerate() {
+                let happened = self.world.resource::<Chronicle>().happened(def);
+                let open = revealed(rule, tick);
+                let ready = open && ready_for(rule, self.world.resource::<Techs>());
+                notes.push(NoteSnap {
+                    def,
+                    label: self.timeline[def].label.clone(),
+                    at: rule.at,
+                    left: rule.at as i64 - tick as i64,
+                    hint: self.timeline[def].hint.clone(),
+                    revealed: open,
+                    detail: if open {
+                        self.timeline[def].detail.clone()
+                    } else {
+                        String::new()
+                    },
+                    requires: if open {
+                        rule.requires.clone()
+                    } else {
+                        Vec::new()
+                    },
+                    ready,
+                    done: happened.is_some(),
+                    succeeded: happened.is_some_and(|h| h.ready),
+                });
+            }
+        }
+
         serde_wasm_bindgen::to_value(&Snapshot {
             tick,
             entities,
@@ -1245,6 +1299,7 @@ impl Sim {
             research,
             topics,
             techs,
+            notes,
         })
         .map_err(|e| JsValue::from_str(&e.to_string()))
     }

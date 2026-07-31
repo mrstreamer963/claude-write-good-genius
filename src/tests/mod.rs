@@ -19,6 +19,7 @@ mod research;
 mod skills;
 mod study;
 mod tidying;
+mod timeline;
 mod voids;
 
 use bevy_ecs::prelude::*;
@@ -32,6 +33,7 @@ use std::collections::BTreeMap;
 use crate::ruleset::TileDef;
 use crate::schedule::build_schedule;
 use crate::sim::Sim;
+use crate::timeline::{ready_for, revealed};
 
 /// Тиков на один тайл при нулевом навыке. Работа считается в очках (§12.17),
 /// но тесты меряют время тиками, поэтому пересчёт держим здесь.
@@ -90,6 +92,8 @@ fn sim_from(rows: &[&str]) -> Sim {
     world.insert_resource(RecruitRules::default());
     world.insert_resource(ResearchRules::default());
     world.insert_resource(Techs::default());
+    world.insert_resource(TimelineRules::default());
+    world.insert_resource(Chronicle::default());
     world.insert_resource(Fame::default());
     world.insert_resource(UnitRules::default());
     Sim {
@@ -113,6 +117,7 @@ fn sim_from(rows: &[&str]) -> Sim {
         missions: Vec::new(),
         recruits: Vec::new(),
         research: Vec::new(),
+        timeline: Vec::new(),
         width,
         height,
     }
@@ -390,6 +395,89 @@ impl Sim {
             requires: requires.iter().map(|t| t.to_string()).collect(),
         });
         rules.0.len() - 1
+    }
+
+    /// Выключить таймлайн в мире боевого рулсета.
+    ///
+    /// Мир по расписанию — единственное, что происходит без участия игрока
+    /// (§12.28), и на длинных прогонах он меняет и запасы, и известность.
+    /// Тестам чужих механик это шум, ровно как пустые `MissionRules` в
+    /// синтетической схеме; сами события покрывает `tests/timeline.rs`.
+    fn without_timeline(&mut self) {
+        self.world.resource_mut::<TimelineRules>().0.clear();
+    }
+
+    /// Завести событие таймлайна: дата, требуемые технологии, подарок за
+    /// готовность и плата за неготовность. Вернёт его индекс.
+    fn set_event(
+        &mut self,
+        at: u64,
+        requires: &[&str],
+        gift: &[(usize, i32)],
+        fame: i32,
+        toll: i32,
+    ) -> usize {
+        let mut rules = self.world.resource_mut::<TimelineRules>();
+        rules.0.push(EventRule {
+            at,
+            reveal: 0,
+            requires: requires.iter().map(|t| t.to_string()).collect(),
+            gift: gift.to_vec(),
+            fame,
+            toll,
+        });
+        rules.0.len() - 1
+    }
+
+    /// За сколько тиков до срока у события проступают детали.
+    fn set_reveal(&mut self, event: usize, reveal: u64) {
+        let mut rules = self.world.resource_mut::<TimelineRules>();
+        if let Some(rule) = rules.0.get_mut(event) {
+            rule.reveal = reveal;
+        }
+    }
+
+    /// Выдать технологию напрямую — как `set_fame` для известности.
+    fn set_tech(&mut self, tech: &str) {
+        self.world.resource_mut::<Techs>().0.push(tech.to_string());
+    }
+
+    /// Проступили ли детали события — то же, что уходит в снапшот (§12.28).
+    fn note_revealed(&self, event: usize) -> bool {
+        let tick = self.world.resource::<SimTime>().tick;
+        self.world
+            .resource::<TimelineRules>()
+            .0
+            .get(event)
+            .is_some_and(|r| revealed(r, tick))
+    }
+
+    /// Требования события — **как их видит игрок**: до раскрытия пусто.
+    fn note_requires(&self, event: usize) -> Vec<String> {
+        let rules = self.world.resource::<TimelineRules>();
+        match rules.0.get(event) {
+            Some(rule) if self.note_revealed(event) => rule.requires.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Успевает ли база к сроку — тоже деталь, и до раскрытия её не видно.
+    fn note_ready(&self, event: usize) -> bool {
+        let rules = self.world.resource::<TimelineRules>();
+        match rules.0.get(event) {
+            Some(rule) if self.note_revealed(event) => {
+                ready_for(rule, self.world.resource::<Techs>())
+            }
+            _ => false,
+        }
+    }
+
+    /// Случилось ли событие и была ли база к нему готова; `None` — ещё нет.
+    fn happened(&self, event: usize) -> Option<bool> {
+        self.world
+            .resource::<Chronicle>()
+            .happened(event)
+            .map(|h| h.ready)
     }
 
     /// Изучена ли технология.

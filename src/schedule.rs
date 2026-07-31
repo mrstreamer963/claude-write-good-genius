@@ -13,6 +13,7 @@ use crate::movement::{escape_voids, move_units, retry_orders};
 use crate::needs::{assign_rest, collapse_exhausted, sleep, tire};
 use crate::research::{assign_research, work_research};
 use crate::skills::{study, train_skills};
+use crate::timeline::run_timeline;
 
 fn advance_time(mut time: ResMut<SimTime>) {
     time.tick += 1;
@@ -43,6 +44,9 @@ fn advance_time(mut time: ResMut<SimTime>) {
 /// засчитывается в отряд сразу. И до `settle_stacks`: добыча ложится кучей на
 /// шлюз, а он к возвращению отряда может оказаться ямой.
 ///
+/// `run_timeline` — рядом с ним и по той же причине: мир тоже дотягивается до
+/// базы через шлюз, и его груз должен успеть съехать из ямы тем же тиком.
+///
 /// `escape_voids` — предпоследним: если приказ или джоб уже дали маршрут, он и
 /// выводит кота из ямы, отдельный шаг не нужен. `settle_stacks` после
 /// `work_jobs`: обе системы разбирают последствия только что снесённого
@@ -54,6 +58,7 @@ fn advance_time(mut time: ResMut<SimTime>) {
 /// `train_skills` замыкает цепочку: он превращает в опыт маркеры `Worked`,
 /// которые за тик оставили системы работы, — и потому должен идти после любой
 /// из них, включая будущие (§12.17).
+///
 /// Цепочка разбита на две группы **только из-за предела арности** у кортежа
 /// систем: порядок ровно тот же, что и одним списком, — сперва кто за что
 /// берётся, потом что из этого выходит.
@@ -80,6 +85,7 @@ pub(crate) fn build_schedule() -> Schedule {
         work_research,
         study,
         run_missions,
+        run_timeline,
         retry_orders,
         escape_voids,
         settle_stacks,

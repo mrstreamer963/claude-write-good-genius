@@ -217,6 +217,7 @@ fn a_hired_cat_can_be_sent_on_a_raid() {
 #[test]
 fn the_shipped_ruleset_has_a_reachable_ladder() {
     let mut sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
+    sim.without_timeline(); // известность здесь только от вылазок (§12.28)
 
     // Первая вылазка доступна безвестной базе, остальные — нет.
     assert_eq!(sim.fame(), 0);
