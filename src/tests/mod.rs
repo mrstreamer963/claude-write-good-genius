@@ -412,12 +412,28 @@ impl Sim {
     }
 
     /// Завести миссию в мире теста: размер отряда, длительность и добыча.
+    /// Она **безопасна и бесплатна** (`danger`/`toll` в нулях), как бесплатен
+    /// тайл в `sim_from`: тесты сбора отряда об исходе ничего не знают.
     /// Вернёт её индекс — им же зовётся `launch`.
     fn set_mission(&mut self, squad: usize, ticks: i32, loot: &[(usize, i32)]) -> usize {
+        self.set_risky_mission(squad, ticks, 0, 0, loot)
+    }
+
+    /// Миссия со сложностью и платой — для тестов исхода (§12.23).
+    fn set_risky_mission(
+        &mut self,
+        squad: usize,
+        ticks: i32,
+        danger: i32,
+        toll: i32,
+        loot: &[(usize, i32)],
+    ) -> usize {
         let mut rules = self.world.resource_mut::<MissionRules>();
         rules.0.push(MissionRule {
             squad,
             ticks,
+            danger,
+            toll,
             loot: loot.to_vec(),
         });
         rules.0.len() - 1

@@ -22,10 +22,12 @@ use wasm_bindgen::prelude::*;
 use crate::components::*;
 use crate::jobs::BUILD_WORK;
 use crate::map::{BaseMap, rect_cells};
+use crate::missions::{outcome, pick_gate};
 use crate::movement::{Busy, is_stuck};
 use crate::path::find_path;
 use crate::ruleset::{ItemDef, MissionDef, PerkDef, Ruleset, SkillDef, TileDef};
 use crate::schedule::build_schedule;
+use crate::skills::{SKILL_RAID, level_of};
 use crate::snapshot::{
     BaseMapDto, BlueprintSnap, EntitySnap, MapMeta, MissionSnap, SkillSnap, Snapshot, StackSnap,
 };
@@ -99,6 +101,49 @@ impl Sim {
             .map(|(e, _, away)| (e, away.is_some()))
             .collect()
     }
+
+    /// Снять миссию и освободить весь её отряд. Зовётся и по кнопке «Отозвать»,
+    /// и когда игрок уводит бойца приказом: состав выбран поимённо, заменить
+    /// выбывшего некем, а молча зависшая вылазка хуже честного роспуска.
+    fn disband(&mut self, mission: Entity) {
+        for (cat_e, _) in self.crew_of(mission) {
+            self.world
+                .entity_mut(cat_e)
+                .remove::<(Squad, Path, MoveCooldown)>();
+        }
+        self.world.entity_mut(mission).despawn();
+    }
+
+    /// Снять с кота текущую задачу, освободив всё, что она держала.
+    ///
+    /// Одно место на всех, кто задачу отбирает — приказ игрока и заявка на
+    /// вылазку. Забыть освободить чертёж можно ровно однажды, и площадка после
+    /// этого навсегда останется за котом, который давно занят другим (§12.15).
+    fn release_task(&mut self, cat: Entity) {
+        if let Some(bp_e) = self.world.get::<Assignment>(cat).map(|a| a.0) {
+            if let Some(mut bp) = self.world.get_mut::<Blueprint>(bp_e) {
+                bp.assignee = None;
+            }
+        }
+        match self.world.get::<Haul>(cat).map(|h| h.0) {
+            Some(HaulTo::Site(bp_e)) => {
+                if let Some(mut bp) = self.world.get_mut::<Blueprint>(bp_e) {
+                    bp.hauler = None;
+                }
+            }
+            Some(HaulTo::Store(pile)) => {
+                if let Some(mut mark) = pile.and_then(|e| self.world.get_mut::<ToStore>(e)) {
+                    mark.hauler = None;
+                }
+            }
+            None => {}
+        }
+        // Груз кот при этом не бросает: донесёт, когда снова возьмётся за
+        // доставку (§12.15). Сон снимается — это осознанное действие (§12.20).
+        self.world
+            .entity_mut(cat)
+            .remove::<(Assignment, Haul, Rest, Path, MoveCooldown)>();
+    }
 }
 
 #[wasm_bindgen]
@@ -148,6 +193,8 @@ impl Sim {
                 .map(|m| MissionRule {
                     squad: m.squad,
                     ticks: m.ticks,
+                    danger: m.danger,
+                    toll: m.toll,
                     loot: m
                         .loot
                         .iter()
@@ -399,34 +446,71 @@ impl Sim {
         true
     }
 
-    /// Отправить отряд на миссию `def` (индекс в палитре из `map_meta`).
+    /// Отправить названных котов на миссию `def` (индекс в палитре `map_meta`).
     ///
-    /// Отряд не выбирается: миссия — это разметка работы, как чертёж, а кого
-    /// послать, решает симуляция (§12.16, §12.22). Адресный выбор придёт вместе
-    /// с авторасчётом исхода — пока миссия всегда успешна, и посылать «нужных»
-    /// котов не за чем.
+    /// **Отряд выбирает игрок, поимённо** — единственная работа, где исполнитель
+    /// не раздаётся симуляцией (§12.23). Причина одна: от состава зависит исход.
+    /// Требуется ровно `squad` котов: недобор — это не «пойдут вдвоём вместо
+    /// троих», а неполная заявка, и молча дополнять её симуляция не станет.
     ///
-    /// Миссия одна за раз: на POC с тремя котами вторая всё равно не нашла бы
-    /// исполнителей, а очередь вылазок — механика, которую не на чем проверить.
-    /// Вернёт false, если такой миссии нет или одна уже идёт.
-    pub fn launch(&mut self, def: usize) -> bool {
-        let Some(ticks) = self
-            .world
-            .resource::<MissionRules>()
-            .0
-            .get(def)
-            .map(|r| r.ticks)
-        else {
+    /// Заявка снимает с выбранных текущие задачи — как приказ игрока (§12.15):
+    /// решение отправить кота в поле весомее начатой им стройки.
+    ///
+    /// Миссия одна за раз: на POC с тремя котами вторая осталась бы без людей,
+    /// а очередь вылазок — механика, которую не на чем проверить.
+    /// Вернёт false, если миссии нет, одна уже идёт, состав не тот или до
+    /// общего шлюза дойдут не все.
+    pub fn launch(&mut self, def: usize, units: Vec<String>) -> bool {
+        let Some(rule) = self.world.resource::<MissionRules>().0.get(def).cloned() else {
             return false;
         };
-        if self.mission().is_some() {
+        if self.mission().is_some() || units.len() != rule.squad {
             return false;
         }
-        self.world.spawn(Mission {
+
+        // Ушедших в списке быть не может — их нет на базе; дубликаты отсекаем
+        // сравнением длины, иначе «три раза excellent» сошло бы за отряд.
+        let mut crew: Vec<(Entity, (i32, i32))> = Vec::new();
+        {
+            let mut q = self
+                .world
+                .query::<(Entity, &UnitId, &Position, Option<&Away>)>();
+            for id in &units {
+                let found = q
+                    .iter(&self.world)
+                    .find(|(_, u, _, away)| u.0 == *id && away.is_none())
+                    .map(|(e, _, p, _)| (e, (p.x, p.y)));
+                match found {
+                    Some(cat) if !crew.iter().any(|&(e, _)| e == cat.0) => crew.push(cat),
+                    _ => return false,
+                }
+            }
+        }
+
+        let at: Vec<(i32, i32)> = crew.iter().map(|&(_, p)| p).collect();
+        let Some(gate) = pick_gate(
+            self.world.resource::<BaseMap>(),
+            self.world.resource::<TileRules>(),
+            &at,
+        ) else {
+            return false; // шлюза нет или до общего не добраться всем разом
+        };
+
+        let mission_e = self.world.spawn(Mission {
             def,
-            gate: None,
-            left: ticks,
+            gate: Some(gate),
+            left: rule.ticks,
         });
+        let mission_e = mission_e.id();
+        for (cat_e, from) in crew {
+            self.release_task(cat_e);
+            let path = find_path(self.world.resource::<BaseMap>(), from, gate).unwrap_or_default();
+            self.world.entity_mut(cat_e).insert((
+                Squad(mission_e),
+                Path { steps: path },
+                MoveCooldown(0),
+            ));
+        }
         true
     }
 
@@ -439,16 +523,10 @@ impl Sim {
         let Some(mission_e) = self.mission() else {
             return false;
         };
-        let crew = self.crew_of(mission_e);
-        if crew.iter().any(|&(_, away)| away) {
+        if self.crew_of(mission_e).iter().any(|&(_, away)| away) {
             return false;
         }
-        for (cat_e, _) in crew {
-            self.world
-                .entity_mut(cat_e)
-                .remove::<(Squad, Path, MoveCooldown)>();
-        }
-        self.world.entity_mut(mission_e).despawn();
+        self.disband(mission_e);
         true
     }
 
@@ -495,41 +573,22 @@ impl Sim {
         let map_version = self.world.resource::<BaseMap>().version;
         let path = find_path(self.world.resource::<BaseMap>(), (sx, sy), (x, y));
 
-        // Снять текущую задачу — стройку или перенос (освободить чертёж).
-        // Груз кот при этом не бросает: донесёт, когда снова возьмётся за
-        // доставку (§12.15).
-        if let Some(bp_e) = self.world.get::<Assignment>(entity).map(|a| a.0) {
-            if let Some(mut bp) = self.world.get_mut::<Blueprint>(bp_e) {
-                bp.assignee = None;
-            }
-            self.world.entity_mut(entity).remove::<Assignment>();
-        }
-        match self.world.get::<Haul>(entity).map(|h| h.0) {
-            Some(HaulTo::Site(bp_e)) => {
-                if let Some(mut bp) = self.world.get_mut::<Blueprint>(bp_e) {
-                    bp.hauler = None;
-                }
-                self.world.entity_mut(entity).remove::<Haul>();
-            }
-            Some(HaulTo::Store(pile)) => {
-                if let Some(mut mark) = pile.and_then(|e| self.world.get_mut::<ToStore>(e)) {
-                    mark.hauler = None;
-                }
-                self.world.entity_mut(entity).remove::<Haul>();
-            }
-            None => {}
+        // Приказ забирает кота у любой задачи — стройки, переноса, сна (§12.15,
+        // §12.20). Груз он при этом не бросает: донесёт, когда снова возьмётся
+        // за доставку.
+        self.release_task(entity);
+
+        // А вылазку приказ **распускает целиком**: состав выбран поимённо,
+        // заменить выбывшего некем, и отряд, который никогда не соберётся,
+        // хуже честного роспуска (§12.23). Ушедшего это не касается — такого
+        // кота нет в мире базы, и приказ ему отклонён выше.
+        if let Some(mission_e) = self.world.get::<Squad>(entity).map(|s| s.0) {
+            self.disband(mission_e);
         }
 
         // Приказ сохраняется даже без пути прямо сейчас — `retry_orders`
         // перепроложит маршрут при следующем изменении карты (например, после
         // постройки коридора, открывающего доступ к цели).
-        // Приказ будит: это осознанное действие игрока (§12.20). Кот на нуле
-        // бодрости ляжет снова — и это честный ответ.
-        //
-        // И выводит из отряда: приказ снимает любую задачу, а место в отряде
-        // раздатчик доберёт кем-то ещё (§12.22). Ушедшего он не касается —
-        // такого кота вообще нет в мире базы, и цели ему не поставить.
-        self.world.entity_mut(entity).remove::<(Rest, Squad)>();
         self.world.entity_mut(entity).insert(Order {
             x,
             y,
@@ -664,28 +723,40 @@ impl Sim {
 
         let mut missions = Vec::new();
         {
-            let mut crew = self.world.query::<(&UnitId, &Squad, Option<&Away>)>();
-            let members: Vec<(Entity, String, bool)> = crew
+            let raid = self.world.resource::<SkillRules>().index_of(SKILL_RAID);
+            let mut crew = self
+                .world
+                .query::<(&UnitId, &Squad, Option<&Away>, Option<&Skills>)>();
+            let skill_rules = self.world.resource::<SkillRules>();
+            // Вклад кота в силу отряда считается ровно как в `run_missions`:
+            // сам он стоит единицу, уровень «Вылазки» — сверху.
+            let members: Vec<(Entity, String, bool, i32)> = crew
                 .iter(&self.world)
-                .map(|(id, squad, away)| (squad.0, id.0.clone(), away.is_some()))
+                .map(|(id, squad, away, skills)| {
+                    let force = 1 + raid.map_or(0, |s| level_of(skill_rules, skills, s));
+                    (squad.0, id.0.clone(), away.is_some(), force)
+                })
                 .collect();
             let mut q = self.world.query::<(Entity, &Mission)>();
             let rules = self.world.resource::<MissionRules>();
             for (e, m) in q.iter(&self.world) {
                 let rule = rules.0.get(m.def);
+                let mine = || members.iter().filter(move |&&(owner, ..)| owner == e);
+                let danger = rule.map_or(0, |r| r.danger);
+                let out = outcome(danger, mine().map(|&(.., force)| force).sum());
                 missions.push(MissionSnap {
                     def: m.def,
                     x: m.gate.map_or(-1, |(x, _)| x),
                     y: m.gate.map_or(-1, |(_, y)| y),
                     left: m.left,
                     total: rule.map_or(0, |r| r.ticks),
-                    squad: members
-                        .iter()
-                        .filter(|&&(owner, ..)| owner == e)
-                        .map(|(_, id, _)| id.clone())
-                        .collect(),
+                    squad: mine().map(|(_, id, ..)| id.clone()).collect(),
                     size: rule.map_or(0, |r| r.squad),
-                    away: members.iter().any(|&(owner, _, away)| owner == e && away),
+                    away: mine().any(|&(_, _, away, _)| away),
+                    strength: out.strength,
+                    danger,
+                    share: out.share,
+                    failed: out.failed,
                 });
             }
         }

@@ -1,17 +1,15 @@
-//! Миссии: отряд уходит с базы и возвращается с добычей (§12.22 concept.md).
+//! Вылазки: отряд уходит с базы и возвращается с добычей (§12.22, §12.23
+//! concept.md).
 //!
-//! Миссия — это **разметка работы**, как чертёж: игрок говорит «идём на свалку»,
-//! а кого послать, решает симуляция (§12.16). Адресный выбор отряда придёт
-//! вместе с авторасчётом исхода: пока миссия всегда успешна и добыча
-//! фиксирована рулсетом, «кого послать» ни на что не влияет и выбирать нечего.
+//! **Отряд выбирает игрок, поимённо** (§12.23) — единственная работа, где
+//! исполнитель не раздаётся симуляцией. Причина ровно одна: от состава зависит
+//! исход, а всё остальное на базе одинаково выполнимо любым котом (§12.16).
 //!
-//! Систем две, и они повторяют форму «раздатчик + работа», по которой устроены
-//! стройка и перенос:
-//!   * `assign_squad` — набирает недостающих бойцов из общего пула свободных
-//!     котов и гонит их к шлюзу. Идёт вторым после отдыха: миссия — самая
-//!     дорогая работа на базе, и подвоз лома не должен держать отряд.
-//!   * `run_missions` — отправляет собравшийся отряд, крутит таймер и
-//!     возвращает котов с добычей.
+//! Систем две:
+//!   * `gather_squad` — держит выбранный отряд идущим к шлюзу, переживая
+//!     изменения карты. Состав не трогает: заменить выбывшего некем.
+//!   * `run_missions` — отправляет собравшийся отряд, крутит таймер, считает
+//!     исход и возвращает котов с добычей.
 //!
 //! Отдельного состояния «фаза миссии» нет, как его нет у `Haul` и `Rest`: где
 //! отряд, видно по компонентам. `Squad` с маршрутом — кот идёт к шлюзу,
@@ -21,6 +19,10 @@
 //! ходку (§12.21), а добыча бывает набором. Дальше её разносит обычная уборка
 //! (§12.16) — и то, что миссия ничего не знает про склад, тут не упрощение,
 //! а прямое следствие: возврат от сноса ложится под ноги ровно так же.
+//!
+//! **Исход детерминирован** (`outcome`): сила отряда против сложности вылазки,
+//! без броска кубика. Плата за вылазку — бодрость: та же валюта котовремени, в
+//! которой измеряется и сама отправка отряда (§12.23).
 
 use bevy_ecs::prelude::*;
 
@@ -28,6 +30,7 @@ use crate::components::*;
 use crate::hauling::spill;
 use crate::map::BaseMap;
 use crate::path::{Reach, find_path};
+use crate::skills::{SKILL_RAID, level_of};
 
 /// Все клетки-шлюзы карты, в порядке обхода: он фиксирован, значит выбор
 /// шлюза детерминирован (§11).
@@ -37,49 +40,73 @@ fn gate_cells<'a>(map: &'a BaseMap, rules: &'a TileRules) -> impl Iterator<Item 
         .filter(move |&(x, y)| rules.is_gate(map.tile_at(x, y)))
 }
 
-/// Набирает отряд и гонит его к шлюзу.
+/// Чем кончится вылазка. Считается и на возвращении, и каждый кадр для панели:
+/// прогноз и результат обязаны быть одним и тем же выражением, иначе игрок
+/// увидит одно, а получит другое.
+#[derive(Clone, Copy)]
+pub(crate) struct Outcome {
+    pub(crate) strength: i32,
+    /// Какая доля добычи достанется, в процентах (0..=100).
+    pub(crate) share: i32,
+    /// Провал: силы не хватило даже вполовину.
+    pub(crate) failed: bool,
+}
+
+/// Исход по силе отряда и сложности вылазки — **без броска кубика** (§12.23).
 ///
-/// Набор **постепенный**: кто освободился, тот и в отряде. Брать всех разом
-/// нельзя — на базе с бесконечной работой коты свободны поодиночке и по одному
-/// тику, и отряд не собрался бы никогда.
+/// Детерминизм здесь не формальность: он единственное, что делает выбор отряда
+/// читаемым. С кубиком игрок не отличил бы «выбрал слабый отряд» от «не
+/// повезло», а вылазок за сеанс столько, что вероятность так и не проступит.
 ///
-/// Исполнителей выбирает симуляция, и выбирает **ближайших** к шлюзу — то же
-/// правило, что у чертежей (§12.14). Шлюз выбирается один раз на миссию: тот,
-/// до которого суммарно ближе всего идти отряду нужного размера.
-pub(crate) fn assign_squad(
+/// Хватило силы — вся добыча; не хватило — её доля; вдвое меньше нужного —
+/// провал: ни добычи, ни сил. Нулевая сложность удаётся всегда, по общему
+/// правилу нулей в рулсете (цена тайла, ёмкость склада, потолок бодрости).
+pub(crate) fn outcome(danger: i32, strength: i32) -> Outcome {
+    if danger <= 0 {
+        return Outcome {
+            strength,
+            share: 100,
+            failed: false,
+        };
+    }
+    let failed = strength * 2 < danger;
+    Outcome {
+        strength,
+        share: if failed {
+            0
+        } else {
+            (strength * 100 / danger).min(100)
+        },
+        failed,
+    }
+}
+
+/// Держит выбранный игроком отряд идущим к шлюзу.
+///
+/// Состав здесь не трогается: его назначил `Sim::launch` в момент заявки, и
+/// заменить выбывшего некем — это выбор игрока, а не раздача работы (§12.23).
+/// Система нужна ровно для того, чтобы маршрут переживал изменения карты:
+/// шлюз снесли, кота выбросило из ямы, боец проснулся после истощения.
+/// Тот же случай, что `retry_orders` у приказа игрока.
+pub(crate) fn gather_squad(
     map: Res<BaseMap>,
     tiles: Res<TileRules>,
-    rules: Res<MissionRules>,
     mut commands: Commands,
     mut missions: Query<(Entity, &mut Mission)>,
-    crew: Query<(Entity, &Squad, &Position, Option<&Path>, Option<&Away>)>,
-    free_cats: Query<
-        (Entity, &Position),
-        (
-            With<UnitId>,
-            Without<Assignment>,
-            Without<Haul>,
-            Without<Rest>,
-            Without<Squad>,
-            Without<Path>,
-        ),
+    crew: Query<
+        (Entity, &Squad, &Position, Option<&Path>, Option<&Away>),
+        // Спящего не трогаем: маршрут разбудил бы его, а истощение — не повод
+        // гнать кота дальше. Проснётся — эта же система его и подберёт.
+        Without<Rest>,
     >,
 ) {
     if missions.is_empty() {
-        return; // обход на кота недёшев, а без миссий он никому не нужен
+        return;
     }
     let map = &*map;
-    let mut idle: Vec<(Entity, Reach)> = free_cats
-        .iter()
-        .map(|(e, p)| (e, Reach::all(map, (p.x, p.y))))
-        .collect();
 
     for (mission_e, mut mission) in &mut missions {
-        let Some(rule) = rules.0.get(mission.def) else {
-            continue; // запись контента мимо палитры миссий
-        };
-
-        // Кто уже в отряде и где он. Пустой маршрут считается пройденным:
+        // Кто в отряде и где он. Пустой маршрут считается пройденным:
         // `move_units` снимет его только следующим тиком.
         let mut left_base = false;
         let squad: Vec<(Entity, (i32, i32), bool)> = crew
@@ -91,8 +118,8 @@ pub(crate) fn assign_squad(
                 (e, (p.x, p.y), walking)
             })
             .collect();
-        // Отряд ушёл — набирать больше нечего, и шлюз больше не пересматривается:
-        // вернутся коты туда, откуда ушли, даже если гараж успели снести.
+        // Отряд ушёл — шлюз больше не пересматривается: вернутся коты туда,
+        // откуда ушли, даже если гараж успели снести.
         if left_base {
             continue;
         }
@@ -105,36 +132,13 @@ pub(crate) fn assign_squad(
             mission.gate = None;
         }
         if mission.gate.is_none() {
-            mission.gate = pick_gate(map, &tiles, rule.squad, &squad, &idle);
+            let at: Vec<(i32, i32)> = squad.iter().map(|&(_, at, _)| at).collect();
+            mission.gate = pick_gate(map, &tiles, &at);
         }
         let Some(gate) = mission.gate else {
-            continue; // шлюза нет или до него не добраться нужным числом котов
+            continue; // шлюза нет или до него не добраться всем разом
         };
 
-        // Добираем недостающих — ближайшими к шлюзу.
-        let mut need = rule.squad.saturating_sub(squad.len());
-        while need > 0 {
-            let nearest = idle
-                .iter()
-                .enumerate()
-                .filter_map(|(i, (_, reach))| reach.dist_at(gate.0, gate.1).map(|d| (d, i)))
-                .min_by_key(|&(d, _)| d);
-            let Some((_, i)) = nearest else {
-                break; // до шлюза никому не дойти — ждём следующего тика
-            };
-            let (cat_e, reach) = idle.remove(i);
-            let path = reach.path_to(gate.0, gate.1).unwrap_or_default();
-            commands.entity(cat_e).insert((
-                Squad(mission_e),
-                Path { steps: path },
-                MoveCooldown(0),
-            ));
-            need -= 1;
-        }
-
-        // Боец стоит не на шлюзе и никуда не идёт: шлюз сменился, или кота
-        // выбросило из ямы (`escape_voids`). Маршрут перепрокладываем — это
-        // тот же случай, что `retry_orders` у приказа игрока.
         for &(cat_e, at, walking) in &squad {
             if walking || at == gate {
                 continue;
@@ -150,32 +154,18 @@ pub(crate) fn assign_squad(
 
 /// Шлюз, к которому отряду суммарно ближе всего идти.
 ///
-/// Клетки, до которых не набирается нужное число котов, отбрасываются: иначе
-/// отряд ушёл бы собираться к шлюзу, отрезанному от половины базы. Ничьи
-/// разрешает порядок обхода карты, то есть детерминированно.
-fn pick_gate(
-    map: &BaseMap,
-    tiles: &TileRules,
-    size: usize,
-    squad: &[(Entity, (i32, i32), bool)],
-    idle: &[(Entity, Reach)],
-) -> Option<(i32, i32)> {
-    let reaches: Vec<Reach> = squad
-        .iter()
-        .map(|&(_, at, _)| Reach::all(map, at))
-        .collect();
+/// Клетки, до которых дойдут не все, отбрасываются: состав фиксирован, и шлюз,
+/// отрезанный от одного из бойцов, значит вылазку, которая никогда не тронется.
+/// Ничьи разрешает порядок обхода карты, то есть детерминированно.
+pub(crate) fn pick_gate(map: &BaseMap, tiles: &TileRules, at: &[(i32, i32)]) -> Option<(i32, i32)> {
+    let reaches: Vec<Reach> = at.iter().map(|&p| Reach::all(map, p)).collect();
     gate_cells(map, tiles)
         .filter_map(|(x, y)| {
-            let mut steps: Vec<i32> = reaches
-                .iter()
-                .chain(idle.iter().map(|(_, r)| r))
-                .filter_map(|r| r.dist_at(x, y))
-                .collect();
-            if steps.len() < size {
-                return None;
+            let mut total = 0;
+            for r in &reaches {
+                total += r.dist_at(x, y)?;
             }
-            steps.sort_unstable();
-            Some((steps[..size].iter().sum::<i32>(), (x, y)))
+            Some((total, (x, y)))
         })
         .min_by_key(|&(total, _)| total)
         .map(|(_, cell)| cell)
@@ -188,42 +178,77 @@ fn pick_gate(
 /// съехала на пол тем же тиком (§12.15).
 pub(crate) fn run_missions(
     rules: Res<MissionRules>,
+    skill_rules: Res<SkillRules>,
     mut commands: Commands,
     mut missions: Query<(Entity, &mut Mission)>,
-    crew: Query<(Entity, &Squad, &Position, Option<&Path>, Option<&Away>)>,
+    mut crew: Query<(
+        Entity,
+        &Squad,
+        &Position,
+        Option<&Path>,
+        Option<&Away>,
+        Option<&Skills>,
+        Option<&mut Energy>,
+    )>,
     mut stacks: Query<(Entity, &Position, &mut Stack)>,
 ) {
+    let raid = skill_rules.index_of(SKILL_RAID);
     for (mission_e, mut mission) in &mut missions {
         let Some(rule) = rules.0.get(mission.def) else {
             continue;
         };
         let Some(gate) = mission.gate else {
-            continue; // отряд ещё не начали набирать
+            continue; // шлюз ещё не выбран
         };
 
-        let squad: Vec<(Entity, (i32, i32), bool, bool)> = crew
+        let squad: Vec<(Entity, (i32, i32), bool, bool, i32)> = crew
             .iter()
             .filter(|(_, s, ..)| s.0 == mission_e)
-            .map(|(e, _, p, path, away)| {
+            .map(|(e, _, p, path, away, skills, _)| {
                 let walking = path.is_some_and(|p| !p.steps.is_empty());
-                (e, (p.x, p.y), walking, away.is_some())
+                // Вклад кота в силу отряда: сам он стоит единицу, навык —
+                // сверху. Нулевой навык поэтому не значит «бесполезен».
+                let force = 1 + raid.map_or(0, |s| level_of(&skill_rules, skills, s));
+                (e, (p.x, p.y), walking, away.is_some(), force)
             })
             .collect();
 
         // Отряд в поле. База о нём ничего не знает: ни усталости, ни маршрутов —
-        // авторасчёт исхода придёт отдельным шагом, пока миссия просто идёт.
-        if squad.iter().any(|&(.., away)| away) {
+        // вылазка считается разом по возвращении, а не симулируется (§12.22).
+        if squad.iter().any(|&(.., away, _)| away) {
+            // Опыт капает за тик в поле, как и на любой другой работе (§12.17):
+            // начисляет его `train_skills` в конце цепочки, здесь только маркер.
+            if let Some(skill) = raid {
+                for &(cat_e, ..) in &squad {
+                    commands.entity(cat_e).insert(Worked(skill));
+                }
+            }
             mission.left -= 1;
             if mission.left > 0 {
                 continue;
             }
+
+            // Исход считаем по силе **на возвращении**: за вылазку навык вырос,
+            // и отнимать этот рост у самой вылазки было бы странно.
+            let force = squad.iter().map(|&(.., f)| f).sum();
+            let out = outcome(rule.danger, force);
             for &(cat_e, ..) in &squad {
                 commands.entity(cat_e).remove::<(Away, Squad)>();
+                // Плата за вылазку — котовремя: та же валюта, в которой
+                // измеряется и сама отправка отряда. Провал забирает всё, и
+                // коты валятся у шлюза — `collapse_exhausted` подберёт их.
+                if let Ok((.., Some(mut energy))) = crew.get_mut(cat_e) {
+                    let toll = if out.failed { energy.0 } else { rule.toll };
+                    energy.0 = (energy.0 - toll).max(0);
+                }
             }
             // Добыча ложится кучей на шлюз — ровно как возврат от сноса ложится
             // под ноги сносильщику. Развозит её обычная уборка (§12.16).
             for &(item, count) in &rule.loot {
-                spill(&mut commands, &mut stacks, gate, item, count);
+                let got = count * out.share / 100;
+                if got > 0 {
+                    spill(&mut commands, &mut stacks, gate, item, got);
+                }
             }
             commands.entity(mission_e).despawn();
             continue;
@@ -234,7 +259,7 @@ pub(crate) fn run_missions(
         let ready = squad.len() == rule.squad
             && squad
                 .iter()
-                .all(|&(_, at, walking, _)| at == gate && !walking);
+                .all(|&(_, at, walking, ..)| at == gate && !walking);
         if ready {
             for &(cat_e, ..) in &squad {
                 commands.entity(cat_e).insert(Away);

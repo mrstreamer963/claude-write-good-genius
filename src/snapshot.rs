@@ -85,11 +85,19 @@ pub(crate) struct MissionSnap {
     /// ушёл, `left == total`: сбор в срок вылазки не входит.
     pub(crate) left: i32,
     pub(crate) total: i32,
-    /// Кто уже в отряде и сколько нужно всего.
+    /// Кто в отряде и сколько нужно всего.
     pub(crate) squad: Vec<String>,
     pub(crate) size: usize,
     /// Отряд ушёл с базы: отозвать его уже нельзя.
     pub(crate) away: bool,
+    /// Прогноз исхода — тем же выражением, которым он посчитается на
+    /// возвращении (§12.23). Пока отряд на базе, это ещё и предупреждение:
+    /// увидел «провал» — успел отозвать.
+    pub(crate) strength: i32,
+    pub(crate) danger: i32,
+    /// Какая доля добычи достанется, в процентах.
+    pub(crate) share: i32,
+    pub(crate) failed: bool,
 }
 
 #[derive(Serialize)]

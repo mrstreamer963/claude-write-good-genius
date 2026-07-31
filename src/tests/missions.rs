@@ -1,9 +1,11 @@
-//! Миссии: сбор отряда, уход через шлюз, возвращение с добычей (§12.22).
+//! Вылазки: сбор отряда, уход через шлюз, исход и возвращение (§12.22, §12.23).
 //!
-//! Схема почти везде одна: коридор с шлюзом (`G`-тайл задаётся через
-//! `set_gate`) и коты по разные его стороны. Проверяем не отдельные функции,
-//! а прогон полной цепочки — баги здесь живут в фильтрах занятости и в порядке
-//! раздатчиков.
+//! Схема почти везде одна: коридор с клеткой-шлюзом (тайл 1) и коты по разные
+//! его стороны. Проверяем не отдельные функции, а прогон полной цепочки — баги
+//! здесь живут в фильтрах занятости и в порядке систем.
+//!
+//! Миссия из `set_mission` **безопасна и бесплатна**: тесты сбора отряда про
+//! исход ничего не знают, а тесты исхода зовут `set_risky_mission`.
 
 use super::*;
 
@@ -17,18 +19,29 @@ fn sim_with_gate(rows: &[&str], gate: (i32, i32), squad: usize, ticks: i32) -> (
     (sim, mission)
 }
 
+/// Отряд поимённо — в тестах он почти всегда «все, кто есть».
+fn squad(ids: &[&str]) -> Vec<String> {
+    ids.iter().map(|s| s.to_string()).collect()
+}
+
+/// Тайл, которым в этих тестах занимают котов стройкой.
+///
+/// Не `0`: пол схемы `sim_from` — это уже тайл `0`, и чертёж на нём мгновенно
+/// отсекается как «уже построено». Тест с таким чертежом зелёный и пустой.
+const OTHER: i32 = 2;
+
+// --- сбор и уход -----------------------------------------------------------
+
 #[test]
 fn a_squad_gathers_at_the_gate_and_leaves() {
     let (mut sim, m) = sim_with_gate(&["#######", "#a...b#", "#######"], (3, 1), 2, 10);
-    assert!(sim.launch(m));
+    assert!(sim.launch(m, squad(&["a", "b"])));
 
-    // Сбор: оба идут к шлюзу и по дороге ещё на базе.
-    sim.tick_n(1);
     assert!(
         sim.in_squad("a") && sim.in_squad("b"),
         "оба записаны в отряд"
     );
-    assert!(!sim.is_away("a"), "пока идут — ещё на базе");
+    assert!(!sim.is_away("a"), "но ещё на базе — идут к шлюзу");
 
     sim.tick_n(10);
     assert_eq!(sim.pos_of("a"), (3, 1), "кот пришёл на шлюз");
@@ -39,7 +52,7 @@ fn a_squad_gathers_at_the_gate_and_leaves() {
 #[test]
 fn the_squad_returns_with_loot_at_the_gate() {
     let (mut sim, m) = sim_with_gate(&["#######", "#a...b#", "#######"], (3, 1), 2, 10);
-    sim.launch(m);
+    sim.launch(m, squad(&["a", "b"]));
     sim.tick_n(11);
     assert!(sim.is_away("a"), "отряд в поле");
     assert_eq!(sim.scrap_total(), 0, "пока отряд в поле, добычи ещё нет");
@@ -64,10 +77,9 @@ fn the_timer_waits_for_the_last_cat() {
         "##########",
     ];
     let (mut sim, m) = sim_with_gate(rows, (8, 1), 2, 20);
-    sim.launch(m);
+    sim.launch(m, squad(&["a", "b"]));
 
     sim.tick_n(8);
-    assert!(sim.in_squad("a") && sim.in_squad("b"));
     assert_eq!(sim.mission_left(), Some(20), "таймер ещё не тронулся");
     assert!(!sim.is_away("a"), "первый пришёл, но ждёт второго");
 
@@ -81,9 +93,9 @@ fn the_timer_waits_for_the_last_cat() {
 #[test]
 fn a_cat_in_a_squad_is_not_taken_by_jobs() {
     let (mut sim, m) = sim_with_gate(&["#######", "#a...b#", "#######"], (3, 1), 2, 50);
-    sim.launch(m);
-    sim.add_blueprint(1, 1, 0);
-    sim.add_blueprint(5, 1, 0);
+    sim.launch(m, squad(&["a", "b"]));
+    sim.add_blueprint(1, 1, OTHER);
+    sim.add_blueprint(5, 1, OTHER);
     sim.tick_n(20);
 
     assert!(
@@ -91,24 +103,7 @@ fn a_cat_in_a_squad_is_not_taken_by_jobs() {
         "чертежи отряд не сорвали"
     );
     assert!(!sim.has_assignment("a") && !sim.has_assignment("b"));
-}
-
-/// Приказ игрока снимает любую задачу — и место в отряде тоже. Раздатчик
-/// добирает замену, а сам отряд не разваливается.
-#[test]
-fn an_order_pulls_a_cat_out_of_the_squad() {
-    let (mut sim, m) = sim_with_gate(&["#######", "#a.c.b#", "#######"], (3, 1), 2, 50);
-    sim.launch(m);
-    sim.tick_n(1);
-    // Ближайший к шлюзу — 'c'; его и уводим приказом.
-    assert!(sim.in_squad("c"), "ближайший записан первым");
-    assert!(sim.set_target("c", 1, 1));
-    assert!(!sim.in_squad("c"), "приказ вывел из отряда");
-
-    sim.tick_n(20);
-    assert!(!sim.is_away("c"), "'c' ушёл по своим делам");
-    let gone = ["a", "b"].iter().filter(|u| sim.is_away(u)).count();
-    assert_eq!(gone, 2, "замена нашлась, и отряд всё равно ушёл вдвоём");
+    assert_ne!(sim.tile(1, 1), OTHER as i16, "и строить их было некому");
 }
 
 /// Добыча ложится на шлюз обычной кучей и дальше живёт по общим правилам:
@@ -118,7 +113,7 @@ fn loot_reaches_storage_by_itself() {
     let (mut sim, m) = sim_with_gate(&["########", "#a..b..#", "########"], (3, 1), 2, 6);
     sim.set_capacity(2, 50);
     sim.force_tile(6, 1, 2); // склад в дальнем конце коридора
-    sim.launch(m);
+    sim.launch(m, squad(&["a", "b"]));
     sim.tick_n(40);
 
     assert_eq!(sim.scrap_total(), 5, "добыча не потерялась");
@@ -131,7 +126,7 @@ fn loot_reaches_storage_by_itself() {
 #[test]
 fn a_squad_returns_into_a_demolished_gate() {
     let (mut sim, m) = sim_with_gate(&["#######", "#a...b#", "#######"], (3, 1), 2, 10);
-    sim.launch(m);
+    sim.launch(m, squad(&["a", "b"]));
     sim.tick_n(11);
     assert!(sim.is_away("a"));
 
@@ -145,10 +140,77 @@ fn a_squad_returns_into_a_demolished_gate() {
     assert!(sim.scrap_is_on_floor(), "и лежит на полу, а не в яме");
 }
 
+// --- заявка: кого посылают --------------------------------------------------
+
+/// Отряд выбирает игрок, а не симуляция: идут названные коты, даже если рядом
+/// со шлюзом стоял кто-то другой (§12.23).
+#[test]
+fn the_player_picks_the_squad() {
+    let (mut sim, m) = sim_with_gate(&["#######", "#a.c.b#", "#######"], (3, 1), 2, 50);
+    assert!(sim.launch(m, squad(&["a", "b"])), "заявка принята");
+
+    assert!(sim.in_squad("a") && sim.in_squad("b"));
+    assert!(!sim.in_squad("c"), "ближайший к шлюзу остался на базе");
+    sim.tick_n(20);
+    assert!(sim.is_away("a") && sim.is_away("b"));
+    assert!(!sim.is_away("c"));
+}
+
+/// Недобор — это неполная заявка, а не «пойдут вдвоём вместо троих»: молча
+/// дополнять состав симуляция не станет.
+#[test]
+fn an_incomplete_squad_is_refused() {
+    let (mut sim, m) = sim_with_gate(&["#######", "#a.c.b#", "#######"], (3, 1), 2, 50);
+    assert!(!sim.launch(m, squad(&["a"])), "меньше нужного");
+    assert!(!sim.launch(m, squad(&["a", "b", "c"])), "больше нужного");
+    assert!(
+        !sim.launch(m, squad(&["a", "a"])),
+        "один кот дважды — не отряд"
+    );
+    assert!(!sim.launch(m, squad(&["a", "ghost"])), "кота нет в мире");
+    assert_eq!(sim.mission_left(), None, "ни одна заявка не прошла");
+}
+
+/// Заявка снимает начатую работу — как приказ игрока (§12.15): решение послать
+/// кота в поле весомее его текущей стройки, и чертёж при этом освобождается.
+#[test]
+fn a_raid_takes_a_cat_off_its_job() {
+    let (mut sim, m) = sim_with_gate(&["#######", "#a...b#", "#######"], (3, 1), 2, 20);
+    sim.add_blueprint(1, 1, OTHER);
+    sim.tick_n(2);
+    assert!(sim.has_assignment("a"), "кот взялся за чертёж");
+
+    assert!(sim.launch(m, squad(&["a", "b"])));
+    assert!(!sim.has_assignment("a"), "стройка снята");
+    sim.tick_n(20);
+    assert!(sim.is_away("a"), "ушёл на вылазку");
+
+    // Чертёж освобождён, а не остался за ушедшим: вернувшись, его добьют.
+    sim.tick_n(BUILD_TICKS * 3 + 20);
+    assert_eq!(sim.tile(1, 1), OTHER as i16, "чертёж всё-таки построен");
+}
+
+/// Приказ игрока распускает вылазку целиком: состав выбран поимённо, заменить
+/// выбывшего некем, а отряд, который никогда не соберётся, хуже честного
+/// роспуска (§12.23).
+#[test]
+fn an_order_disbands_the_raid() {
+    let (mut sim, m) = sim_with_gate(&["#######", "#a...b#", "#######"], (3, 1), 2, 50);
+    sim.launch(m, squad(&["a", "b"]));
+    sim.tick_n(1);
+
+    assert!(sim.set_target("a", 1, 1));
+    assert_eq!(sim.mission_left(), None, "вылазка снята");
+    assert!(!sim.in_squad("a") && !sim.in_squad("b"), "оба свободны");
+
+    sim.tick_n(30);
+    assert!(!sim.is_away("b"), "никто никуда не ушёл");
+}
+
 #[test]
 fn cancelling_frees_the_squad() {
     let (mut sim, m) = sim_with_gate(&["#######", "#a...b#", "#######"], (3, 1), 2, 50);
-    sim.launch(m);
+    sim.launch(m, squad(&["a", "b"]));
     sim.tick_n(1);
     assert!(sim.in_squad("a"));
 
@@ -156,9 +218,9 @@ fn cancelling_frees_the_squad() {
     assert!(!sim.in_squad("a") && !sim.in_squad("b"), "отряд распущен");
     assert_eq!(sim.mission_left(), None);
 
-    sim.add_blueprint(1, 1, 0);
+    sim.add_blueprint(1, 1, OTHER);
     sim.tick_n(BUILD_TICKS + 5);
-    assert_eq!(sim.tile(1, 1), 0, "и коты вернулись к работе");
+    assert_eq!(sim.tile(1, 1), OTHER as i16, "и коты вернулись к работе");
 }
 
 /// Ушедший отряд не отзывается: что с ним происходит, симуляция не знает —
@@ -166,7 +228,7 @@ fn cancelling_frees_the_squad() {
 #[test]
 fn an_away_squad_cannot_be_recalled() {
     let (mut sim, m) = sim_with_gate(&["#######", "#a...b#", "#######"], (3, 1), 2, 30);
-    sim.launch(m);
+    sim.launch(m, squad(&["a", "b"]));
     sim.tick_n(11);
     assert!(sim.is_away("a"));
 
@@ -175,33 +237,43 @@ fn an_away_squad_cannot_be_recalled() {
     assert!(sim.is_away("a"), "кот всё ещё в поле");
 }
 
-/// Истощение забирает кота откуда угодно — в том числе из отряда: он выпадает
-/// из состава и ложится спать, а раздатчик доберёт замену (§12.20).
+/// Истощение — не решение игрока, поэтому из отряда оно не выводит: боец
+/// досыпает своё, а вылазка ждёт. Этим оно и отличается от приказа (§12.23).
 #[test]
-fn exhaustion_pulls_a_cat_out_of_the_squad() {
-    let (mut sim, m) = sim_with_gate(&["#######", "#a.c.b#", "#######"], (3, 1), 2, 50);
-    sim.set_needs(100, 10, 1);
-    sim.launch(m);
+fn exhaustion_makes_the_raid_wait() {
+    let rows = &[
+        "##########",
+        "#a.......#",
+        "#........#",
+        "#b.......#",
+        "##########",
+    ];
+    let (mut sim, m) = sim_with_gate(rows, (8, 1), 2, 20);
+    sim.set_needs(100, 10, 50);
+    sim.launch(m, squad(&["a", "b"]));
     sim.tick_n(1);
-    assert!(sim.in_squad("c"));
 
-    sim.set_energy("c", 0);
+    sim.set_energy("b", 0);
     sim.tick_n(1);
-    assert!(!sim.in_squad("c"), "истощённый выпал из отряда");
-    assert!(sim.is_resting("c"), "и спит там, где стоял");
+    assert!(sim.is_resting("b"), "упал где стоял");
+    assert!(sim.in_squad("b"), "но из отряда не выпал");
+    assert!(!sim.is_away("a"), "и вылазка ждёт его");
 
+    // Просыпается за пару тиков и идёт дальше к шлюзу — девять шагов.
     sim.tick_n(20);
-    let gone = ["a", "b"].iter().filter(|u| sim.is_away(u)).count();
-    assert_eq!(gone, 2, "замена нашлась, отряд ушёл");
+    assert!(
+        sim.is_away("a") && sim.is_away("b"),
+        "выспался — и отряд ушёл"
+    );
 }
 
-/// Вне базы кот не устаёт: считать усталость там нечем, миссия — авторасчёт,
-/// а не симуляция (§12.22).
+/// Вне базы кот не устаёт: считать усталость там нечем, вылазка — авторасчёт,
+/// а не симуляция (§12.22). Плата берётся разом, на возвращении.
 #[test]
 fn a_cat_on_a_mission_does_not_tire() {
     let (mut sim, m) = sim_with_gate(&["#######", "#a...b#", "#######"], (3, 1), 2, 40);
     sim.set_needs(3000, 100, 1);
-    sim.launch(m);
+    sim.launch(m, squad(&["a", "b"]));
     sim.tick_n(11);
     assert!(sim.is_away("a"));
 
@@ -211,46 +283,195 @@ fn a_cat_on_a_mission_does_not_tire() {
     assert_eq!(sim.energy_of("a"), before, "бодрость не тронулась");
 }
 
-/// Шлюза на базе нет — отряд не набирается вовсе, и коты не стоят столбом:
-/// миссия просто ждёт, пока игрок построит гараж.
+/// Шлюза на базе нет — заявку не принимаем вовсе: отряд, которому некуда идти,
+/// просто стоял бы столбом.
 #[test]
 fn without_a_gate_nobody_leaves() {
     let mut sim = sim_from(&["#######", "#a...b#", "#######"]);
     let m = sim.set_mission(2, 10, &[(0, 5)]);
-    sim.launch(m);
-    sim.add_blueprint(3, 1, 0);
-    sim.tick_n(20);
-
-    assert!(!sim.in_squad("a") && !sim.in_squad("b"), "набирать некуда");
-    assert_eq!(sim.mission_gate(), None);
+    assert!(!sim.launch(m, squad(&["a", "b"])));
+    assert_eq!(sim.mission_left(), None);
 }
 
 /// Миссия одна за раз: вторая заявка не принимается, пока первая не закрыта.
 #[test]
 fn only_one_mission_runs_at_a_time() {
     let (mut sim, m) = sim_with_gate(&["#######", "#a...b#", "#######"], (3, 1), 2, 10);
-    assert!(sim.launch(m));
-    assert!(!sim.launch(m), "вторая заявка отклонена");
+    assert!(sim.launch(m, squad(&["a", "b"])));
+    assert!(
+        !sim.launch(m, squad(&["a", "b"])),
+        "вторая заявка отклонена"
+    );
     sim.tick_n(21);
-    assert!(sim.launch(m), "после возвращения — снова можно");
+    assert!(
+        sim.launch(m, squad(&["a", "b"])),
+        "после возвращения — снова можно"
+    );
 }
 
-/// Боевой рулсет: гараж — шлюз, отряд собирается, уходит и возвращается с
-/// деталями. Ловит рассогласование кода и контента — гараж без `gate`, миссию
-/// с отрядом больше, чем котов на базе, или добычу под чужим `id` предмета.
+// --- исход -----------------------------------------------------------------
+
+/// Сила отряда покрыла сложность — вся добыча. По коту это единица плюс его
+/// уровень «Вылазки», поэтому даже новички что-то да могут (§12.23).
+#[test]
+fn a_squad_that_matches_the_danger_brings_everything() {
+    let (mut sim, _) = sim_with_gate(&["#######", "#a...b#", "#######"], (3, 1), 2, 10);
+    let m = sim.set_risky_mission(2, 10, 2, 0, &[(0, 20)]);
+    sim.launch(m, squad(&["a", "b"]));
+    sim.tick_n(25);
+
+    assert_eq!(sim.scrap_total(), 20, "сила 2 против сложности 2 — всё");
+}
+
+/// Силы не хватило, но и не вдвое: добыча приходит долей. Округление вниз —
+/// «донесли, сколько смогли», а не «получите половинку детали».
+#[test]
+fn a_weak_squad_brings_only_a_share() {
+    let (mut sim, _) = sim_with_gate(&["#######", "#a...b#", "#######"], (3, 1), 2, 10);
+    let m = sim.set_risky_mission(2, 10, 3, 0, &[(0, 20), (1, 3)]);
+    sim.launch(m, squad(&["a", "b"]));
+    sim.tick_n(25);
+
+    // 2 из 3 = 66%: лома 20*66/100 = 13, деталей 3*66/100 = 1.
+    assert_eq!(sim.item_total(0), 13, "лома — две трети");
+    assert_eq!(sim.item_total(1), 1, "деталей — сколько донесли");
+}
+
+/// Силы меньше половины нужного — провал: ни добычи, ни сил. Коты валятся у
+/// шлюза, и цена вылазки становится видимой сразу.
+#[test]
+fn a_hopeless_squad_fails_and_collapses() {
+    let (mut sim, _) = sim_with_gate(&["#######", "#a...b#", "#######"], (3, 1), 2, 10);
+    sim.set_needs(1000, 100, 1);
+    let m = sim.set_risky_mission(2, 10, 10, 0, &[(0, 20)]);
+    sim.launch(m, squad(&["a", "b"]));
+    sim.tick_n(25);
+
+    assert_eq!(sim.scrap_total(), 0, "вернулись ни с чем");
+    // Ноль бодрости держится ровно тик: `collapse_exhausted` тут же роняет
+    // кота, и `sleep` начинает его поднимать. Видимый след провала — не число,
+    // а то, что оба спят у шлюза, ничего не проработав.
+    assert!(
+        sim.is_resting("a") && sim.is_resting("b"),
+        "падают там, где стояли"
+    );
+    assert!(sim.energy_of("a") < 100, "и подниматься им долго");
+}
+
+/// Успешная вылазка тоже стоит бодрости — просто не всей. Плата списывается
+/// разом на возвращении: сама вылазка не симулируется (§12.22).
+#[test]
+fn a_successful_raid_still_costs_energy() {
+    // Сравниваем два одинаковых мира, различающихся только платой: обычное
+    // бодрствование тратит бодрость в обоих, и вычитать его из ответа значит
+    // считать то же самое дважды.
+    let after_toll = |toll: i32| {
+        let (mut sim, _) = sim_with_gate(&["#######", "#a...b#", "#######"], (3, 1), 2, 10);
+        sim.set_needs(1000, 100, 1);
+        let m = sim.set_risky_mission(2, 10, 2, toll, &[(0, 5)]);
+        sim.launch(m, squad(&["a", "b"]));
+        sim.tick_n(25);
+        assert!(!sim.is_away("a"), "вернулись");
+        sim.energy_of("a")
+    };
+
+    assert_eq!(
+        after_toll(0) - after_toll(300),
+        300,
+        "плата за вылазку снята разом и ровно один раз",
+    );
+}
+
+/// Навык «Вылазка» растёт от самих вылазок — по очку за тик в поле, тем же
+/// механизмом `Worked`, что и «Стройка» (§12.17).
+#[test]
+fn raiding_trains_the_raid_skill() {
+    let (mut sim, _) = sim_with_gate(&["#######", "#a...b#", "#######"], (3, 1), 2, 10);
+    let raid = sim.set_skill("raid", &[5, 50]);
+    let m = sim.set_risky_mission(2, 10, 2, 0, &[(0, 5)]);
+    sim.launch(m, squad(&["a", "b"]));
+    sim.tick_n(25);
+
+    assert_eq!(sim.xp_of("a", raid), 10, "очко за каждый тик в поле");
+    assert_eq!(sim.level_of("a", raid), 1, "и первый уровень взят");
+}
+
+/// Тот же отряд с навыком приносит больше: ради этого выбор состава и нужен.
+#[test]
+fn a_trained_squad_brings_more_loot() {
+    let (mut sim, _) = sim_with_gate(&["#######", "#a...b#", "#######"], (3, 1), 2, 10);
+    let raid = sim.set_skill("raid", &[100]);
+    let m = sim.set_risky_mission(2, 10, 4, 0, &[(0, 20)]);
+
+    // Новички: сила 2 из 4 — половина добычи.
+    sim.launch(m, squad(&["a", "b"]));
+    sim.tick_n(25);
+    assert_eq!(sim.scrap_total(), 10, "половина");
+
+    // Те же коты первого уровня: сила 4 из 4 — всё.
+    sim.set_xp("a", raid, 100);
+    sim.set_xp("b", raid, 100);
+    sim.launch(m, squad(&["a", "b"]));
+    sim.tick_n(25);
+    assert_eq!(sim.scrap_total(), 30, "и ещё двадцать сверху");
+}
+
+/// Провалу тоже учатся: опыт капает за время в поле, а не за успех (§12.17).
+#[test]
+fn even_a_failed_raid_teaches() {
+    let (mut sim, _) = sim_with_gate(&["#######", "#a...b#", "#######"], (3, 1), 2, 10);
+    let raid = sim.set_skill("raid", &[100]);
+    let m = sim.set_risky_mission(2, 10, 10, 0, &[(0, 20)]);
+    sim.launch(m, squad(&["a", "b"]));
+    sim.tick_n(25);
+
+    assert_eq!(sim.scrap_total(), 0, "вылазка провалена");
+    assert_eq!(sim.xp_of("a", raid), 10, "но опыт всё равно набран");
+}
+
+/// Боевой рулсет: гараж — шлюз, «Свалка» по силам стартовой тройке, а «Логово»
+/// на старте гарантированно проваливается. Ловит рассогласование кода и
+/// контента — гараж без `gate`, навык под другим `id`, лестницу сложности,
+/// в которой первая же вылазка невыполнима.
 #[test]
 fn the_shipped_ruleset_sends_a_squad_out_and_back() {
     let mut sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
     let parts = 1; // индекс `part` в палитре предметов
     let before = sim.item_total(parts);
 
-    assert!(sim.launch(0), "первая миссия рулсета запускается");
-    // Сбор + вылазка + запас на дорогу: длительность берём с потолком.
+    assert!(
+        sim.launch(0, squad(&["excellent", "sp2"])),
+        "первая миссия рулсета по силам стартовому отряду",
+    );
     sim.tick_n(600);
 
     assert!(
         sim.item_total(parts) > before,
         "деталей стало больше: вылазка — источник дохода, которого у базы не было",
     );
+    assert!(
+        sim.skill_index("raid")
+            .is_some_and(|s| sim.xp_of("excellent", s) > 0),
+        "и навык «Вылазка» вырос: домен работы, а не украшение",
+    );
     assert_eq!(sim.mission_left(), None, "миссия закрыта");
+}
+
+#[test]
+fn the_shipped_ruleset_has_a_mission_that_is_out_of_reach() {
+    let mut sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
+    let before = sim.scrap_total();
+
+    assert!(
+        sim.launch(2, squad(&["excellent", "sp2"])),
+        "«Логово» заявлено"
+    );
+    sim.tick_n(800);
+
+    assert_eq!(
+        sim.scrap_total(),
+        before,
+        "новички возвращаются из логова ни с чем — механике провала есть что показать",
+    );
+    assert!(sim.is_resting("excellent"), "и валятся без сил");
 }

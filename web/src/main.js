@@ -46,9 +46,8 @@ world.addChild(overlay);
 app.stage.addChild(world);
 
 const hoverRect = new Graphics();
-const selectionRing = new Graphics();
-selectionRing.circle(0, 0, TILE * 0.44).stroke({ color: COLORS.select, width: 2 });
-selectionRing.visible = false;
+// Колец столько, сколько выбрано котов: под вылазку их набирают по несколько.
+const selectionRings = new Container();
 const orderMarker = new Graphics();
 orderMarker
   .circle(0, 0, TILE * 0.16)
@@ -58,7 +57,7 @@ orderMarker
 orderMarker.visible = false;
 overlay.addChild(hoverRect);
 overlay.addChild(orderMarker);
-overlay.addChild(selectionRing);
+overlay.addChild(selectionRings);
 
 app.stage.eventMode = 'static';
 app.stage.hitArea = app.screen;
@@ -74,7 +73,9 @@ let mapCells = null; // Int-массив состояния карты
 let mode = 'cursor'; // 'cursor' | 'build' | 'store'
 let buildTile = 0; // индекс палитры, или -1 = стереть (в режиме build)
 let autoTidy = true; // коты сами свозят лом на склад (см. ядро, §12.16)
-let selectedUnit = null;
+// Выбор множественный: отряд на вылазку игрок набирает поимённо (§12.23), а
+// один выбранный кот — это его частный случай. Панель показывает последнего.
+let selectedUnits = [];
 let dragFrom = null; // якорь рамки (клетка, где нажали), null = не тянем
 let dragTo = null; // текущий угол рамки; переживает выход курсора за карту
 let missionRunning = false; // миссия на POC одна за раз (§12.22)
@@ -311,16 +312,21 @@ function createUnit(e) {
 }
 
 function updateSelectionOverlay() {
-  const su = selectedUnit ? unitTiles.get(selectedUnit) : null;
-  if (su) {
-    selectionRing.visible = true;
-    selectionRing.x = su.x * TILE + TILE / 2;
-    selectionRing.y = su.y * TILE + TILE / 2;
-  } else {
-    selectionRing.visible = false;
+  // Выбранный кот мог уйти на вылазку — с карты он при этом исчезает, но из
+  // выбора не выпадает: вернётся, и кольцо снова зажжётся.
+  selectionRings.removeChildren();
+  for (const id of selectedUnits) {
+    const at = unitTiles.get(id);
+    if (!at) continue;
+    const ring = new Graphics();
+    ring.circle(0, 0, TILE * 0.44).stroke({ color: COLORS.select, width: 2 });
+    ring.x = at.x * TILE + TILE / 2;
+    ring.y = at.y * TILE + TILE / 2;
+    selectionRings.addChild(ring);
   }
 
-  const so = selectedUnit ? orders.get(selectedUnit) : null;
+  const last = selectedUnits[selectedUnits.length - 1];
+  const so = last ? orders.get(last) : null;
   if (so) {
     orderMarker.visible = true;
     orderMarker.x = so.x * TILE + TILE / 2;
@@ -333,13 +339,17 @@ function updateSelectionOverlay() {
 // Панель выбранного кота. Навык растёт молча, и это единственное место, где
 // рост виден игроку (§12.17): уровень, полоска до следующего, лапы и перки.
 function renderCatPanel(entities) {
-  const e = selectedUnit ? entities.find((u) => u.id === selectedUnit) : null;
+  const last = selectedUnits[selectedUnits.length - 1];
+  const e = last ? entities.find((u) => u.id === last) : null;
   if (!e || !meta) {
     catEl.hidden = true;
     return;
   }
   const defs = meta.skills ?? [];
   const parts = [`<div class="cat-name">${esc(e.id)}</div>`];
+  if (selectedUnits.length > 1) {
+    parts.push(`<div class="cat-sub">выбрано ${selectedUnits.length}: ${selectedUnits.map(esc).join(' · ')}</div>`);
+  }
   for (let i = 0; i < defs.length; i++) {
     const s = e.skills?.[i];
     if (!s) continue;
@@ -397,11 +407,22 @@ function renderMissionPanel(list) {
         '</div>',
     );
   } else {
-    parts.push(
-      `<div class="cat-sub">Собираются у шлюза · ${m.squad.length}/${m.size}</div>`,
-    );
+    parts.push('<div class="cat-sub">Собираются у шлюза</div>');
   }
   parts.push(`<div class="cat-sub">${m.squad.map(esc).join(' · ') || '—'}</div>`);
+  // Прогноз исхода: его считает ядро тем же выражением, которым исход
+  // посчитается на возвращении (§12.23). Пока отряд на базе — это ещё и
+  // предупреждение: увидел «провал», успел отозвать.
+  if (m.danger > 0) {
+    const verdict = m.failed ? 'провал' : `добыча ${m.share}%`;
+    parts.push(
+      '<div class="cat-skill">' +
+        `<div class="cat-row"><span>Сила / сложность</span><b>${m.strength} / ${m.danger}</b></div>` +
+        `<div class="bar"><i class="${m.failed ? 'fail' : ''}" style="width:${m.failed ? 100 : m.share}%"></i></div>` +
+        `<div class="cat-sub">${verdict}</div>` +
+        '</div>',
+    );
+  }
   // Отозвать можно только тех, кто ещё на базе: ушедший отряд симуляции уже
   // не подчиняется — вылазка считается разом по возвращении.
   if (!m.away) {
@@ -481,21 +502,26 @@ function endDrag(apply, global) {
   if (global) updateHover(global);
 }
 
-// режим курсора: выбрать кота / приказать идти
-function command(global) {
+// режим курсора: выбрать кота (Shift — добавить в отряд) / приказать идти
+function command(global, add) {
   const t = tileAt(global);
   if (!t) return;
   const hit = unitAt(t.tx, t.ty);
   if (hit) {
-    selectedUnit = hit;
+    if (!add) selectedUnits = [hit];
+    else if (selectedUnits.includes(hit)) selectedUnits = selectedUnits.filter((u) => u !== hit);
+    else selectedUnits.push(hit);
     updateSelectionOverlay();
     return;
   }
-  if (selectedUnit && isWalkable(t.tx, t.ty)) {
-    worker.postMessage({ type: 'move', id: selectedUnit, x: t.tx, y: t.ty });
-    orders.set(selectedUnit, { x: t.tx, y: t.ty });
-    updateSelectionOverlay();
+  if (!isWalkable(t.tx, t.ty)) return;
+  // Приказ уходит каждому выбранному: коты друг друга не блокируют, и толпа
+  // на одной клетке — законное состояние (см. `set_target` в ядре).
+  for (const id of selectedUnits) {
+    worker.postMessage({ type: 'move', id, x: t.tx, y: t.ty });
+    orders.set(id, { x: t.tx, y: t.ty });
   }
+  updateSelectionOverlay();
 }
 
 function updateHover(global) {
@@ -520,7 +546,7 @@ function updateHover(global) {
 
 app.stage.on('pointerdown', (e) => {
   if (mode === 'cursor') {
-    command(e.global);
+    command(e.global, e.shiftKey);
     return;
   }
   const t = tileAt(e.global);
@@ -625,14 +651,15 @@ function buildToolbar() {
 
     missionButtons.length = 0;
     missions.forEach((m, i) => {
-      // На кнопке — цена котовремени (сколько уходит и надолго ли) и добыча
-      // теми же фишками, что и цена тайла: это одна и та же валюта.
+      // На кнопке — добыча теми же фишками, что и цена тайла: это одна и та же
+      // валюта. Отряд берётся из выделения: кого послать, решает игрок.
       const b = mkTool(
         `<span class="sw sw-gate"></span><span>${esc(m.label || m.id)}</span>${costChips(m.loot)}`,
-        () => worker.postMessage({ type: 'launch', mission: i }),
+        () => worker.postMessage({ type: 'launch', mission: i, units: [...selectedUnits] }),
       );
-      b.classList.add('toggle', 'on');
-      b.title = `${m.squad} кота · ${m.ticks} тиков`;
+      b.classList.add('toggle');
+      b.dataset.squad = m.squad;
+      b.dataset.hint = `${m.squad} кота · ${m.ticks} тиков · сложность ${m.danger ?? 0}`;
       missionButtons.push(b);
       el.appendChild(b);
     });
@@ -642,12 +669,18 @@ function buildToolbar() {
   selectCursor(cursorBtn); // режим по умолчанию
 }
 
-// Миссия одна за раз, и отказ ядра игроку не виден: гасим кнопки сами, чтобы
-// клик не выглядел сломанным.
+// Кнопка живая, только когда выделено ровно столько котов, сколько уходит:
+// ядро неполную заявку отклоняет молча (§12.23), а молчащая кнопка читается
+// как сломанная. Заодно подсказка объясняет, чего не хватает.
 function syncMissionButtons() {
   for (const b of missionButtons) {
-    b.disabled = missionRunning;
-    b.classList.toggle('on', !missionRunning);
+    const need = Number(b.dataset.squad);
+    const ready = !missionRunning && selectedUnits.length === need;
+    b.disabled = !ready;
+    b.classList.toggle('on', ready);
+    b.title = missionRunning
+      ? 'Вылазка уже идёт'
+      : `${b.dataset.hint} · выбрано ${selectedUnits.length} из ${need}`;
   }
 }
 
