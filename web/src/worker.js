@@ -75,6 +75,12 @@ onmessage = (e) => {
     sim.set_auto_tidy(m.on);
   } else if (m.type === 'move' && sim) {
     sim.set_target(m.id, m.x, m.y);
+  } else if (m.type === 'launch' && sim) {
+    // Отряд не выбирается: миссия — это разметка работы, как чертёж, а кого
+    // послать, решает симуляция (см. `launch` в ядре, §12.22).
+    sim.launch(m.mission);
+  } else if (m.type === 'cancelMission' && sim) {
+    sim.cancel_mission();
   }
 };
 

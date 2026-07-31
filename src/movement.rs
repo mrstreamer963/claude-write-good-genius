@@ -51,9 +51,9 @@ pub(crate) fn move_units(
 /// сейчас нет пути — например, приказ был отдан до постройки коридора.
 /// Снимает `Order`, когда цель достигнута.
 ///
-/// Коты за работой — стройкой (`Assignment`) или переносом (`Haul`) —
-/// пропускаются: приказ не должен срывать кота с начатой задачи. Он подхватится
-/// сам, как только задача снимется.
+/// Коты за работой — стройкой (`Assignment`), переносом (`Haul`), сном (`Rest`)
+/// или в отряде (`Squad`) — пропускаются: приказ не должен срывать кота с
+/// начатой задачи. Он подхватится сам, как только задача снимется.
 pub(crate) fn retry_orders(
     map: Res<BaseMap>,
     mut commands: Commands,
@@ -64,6 +64,7 @@ pub(crate) fn retry_orders(
             Without<Assignment>,
             Without<Haul>,
             Without<Rest>,
+            Without<Squad>,
         ),
     >,
 ) {
@@ -100,7 +101,7 @@ pub(crate) fn retry_orders(
 pub(crate) fn escape_voids(
     map: Res<BaseMap>,
     mut commands: Commands,
-    q: Query<(Entity, &Position), (With<UnitId>, Without<Path>)>,
+    q: Query<(Entity, &Position), (With<UnitId>, Without<Path>, Without<Away>)>,
 ) {
     for (e, pos) in &q {
         if map.walkable(pos.x, pos.y) {
@@ -126,23 +127,48 @@ pub(crate) fn escape_voids(
 /// раз за разом не находит путь; кот за работой или за сном застрявшим не
 /// считается). Замурованный в пустоте виден даже спящим: выбираться ему
 /// всё равно придётся, и игрок должен это видеть.
-pub(crate) fn is_stuck(
-    map: &BaseMap,
-    pos: &Position,
-    order: Option<&Order>,
-    path: Option<&Path>,
-    assignment: Option<&Assignment>,
-    haul: Option<&Haul>,
-    rest: Option<&Rest>,
-) -> bool {
+///
+/// Ушедшего на миссию не касается ни то, ни другое: его позиция — это шлюз, с
+/// которого он ушёл, и она ничего не говорит о том, где кот на самом деле.
+pub(crate) fn is_stuck(map: &BaseMap, pos: &Position, tasks: Busy) -> bool {
+    if tasks.away {
+        return false;
+    }
     let entombed = !map.walkable(pos.x, pos.y)
         && !DIRS
             .iter()
             .any(|(dx, dy)| map.walkable(pos.x + dx, pos.y + dy));
-    let order_stalled = order.is_some()
-        && path.is_none()
-        && assignment.is_none()
-        && haul.is_none()
-        && rest.is_none();
-    entombed || order_stalled
+    entombed || (tasks.ordered && tasks.idle)
+}
+
+/// Чем кот занят — в том же наборе, что и фильтры `Without<…>` раздатчиков.
+///
+/// Отдельная структура, а не восемь аргументов: список задач общего слоя растёт
+/// (`Assignment`, `Haul`, `Rest`, `Squad` — и это не конец), и собирать его в
+/// каждой точке вызова заново значит однажды забыть одну.
+#[derive(Clone, Copy)]
+pub(crate) struct Busy {
+    /// Приказ игрока висит, но маршрута под него сейчас нет.
+    pub(crate) ordered: bool,
+    /// Ни одной задачи — то есть невыполнимый приказ и правда некому отменить.
+    pub(crate) idle: bool,
+    pub(crate) away: bool,
+}
+
+impl Busy {
+    pub(crate) fn of(
+        order: Option<&Order>,
+        path: Option<&Path>,
+        assignment: Option<&Assignment>,
+        haul: Option<&Haul>,
+        rest: Option<&Rest>,
+        squad: Option<&Squad>,
+        away: Option<&Away>,
+    ) -> Self {
+        Busy {
+            ordered: order.is_some() && path.is_none(),
+            idle: assignment.is_none() && haul.is_none() && rest.is_none() && squad.is_none(),
+            away: away.is_some(),
+        }
+    }
 }

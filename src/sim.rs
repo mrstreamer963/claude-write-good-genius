@@ -9,6 +9,8 @@
 //!   * `*_rect()`        — те же инструменты на рамку; решение — на всю рамку сразу;
 //!   * `mark_to_store_rect()` — пометить кучи «на склад» (или снять пометку);
 //!   * `set_auto_tidy()` — убирать ли лом с пола без приказа;
+//!   * `launch()`        — отправить отряд на миссию; отряд наберётся сам;
+//!   * `cancel_mission()`— распустить отряд, пока он ещё не ушёл с базы;
 //!   * `demolish()`      — мгновенный снос без котов (тесты/отладка);
 //!   * `set_target()`    — приказ коту идти в тайл (движение по тикам, отменяет его задачу);
 //!   * `tick()`          — один фиксированный шаг симуляции;
@@ -20,12 +22,12 @@ use wasm_bindgen::prelude::*;
 use crate::components::*;
 use crate::jobs::BUILD_WORK;
 use crate::map::{BaseMap, rect_cells};
-use crate::movement::is_stuck;
+use crate::movement::{Busy, is_stuck};
 use crate::path::find_path;
-use crate::ruleset::{ItemDef, PerkDef, Ruleset, SkillDef, TileDef};
+use crate::ruleset::{ItemDef, MissionDef, PerkDef, Ruleset, SkillDef, TileDef};
 use crate::schedule::build_schedule;
 use crate::snapshot::{
-    BaseMapDto, BlueprintSnap, EntitySnap, MapMeta, SkillSnap, Snapshot, StackSnap,
+    BaseMapDto, BlueprintSnap, EntitySnap, MapMeta, MissionSnap, SkillSnap, Snapshot, StackSnap,
 };
 
 #[wasm_bindgen]
@@ -36,6 +38,7 @@ pub struct Sim {
     pub(crate) items: Vec<ItemDef>,
     pub(crate) skills: Vec<SkillDef>,
     pub(crate) perks: Vec<PerkDef>,
+    pub(crate) missions: Vec<MissionDef>,
     pub(crate) width: i32,
     pub(crate) height: i32,
 }
@@ -81,6 +84,21 @@ impl Sim {
         self.world.entity_mut(e).despawn();
         true
     }
+
+    /// Миссия, которая сейчас идёт (её на POC не больше одной).
+    fn mission(&mut self) -> Option<Entity> {
+        let mut q = self.world.query_filtered::<Entity, With<Mission>>();
+        q.iter(&self.world).next()
+    }
+
+    /// Отряд миссии: кто в нём и ушёл ли он уже с базы.
+    fn crew_of(&mut self, mission: Entity) -> Vec<(Entity, bool)> {
+        let mut q = self.world.query::<(Entity, &Squad, Option<&Away>)>();
+        q.iter(&self.world)
+            .filter(|(_, squad, _)| squad.0 == mission)
+            .map(|(e, _, away)| (e, away.is_some()))
+            .collect()
+    }
 }
 
 #[wasm_bindgen]
@@ -120,6 +138,21 @@ impl Sim {
                         .collect(),
                     capacity: t.capacity,
                     rest: t.rest,
+                    gate: t.gate,
+                })
+                .collect(),
+        ));
+        world.insert_resource(MissionRules(
+            rs.missions
+                .iter()
+                .map(|m| MissionRule {
+                    squad: m.squad,
+                    ticks: m.ticks,
+                    loot: m
+                        .loot
+                        .iter()
+                        .filter_map(|(id, &n)| item_index(id).map(|i| (i, n)))
+                        .collect(),
                 })
                 .collect(),
         ));
@@ -188,6 +221,7 @@ impl Sim {
             items: rs.items,
             skills: rs.skills,
             perks: rs.perks,
+            missions: rs.missions,
             width: w,
             height: h,
         })
@@ -202,6 +236,7 @@ impl Sim {
             items: self.items.clone(),
             skills: self.skills.clone(),
             perks: self.perks.clone(),
+            missions: self.missions.clone(),
         };
         serde_wasm_bindgen::to_value(&meta).map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -364,6 +399,59 @@ impl Sim {
         true
     }
 
+    /// Отправить отряд на миссию `def` (индекс в палитре из `map_meta`).
+    ///
+    /// Отряд не выбирается: миссия — это разметка работы, как чертёж, а кого
+    /// послать, решает симуляция (§12.16, §12.22). Адресный выбор придёт вместе
+    /// с авторасчётом исхода — пока миссия всегда успешна, и посылать «нужных»
+    /// котов не за чем.
+    ///
+    /// Миссия одна за раз: на POC с тремя котами вторая всё равно не нашла бы
+    /// исполнителей, а очередь вылазок — механика, которую не на чем проверить.
+    /// Вернёт false, если такой миссии нет или одна уже идёт.
+    pub fn launch(&mut self, def: usize) -> bool {
+        let Some(ticks) = self
+            .world
+            .resource::<MissionRules>()
+            .0
+            .get(def)
+            .map(|r| r.ticks)
+        else {
+            return false;
+        };
+        if self.mission().is_some() {
+            return false;
+        }
+        self.world.spawn(Mission {
+            def,
+            gate: None,
+            left: ticks,
+        });
+        true
+    }
+
+    /// Распустить отряд и снять миссию.
+    ///
+    /// Работает, только пока отряд на базе: ушедших не отзывают — что там
+    /// происходит, симуляция не знает, вылазка считается разом по возвращении.
+    /// Вернёт false, если миссии нет или отряд уже ушёл.
+    pub fn cancel_mission(&mut self) -> bool {
+        let Some(mission_e) = self.mission() else {
+            return false;
+        };
+        let crew = self.crew_of(mission_e);
+        if crew.iter().any(|&(_, away)| away) {
+            return false;
+        }
+        for (cat_e, _) in crew {
+            self.world
+                .entity_mut(cat_e)
+                .remove::<(Squad, Path, MoveCooldown)>();
+        }
+        self.world.entity_mut(mission_e).despawn();
+        true
+    }
+
     /// Мгновенно снести тайл вместе с чертежом, без участия котов.
     ///
     /// Ластик игрока ходит через `plan_demolish`; этот путь оставлен для тестов
@@ -395,6 +483,11 @@ impl Sim {
         let Some((entity, sx, sy)) = found else {
             return false;
         };
+        // Кота нет на базе — приказывать некому: его позиция это шлюз, с
+        // которого он ушёл, а сам он вернётся туда же (§12.22).
+        if self.world.get::<Away>(entity).is_some() {
+            return false;
+        }
 
         if !self.world.resource::<BaseMap>().walkable(x, y) {
             return false;
@@ -432,7 +525,11 @@ impl Sim {
         // постройки коридора, открывающего доступ к цели).
         // Приказ будит: это осознанное действие игрока (§12.20). Кот на нуле
         // бодрости ляжет снова — и это честный ответ.
-        self.world.entity_mut(entity).remove::<Rest>();
+        //
+        // И выводит из отряда: приказ снимает любую задачу, а место в отряде
+        // раздатчик доберёт кем-то ещё (§12.22). Ушедшего он не касается —
+        // такого кота вообще нет в мире базы, и цели ему не поставить.
+        self.world.entity_mut(entity).remove::<(Rest, Squad)>();
         self.world.entity_mut(entity).insert(Order {
             x,
             y,
@@ -478,6 +575,8 @@ impl Sim {
                 Option<&Perks>,
                 Option<&Energy>,
                 Option<&Rest>,
+                Option<&Squad>,
+                Option<&Away>,
             )>();
             let map = self.world.resource::<BaseMap>();
             let rules = self.world.resource::<SkillRules>();
@@ -496,14 +595,18 @@ impl Sim {
                 perks,
                 energy,
                 rest,
+                squad,
+                away,
             ) in q.iter(&self.world)
             {
+                let busy = Busy::of(order, path, assignment, haul, rest, squad, away);
                 entities.push(EntitySnap {
                     id: id.0.clone(),
                     sprite: r.sprite.clone(),
                     x: p.x,
                     y: p.y,
-                    stuck: is_stuck(map, p, order, path, assignment, haul, rest),
+                    stuck: is_stuck(map, p, busy),
+                    away: away.is_some(),
                     energy: energy.map_or(0, |e| e.0),
                     energy_max: needs.max,
                     // Спит, а не идёт спать: маршрут ещё есть — значит в пути.
@@ -559,11 +662,40 @@ impl Sim {
             }
         }
 
+        let mut missions = Vec::new();
+        {
+            let mut crew = self.world.query::<(&UnitId, &Squad, Option<&Away>)>();
+            let members: Vec<(Entity, String, bool)> = crew
+                .iter(&self.world)
+                .map(|(id, squad, away)| (squad.0, id.0.clone(), away.is_some()))
+                .collect();
+            let mut q = self.world.query::<(Entity, &Mission)>();
+            let rules = self.world.resource::<MissionRules>();
+            for (e, m) in q.iter(&self.world) {
+                let rule = rules.0.get(m.def);
+                missions.push(MissionSnap {
+                    def: m.def,
+                    x: m.gate.map_or(-1, |(x, _)| x),
+                    y: m.gate.map_or(-1, |(_, y)| y),
+                    left: m.left,
+                    total: rule.map_or(0, |r| r.ticks),
+                    squad: members
+                        .iter()
+                        .filter(|&&(owner, ..)| owner == e)
+                        .map(|(_, id, _)| id.clone())
+                        .collect(),
+                    size: rule.map_or(0, |r| r.squad),
+                    away: members.iter().any(|&(owner, _, away)| owner == e && away),
+                });
+            }
+        }
+
         serde_wasm_bindgen::to_value(&Snapshot {
             tick,
             entities,
             blueprints,
             stacks,
+            missions,
         })
         .map_err(|e| JsValue::from_str(&e.to_string()))
     }

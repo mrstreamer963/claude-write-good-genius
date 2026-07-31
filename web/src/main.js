@@ -25,6 +25,7 @@ const stageEl = document.getElementById('stage');
 const tickEl = document.getElementById('tick');
 const scrapEl = document.getElementById('scrap');
 const catEl = document.getElementById('cat');
+const missionEl = document.getElementById('mission');
 
 const app = new Application();
 await app.init({ background: COLORS.bg, antialias: true, resizeTo: stageEl });
@@ -76,6 +77,8 @@ let autoTidy = true; // коты сами свозят лом на склад (�
 let selectedUnit = null;
 let dragFrom = null; // якорь рамки (клетка, где нажали), null = не тянем
 let dragTo = null; // текущий угол рамки; переживает выход курсора за карту
+let missionRunning = false; // миссия на POC одна за раз (§12.22)
+const missionButtons = []; // кнопки запуска — их гасим, пока миссия идёт
 
 // --- worker ---------------------------------------------------------------
 
@@ -220,6 +223,14 @@ function renderSnapshot(snap) {
     seen.add(e.id);
     if (e.carrying > 0) add(e.carrying_item, e.carrying);
     const c = units.get(e.id) ?? createUnit(e);
+    // Ушедшего на вылазку на карте нет: его позиция — это шлюз, с которого он
+    // ушёл, и она ничего не говорит о том, где кот на самом деле (§12.22).
+    // Из `unitTiles` он тоже выпадает — иначе клик по шлюзу выбирал бы призрака.
+    c.visible = !e.away;
+    if (e.away) {
+      unitTiles.delete(e.id);
+      continue;
+    }
     // TODO(§8b): интерполяция между тиками. Пока — снап к центру тайла.
     c.x = e.x * TILE + TILE / 2;
     c.y = e.y * TILE + TILE / 2;
@@ -256,6 +267,7 @@ function renderSnapshot(snap) {
 
   updateSelectionOverlay();
   renderCatPanel(snap.entities);
+  renderMissionPanel(snap.missions);
 }
 
 function createUnit(e) {
@@ -353,6 +365,7 @@ function renderCatPanel(entities) {
         '</div>',
     );
   }
+  if (e.away) parts.push('<div class="cat-sub">на вылазке</div>');
   const held = e.carrying > 0 ? ` ${esc(itemLabel(e.carrying_item))}` : '';
   const paws =
     (e.carry_max > 0 ? `лапы ${e.carrying}/${e.carry_max}` : `в лапах ${e.carrying}`) + held;
@@ -360,6 +373,44 @@ function renderCatPanel(entities) {
   parts.push(`<div class="cat-sub">${[paws, ...tags].join(' · ')}</div>`);
   catEl.innerHTML = parts.join('');
   catEl.hidden = false;
+}
+
+// Панель миссии. Пока отряд собирается, показываем состав: игрок не выбирает,
+// кого послать (§12.22), — значит должен хотя бы видеть, кого выбрала за него
+// симуляция и почему база вдруг перестала строить.
+function renderMissionPanel(list) {
+  const m = (list ?? [])[0];
+  missionRunning = !!m;
+  syncMissionButtons();
+  if (!m || !meta) {
+    missionEl.hidden = true;
+    return;
+  }
+  const def = (meta.missions ?? [])[m.def];
+  const parts = [`<div class="cat-name">${esc(def?.label || def?.id || 'Вылазка')}</div>`];
+  if (m.away) {
+    const pct = m.total > 0 ? Math.round(((m.total - m.left) / m.total) * 100) : 0;
+    parts.push(
+      '<div class="cat-skill">' +
+        `<div class="cat-row"><span>В пути</span><b>${pct}%</b></div>` +
+        `<div class="bar"><i style="width:${pct}%"></i></div>` +
+        '</div>',
+    );
+  } else {
+    parts.push(
+      `<div class="cat-sub">Собираются у шлюза · ${m.squad.length}/${m.size}</div>`,
+    );
+  }
+  parts.push(`<div class="cat-sub">${m.squad.map(esc).join(' · ') || '—'}</div>`);
+  // Отозвать можно только тех, кто ещё на базе: ушедший отряд симуляции уже
+  // не подчиняется — вылазка считается разом по возвращении.
+  if (!m.away) {
+    parts.push('<button class="tool mission-cancel"><span>Отозвать</span></button>');
+  }
+  missionEl.innerHTML = parts.join('');
+  missionEl.hidden = false;
+  const cancel = missionEl.querySelector('.mission-cancel');
+  if (cancel) cancel.addEventListener('click', () => worker.postMessage({ type: 'cancelMission' }));
 }
 
 function itemLabel(item) {
@@ -563,7 +614,41 @@ function buildToolbar() {
   auto.classList.add('toggle', 'on');
   el.appendChild(auto);
 
+  // Вылазки. Не режим ввода: клик — это сразу заявка, отряд наберётся сам
+  // (§12.22). Поэтому кнопки не входят в общую подсветку инструментов.
+  const missions = meta.missions ?? [];
+  if (missions.length) {
+    const tm = document.createElement('div');
+    tm.className = 'tt';
+    tm.textContent = 'Вылазки';
+    el.appendChild(tm);
+
+    missionButtons.length = 0;
+    missions.forEach((m, i) => {
+      // На кнопке — цена котовремени (сколько уходит и надолго ли) и добыча
+      // теми же фишками, что и цена тайла: это одна и та же валюта.
+      const b = mkTool(
+        `<span class="sw sw-gate"></span><span>${esc(m.label || m.id)}</span>${costChips(m.loot)}`,
+        () => worker.postMessage({ type: 'launch', mission: i }),
+      );
+      b.classList.add('toggle', 'on');
+      b.title = `${m.squad} кота · ${m.ticks} тиков`;
+      missionButtons.push(b);
+      el.appendChild(b);
+    });
+    syncMissionButtons();
+  }
+
   selectCursor(cursorBtn); // режим по умолчанию
+}
+
+// Миссия одна за раз, и отказ ядра игроку не виден: гасим кнопки сами, чтобы
+// клик не выглядел сломанным.
+function syncMissionButtons() {
+  for (const b of missionButtons) {
+    b.disabled = missionRunning;
+    b.classList.toggle('on', !missionRunning);
+  }
 }
 
 function mkTool(html, onClick) {

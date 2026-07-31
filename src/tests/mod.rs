@@ -10,6 +10,7 @@ mod demolition;
 mod hauling;
 mod items;
 mod jobs;
+mod missions;
 mod needs;
 mod orders;
 mod paths;
@@ -22,7 +23,7 @@ use bevy_ecs::prelude::*;
 use crate::components::*;
 use crate::jobs::{BUILD_WORK, WORK_RATE};
 use crate::map::BaseMap;
-use crate::movement::is_stuck;
+use crate::movement::{Busy, is_stuck};
 use std::collections::BTreeMap;
 
 use crate::ruleset::TileDef;
@@ -82,6 +83,7 @@ fn sim_from(rows: &[&str]) -> Sim {
     world.insert_resource(AutoTidy(true));
     world.insert_resource(SkillRules::default());
     world.insert_resource(NeedRules::default());
+    world.insert_resource(MissionRules::default());
     Sim {
         world,
         schedule: build_schedule(),
@@ -92,10 +94,12 @@ fn sim_from(rows: &[&str]) -> Sim {
             cost: BTreeMap::new(),
             capacity: 0,
             rest: 0,
+            gate: false,
         }],
         items: Vec::new(),
         skills: Vec::new(),
         perks: Vec::new(),
+        missions: Vec::new(),
         width,
         height,
     }
@@ -125,11 +129,15 @@ impl Sim {
             Option<&Assignment>,
             Option<&Haul>,
             Option<&Rest>,
+            Option<&Squad>,
+            Option<&Away>,
         )>();
         let map = self.world.resource::<BaseMap>();
         q.iter(&self.world)
             .find(|(id, ..)| id.0 == unit)
-            .map(|(_, p, o, path, a, h, r)| is_stuck(map, p, o, path, a, h, r))
+            .map(|(_, p, o, path, a, h, r, s, away)| {
+                is_stuck(map, p, Busy::of(o, path, a, h, r, s, away))
+            })
             .expect("кот не найден")
     }
 
@@ -396,6 +404,47 @@ impl Sim {
     fn rest_spot_of(&mut self, unit: &str) -> Option<(i32, i32)> {
         let cat = self.entity_of(unit);
         self.world.get::<Rest>(cat).and_then(|r| r.spot)
+    }
+
+    /// Сделать тайл шлюзом: отсюда отряд уходит на миссию и сюда возвращается.
+    fn set_gate(&mut self, tile: i16, on: bool) {
+        self.tile_rule(tile, |r| r.gate = on);
+    }
+
+    /// Завести миссию в мире теста: размер отряда, длительность и добыча.
+    /// Вернёт её индекс — им же зовётся `launch`.
+    fn set_mission(&mut self, squad: usize, ticks: i32, loot: &[(usize, i32)]) -> usize {
+        let mut rules = self.world.resource_mut::<MissionRules>();
+        rules.0.push(MissionRule {
+            squad,
+            ticks,
+            loot: loot.to_vec(),
+        });
+        rules.0.len() - 1
+    }
+
+    /// Кот записан в отряд — идёт к шлюзу, ждёт на нём или уже ушёл.
+    fn in_squad(&mut self, unit: &str) -> bool {
+        let cat = self.entity_of(unit);
+        self.world.get::<Squad>(cat).is_some()
+    }
+
+    /// Кота нет на базе: отряд ушёл на вылазку.
+    fn is_away(&mut self, unit: &str) -> bool {
+        let cat = self.entity_of(unit);
+        self.world.get::<Away>(cat).is_some()
+    }
+
+    /// Тиков до возвращения отряда; `None` — миссии нет.
+    fn mission_left(&mut self) -> Option<i32> {
+        let mut q = self.world.query::<&Mission>();
+        q.iter(&self.world).next().map(|m| m.left)
+    }
+
+    /// Выбранный шлюз миссии; `None` — миссии нет или отряд не начали набирать.
+    fn mission_gate(&mut self) -> Option<(i32, i32)> {
+        let mut q = self.world.query::<&Mission>();
+        q.iter(&self.world).next().and_then(|m| m.gate)
     }
 
     /// Сколько клеток пола осталось в прямоугольнике.

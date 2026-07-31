@@ -100,7 +100,12 @@ main#stage canvas { display: block; }
   position: fixed;
   left: 12px;
   top: 60px;
-  width: 168px;
+  width: 190px;
+  /* Инструментов стало больше экрана: тулбар растёт вниз, а окно — нет.
+     По горизонтали не скроллим — цена просто прижата к правому краю. */
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
+  overflow-x: hidden;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -165,6 +170,16 @@ main#stage canvas { display: block; }
 .sw-scrap {
   background: repeating-linear-gradient(90deg, #c9a227 0 3px, #6b5615 3px 6px);
 }
+/* Шлюз: стрелка «наружу» — вылазка это единственное, что уходит с базы. */
+.sw-gate {
+  background: linear-gradient(135deg, #6e5a26 50%, #b08c3a 50%);
+}
+
+.tool:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+.tool:disabled:hover { border-color: var(--line); }
 
 /* Переключатель правила симуляции, а не режим ввода: не участвует в общей
    подсветке инструментов, поэтому и вид у него другой. */
@@ -198,6 +213,23 @@ main#stage canvas { display: block; }
   font-size: 13px;
 }
 #cat[hidden] { display: none; }
+
+/* Панель миссии — под панелью кота, той же колонкой: отряд набирает симуляция,
+   и это единственное место, где видно кого и надолго ли она забрала (§12.22). */
+#mission {
+  position: fixed;
+  right: 12px;
+  top: 260px;
+  width: 190px;
+  padding: 10px 12px;
+  background: rgba(21, 23, 31, 0.92);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  backdrop-filter: blur(4px);
+  font-size: 13px;
+}
+#mission[hidden] { display: none; }
+#mission .mission-cancel { width: 100%; margin-top: 8px; justify-content: center; }
 
 .cat-name {
   font-weight: 600;

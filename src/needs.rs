@@ -29,12 +29,14 @@ const TIRE_PER_TICK: i32 = 1;
 /// Кот на нуле бодрости засыпает где стоит, отпустив задачу.
 ///
 /// Чертёж и пометку кучи надо освободить явно: иначе площадка останется
-/// «занятой» спящим и её больше никто не возьмёт.
+/// «занятой» спящим и её больше никто не возьмёт. Отряд освобождается тем же
+/// правилом: боец выпадает из него и ложится спать, а раздатчик доберёт
+/// замену (§12.22). Ушедшего с базы истощение не берёт — вне базы он не устаёт.
 pub(crate) fn collapse_exhausted(
     mut commands: Commands,
     cats: Query<
         (Entity, &Energy, Option<&Assignment>, Option<&Haul>),
-        (With<UnitId>, Without<Rest>),
+        (With<UnitId>, Without<Rest>, Without<Away>),
     >,
     mut blueprints: Query<&mut Blueprint>,
     mut marks: Query<&mut ToStore>,
@@ -62,7 +64,7 @@ pub(crate) fn collapse_exhausted(
         commands
             .entity(cat_e)
             .insert(Rest { spot: None })
-            .remove::<(Assignment, Haul, Path, MoveCooldown)>();
+            .remove::<(Assignment, Haul, Squad, Path, MoveCooldown)>();
     }
 }
 
@@ -93,6 +95,7 @@ pub(crate) fn assign_rest(
             Without<Assignment>,
             Without<Haul>,
             Without<Rest>,
+            Without<Squad>,
             Without<Path>,
         ),
     >,
@@ -174,7 +177,8 @@ pub(crate) fn sleep(
 }
 
 /// Бодрствование стоит бодрости — одинаково за работу, ходьбу и простой.
-pub(crate) fn tire(mut cats: Query<&mut Energy, (With<UnitId>, Without<Rest>)>) {
+/// Кроме тех, кто на миссии: вне базы усталость не считается вовсе (§12.22).
+pub(crate) fn tire(mut cats: Query<&mut Energy, (With<UnitId>, Without<Rest>, Without<Away>)>) {
     for mut energy in &mut cats {
         energy.0 = (energy.0 - TIRE_PER_TICK).max(0);
     }

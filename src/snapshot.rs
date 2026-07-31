@@ -5,7 +5,7 @@
 
 use serde::Serialize;
 
-use crate::ruleset::{ItemDef, PerkDef, SkillDef, TileDef};
+use crate::ruleset::{ItemDef, MissionDef, PerkDef, SkillDef, TileDef};
 
 #[derive(Serialize)]
 pub(crate) struct MapMeta {
@@ -19,6 +19,8 @@ pub(crate) struct MapMeta {
     pub(crate) skills: Vec<SkillDef>,
     /// Подписи перков; в снапшоте у кота лежат только их `id`.
     pub(crate) perks: Vec<PerkDef>,
+    /// Палитра миссий: запуск ходит по индексу в этом списке (§12.22).
+    pub(crate) missions: Vec<MissionDef>,
 }
 
 #[derive(Serialize)]
@@ -34,6 +36,9 @@ pub(crate) struct Snapshot {
     pub(crate) entities: Vec<EntitySnap>,
     pub(crate) blueprints: Vec<BlueprintSnap>,
     pub(crate) stacks: Vec<StackSnap>,
+    /// Миссия в работе; список, а не одна запись, — но фасад пока пускает по
+    /// одной за раз (§12.22).
+    pub(crate) missions: Vec<MissionSnap>,
 }
 
 #[derive(Serialize)]
@@ -63,6 +68,28 @@ pub(crate) struct EntitySnap {
     /// Кот спит здесь и сейчас (в пути к лежанке — ещё нет): состояние
     /// легальное и обратимое, но игрок должен видеть, почему тот не работает.
     pub(crate) sleeping: bool,
+    /// Кот ушёл с базы на миссию. Позиция при этом остаётся на шлюзе, поэтому
+    /// рисовать его на карте нельзя — там его нет (§12.22).
+    pub(crate) away: bool,
+}
+
+/// Миссия: где собирается отряд, кто в нём и сколько осталось идти.
+#[derive(Serialize)]
+pub(crate) struct MissionSnap {
+    /// Индекс записи в палитре миссий из `map_meta`.
+    pub(crate) def: usize,
+    /// Клетка шлюза; `-1`, пока отряд не начали набирать (шлюз не выбран).
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    /// Тиков до возвращения и вся длительность — для полоски. Пока отряд не
+    /// ушёл, `left == total`: сбор в срок вылазки не входит.
+    pub(crate) left: i32,
+    pub(crate) total: i32,
+    /// Кто уже в отряде и сколько нужно всего.
+    pub(crate) squad: Vec<String>,
+    pub(crate) size: usize,
+    /// Отряд ушёл с базы: отозвать его уже нельзя.
+    pub(crate) away: bool,
 }
 
 #[derive(Serialize)]
