@@ -116,6 +116,8 @@ pub(crate) fn retry_orders(
             Without<Crafting>,
             Without<Equipping>,
             Without<Eating>,
+            Without<Healing>,
+            Without<Treating>,
             Without<Squad>,
         ),
     >,
@@ -207,6 +209,8 @@ pub(crate) fn spread_units(
             Option<&Crafting>,
             Option<&Equipping>,
             Option<&Eating>,
+            Option<&Healing>,
+            Option<&Treating>,
         ),
         (With<UnitId>, Without<Path>, Without<Away>, Without<Squad>),
     >,
@@ -224,7 +228,7 @@ pub(crate) fn spread_units(
     let mut standing: Vec<(bool, &str, Entity, (i32, i32))> = stopped
         .iter()
         .map(
-            |(e, id, pos, job, haul, rest, study, research, craft, equip, eat)| {
+            |(e, id, pos, job, haul, rest, study, research, craft, equip, eat, hurt, medic)| {
                 let at_work = job.is_some()
                     || haul.is_some()
                     || rest.is_some()
@@ -232,7 +236,9 @@ pub(crate) fn spread_units(
                     || research.is_some()
                     || craft.is_some()
                     || equip.is_some()
-                    || eat.is_some();
+                    || eat.is_some()
+                    || hurt.is_some()
+                    || medic.is_some();
                 (at_work, id.0.as_str(), e, (pos.x, pos.y))
             },
         )
@@ -297,6 +303,10 @@ pub(crate) fn clear_solids(
             Without<Crafting>,
             Without<Equipping>,
             Without<Eating>,
+            // Раненый уходит со стеллажа наравне со спящим: он тоже лежит, а не
+            // работает, — и это ровно та картинка, ради которой правило писалось
+            // (§12.35, §12.37). Медик, наоборот, при деле и остаётся.
+            Without<Treating>,
         ),
     >,
 ) {
@@ -371,6 +381,7 @@ pub(crate) struct Busy {
 }
 
 impl Busy {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn of(
         order: Option<&Order>,
         path: Option<&Path>,
@@ -382,6 +393,8 @@ impl Busy {
         crafting: Option<&Crafting>,
         equipping: Option<&Equipping>,
         eating: Option<&Eating>,
+        healing: Option<&Healing>,
+        treating: Option<&Treating>,
         squad: Option<&Squad>,
         away: Option<&Away>,
     ) -> Self {
@@ -395,6 +408,8 @@ impl Busy {
                 && crafting.is_none()
                 && equipping.is_none()
                 && eating.is_none()
+                && healing.is_none()
+                && treating.is_none()
                 && squad.is_none(),
             away: away.is_some(),
         }

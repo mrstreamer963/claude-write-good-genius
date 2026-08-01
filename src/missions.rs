@@ -98,7 +98,9 @@ pub(crate) fn gather_squad(
         // Спящего не трогаем: маршрут разбудил бы его, а истощение — не повод
         // гнать кота дальше. Проснётся — эта же система его и подберёт. Идущего
         // за снаряжением — тем более: одетым он уйдёт сильнее (§12.29, §12.34).
-        (Without<Rest>, Without<Equipping>),
+        // Раненого — тоже: в отряд его не берут вовсе, а если ранило уже
+        // назначенного, отряд ждёт, пока тот встанет (§12.23, §12.37).
+        (Without<Rest>, Without<Equipping>, Without<Healing>),
     >,
 ) {
     if missions.is_empty() {
@@ -193,6 +195,7 @@ pub(crate) fn run_missions(
         Option<&Skills>,
         Option<&mut Energy>,
         Option<&Gear>,
+        Option<&mut Health>,
     )>,
     mut stacks: Query<(Entity, &Position, &mut Stack)>,
 ) {
@@ -208,7 +211,7 @@ pub(crate) fn run_missions(
         let squad: Vec<(Entity, (i32, i32), bool, bool, i32)> = crew
             .iter()
             .filter(|(_, s, ..)| s.0 == mission_e)
-            .map(|(e, _, p, path, away, skills, _, gear)| {
+            .map(|(e, _, p, path, away, skills, _, gear, _)| {
                 let walking = path.is_some_and(|p| !p.steps.is_empty());
                 // Вклад кота в силу отряда: сам он стоит единицу, навык —
                 // сверху, надетое — ещё сверху. Нулевой навык поэтому не значит
@@ -245,9 +248,20 @@ pub(crate) fn run_missions(
                 // Плата за вылазку — котовремя: та же валюта, в которой
                 // измеряется и сама отправка отряда. Провал забирает всё, и
                 // коты валятся у шлюза — `collapse_exhausted` подберёт их.
-                if let Ok((.., Some(mut energy), _)) = crew.get_mut(cat_e) {
-                    let toll = if out.failed { energy.0 } else { rule.toll };
-                    energy.0 = (energy.0 - toll).max(0);
+                //
+                // Раны считаются **той же долей**, что и добыча: полный успех не
+                // царапает никого, полсилы стоят половины `harm`, провал — всего
+                // (§12.37). Отдельной формулы для урона нет намеренно: две
+                // арифметики исхода разошлись бы, а прогноз в панели показывал
+                // бы игроку не то, что случится (§12.23).
+                if let Ok((.., energy, _, health)) = crew.get_mut(cat_e) {
+                    if let Some(mut energy) = energy {
+                        let toll = if out.failed { energy.0 } else { rule.toll };
+                        energy.0 = (energy.0 - toll).max(0);
+                    }
+                    if let Some(mut health) = health {
+                        health.0 = (health.0 - rule.harm * (100 - out.share) / 100).max(0);
+                    }
                 }
                 // Провал ломает снаряжение: до него он стоил только бодрости, а
                 // она восстанавливается бесплатно — то есть заведомо провальная

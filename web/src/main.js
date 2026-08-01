@@ -15,6 +15,7 @@ const COLORS = {
   scrap: 0xc9a227, // материал по умолчанию, если палитра предметов пуста
   rest: 0x7fd6b5, // сон: бодрость в панели и «зззз» над спящим котом
   study: 0xb08fde, // учёба: книжка над котом, сидящим за партой
+  wound: 0xff5566, // ранение: крест над лежачим — тот же красный, что у стирания
   unit: {
     cat_excellent: 0xe0c060,
     cat_helper: 0x8fb8de,
@@ -87,6 +88,10 @@ let missionRunning = false; // миссия на POC одна за раз (§12.
 let researchRunning = false; // и тема тоже одна за раз (§12.26)
 let craftRunning = false; // и заказ (§12.30)
 let fame = 0; // известность: копится от вылазок, открывает доступ (§12.24)
+// Кто сейчас выбыл по ранению (§12.37). Держим списком id, а не пересчитываем в
+// обработчике клика: ранение приходит из ядра между кликами, и кнопка вылазки
+// обязана погаснуть сама, не дожидаясь, пока игрок перевыберет отряд.
+let wounded = new Set();
 const missionButtons = []; // кнопки запуска — их гасим, пока миссия идёт
 const recruitButtons = []; // кнопки найма — гасим по известности и складу
 const teachButtons = []; // кнопки обучения — живы, когда выбран ровно один кот
@@ -252,8 +257,13 @@ function renderSnapshot(snap) {
     c.load.visible = e.carrying > 0;
     if (e.carrying > 0) c.load.tint = itemColor(e.carrying_item);
     // Спящий кот пригашен: игрок должен видеть, почему тот не работает.
-    c.alpha = e.sleeping ? 0.55 : 1;
-    c.sleepMark.visible = !!e.sleeping;
+    // Лежачий раненый — тоже: причины разные, а следствие для базы одно (§12.37).
+    c.alpha = e.sleeping || e.healing ? 0.55 : 1;
+    c.sleepMark.visible = !!e.sleeping && !e.healing;
+    // Крест — над раненым; он важнее «зззз», потому что лежачий кот выбыл не на
+    // сотню тиков, а до конца лечения, и это единственная необратимая на вид
+    // потеря, какая в игре есть.
+    c.woundMark.visible = !!e.healing;
     // Учёба — потраченное котовремя, и это вся её цена (§12.18): не видно её —
     // игрок просто недосчитается рабочих лап.
     c.studyMark.visible = !!e.studying;
@@ -284,6 +294,11 @@ function renderSnapshot(snap) {
     const ut = unitTiles.get(id);
     if (ut && ut.x === o.x && ut.y === o.y) orders.delete(id);
   }
+
+  wounded = new Set(
+    snap.entities.filter((e) => e.health_max > 0 && e.health <= e.health_hurt).map((e) => e.id),
+  );
+  syncMissionButtons();
 
   updateSelectionOverlay();
   renderCatPanel(snap.entities);
@@ -336,15 +351,26 @@ function createUnit(e) {
     .lineTo(0, -TILE * 0.54)
     .stroke({ color: 0x000000, width: 1 });
   studyMark.visible = false;
+  // Красный крест — на месте «зззз» и книжки: три состояния «кот занят не
+  // базой» читаются одинаково и не совмещаются (§12.37).
+  const woundMark = new Graphics();
+  woundMark
+    .rect(-2, -TILE * 0.78, 4, TILE * 0.22)
+    .fill(COLORS.wound)
+    .rect(-TILE * 0.11, -TILE * 0.71, TILE * 0.22, 4)
+    .fill(COLORS.wound);
+  woundMark.visible = false;
   c.addChild(body);
   c.addChild(stuckRing);
   c.addChild(load);
   c.addChild(sleepMark);
   c.addChild(studyMark);
+  c.addChild(woundMark);
   c.stuckRing = stuckRing;
   c.load = load;
   c.sleepMark = sleepMark;
   c.studyMark = studyMark;
+  c.woundMark = woundMark;
   unitLayer.addChild(c);
   units.set(e.id, c);
   return c;
@@ -431,8 +457,28 @@ function renderCatPanel(entities) {
         '</div>',
     );
   }
+  // Здоровье — третья шкала (§12.37). Её роняет только провал вылазки, поэтому
+  // просевшая полоска всегда означает «этот кот только что вернулся с плохой
+  // вылазки», а порог надо назвать словом: ниже него кота не берут в отряд, и
+  // без подписи игрок прочитает молчащую кнопку как поломку.
+  if (e.health_max > 0) {
+    const pct = Math.round((e.health / e.health_max) * 100);
+    const hurt = e.health <= e.health_hurt;
+    const note = hurt ? 'ранен: не работает и в отряд не идёт' : e.health < e.health_max ? 'царапины' : '';
+    parts.push(
+      '<div class="cat-skill">' +
+        `<div class="cat-row"><span>Здоровье</span><b>${pct}%</b></div>` +
+        `<div class="bar"><i class="${hurt ? 'hurt' : 'health'}" style="width:${pct}%"></i></div>` +
+        (note ? `<div class="cat-sub">${note}</div>` : '') +
+        '</div>',
+    );
+  }
   if (e.away) parts.push('<div class="cat-sub">на вылазке</div>');
   if (e.studying) parts.push('<div class="cat-sub">учится</div>');
+  // «Лежит», а не «в лазарете»: койки может и не быть — раны затягиваются и на
+  // голом полу, просто дольше (§12.37).
+  if (e.healing) parts.push('<div class="cat-sub">лежит: раны заживают</div>');
+  if (e.treating) parts.push('<div class="cat-sub">лечит раненого</div>');
   // Надетое: снаряжение молча прибавляет отряду силы, и без этой строки игрок
   // не свяжет пропавший со склада комбинезон с выросшим прогнозом вылазки
   // (§12.29). Пустой комплект показываем тоже — иначе непонятно, что он бывает.
@@ -483,7 +529,11 @@ function renderMissionPanel(list) {
   // посчитается на возвращении (§12.23). Пока отряд на базе — это ещё и
   // предупреждение: увидел «провал», успел отозвать.
   if (m.danger > 0) {
-    const verdict = m.failed ? 'провал' : `добыча ${m.share}%`;
+    // Раны считаются той же долей, что и добыча (§12.37), поэтому цену провала
+    // можно назвать здесь же — из того самого числа, которым ядро её посчитает.
+    const harm = Math.round(((def?.harm ?? 0) * (100 - m.share)) / 100);
+    const wounds = harm > 0 ? `, раны ${harm}` : '';
+    const verdict = m.failed ? `провал${wounds}` : `добыча ${m.share}%${wounds}`;
     parts.push(
       '<div class="cat-skill">' +
         `<div class="cat-row"><span>Сила / сложность</span><b>${m.strength} / ${m.danger}</b></div>` +
@@ -902,7 +952,9 @@ function buildToolbar() {
       b.classList.add('toggle');
       b.dataset.squad = m.squad;
       b.dataset.requires = m.requires ?? 0;
-      b.dataset.hint = `${m.squad} кота · ${m.ticks} тиков · сложность ${m.danger ?? 0}`;
+      b.dataset.hint =
+        `${m.squad} кота · ${m.ticks} тиков · сложность ${m.danger ?? 0}` +
+        (m.harm ? ` · раны при провале ${m.harm}` : '');
       missionButtons.push(b);
       raids.appendChild(b);
     });
@@ -1099,7 +1151,10 @@ function syncMissionButtons() {
     const need = Number(b.dataset.squad);
     const requires = Number(b.dataset.requires);
     const known = fame >= requires;
-    const ready = !missionRunning && known && selectedUnits.length === need;
+    // Раненого ядро в отряд не пустит (§12.37), и молчащая кнопка читалась бы
+    // как поломка: причину называем словом, как и нехватку известности.
+    const hurt = selectedUnits.filter((id) => wounded.has(id));
+    const ready = !missionRunning && known && !hurt.length && selectedUnits.length === need;
     b.disabled = !ready;
     b.classList.toggle('on', ready);
     // Закрытые вылазки видны, а не спрятаны: лестница ответственности — это то,
@@ -1108,7 +1163,9 @@ function syncMissionButtons() {
       ? 'Вылазка уже идёт'
       : !known
         ? `${b.dataset.hint} · нужна известность ${requires}`
-        : `${b.dataset.hint} · выбрано ${selectedUnits.length} из ${need}`;
+        : hurt.length
+          ? `${b.dataset.hint} · ранен: ${hurt.join(', ')}`
+          : `${b.dataset.hint} · выбрано ${selectedUnits.length} из ${need}`;
   }
 }
 

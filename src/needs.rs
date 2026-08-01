@@ -53,6 +53,7 @@ pub(crate) fn collapse_exhausted(
             Option<&Haul>,
             Option<&Researching>,
             Option<&Crafting>,
+            Option<&Treating>,
         ),
         (With<UnitId>, Without<Rest>, Without<Away>),
     >,
@@ -61,14 +62,14 @@ pub(crate) fn collapse_exhausted(
     mut topics: Query<&mut Research>,
     mut orders: Query<&mut Craft>,
 ) {
-    for (cat_e, energy, assignment, haul, researching, crafting) in &cats {
+    for (cat_e, energy, assignment, haul, researching, crafting, treating) in &cats {
         if energy.0 > 0 {
             continue;
         }
         release_work(
             &mut commands,
             cat_e,
-            (assignment, haul, researching, crafting),
+            (assignment, haul, researching, crafting, treating),
             &mut blueprints,
             &mut marks,
             &mut topics,
@@ -95,7 +96,7 @@ pub(crate) fn collapse_exhausted(
 /// команды применяются в порядке добавления, и `remove::<Path>` отсюда снёс бы
 /// только что выданный маршрут.
 #[allow(clippy::too_many_arguments)]
-fn release_work(
+pub(crate) fn release_work(
     commands: &mut Commands,
     cat_e: Entity,
     work: (
@@ -103,13 +104,14 @@ fn release_work(
         Option<&Haul>,
         Option<&Researching>,
         Option<&Crafting>,
+        Option<&Treating>,
     ),
     blueprints: &mut Query<&mut Blueprint>,
     marks: &mut Query<&mut ToStore>,
     topics: &mut Query<&mut Research>,
     orders: &mut Query<&mut Craft>,
 ) {
-    let (assignment, haul, researching, crafting) = work;
+    let (assignment, haul, researching, crafting, _treating) = work;
     if let Some(bp_e) = assignment.map(|a| a.0) {
         if let Ok(mut bp) = blueprints.get_mut(bp_e) {
             bp.assignee = None;
@@ -132,6 +134,9 @@ fn release_work(
         order.assignee = None;
         order.spot = None;
     }
+    // Пациента освобождать не нужно: `Healing::medic` — claim, который чинит
+    // сам `assign_treat`, заметив, что `Treating` у медика больше нет (§12.37).
+    // Одно место починки вместо освобождения в каждом, кто снимает работу.
     commands.entity(cat_e).remove::<(
         Assignment,
         Haul,
@@ -140,6 +145,7 @@ fn release_work(
         Crafting,
         Equipping,
         Eating,
+        Treating,
         Path,
         MoveCooldown,
     )>();
@@ -191,6 +197,8 @@ pub(crate) fn assign_rest(
             Without<Crafting>,
             Without<Equipping>,
             Without<Eating>,
+            Without<Healing>,
+            Without<Treating>,
             Without<Squad>,
             Without<Path>,
         ),
@@ -207,11 +215,15 @@ pub(crate) fn assign_rest(
             Option<&Haul>,
             Option<&Researching>,
             Option<&Crafting>,
+            Option<&Treating>,
         ),
         (
             With<UnitId>,
             Without<Rest>,
             Without<Away>,
+            // Раненого сюда не пускаем: он уже лежит, и увести его на лежанку
+            // значит отменить лечение ради сна (§12.37).
+            Without<Healing>,
             Or<(
                 With<Assignment>,
                 With<Haul>,
@@ -220,6 +232,7 @@ pub(crate) fn assign_rest(
                 With<Crafting>,
                 With<Equipping>,
                 With<Eating>,
+                With<Treating>,
                 With<Squad>,
                 With<Path>,
             )>,
@@ -227,7 +240,7 @@ pub(crate) fn assign_rest(
     >,
     fallen: Query<
         (Entity, &Position, &Energy, &Rest),
-        (With<UnitId>, Without<Path>, Without<Away>),
+        (With<UnitId>, Without<Path>, Without<Away>, Without<Healing>),
     >,
     mut blueprints: Query<&mut Blueprint>,
     mut marks: Query<&mut ToStore>,
@@ -256,7 +269,7 @@ pub(crate) fn assign_rest(
     // 1. Критический порог: кот бросает начатое, но только если ему есть куда
     // лечь. Выключатель игрока отменяет ровно это — второй порог, а не сон.
     if auto.0 && needs.critical > 0 {
-        for (cat_e, pos, energy, assignment, haul, researching, crafting) in &busy_cats {
+        for (cat_e, pos, energy, assignment, haul, researching, crafting, treating) in &busy_cats {
             if energy.0 > needs.critical || free.is_empty() {
                 continue;
             }
@@ -266,7 +279,7 @@ pub(crate) fn assign_rest(
             release_work(
                 &mut commands,
                 cat_e,
-                (assignment, haul, researching, crafting),
+                (assignment, haul, researching, crafting, treating),
                 &mut blueprints,
                 &mut marks,
                 &mut topics,

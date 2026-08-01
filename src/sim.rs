@@ -253,7 +253,12 @@ impl Sim {
         }
         // Груз кот при этом не бросает: донесёт, когда снова возьмётся за
         // доставку (§12.15). Сон и учёба снимаются — это осознанные действия
-        // (§12.20, §12.18); парту при этом отпускает сам снятый `Study`.
+        // (§12.20, §12.18); парту при этом отпускает сам снятый `Study`, а
+        // пациента — `assign_treat`, заметив пропажу `Treating` (§12.37).
+        //
+        // А вот **лечение приказом не отменяется**: раненый не «занят делом»,
+        // которое можно бросить, он не может работать. Игрок волен увести его
+        // куда угодно — лечиться кот будет и там, просто без койки (§12.37).
         self.world.entity_mut(cat).remove::<(
             Assignment,
             Haul,
@@ -263,6 +268,7 @@ impl Sim {
             Crafting,
             Equipping,
             Eating,
+            Treating,
             Path,
             MoveCooldown,
         )>();
@@ -345,6 +351,7 @@ fn spawn_cat(
     let carry = world.resource::<UnitRules>().carry;
     let energy_max = world.resource::<NeedRules>().max;
     let fed_max = world.resource::<FoodRules>().max;
+    let health_max = world.resource::<HealthRules>().max;
     let caps: Vec<(usize, i32)> = {
         let rules = world.resource::<SkillRules>();
         skills.iter().map(|&(s, _)| (s, rules.xp_cap(s))).collect()
@@ -369,6 +376,11 @@ fn spawn_cat(
     // основаниях, а не с порога (§12.36).
     if fed_max > 0 {
         cat.insert(Fed(fed_max));
+    }
+    // И целым: раны приходят только из поля, а нанятый в поле ещё не был
+    // (§12.37).
+    if health_max > 0 {
+        cat.insert(Health(health_max));
     }
     if !skills.is_empty() {
         let mut xp = Skills::default();
@@ -430,6 +442,7 @@ impl Sim {
                         .collect(),
                     capacity: t.capacity,
                     rest: t.rest,
+                    heal: t.heal,
                     gate: t.gate,
                     teaches: skill_index(&t.teaches),
                     lab: t.lab,
@@ -501,6 +514,7 @@ impl Sim {
                     ticks: m.ticks,
                     danger: m.danger,
                     toll: m.toll,
+                    harm: m.harm,
                     loot: m
                         .loot
                         .iter()
@@ -560,6 +574,11 @@ impl Sim {
             max: rs.food.max,
             hungry: rs.food.hungry,
             starve: rs.food.starve,
+        });
+        world.insert_resource(HealthRules {
+            max: rs.health.max,
+            hurt: rs.health.hurt,
+            mend: rs.health.mend,
         });
 
         // Стартовый запас. Стартовая застройка (`build`) при этом бесплатна —
@@ -831,16 +850,24 @@ impl Sim {
 
         // Ушедших в списке быть не может — их нет на базе; дубликаты отсекаем
         // сравнением длины, иначе «три раза excellent» сошло бы за отряд.
+        //
+        // Раненого не берут вовсе (§12.37): выбывший — это и есть вся цена
+        // провала, и отправить его добирать урон значило бы отменить её. Отказ
+        // здесь молчаливый, как и на нехватку известности: почему кнопка не
+        // сработала, видно в панели кота — там его здоровье.
+        let hurt = self.world.resource::<HealthRules>().hurt;
         let mut crew: Vec<(Entity, (i32, i32))> = Vec::new();
         {
             let mut q = self
                 .world
-                .query::<(Entity, &UnitId, &Position, Option<&Away>)>();
+                .query::<(Entity, &UnitId, &Position, Option<&Away>, Option<&Health>)>();
             for id in &units {
                 let found = q
                     .iter(&self.world)
-                    .find(|(_, u, _, away)| u.0 == *id && away.is_none())
-                    .map(|(e, _, p, _)| (e, (p.x, p.y)));
+                    .find(|(_, u, _, away, health)| {
+                        u.0 == *id && away.is_none() && health.is_none_or(|h: &Health| h.0 > hurt)
+                    })
+                    .map(|(e, _, p, ..)| (e, (p.x, p.y)));
                 match found {
                     Some(cat) if !crew.iter().any(|&(e, _)| e == cat.0) => crew.push(cat),
                     _ => return false,
@@ -865,6 +892,23 @@ impl Sim {
         let mission_e = mission_e.id();
         for (cat_e, from) in crew {
             self.release_task(cat_e);
+            // Ношу кот кладёт под ноги — прямо здесь и сейчас (§12.38). Уехать
+            // с ней в поле значит вынуть лом из мира на сотни тиков: сумма
+            // сходится, но кучу не видно, её не взять на стройку и не
+            // разметить (§12.16) — тот же случай, что вещь, оставшаяся в
+            // пустоте (§12.15). Роняем **до** маршрута: к шлюзу кот идёт налегке.
+            //
+            // Это единственное исключение из «ношу посреди базы не бросают», и
+            // граница у него ровная: приказ игрока груз не роняет (кот вернётся
+            // к работе и донесёт), а заявка на вылазку убирает кота с базы
+            // надолго. Куча ложится там, где он вёз, то есть по дороге к
+            // площадке, ради которой лом и подняли, — оттуда её подхватит
+            // следующий носильщик.
+            if let Some(load) = self.world.get::<Carrying>(cat_e) {
+                let (item, count) = (load.item, load.count);
+                self.drop_stack(from.0, from.1, item, count);
+                self.world.entity_mut(cat_e).remove::<Carrying>();
+            }
             let path = find_path(self.world.resource::<BaseMap>(), from, gate).unwrap_or_default();
             self.world.entity_mut(cat_e).insert((
                 Squad(mission_e),
@@ -1240,6 +1284,7 @@ impl Sim {
                 Option<&Energy>,
                 Option<&Fed>,
                 Option<&Gear>,
+                Option<&Health>,
                 (
                     Option<&Order>,
                     Option<&Path>,
@@ -1251,6 +1296,8 @@ impl Sim {
                     Option<&Crafting>,
                     Option<&Equipping>,
                     Option<&Eating>,
+                    Option<&Healing>,
+                    Option<&Treating>,
                     Option<&Squad>,
                     Option<&Away>,
                 ),
@@ -1259,7 +1306,8 @@ impl Sim {
             let rules = self.world.resource::<SkillRules>();
             let needs = self.world.resource::<NeedRules>();
             let food = self.world.resource::<FoodRules>();
-            for (id, r, p, load, carry, skills, perks, energy, fed, gear, tasks) in
+            let hurts = self.world.resource::<HealthRules>();
+            for (id, r, p, load, carry, skills, perks, energy, fed, gear, health, tasks) in
                 q.iter(&self.world)
             {
                 let (
@@ -1273,6 +1321,8 @@ impl Sim {
                     crafting,
                     equipping,
                     eating,
+                    healing,
+                    treating,
                     squad,
                     away,
                 ) = tasks;
@@ -1287,6 +1337,8 @@ impl Sim {
                     crafting,
                     equipping,
                     eating,
+                    healing,
+                    treating,
                     squad,
                     away,
                 );
@@ -1306,6 +1358,12 @@ impl Sim {
                     // есть», а второй экземпляр числа в JS однажды разойдётся
                     // с рулсетом (§12.26 — считает ядро, а не интерфейс).
                     fed_hungry: food.hungry,
+                    health: health.map_or(0, |h| h.0),
+                    health_max: hurts.max,
+                    health_hurt: hurts.hurt,
+                    // Лежит, а не идёт в лазарет — тот же признак, что у сна.
+                    healing: healing.is_some() && path.is_none(),
+                    treating: treating.is_some(),
                     // Спит, а не идёт спать: маршрут ещё есть — значит в пути.
                     sleeping: rest.is_some() && path.is_none(),
                     // Учится, а не идёт к парте — по тому же признаку.

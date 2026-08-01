@@ -13,6 +13,7 @@ mod fame;
 mod food;
 mod gear;
 mod hauling;
+mod health;
 mod items;
 mod jobs;
 mod missions;
@@ -95,6 +96,7 @@ fn sim_from(rows: &[&str]) -> Sim {
     world.insert_resource(SkillRules::default());
     world.insert_resource(NeedRules::default());
     world.insert_resource(FoodRules::default());
+    world.insert_resource(HealthRules::default());
     world.insert_resource(MissionRules::default());
     world.insert_resource(RecruitRules::default());
     world.insert_resource(ResearchRules::default());
@@ -116,6 +118,7 @@ fn sim_from(rows: &[&str]) -> Sim {
             cost: BTreeMap::new(),
             capacity: 0,
             rest: 0,
+            heal: 0,
             gate: false,
             teaches: String::new(),
             lab: false,
@@ -152,30 +155,37 @@ impl Sim {
     }
 
     fn stuck_of(&mut self, unit: &str) -> bool {
+        // Задачи собраны вложенным кортежем: их ровно столько, сколько берёт
+        // `Busy::of`, а плоский запрос упёрся бы в предел арности `QueryData`.
         let mut q = self.world.query::<(
             &UnitId,
             &Position,
-            Option<&Order>,
-            Option<&Path>,
-            Option<&Assignment>,
-            Option<&Haul>,
-            Option<&Rest>,
-            Option<&Study>,
-            Option<&Researching>,
-            Option<&Crafting>,
-            Option<&Equipping>,
-            Option<&Eating>,
-            Option<&Squad>,
-            Option<&Away>,
+            (
+                Option<&Order>,
+                Option<&Path>,
+                Option<&Assignment>,
+                Option<&Haul>,
+                Option<&Rest>,
+                Option<&Study>,
+                Option<&Researching>,
+                Option<&Crafting>,
+                Option<&Equipping>,
+                Option<&Eating>,
+                Option<&Healing>,
+                Option<&Treating>,
+                Option<&Squad>,
+                Option<&Away>,
+            ),
         )>();
         let map = self.world.resource::<BaseMap>();
         q.iter(&self.world)
             .find(|(id, ..)| id.0 == unit)
-            .map(|(_, p, o, path, a, h, r, st, re, cr, eq, ea, s, away)| {
+            .map(|(_, p, tasks)| {
+                let (o, path, a, h, r, st, re, cr, eq, ea, he, tr, s, away) = tasks;
                 is_stuck(
                     map,
                     p,
-                    Busy::of(o, path, a, h, r, st, re, cr, eq, ea, s, away),
+                    Busy::of(o, path, a, h, r, st, re, cr, eq, ea, he, tr, s, away),
                 )
             })
             .expect("кот не найден")
@@ -738,6 +748,66 @@ impl Sim {
     fn is_eating(&mut self, unit: &str) -> bool {
         let cat = self.entity_of(unit);
         self.world.get::<Eating>(cat).is_some()
+    }
+
+    /// Включить ранения: потолок здоровья, порог выбывания и заживление вне
+    /// лазарета (§12.37). Всем котам выдаётся полное здоровье. Отдельно от
+    /// `set_needs` и `set_food`: три шкалы включаются порознь, иначе тесты
+    /// усталости начали бы зависеть от наличия лазарета.
+    fn set_health_rules(&mut self, max: i32, hurt: i32, mend: i32) {
+        self.world.insert_resource(HealthRules { max, hurt, mend });
+        let mut q = self.world.query_filtered::<Entity, With<UnitId>>();
+        for cat in q.iter(&self.world).collect::<Vec<_>>() {
+            self.world.entity_mut(cat).insert(Health(max));
+        }
+    }
+
+    fn set_health(&mut self, unit: &str, value: i32) {
+        let cat = self.entity_of(unit);
+        self.world.entity_mut(cat).insert(Health(value));
+    }
+
+    fn health_of(&mut self, unit: &str) -> i32 {
+        let cat = self.entity_of(unit);
+        self.world.get::<Health>(cat).map_or(0, |h| h.0)
+    }
+
+    /// Сделать тайл койкой лазарета: сколько здоровья он возвращает за тик.
+    fn set_heal(&mut self, tile: i16, rate: i32) {
+        self.tile_rule(tile, |r| r.heal = rate);
+    }
+
+    /// Кот выбыл — лежит или идёт в лазарет.
+    fn is_healing(&mut self, unit: &str) -> bool {
+        let cat = self.entity_of(unit);
+        self.world.get::<Healing>(cat).is_some()
+    }
+
+    /// Койка, которую занял раненый; `None` — лёг где стоял или здоров.
+    fn ward_of(&mut self, unit: &str) -> Option<(i32, i32)> {
+        let cat = self.entity_of(unit);
+        self.world.get::<Healing>(cat).and_then(|h| h.spot)
+    }
+
+    /// Кто лечит этого кота; `None` — медика нет или кот здоров.
+    fn medic_of(&mut self, unit: &str) -> Option<String> {
+        let cat = self.entity_of(unit);
+        let medic = self.world.get::<Healing>(cat)?.medic?;
+        self.world.get::<UnitId>(medic).map(|u| u.0.clone())
+    }
+
+    /// Кот лечит кого-то — идёт к раненому или уже стоит у койки.
+    fn is_treating(&mut self, unit: &str) -> bool {
+        let cat = self.entity_of(unit);
+        self.world.get::<Treating>(cat).is_some()
+    }
+
+    /// Дописать миссии урон: во сколько здоровья обходится полный провал.
+    fn set_mission_harm(&mut self, mission: usize, harm: i32) {
+        let mut rules = self.world.resource_mut::<MissionRules>();
+        if let Some(rule) = rules.0.get_mut(mission) {
+            rule.harm = harm;
+        }
     }
 
     /// Сделать тайл шлюзом: отсюда отряд уходит на миссию и сюда возвращается.

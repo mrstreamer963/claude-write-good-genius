@@ -100,6 +100,8 @@ pub(crate) fn assign_jobs(
             Without<Crafting>,
             Without<Equipping>,
             Without<Eating>,
+            Without<Healing>,
+            Without<Treating>,
             Without<Squad>,
             Without<Path>,
         ),
