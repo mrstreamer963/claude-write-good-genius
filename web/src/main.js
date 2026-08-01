@@ -77,6 +77,7 @@ let mapCells = null; // Int-массив состояния карты
 let mode = 'cursor'; // 'cursor' | 'build' | 'store'
 let buildTile = 0; // индекс палитры, или -1 = стереть (в режиме build)
 let autoTidy = true; // коты сами свозят лом на склад (см. ядро, §12.16)
+let autoRest = true; // и сами бросают работу на исходе сил (§12.33)
 // Выбор множественный: отряд на вылазку игрок набирает поимённо (§12.23), а
 // один выбранный кот — это его частный случай. Панель показывает последнего.
 let selectedUnits = [];
@@ -845,15 +846,29 @@ function buildToolbar() {
   const st = mkTool('<span class="sw sw-scrap"></span><span>На склад</span>', () => selectStore(st));
   scrap.appendChild(st);
 
-  // Автоуборка — не режим ввода, а правило симуляции, поэтому кнопка не входит
-  // в общую группу инструментов и своей подсветкой их не сбивает.
+  // Правила симуляции — не режимы ввода, а тумблеры поведения котов, поэтому
+  // они живут отдельно от инструментов и своей подсветкой их не сбивают.
+  const rules = mkSection(el, 'Правила');
+
   const auto = mkTool('<span class="sw sw-scrap"></span><span>Убирать сам</span>', () => {
     autoTidy = !autoTidy;
     auto.classList.toggle('on', autoTidy);
     worker.postMessage({ type: 'setAutoTidy', on: autoTidy });
   });
   auto.classList.add('toggle', 'on');
-  scrap.appendChild(auto);
+  auto.title = 'Коты свозят лом на склад без разметки';
+  rules.appendChild(auto);
+
+  // Второй порог усталости (§12.33). Выключено — коты доработают до нуля и
+  // свалятся где стоят: это осознанный выбор игрока гнать базу до упора.
+  const care = mkTool('<span class="sw sw-rest"></span><span>Беречь себя</span>', () => {
+    autoRest = !autoRest;
+    care.classList.toggle('on', autoRest);
+    worker.postMessage({ type: 'setAutoRest', on: autoRest });
+  });
+  care.classList.add('toggle', 'on');
+  care.title = 'На исходе сил кот бросает работу и уходит спать';
+  rules.appendChild(care);
 
   // Вылазки. Не режим ввода: клик — это сразу заявка, отряд наберётся сам
   // (§12.22). Поэтому кнопки не входят в общую подсветку инструментов.

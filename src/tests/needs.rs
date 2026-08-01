@@ -83,6 +83,98 @@ fn tiredness_does_not_abandon_a_started_job() {
     assert!(!sim.is_resting("a"), "и спать не ушёл");
 }
 
+// --- критический порог (§12.33) --------------------------------------------
+
+/// Ниже критического порога кот бросает начатое и уходит спать сам: иначе
+/// длинная работа гарантированно упирается в ноль по дороге.
+#[test]
+fn a_critical_cat_abandons_its_job() {
+    let mut sim = sim_from(&CORRIDOR);
+    sim.set_rest(1, 5);
+    sim.force_tile(7, 1, 1);
+    sim.set_needs(1000, 900, 1);
+    sim.set_critical(50);
+    sim.add_blueprint(1, 2, 0);
+
+    sim.tick_n(2);
+    assert!(sim.has_assignment("a"), "работа взята на свежую голову");
+
+    sim.set_energy("a", 40); // выдохся посреди дела
+    sim.tick_n(2);
+    assert!(!sim.has_assignment("a"), "стройку бросил");
+    assert_eq!(sim.rest_spot_of("a"), Some((7, 1)), "и занял лежанку");
+
+    sim.tick_n(20);
+    assert_eq!(sim.pos_of("a"), (7, 1), "дошёл до неё на своих лапах");
+    assert!(sim.energy_of("a") > 40, "и спит, а не валяется на полпути");
+}
+
+/// Брошенный по критическому порогу чертёж достаётся другому — как и брошенный
+/// от истощения. Иначе площадка навсегда останется за ушедшим спать.
+#[test]
+fn a_critical_cat_frees_its_blueprint() {
+    let mut sim = sim_from(&["#########", "#a.....b#", "#########"]);
+    sim.set_rest(1, 5);
+    sim.force_tile(4, 1, 1);
+    sim.set_needs(1000, 900, 1);
+    sim.set_critical(50);
+    sim.add_blueprint(1, 2, 0);
+
+    sim.tick_n(2);
+    assert!(sim.has_assignment("a"), "ближний кот взял чертёж");
+
+    sim.set_energy("a", 40);
+    sim.tick_n(3);
+    assert!(sim.is_resting("a"), "и ушёл спать");
+    assert!(sim.has_assignment("b"), "работу подхватил второй");
+}
+
+/// Срываем с работы только под лежанку: бросить дело и остаться стоять — это
+/// ни сна, ни работы. Без свободного места кот доработает до нуля.
+#[test]
+fn a_critical_cat_without_a_bed_keeps_working() {
+    let mut sim = sim_from(&CORRIDOR);
+    sim.set_needs(1000, 900, 1); // лежанок в мире нет вовсе
+    sim.set_critical(50);
+    sim.add_blueprint(1, 2, 0);
+
+    sim.tick_n(2);
+    assert!(sim.has_assignment("a"), "работа взята");
+
+    sim.set_energy("a", 40);
+    sim.tick_n(3);
+    assert!(sim.has_assignment("a"), "бросать нечего ради чего");
+    assert!(!sim.is_resting("a"), "и спать не ушёл");
+}
+
+/// Выключатель отменяет ровно второй порог: коты снова работают до нуля и
+/// валятся где стоят. Это осознанный выбор игрока — гнать базу до упора.
+#[test]
+fn auto_rest_off_lets_the_cat_work_to_zero() {
+    let mut sim = sim_from(&CORRIDOR);
+    sim.set_rest(1, 5);
+    sim.force_tile(7, 1, 1);
+    sim.set_needs(1000, 900, 1);
+    sim.set_critical(50);
+    sim.set_auto_rest(false);
+    sim.add_blueprint(1, 2, 0);
+
+    sim.tick_n(2);
+    sim.set_energy("a", 40);
+    sim.tick_n(3);
+    assert!(sim.has_assignment("a"), "работу не бросил");
+
+    sim.set_energy("a", 0);
+    sim.tick_n(1);
+    assert!(sim.is_resting("a"), "упал только на нуле");
+    assert!(!sim.has_assignment("a"), "и отпустил чертёж");
+
+    // А вот переезд упавшего выключатель не отменяет: он про второй порог, а
+    // не про сон. Спящему на полу коту всё равно, чего хотел игрок час назад.
+    sim.tick_n(20);
+    assert_eq!(sim.pos_of("a"), (7, 1), "и всё же добрался до лежанки");
+}
+
 // --- истощение -------------------------------------------------------------
 
 /// Лежанок нет — кот работает до нуля и валится там, где стоит, отпустив
@@ -223,6 +315,87 @@ fn two_beds_take_two_cats() {
     );
 }
 
+// --- переезд упавшего (§12.33) ---------------------------------------------
+
+/// Упавший на пол перебирается на лежанку, как только она появляется: сон на
+/// полу вшестеро медленнее, и до утра там кот лежал бы зря.
+#[test]
+fn a_collapsed_cat_moves_to_a_bed_when_one_appears() {
+    let mut sim = sim_from(&CORRIDOR);
+    sim.set_rest(1, 10);
+    sim.set_needs(1000, 900, 1);
+    sim.set_energy("a", 0);
+
+    sim.tick_n(1);
+    assert!(sim.is_resting("a"), "свалился где стоял");
+    assert_eq!(sim.rest_spot_of("a"), None, "лежанки у него нет");
+
+    sim.force_tile(7, 1, 1); // зону отдыха достроили, пока он спал
+    sim.tick_n(20);
+    assert_eq!(sim.pos_of("a"), (7, 1), "перебрался на лежанку");
+    assert_eq!(sim.rest_spot_of("a"), Some((7, 1)), "и занял её");
+}
+
+/// Освободившаяся лежанка достаётся и упавшему — тому самому случаю, ради
+/// которого переезд и заведён: кот падает в двух шагах от занятого места.
+#[test]
+fn a_freed_bed_is_taken_by_the_cat_on_the_floor() {
+    let mut sim = sim_from(&["#########", "#a.....b#", "#########"]);
+    sim.set_rest(1, 100); // спит быстро — место освободится скоро
+    sim.force_tile(4, 1, 1);
+    sim.set_needs(1000, 900, 1);
+    sim.set_energy("b", 100); // `b` уходит на единственную лежанку
+    sim.tick_n(5);
+    assert_eq!(sim.rest_spot_of("b"), Some((4, 1)), "лежанку занял второй");
+
+    sim.set_energy("a", 0); // а первый свалился на голом полу
+    sim.tick_n(1);
+    assert!(sim.is_resting("a"), "спит на полу");
+    assert_eq!(sim.rest_spot_of("a"), None, "места ему не досталось");
+
+    let mut moved = false;
+    for _ in 0..300 {
+        sim.tick_n(1);
+        if sim.rest_spot_of("a") == Some((4, 1)) {
+            moved = true;
+            break;
+        }
+    }
+    assert!(moved, "как только место освободилось, упавший перебрался");
+}
+
+/// Почти выспавшийся не встаёт ради лежанки: порог переезда тот же, что и у
+/// ухода спать, иначе кот тащился бы через полбазы за последними очками.
+#[test]
+fn an_almost_rested_cat_stays_where_it_fell() {
+    let mut sim = sim_from(&CORRIDOR);
+    sim.set_rest(1, 10);
+    sim.set_needs(1000, 50, 10); // на полу восстанавливается быстро
+    sim.set_energy("a", 0);
+
+    sim.tick_n(10);
+    assert!(sim.energy_of("a") > 50, "поднялся выше порога усталости");
+
+    sim.force_tile(7, 1, 1);
+    sim.tick_n(10);
+    assert_eq!(sim.pos_of("a"), (1, 1), "досыпает там, где упал");
+}
+
+/// Упавший прямо на лежанку с неё не уходит: место у него уже лучшее, какое
+/// есть, — а занятым оно считается по позиции, а не по `Rest::spot`.
+#[test]
+fn a_cat_that_fell_on_a_bed_stays_on_it() {
+    let mut sim = sim_from(&CORRIDOR);
+    sim.set_rest(1, 1); // спит долго — успеем понаблюдать
+    sim.force_tile(1, 1, 1); // лежанка под котом
+    sim.force_tile(7, 1, 1); // и свободная в другом конце
+    sim.set_needs(1000, 900, 1);
+    sim.set_energy("a", 0);
+
+    sim.tick_n(20);
+    assert_eq!(sim.pos_of("a"), (1, 1), "спит на той, где упал");
+}
+
 // --- границы механики ------------------------------------------------------
 
 /// Приказ игрока будит: это осознанное действие, а не автоматика. Но усталость
@@ -272,6 +445,15 @@ fn the_shipped_ruleset_sends_the_crew_to_bed() {
     let yaml = include_str!("../../assets/rulesets/core.yaml");
     let mut sim = Sim::new(yaml).ok().expect("рулсет должен разбираться");
     let crew = ["excellent", "sp2", "sp3"];
+
+    // Пороги идут в правильном порядке: критический выше нуля (иначе второго
+    // порога в контенте нет вовсе) и ниже обычного (иначе кот бросал бы работу
+    // ровно тогда, когда и брать её перестал, — §12.33).
+    let (tired, critical) = sim.thresholds();
+    assert!(
+        0 < critical && critical < tired,
+        "критический порог живёт между нулём и усталостью: {critical} против {tired}",
+    );
 
     let mut sleeper = None;
     for _ in 0..6000 {

@@ -6,12 +6,16 @@
 //! спать. Это первая задача, которую кот назначает себе сам; все четыре
 //! остальные приходят от разметки игрока.
 //!
-//! Правил два, и у каждого своя работа:
-//!   * `assign_rest` — уставший **и свободный** кот идёт к лежанке. Начатое дело
-//!     он при этом не бросает, как не бросает его и по приказу игрока (§12.15).
-//!   * `collapse_exhausted` — на нуле бодрости кот валится там, где стоит, и
-//!     задачу отпускает. Без этого при бесконечной работе он не поспал бы
-//!     никогда, а лежанки остались бы украшением.
+//! Порогов у бодрости два (§12.33), и раздатчик читает оба:
+//!   * `tired` — уставший **и свободный** кот идёт к лежанке. Начатое дело он
+//!     при этом не бросает, как не бросает его и по приказу игрока (§12.15).
+//!   * `critical` — кот бросает начатое и уходит спать сам. Без него половина
+//!     сна на базе происходила на полу: длинная задача гарантированно упирается
+//!     в ноль по дороге.
+//!
+//! Плюс `collapse_exhausted`: на нуле бодрости кот валится там, где стоит.
+//! Второй порог его не отменяет — в поле, без лежанок и с выключенным
+//! `AutoRest` до нуля по-прежнему доходят.
 //!
 //! Фаза отдыха отдельно не хранится: `Rest` с маршрутом — идёт спать, `Rest`
 //! без маршрута — уже спит (так же устроен `Haul`).
@@ -57,54 +61,98 @@ pub(crate) fn collapse_exhausted(
         if energy.0 > 0 {
             continue;
         }
-        if let Some(bp_e) = assignment.map(|a| a.0) {
-            if let Ok(mut bp) = blueprints.get_mut(bp_e) {
-                bp.assignee = None;
-            }
-        }
-        match haul.map(|h| h.0) {
-            Some(HaulTo::Site(bp_e)) => {
-                if let Ok(mut bp) = blueprints.get_mut(bp_e) {
-                    bp.hauler = None;
-                }
-            }
-            Some(HaulTo::Store(pile)) => release_claim(&mut marks, pile),
-            None => {}
-        }
-        if let Some(mut topic) = researching.and_then(|r| topics.get_mut(r.0).ok()) {
-            topic.assignee = None;
-            topic.spot = None;
-        }
-        // Заказ освобождается так же, как тема, и по той же причине: иначе
-        // мастерская навсегда останется за спящим (§12.30). Оплаченная штука
-        // при этом не пропадает — `paid` живёт у заказа, а не у кота.
-        if let Some(mut order) = crafting.and_then(|c| orders.get_mut(c.0).ok()) {
-            order.assignee = None;
-            order.spot = None;
-        }
-        // Груз кот не роняет: донесёт, когда выспится (§12.15). Лежанку он
-        // при этом не занимает — падает где стоит, а не идёт к месту. А вот
-        // парту отпускает: занятость держит сам `Study`, и уснувший ученик
-        // держал бы её вечно (§12.18).
-        commands
-            .entity(cat_e)
-            .insert(Rest { spot: None })
-            .remove::<(
-                Assignment,
-                Haul,
-                Study,
-                Researching,
-                Crafting,
-                Path,
-                MoveCooldown,
-            )>();
+        release_work(
+            &mut commands,
+            cat_e,
+            (assignment, haul, researching, crafting),
+            &mut blueprints,
+            &mut marks,
+            &mut topics,
+            &mut orders,
+        );
+        // Лежанку упавший не занимает — падает где стоит, а не идёт к месту.
+        commands.entity(cat_e).insert(Rest { spot: None });
     }
 }
 
-/// Отправляет уставших свободных котов к ближайшей лежанке.
+/// Отпустить всё, за что кот держался: чертёж, кучу, тему, заказ и парту.
+///
+/// Одна на два случая, когда усталость забирает кота с работы, —
+/// `collapse_exhausted` (ноль бодрости) и критический порог в `assign_rest`
+/// (§12.33). Две копии этой арифметики разошлись бы на первой же новой задаче,
+/// а площадка молча осталась бы за спящим.
+///
+/// Груз кот не роняет: донесёт, когда выспится (§12.15). Парту, наоборот,
+/// отпускает — занятость держит сам `Study`, и уснувший ученик держал бы её
+/// вечно (§12.18). Оплаченная штука заказа не пропадает: `paid` живёт у
+/// заказа, а не у кота (§12.30).
+///
+/// `Rest` и маршрут к лежанке вешает **вызывающий, после** этого вызова:
+/// команды применяются в порядке добавления, и `remove::<Path>` отсюда снёс бы
+/// только что выданный маршрут.
+#[allow(clippy::too_many_arguments)]
+fn release_work(
+    commands: &mut Commands,
+    cat_e: Entity,
+    work: (
+        Option<&Assignment>,
+        Option<&Haul>,
+        Option<&Researching>,
+        Option<&Crafting>,
+    ),
+    blueprints: &mut Query<&mut Blueprint>,
+    marks: &mut Query<&mut ToStore>,
+    topics: &mut Query<&mut Research>,
+    orders: &mut Query<&mut Craft>,
+) {
+    let (assignment, haul, researching, crafting) = work;
+    if let Some(bp_e) = assignment.map(|a| a.0) {
+        if let Ok(mut bp) = blueprints.get_mut(bp_e) {
+            bp.assignee = None;
+        }
+    }
+    match haul.map(|h| h.0) {
+        Some(HaulTo::Site(bp_e)) => {
+            if let Ok(mut bp) = blueprints.get_mut(bp_e) {
+                bp.hauler = None;
+            }
+        }
+        Some(HaulTo::Store(pile)) => release_claim(marks, pile),
+        None => {}
+    }
+    if let Some(mut topic) = researching.and_then(|r| topics.get_mut(r.0).ok()) {
+        topic.assignee = None;
+        topic.spot = None;
+    }
+    if let Some(mut order) = crafting.and_then(|c| orders.get_mut(c.0).ok()) {
+        order.assignee = None;
+        order.spot = None;
+    }
+    commands.entity(cat_e).remove::<(
+        Assignment,
+        Haul,
+        Study,
+        Researching,
+        Crafting,
+        Path,
+        MoveCooldown,
+    )>();
+}
+
+/// Отправляет уставших котов к ближайшей лежанке — тремя проходами по одному
+/// и тому же списку свободных мест.
 ///
 /// Раздаётся **первым** из всех работ: порядок раздатчиков и есть приоритет
 /// (§12.15), иначе уставшего кота тут же уводит подвоз материала.
+///
+/// Проходы идут по убыванию нужды, и это и есть распределение дефицита
+/// (§12.33):
+///   1. **Критически уставшие занятые** — ниже `critical` кот бросает начатое.
+///      Первыми, потому что до нуля им остались считаные тики.
+///   2. **Уставшие свободные** — ниже `tired`, начатого при этом нет.
+///   3. **Упавшие на полу** — те, кого уже подобрал `collapse_exhausted`,
+///      перебираются на освободившуюся лежанку. Последними: они хотя бы спят,
+///      пусть и вшестеро медленнее, а первые двое иначе не спят вовсе.
 ///
 /// **Лежанка занята, пока на неё идут или на ней спят.** Делить её нельзя:
 /// место для сна — ресурс, и если его можно занимать вдвоём, число лежанок
@@ -115,10 +163,14 @@ pub(crate) fn collapse_exhausted(
 /// Свободной лежанки нет или до неё не дойти — кот продолжает работать до нуля
 /// бодрости, и тогда его подберёт `collapse_exhausted`. Это и есть цена базы
 /// с недостроенной зоной отдыха: не запрет работать, а медленный сон на полу.
+/// По той же причине критический порог **срывает с работы только под лежанку**:
+/// бросить дело и остаться стоять — это ни сна, ни работы.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn assign_rest(
     map: Res<BaseMap>,
     rules: Res<TileRules>,
     needs: Res<NeedRules>,
+    auto: Res<AutoRest>,
     mut commands: Commands,
     resting: Query<(&Position, &Rest)>,
     free_cats: Query<
@@ -135,16 +187,43 @@ pub(crate) fn assign_rest(
             Without<Path>,
         ),
     >,
+    // Ровно дополнение к `free_cats`: занят тот, у кого есть хоть одна задача
+    // или маршрут. Два непересекающихся множества, поэтому кота не разберут
+    // дважды — иначе первый проход выдал бы ему лежанку, а второй вторую.
+    busy_cats: Query<
+        (
+            Entity,
+            &Position,
+            &Energy,
+            Option<&Assignment>,
+            Option<&Haul>,
+            Option<&Researching>,
+            Option<&Crafting>,
+        ),
+        (
+            With<UnitId>,
+            Without<Rest>,
+            Without<Away>,
+            Or<(
+                With<Assignment>,
+                With<Haul>,
+                With<Study>,
+                With<Researching>,
+                With<Crafting>,
+                With<Squad>,
+                With<Path>,
+            )>,
+        ),
+    >,
+    fallen: Query<
+        (Entity, &Position, &Energy, &Rest),
+        (With<UnitId>, Without<Path>, Without<Away>),
+    >,
+    mut blueprints: Query<&mut Blueprint>,
+    mut marks: Query<&mut ToStore>,
+    mut topics: Query<&mut Research>,
+    mut orders: Query<&mut Craft>,
 ) {
-    let tired: Vec<(Entity, (i32, i32))> = free_cats
-        .iter()
-        .filter(|(_, _, energy)| energy.0 <= needs.tired)
-        .map(|(e, pos, _)| (e, (pos.x, pos.y)))
-        .collect();
-    if tired.is_empty() {
-        return;
-    }
-
     // Занято и то, к чему идут, и то, на чём лежат: кот, свалившийся прямо на
     // лежанку, места в `Rest` не держит, но занимает его собой.
     let mut taken: Vec<(i32, i32)> = Vec::new();
@@ -160,28 +239,91 @@ pub(crate) fn assign_rest(
         .filter(|&(x, y)| rules.rest_of(map.tile_at(x, y)) > 0)
         .filter(|cell| !taken.contains(cell))
         .collect();
-
-    for (cat_e, from) in tired {
-        if free.is_empty() {
-            return; // свободных лежанок не осталось — работаем до упора
-        }
-        let reach = Reach::all(&map, from);
-        let nearest = free
-            .iter()
-            .enumerate()
-            .filter_map(|(i, &(x, y))| reach.dist_at(x, y).map(|d| (i, (x, y), d)))
-            .min_by_key(|&(_, _, d)| d);
-        let Some((i, cell, _)) = nearest else {
-            continue; // до свободных лежанок не добраться
-        };
-        free.remove(i);
-        let path = reach.path_to(cell.0, cell.1).unwrap_or_default();
-        commands.entity(cat_e).insert((
-            Rest { spot: Some(cell) },
-            Path { steps: path },
-            MoveCooldown(0),
-        ));
+    if free.is_empty() {
+        return; // лежанок нет вовсе или все заняты — работаем до упора
     }
+
+    // 1. Критический порог: кот бросает начатое, но только если ему есть куда
+    // лечь. Выключатель игрока отменяет ровно это — второй порог, а не сон.
+    if auto.0 && needs.critical > 0 {
+        for (cat_e, pos, energy, assignment, haul, researching, crafting) in &busy_cats {
+            if energy.0 > needs.critical || free.is_empty() {
+                continue;
+            }
+            let Some(bed) = claim_bed(&map, &mut free, (pos.x, pos.y)) else {
+                continue; // до свободной лежанки не добраться — работает дальше
+            };
+            release_work(
+                &mut commands,
+                cat_e,
+                (assignment, haul, researching, crafting),
+                &mut blueprints,
+                &mut marks,
+                &mut topics,
+                &mut orders,
+            );
+            // Маршрут вешается строго после освобождения задачи: `release_work`
+            // снимает `Path`, а команды применяются в порядке добавления.
+            lie_down(&mut commands, cat_e, bed);
+        }
+    }
+
+    // 2. Обычный порог: свободный кот уходит спать, ничего не бросая.
+    for (cat_e, pos, energy) in &free_cats {
+        if energy.0 > needs.tired || free.is_empty() {
+            continue;
+        }
+        if let Some(bed) = claim_bed(&map, &mut free, (pos.x, pos.y)) {
+            lie_down(&mut commands, cat_e, bed);
+        }
+    }
+
+    // 3. Переезд упавших: лежанка могла освободиться, пока кот спал на полу
+    // (§12.33). Порог тот же, что и у ухода спать, — иначе кот, доспавший до
+    // `tired`, пошёл бы через полбазы ради последних очков бодрости.
+    for (cat_e, pos, energy, rest) in &fallen {
+        if free.is_empty() {
+            return;
+        }
+        if rest.spot.is_some() || energy.0 > needs.tired {
+            continue; // лежанка у кота уже есть либо он почти выспался
+        }
+        if rules.rest_of(map.tile_at(pos.x, pos.y)) > 0 {
+            continue; // упал прямо на лежанку — переезжать некуда и незачем
+        }
+        if let Some(bed) = claim_bed(&map, &mut free, (pos.x, pos.y)) {
+            lie_down(&mut commands, cat_e, bed);
+        }
+    }
+}
+
+/// Занятая котом лежанка и маршрут к ней.
+type Bed = ((i32, i32), Vec<(i32, i32)>);
+
+/// Забрать из `free` ближайшую достижимую лежанку и маршрут к ней; `None` —
+/// свободных не осталось или ни до одной не дойти.
+///
+/// Выбор по расстоянию — то же правило, что у любого раздатчика (§12.14).
+fn claim_bed(map: &BaseMap, free: &mut Vec<(i32, i32)>, from: (i32, i32)) -> Option<Bed> {
+    let reach = Reach::all(map, from);
+    let (i, cell, _) = free
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &(x, y))| reach.dist_at(x, y).map(|d| (i, (x, y), d)))
+        .min_by_key(|&(_, _, d)| d)?;
+    free.remove(i);
+    Some((cell, reach.path_to(cell.0, cell.1).unwrap_or_default()))
+}
+
+/// Отправить кота к занятой им лежанке. Пустой маршрут значит «кот уже на
+/// месте»; снимет его `move_units`, и со следующего тика кот спит.
+fn lie_down(commands: &mut Commands, cat_e: Entity, bed: Bed) {
+    let (cell, path) = bed;
+    commands.entity(cat_e).insert((
+        Rest { spot: Some(cell) },
+        Path { steps: path },
+        MoveCooldown(0),
+    ));
 }
 
 /// Спящие коты восстанавливают бодрость и просыпаются на полной.

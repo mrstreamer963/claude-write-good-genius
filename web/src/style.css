@@ -255,6 +255,12 @@ main#stage canvas { display: block; }
   font-size: 11px;
 }
 
+/* Отдых: лежанка — той же краской, что и в палитре тайлов. */
+.sw-rest {
+  background: linear-gradient(180deg, #3f5a3a 0 55%, #2a3d27 55% 100%);
+  border-radius: 2px;
+}
+
 /* Найм: новый кот — той же краской, что и коты на карте. */
 .sw-hire {
   background: #8fb8de;

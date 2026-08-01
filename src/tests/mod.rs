@@ -89,6 +89,7 @@ fn sim_from(rows: &[&str]) -> Sim {
     world.insert_resource(SimTime { tick: 0 });
     world.insert_resource(TileRules(vec![TileRule::default()]));
     world.insert_resource(AutoTidy(true));
+    world.insert_resource(AutoRest(true));
     world.insert_resource(SkillRules::default());
     world.insert_resource(NeedRules::default());
     world.insert_resource(MissionRules::default());
@@ -614,12 +615,31 @@ impl Sim {
 
     /// Включить усталость: потолок бодрости, порог «пора спать» и скорость
     /// восстановления вне лежанки. Всем котам выдаётся полная бодрость.
+    /// Включить усталость. Критического порога тут нет намеренно: он меняет
+    /// поведение занятых котов, и тесты чужих механик о нём знать не должны —
+    /// его включает `set_critical` (§12.33).
     fn set_needs(&mut self, max: i32, tired: i32, floor: i32) {
-        self.world.insert_resource(NeedRules { max, tired, floor });
+        self.world.insert_resource(NeedRules {
+            max,
+            tired,
+            critical: 0,
+            floor,
+        });
         let mut q = self.world.query_filtered::<Entity, With<UnitId>>();
         for cat in q.iter(&self.world).collect::<Vec<_>>() {
             self.world.entity_mut(cat).insert(Energy(max));
         }
+    }
+
+    /// Порог, ниже которого кот бросает начатое и уходит спать; ноль выключает.
+    fn set_critical(&mut self, value: i32) {
+        self.world.resource_mut::<NeedRules>().critical = value;
+    }
+
+    /// Пороги усталости из правил: `(tired, critical)`.
+    fn thresholds(&self) -> (i32, i32) {
+        let needs = self.world.resource::<NeedRules>();
+        (needs.tired, needs.critical)
     }
 
     /// Сделать тайл лежанкой: сколько бодрости он возвращает за тик.

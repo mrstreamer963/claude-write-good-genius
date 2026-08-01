@@ -9,6 +9,7 @@
 //!   * `*_rect()`        — те же инструменты на рамку; решение — на всю рамку сразу;
 //!   * `mark_to_store_rect()` — пометить кучи «на склад» (или снять пометку);
 //!   * `set_auto_tidy()` — убирать ли лом с пола без приказа;
+//!   * `set_auto_rest()` — бросает ли кот работу на критической бодрости;
 //!   * `launch()`        — отправить названных котов на вылазку;
 //!   * `cancel_mission()`— распустить отряд, пока он ещё не ушёл с базы;
 //!   * `hire()`          — нанять кандидата: известность открывает, склад платит;
@@ -536,9 +537,11 @@ impl Sim {
         ));
         world.insert_resource(UnitRules { carry: rs.carry });
         world.insert_resource(AutoTidy(true));
+        world.insert_resource(AutoRest(true));
         world.insert_resource(NeedRules {
             max: rs.energy.max,
             tired: rs.energy.tired,
+            critical: rs.energy.critical,
             floor: rs.energy.floor,
         });
 
@@ -732,6 +735,17 @@ impl Sim {
                 .entity_mut(e)
                 .remove::<(Haul, Path, MoveCooldown)>();
         }
+    }
+
+    /// Бросает ли кот начатое, когда бодрость ушла ниже критического порога
+    /// (§12.33). Выключено — коты работают до нуля и валятся где стоят, как до
+    /// второго порога.
+    ///
+    /// В отличие от `set_auto_tidy`, выключение **никого не будит**: уже
+    /// спящий кот — это состояние, а не пометка игрока, и снимать её значило бы
+    /// поднимать котов на нуле бодрости, чтобы они тут же упали снова.
+    pub fn set_auto_rest(&mut self, on: bool) {
+        self.world.resource_mut::<AutoRest>().0 = on;
     }
 
     /// Пометить кучи под рамкой «на склад» — или снять пометку.

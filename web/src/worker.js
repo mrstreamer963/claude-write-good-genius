@@ -73,6 +73,10 @@ onmessage = (e) => {
     sim.mark_to_store_rect(m.x, m.y, m.w, m.h);
   } else if (m.type === 'setAutoTidy' && sim) {
     sim.set_auto_tidy(m.on);
+  } else if (m.type === 'setAutoRest' && sim) {
+    // Второй порог усталости: бросает ли кот работу, когда бодрость на исходе
+    // (см. `set_auto_rest` в ядре, §12.33). Выключение никого не будит.
+    sim.set_auto_rest(m.on);
   } else if (m.type === 'move' && sim) {
     sim.set_target(m.id, m.x, m.y);
   } else if (m.type === 'launch' && sim) {
