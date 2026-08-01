@@ -77,18 +77,26 @@ impl Sim {
         None
     }
 
-    /// Снять чертёж с клетки и освободить и строителя, и носильщика.
-    /// Отмена плана мгновенна и бесплатна — строить ещё не начинали.
+    /// Снять чертёж с клетки, освободить строителя с носильщиком и **вернуть
+    /// завезённое** (§12.31).
     ///
-    /// Уже завезённый лом при отмене не пропадает и на пол не сыплется: он
-    /// остаётся на руках у носильщика, если тот не успел его сдать, а сданный
-    /// списывается вместе с чертежом — на POC это цена поспешной разметки.
+    /// Материал ложится кучей на клетку самой площадки — тем же правилом, что
+    /// возврат от сноса и добыча с вылазки: вещь появляется там, где была
+    /// работа. Площадка обычно ещё пустота, и куча оказывается в яме — оттуда её
+    /// штатно сдвинет `settle_stacks` (§12.15), отдельного случая не нужно.
+    ///
+    /// Груз **в лапах** носильщика при этом остаётся у него: ношу посреди базы
+    /// не бросают, он донесёт её следующей доставкой (§12.16).
     fn cancel_blueprint(&mut self, x: i32, y: i32) -> bool {
         let Some(e) = self.blueprint_at(x, y) else {
             return false;
         };
         let bp = self.world.get::<Blueprint>(e);
         let (assignee, hauler) = (bp.and_then(|b| b.assignee), bp.and_then(|b| b.hauler));
+        let delivered: Vec<(usize, i32)> = bp.map(|b| b.delivered.clone()).unwrap_or_default();
+        for (item, count) in delivered {
+            self.drop_stack(x, y, item, count);
+        }
         if let Some(cat) = assignee {
             self.world
                 .entity_mut(cat)
@@ -101,6 +109,28 @@ impl Sim {
         }
         self.world.entity_mut(e).despawn();
         true
+    }
+
+    /// Положить кучу на клетку, слив с уже лежащей там кучей того же типа.
+    ///
+    /// Фасадный двойник `hauling::spill`: тот работает в системе (`Commands` +
+    /// `Query`), этот — по миру. Правило одно: кучи одного типа на клетке
+    /// сливаются, разных — лежат рядом (§12.21).
+    fn drop_stack(&mut self, x: i32, y: i32, item: usize, count: i32) {
+        if count <= 0 {
+            return;
+        }
+        let mut q = self.world.query::<(Entity, &Position, &Stack)>();
+        let found = q
+            .iter(&self.world)
+            .find(|(_, p, s)| (p.x, p.y) == (x, y) && s.item == item)
+            .map(|(e, ..)| e);
+        match found.and_then(|e| self.world.get_mut::<Stack>(e)) {
+            Some(mut stack) => stack.count += count,
+            None => {
+                self.world.spawn((Position { x, y }, Stack { item, count }));
+            }
+        }
     }
 
     /// Миссия, которая сейчас идёт (её на POC не больше одной).

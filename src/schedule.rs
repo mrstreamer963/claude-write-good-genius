@@ -11,7 +11,7 @@ use crate::gear::auto_equip;
 use crate::hauling::{assign_hauls, assign_tidy, mark_loose_scrap, settle_stacks, work_hauls};
 use crate::jobs::{assign_jobs, work_jobs};
 use crate::missions::{gather_squad, run_missions};
-use crate::movement::{escape_voids, move_units, retry_orders};
+use crate::movement::{escape_voids, move_units, retry_orders, spread_units};
 use crate::needs::{assign_rest, collapse_exhausted, sleep, tire};
 use crate::research::{assign_research, work_research};
 use crate::skills::{study, train_skills};
@@ -24,8 +24,8 @@ fn advance_time(mut time: ResMut<SimTime>) {
 /// Цепочка систем одного тика. Вынесена отдельно, чтобы тесты гоняли ровно тот
 /// же порядок, что и боевая симуляция.
 ///
-/// Пять раздатчиков берут котов из одного пула свободных, поэтому их порядок —
-/// это и есть приоритет работ (§12.15, §12.16, §12.20, §12.26):
+/// Шесть раздатчиков берут котов из одного пула свободных, поэтому их порядок —
+/// это и есть приоритет работ (§12.15, §12.16, §12.20, §12.26, §12.30):
 ///   1. `assign_rest` — отдых. Иначе уставшего кота тут же уводит работа.
 ///   2. `assign_hauls` — подвоз на площадки. Иначе бригада разбирает уже
 ///      обеспеченные чертежи, а за ломом для остальных никто не идёт, и база
@@ -57,10 +57,13 @@ fn advance_time(mut time: ResMut<SimTime>) {
 /// `run_timeline` — рядом с ним и по той же причине: мир тоже дотягивается до
 /// базы через шлюз, и его груз должен успеть съехать из ямы тем же тиком.
 ///
-/// `escape_voids` — предпоследним: если приказ или джоб уже дали маршрут, он и
+/// `escape_voids` — под конец: если приказ или джоб уже дали маршрут, он и
 /// выводит кота из ямы, отдельный шаг не нужен. `settle_stacks` после
 /// `work_jobs`: обе системы разбирают последствия только что снесённого
-/// тайла — кота в яме и кучу лома в ней же.
+/// тайла — кота в яме и кучу лома в ней же. `spread_units` — там же и по той же
+/// причине: он разбирает после факта то, что запретом стоило бы дороже, —
+/// двух котов, оставшихся в одной клетке (§12.32). Идёт после `escape_voids`,
+/// потому что кот с только что выданным маршрутом уже не «стоит».
 ///
 /// `study` — после `move_units`, по той же причине, что и `run_missions`: кот,
 /// шагнувший к парте в этом тике, тикает сразу, а не со следующего.
@@ -101,6 +104,7 @@ pub(crate) fn build_schedule() -> Schedule {
         run_timeline,
         retry_orders,
         escape_voids,
+        spread_units,
         settle_stacks,
         sleep,
         tire,

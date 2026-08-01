@@ -7,6 +7,7 @@
 //! YAML; общие хелперы — в этом файле, сами тесты разложены по механикам.
 
 mod crafting;
+mod crowd;
 mod demolition;
 mod fame;
 mod gear;

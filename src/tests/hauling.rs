@@ -185,3 +185,46 @@ fn a_cancelled_site_leaves_the_load_on_the_cat() {
     assert_eq!(sim.carrying_of("a"), 2, "груз при коте");
     assert_eq!(sim.scrap_at(8, 1), 3, "на пол ничего не высыпалось");
 }
+
+/// Отмена площадки, на которую материал уже **сдали**: он возвращается кучей на
+/// пол, а не исчезает (§12.31). Ошибка разметки стоит котовремени — терять за
+/// неё материал незачем.
+#[test]
+fn a_cancelled_site_returns_the_delivered_material() {
+    let mut sim = sim_from(&CORRIDOR);
+    sim.set_cost(0, 2);
+    sim.put_scrap(8, 1, 5);
+    assert!(sim.add_blueprint(4, 2, 0));
+
+    // Ждём, пока лом окажется именно на площадке, а не в лапах.
+    while sim.delivered_at(4, 2).unwrap_or(0) == 0 {
+        sim.tick_n(1);
+    }
+    let before = sim.scrap_total();
+    assert!(sim.plan_demolish(4, 2), "ластик снимает чертёж");
+
+    assert_eq!(sim.scrap_at(4, 2), 2, "завезённое легло кучей на клетку");
+    assert_eq!(sim.scrap_total(), before, "и ничего не пропало");
+}
+
+/// Возврат ложится на саму площадку, а она обычно ещё пустота, — оттуда кучу
+/// штатно сдвигает `settle_stacks` (§12.15), отдельного случая не нужно.
+#[test]
+fn material_returned_into_a_void_settles_onto_the_floor() {
+    let mut sim = sim_from(&["#####", "#a..#", "#.###", "#####"]);
+    sim.set_cost(0, 2);
+    sim.put_scrap(3, 1, 4);
+    sim.force_tile(1, 2, -1); // площадка в пустоте
+    assert!(sim.add_blueprint(1, 2, 0));
+
+    while sim.delivered_at(1, 2).unwrap_or(0) == 0 {
+        sim.tick_n(1);
+    }
+    let before = sim.scrap_total();
+    assert!(sim.plan_demolish(1, 2));
+
+    sim.tick_n(2);
+    assert_eq!(sim.scrap_at(1, 2), 0, "в пустоте лом не остался");
+    assert_eq!(sim.scrap_total(), before, "он съехал на пол, а не пропал");
+    assert!(sim.scrap_is_on_floor(), "и лежит на проходимой клетке");
+}

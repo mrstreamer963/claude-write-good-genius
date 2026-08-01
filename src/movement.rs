@@ -124,6 +124,88 @@ pub(crate) fn escape_voids(
     }
 }
 
+/// Разводит котов, оставшихся в одной клетке: пройти сквозь можно, встать
+/// вместе — нет (§12.32).
+///
+/// Проходимость считается по тайлам, и кот в неё не входит: сделай его
+/// препятствием — и маршруты начнут зависеть от того, кто где стоит в этот тик,
+/// а двое встречных в коридоре шириной в клетку встанут намертво. Поэтому
+/// правило касается только **остановки**, и разбирается оно после факта — тем
+/// же приёмом, что `escape_voids` выводит кота из ямы, а `settle_stacks`
+/// сдвигает кучу из пустоты. Иначе «клетка занята» пришлось бы вписать в
+/// каждый из семи раздатчиков и однажды забыть в восьмом.
+///
+/// Остаётся в клетке занятый делом, при равенстве — первый по `id`; остальные
+/// делают шаг на свободного соседа в фиксированном порядке `DIRS` (§11). Отойти
+/// некуда — стоят вместе: это легальное состояние, как `stuck`.
+///
+/// **Отряд не трогаем**: сбор у шлюза по определению сводит котов в одну точку,
+/// и `run_missions` ждёт, пока все встанут именно на неё (§12.22). Ушедших с
+/// базы — тем более: их позиция это шлюз, а не место, где они есть.
+pub(crate) fn spread_units(
+    map: Res<BaseMap>,
+    mut commands: Commands,
+    all: Query<(&Position, Option<&Path>), (With<UnitId>, Without<Away>)>,
+    stopped: Query<
+        (
+            Entity,
+            &UnitId,
+            &Position,
+            Option<&Assignment>,
+            Option<&Haul>,
+            Option<&Rest>,
+            Option<&Study>,
+            Option<&Researching>,
+            Option<&Crafting>,
+        ),
+        (With<UnitId>, Without<Path>, Without<Away>, Without<Squad>),
+    >,
+) {
+    // Занято то, где кто-то **стоит**: идущий сквозь не мешает. Отряд у шлюза
+    // сюда входит — вставать под него незачем, хоть он и не расходится сам.
+    let mut blocked: Vec<(i32, i32)> = all
+        .iter()
+        .filter(|(_, path)| path.is_none())
+        .map(|(p, _)| (p.x, p.y))
+        .collect();
+
+    // Кто с кем стоит. Порядок задан явно: занятый делом остаётся, дальше по
+    // `id`, — иначе «кто отойдёт» зависело бы от истории вставок в ECS (§12.24).
+    let mut standing: Vec<(bool, &str, Entity, (i32, i32))> = stopped
+        .iter()
+        .map(|(e, id, pos, job, haul, rest, study, research, craft)| {
+            let at_work = job.is_some()
+                || haul.is_some()
+                || rest.is_some()
+                || study.is_some()
+                || research.is_some()
+                || craft.is_some();
+            (at_work, id.0.as_str(), e, (pos.x, pos.y))
+        })
+        .collect();
+    standing.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
+
+    let mut kept: Vec<(i32, i32)> = Vec::new();
+    for (_, _, cat_e, at) in standing {
+        if !kept.contains(&at) {
+            kept.push(at); // первый по правилу остаётся на месте
+            continue;
+        }
+        let Some(step) = DIRS
+            .iter()
+            .map(|(dx, dy)| (at.0 + dx, at.1 + dy))
+            .find(|&(nx, ny)| map.walkable(nx, ny) && !blocked.contains(&(nx, ny)))
+        else {
+            continue; // отойти некуда — стоят вместе, это не ошибка
+        };
+        // Цель занимаем сразу: иначе двое из одной клетки шагнут в одну и ту же.
+        blocked.push(step);
+        commands
+            .entity(cat_e)
+            .insert((Path { steps: vec![step] }, MoveCooldown(0)));
+    }
+}
+
 /// Кот ничего не может сделать сам — для подсветки в UI.
 ///
 /// Два случая: замурован в пустоте без проходимых соседей, либо его приказ

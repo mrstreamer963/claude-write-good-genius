@@ -76,7 +76,7 @@ cargo test whole_room_is_erased_completely -- --nocapture
 `advance_time → auto_equip → collapse_exhausted → assign_rest → gather_squad → assign_hauls →
 assign_research → assign_craft → assign_jobs → mark_loose_scrap → assign_tidy → move_units →
 work_hauls → work_jobs → work_research → work_craft → study → run_missions → run_timeline →
-retry_orders → escape_voids → settle_stacks → sleep → tire → train_skills`.
+retry_orders → escape_voids → spread_units → settle_stacks → sleep → tire → train_skills`.
 Цепочка собирается двумя группами (`assign` и `act`) только из-за предела арности кортежа систем;
 порядок ровно тот же, что и одним списком.
 Тесты гоняют ровно эту функцию, поэтому новую систему добавлять только сюда, а не в тестовую копию.
@@ -124,7 +124,14 @@ retry_orders → escape_voids → settle_stacks → sleep → tire → train_ski
 8. **Ничего не остаётся в пустоте.** Кот выходит сам (`escape_voids`), куча лома сдвигается на
    соседний пол (`settle_stacks`, он же сливает две кучи на одной клетке). Правило одно на обоих:
    пустоту не пересечь, значит оставленное в ней недостижимо, — но кот виден флагом `stuck`,
-   а лом молча пропал бы (§12.15).
+   а лом молча пропал бы (§12.15). Той же природы `spread_units`: **пройти сквозь кота можно,
+   остаться в его клетке — нет** (§12.32). Кот не входит в проходимость (иначе маршруты зависели
+   бы от того, кто где стоит в этот тик), поэтому правило разбирается после факта, а не запретом
+   в семи раздатчиках: остаётся занятый делом, при равенстве — первый по `id`, остальные шагают
+   на свободного соседа. Отряд у шлюза — исключение: сбор по определению сводит котов в одну
+   точку (§12.22).
+   **Материал тоже не исчезает:** отмена площадки возвращает уже сданное кучей на её клетку
+   (§12.31) — в лапах носильщика груз при этом остаётся у него.
 9. **Навык не влияет на выбор исполнителя, только на скорость работы.** Раздатчики берут
    ближайшего кота (§12.14); мастер на дальнем конце базы вернёт ровно ту беготню через
    полкарты, ради которой §12.14 и писалась. Работа считается в **очках**, а не в тиках
@@ -213,9 +220,9 @@ retry_orders → escape_voids → settle_stacks → sleep → tire → train_ski
 
 ## Тесты
 
-193 теста живут в `src/tests/` по механикам (`paths` · `voids` · `orders` · `jobs` · `demolition` ·
+203 теста живут в `src/tests/` по механикам (`paths` · `voids` · `orders` · `jobs` · `demolition` ·
 `hauling` · `tidying` · `skills` · `study` · `research` · `needs` · `items` · `missions` · `fame` ·
-`timeline` · `gear` · `crafting`); общие хелперы и сборка мира —
+`timeline` · `gear` · `crafting` · `crowd`); общие хелперы и сборка мира —
 в `tests/mod.rs`. Мир собирается из ASCII-схем, минуя YAML:
 
 ```rust
