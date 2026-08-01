@@ -390,6 +390,10 @@ main#stage canvas { display: block; }
   background: var(--accent);
 }
 .bar i.rest { background: #7fd6b5; }
+.bar i.fed { background: #c96f4a; }
+/* Пустой желудок жжёт бодрость вдвое (§12.36) — цена невидима в цифрах, поэтому
+   видна в цвете: полоска на нуле не «почти пустая», а тревожная. */
+.bar i.starving { background: #ff5566; }
 /* Прогноз провала: полоса красная и полная — «пойдут и не вернутся с добычей»,
    а не «немного не хватает». */
 .bar i.fail { background: #ff5566; }

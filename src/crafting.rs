@@ -65,6 +65,7 @@ pub(crate) fn assign_craft(
             Without<Researching>,
             Without<Crafting>,
             Without<Equipping>,
+            Without<Eating>,
             Without<Squad>,
             Without<Path>,
         ),

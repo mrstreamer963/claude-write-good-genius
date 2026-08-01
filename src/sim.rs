@@ -262,6 +262,7 @@ impl Sim {
             Researching,
             Crafting,
             Equipping,
+            Eating,
             Path,
             MoveCooldown,
         )>();
@@ -343,6 +344,7 @@ fn spawn_cat(
 ) -> Entity {
     let carry = world.resource::<UnitRules>().carry;
     let energy_max = world.resource::<NeedRules>().max;
+    let fed_max = world.resource::<FoodRules>().max;
     let caps: Vec<(usize, i32)> = {
         let rules = world.resource::<SkillRules>();
         skills.iter().map(|&(s, _)| (s, rules.xp_cap(s))).collect()
@@ -362,6 +364,11 @@ fn spawn_cat(
     }
     if energy_max > 0 {
         cat.insert(Energy(energy_max));
+    }
+    // Новичок приходит сытым, как и бодрым: голодать он начнёт на общих
+    // основаниях, а не с порога (§12.36).
+    if fed_max > 0 {
+        cat.insert(Fed(fed_max));
     }
     if !skills.is_empty() {
         let mut xp = Skills::default();
@@ -531,7 +538,10 @@ impl Sim {
         world.insert_resource(ItemRules(
             rs.items
                 .iter()
-                .map(|i| ItemRule { force: i.force })
+                .map(|i| ItemRule {
+                    force: i.force,
+                    nutrition: i.nutrition,
+                })
                 .collect(),
         ));
         world.insert_resource(LoadoutRules(
@@ -545,6 +555,11 @@ impl Sim {
             tired: rs.energy.tired,
             critical: rs.energy.critical,
             floor: rs.energy.floor,
+        });
+        world.insert_resource(FoodRules {
+            max: rs.food.max,
+            hungry: rs.food.hungry,
+            starve: rs.food.starve,
         });
 
         // Стартовый запас. Стартовая застройка (`build`) при этом бесплатна —
@@ -1223,6 +1238,7 @@ impl Sim {
                 Option<&Skills>,
                 Option<&Perks>,
                 Option<&Energy>,
+                Option<&Fed>,
                 Option<&Gear>,
                 (
                     Option<&Order>,
@@ -1234,6 +1250,7 @@ impl Sim {
                     Option<&Researching>,
                     Option<&Crafting>,
                     Option<&Equipping>,
+                    Option<&Eating>,
                     Option<&Squad>,
                     Option<&Away>,
                 ),
@@ -1241,7 +1258,10 @@ impl Sim {
             let map = self.world.resource::<BaseMap>();
             let rules = self.world.resource::<SkillRules>();
             let needs = self.world.resource::<NeedRules>();
-            for (id, r, p, load, carry, skills, perks, energy, gear, tasks) in q.iter(&self.world) {
+            let food = self.world.resource::<FoodRules>();
+            for (id, r, p, load, carry, skills, perks, energy, fed, gear, tasks) in
+                q.iter(&self.world)
+            {
                 let (
                     order,
                     path,
@@ -1252,6 +1272,7 @@ impl Sim {
                     researching,
                     crafting,
                     equipping,
+                    eating,
                     squad,
                     away,
                 ) = tasks;
@@ -1265,6 +1286,7 @@ impl Sim {
                     researching,
                     crafting,
                     equipping,
+                    eating,
                     squad,
                     away,
                 );
@@ -1277,6 +1299,13 @@ impl Sim {
                     away: away.is_some(),
                     energy: energy.map_or(0, |e| e.0),
                     energy_max: needs.max,
+                    fed: fed.map_or(0, |f| f.0),
+                    fed_max: food.max,
+                    // Порог голода уходит наружу вместе со шкалой: без него
+                    // панель не отличит «наелся минуту назад» от «уже идёт
+                    // есть», а второй экземпляр числа в JS однажды разойдётся
+                    // с рулсетом (§12.26 — считает ядро, а не интерфейс).
+                    fed_hungry: food.hungry,
                     // Спит, а не идёт спать: маршрут ещё есть — значит в пути.
                     sleeping: rest.is_some() && path.is_none(),
                     // Учится, а не идёт к парте — по тому же признаку.

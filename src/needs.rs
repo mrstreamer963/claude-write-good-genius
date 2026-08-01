@@ -19,6 +19,10 @@
 //!
 //! Фаза отдыха отдельно не хранится: `Rest` с маршрутом — идёт спать, `Rest`
 //! без маршрута — уже спит (так же устроен `Haul`).
+//!
+//! Вторая потребность — голод — живёт в `food` (§12.36): у неё своя шкала, свой
+//! порог и свой удовлетворитель. Общего у них ровно одно место, и оно здесь:
+//! `tire` жжёт бодрость вдвое на пустой желудок — это и есть вся цена голода.
 
 use bevy_ecs::prelude::*;
 
@@ -135,6 +139,7 @@ fn release_work(
         Researching,
         Crafting,
         Equipping,
+        Eating,
         Path,
         MoveCooldown,
     )>();
@@ -185,6 +190,7 @@ pub(crate) fn assign_rest(
             Without<Researching>,
             Without<Crafting>,
             Without<Equipping>,
+            Without<Eating>,
             Without<Squad>,
             Without<Path>,
         ),
@@ -213,6 +219,7 @@ pub(crate) fn assign_rest(
                 With<Researching>,
                 With<Crafting>,
                 With<Equipping>,
+                With<Eating>,
                 With<Squad>,
                 With<Path>,
             )>,
@@ -359,8 +366,21 @@ pub(crate) fn sleep(
 
 /// Бодрствование стоит бодрости — одинаково за работу, ходьбу и простой.
 /// Кроме тех, кто на миссии: вне базы усталость не считается вовсе (§12.22).
-pub(crate) fn tire(mut cats: Query<&mut Energy, (With<UnitId>, Without<Rest>, Without<Away>)>) {
-    for mut energy in &mut cats {
-        energy.0 = (energy.0 - TIRE_PER_TICK).max(0);
+///
+/// **На пустой желудок она горит в `starve` раз быстрее** (§12.36). Это вся
+/// цена голода: он стоит сил, а не жизни, — и берёт их существующей шкалой,
+/// а не второй полоской рядом. Отсюда же и отсутствие у голода второго порога:
+/// с работы кота уводит бодрость, дошедшая до критической, а не сам голод.
+///
+/// Спящего это не касается — у него нет `Energy` в убыль вовсе: голодный, из
+/// чьего сна не выйти, был бы наказанием без выхода, а §12.20 такие отверг.
+pub(crate) fn tire(
+    food: Res<FoodRules>,
+    mut cats: Query<(&mut Energy, Option<&Fed>), (With<UnitId>, Without<Rest>, Without<Away>)>,
+) {
+    for (mut energy, fed) in &mut cats {
+        let starving = fed.is_some_and(|f| f.0 <= 0);
+        let rate = TIRE_PER_TICK * if starving { food.starve.max(1) } else { 1 };
+        energy.0 = (energy.0 - rate).max(0);
     }
 }

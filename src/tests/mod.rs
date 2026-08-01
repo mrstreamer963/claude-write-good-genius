@@ -10,6 +10,7 @@ mod crafting;
 mod crowd;
 mod demolition;
 mod fame;
+mod food;
 mod gear;
 mod hauling;
 mod items;
@@ -93,6 +94,7 @@ fn sim_from(rows: &[&str]) -> Sim {
     world.insert_resource(AutoRest(true));
     world.insert_resource(SkillRules::default());
     world.insert_resource(NeedRules::default());
+    world.insert_resource(FoodRules::default());
     world.insert_resource(MissionRules::default());
     world.insert_resource(RecruitRules::default());
     world.insert_resource(ResearchRules::default());
@@ -162,14 +164,19 @@ impl Sim {
             Option<&Researching>,
             Option<&Crafting>,
             Option<&Equipping>,
+            Option<&Eating>,
             Option<&Squad>,
             Option<&Away>,
         )>();
         let map = self.world.resource::<BaseMap>();
         q.iter(&self.world)
             .find(|(id, ..)| id.0 == unit)
-            .map(|(_, p, o, path, a, h, r, st, re, cr, eq, s, away)| {
-                is_stuck(map, p, Busy::of(o, path, a, h, r, st, re, cr, eq, s, away))
+            .map(|(_, p, o, path, a, h, r, st, re, cr, eq, ea, s, away)| {
+                is_stuck(
+                    map,
+                    p,
+                    Busy::of(o, path, a, h, r, st, re, cr, eq, ea, s, away),
+                )
             })
             .expect("кот не найден")
     }
@@ -689,6 +696,48 @@ impl Sim {
     fn rest_spot_of(&mut self, unit: &str) -> Option<(i32, i32)> {
         let cat = self.entity_of(unit);
         self.world.get::<Rest>(cat).and_then(|r| r.spot)
+    }
+
+    /// Включить голод: потолок сытости, порог «пора есть» и во сколько раз
+    /// быстрее горит бодрость на пустой желудок (§12.36). Всем котам выдаётся
+    /// полная сытость. Отдельно от `set_needs`: голод и усталость включаются
+    /// порознь, иначе тесты усталости начали бы зависеть от наличия еды.
+    fn set_food(&mut self, max: i32, hungry: i32, starve: i32) {
+        self.world.insert_resource(FoodRules {
+            max,
+            hungry,
+            starve,
+        });
+        let mut q = self.world.query_filtered::<Entity, With<UnitId>>();
+        for cat in q.iter(&self.world).collect::<Vec<_>>() {
+            self.world.entity_mut(cat).insert(Fed(max));
+        }
+    }
+
+    /// Сделать предмет едой: сколько сытости даёт одна штука. В схеме `sim_from`
+    /// предметы несъедобны, как тайл бесплатен, — еда это контент рулсета.
+    fn set_nutrition(&mut self, item: usize, nutrition: i32) {
+        let mut rules = self.world.resource_mut::<ItemRules>();
+        if rules.0.len() <= item {
+            rules.0.resize(item + 1, ItemRule::default());
+        }
+        rules.0[item].nutrition = nutrition;
+    }
+
+    fn set_fed(&mut self, unit: &str, value: i32) {
+        let cat = self.entity_of(unit);
+        self.world.entity_mut(cat).insert(Fed(value));
+    }
+
+    fn fed_of(&mut self, unit: &str) -> i32 {
+        let cat = self.entity_of(unit);
+        self.world.get::<Fed>(cat).map_or(0, |f| f.0)
+    }
+
+    /// Кот идёт к куче с едой (§12.36).
+    fn is_eating(&mut self, unit: &str) -> bool {
+        let cat = self.entity_of(unit);
+        self.world.get::<Eating>(cat).is_some()
     }
 
     /// Сделать тайл шлюзом: отсюда отряд уходит на миссию и сюда возвращается.

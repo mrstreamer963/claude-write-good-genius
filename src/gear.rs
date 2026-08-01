@@ -66,6 +66,7 @@ pub(crate) fn assign_equip(
             Without<Researching>,
             Without<Crafting>,
             Without<Equipping>,
+            Without<Eating>,
             Without<Away>,
         ),
     >,

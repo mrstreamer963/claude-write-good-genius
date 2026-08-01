@@ -115,6 +115,7 @@ pub(crate) fn retry_orders(
             Without<Researching>,
             Without<Crafting>,
             Without<Equipping>,
+            Without<Eating>,
             Without<Squad>,
         ),
     >,
@@ -205,6 +206,7 @@ pub(crate) fn spread_units(
             Option<&Researching>,
             Option<&Crafting>,
             Option<&Equipping>,
+            Option<&Eating>,
         ),
         (With<UnitId>, Without<Path>, Without<Away>, Without<Squad>),
     >,
@@ -222,14 +224,15 @@ pub(crate) fn spread_units(
     let mut standing: Vec<(bool, &str, Entity, (i32, i32))> = stopped
         .iter()
         .map(
-            |(e, id, pos, job, haul, rest, study, research, craft, equip)| {
+            |(e, id, pos, job, haul, rest, study, research, craft, equip, eat)| {
                 let at_work = job.is_some()
                     || haul.is_some()
                     || rest.is_some()
                     || study.is_some()
                     || research.is_some()
                     || craft.is_some()
-                    || equip.is_some();
+                    || equip.is_some()
+                    || eat.is_some();
                 (at_work, id.0.as_str(), e, (pos.x, pos.y))
             },
         )
@@ -293,6 +296,7 @@ pub(crate) fn clear_solids(
             Without<Researching>,
             Without<Crafting>,
             Without<Equipping>,
+            Without<Eating>,
         ),
     >,
 ) {
@@ -355,8 +359,8 @@ pub(crate) fn is_stuck(map: &BaseMap, pos: &Position, tasks: Busy) -> bool {
 ///
 /// Отдельная структура, а не десяток аргументов: список задач общего слоя растёт
 /// (`Assignment`, `Haul`, `Rest`, `Study`, `Researching`, `Crafting`, `Equipping`,
-/// `Squad` — и это не конец), и собирать его в каждой точке вызова заново значит
-/// однажды забыть одну.
+/// `Eating`, `Squad` — и это не конец), и собирать его в каждой точке вызова
+/// заново значит однажды забыть одну.
 #[derive(Clone, Copy)]
 pub(crate) struct Busy {
     /// Приказ игрока висит, но маршрута под него сейчас нет.
@@ -377,6 +381,7 @@ impl Busy {
         researching: Option<&Researching>,
         crafting: Option<&Crafting>,
         equipping: Option<&Equipping>,
+        eating: Option<&Eating>,
         squad: Option<&Squad>,
         away: Option<&Away>,
     ) -> Self {
@@ -389,6 +394,7 @@ impl Busy {
                 && researching.is_none()
                 && crafting.is_none()
                 && equipping.is_none()
+                && eating.is_none()
                 && squad.is_none(),
             away: away.is_some(),
         }

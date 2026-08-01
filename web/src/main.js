@@ -416,6 +416,21 @@ function renderCatPanel(entities) {
         '</div>',
     );
   }
+  // Сытость — вторая потребность (§12.36). Цена голода списывается с бодрости,
+  // а не со шкалы рядом, поэтому «голоден» надо назвать словом: иначе игрок
+  // видит, что коты всё время спят, и не связывает это с пустым складом.
+  if (e.fed_max > 0) {
+    const pct = Math.round((e.fed / e.fed_max) * 100);
+    const starving = e.fed <= 0;
+    const note = starving ? 'голодает: бодрость горит вдвое' : e.fed <= e.fed_hungry ? 'проголодался' : '';
+    parts.push(
+      '<div class="cat-skill">' +
+        `<div class="cat-row"><span>Сытость</span><b>${pct}%</b></div>` +
+        `<div class="bar"><i class="${starving ? 'starving' : 'fed'}" style="width:${pct}%"></i></div>` +
+        (note ? `<div class="cat-sub">${note}</div>` : '') +
+        '</div>',
+    );
+  }
   if (e.away) parts.push('<div class="cat-sub">на вылазке</div>');
   if (e.studying) parts.push('<div class="cat-sub">учится</div>');
   // Надетое: снаряжение молча прибавляет отряду силы, и без этой строки игрок
