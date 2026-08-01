@@ -57,6 +57,7 @@ pub(crate) fn assign_research(
             Without<Study>,
             Without<Researching>,
             Without<Crafting>,
+            Without<Equipping>,
             Without<Squad>,
             Without<Path>,
         ),

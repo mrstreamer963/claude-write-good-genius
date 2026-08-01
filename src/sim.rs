@@ -261,6 +261,7 @@ impl Sim {
             Study,
             Researching,
             Crafting,
+            Equipping,
             Path,
             MoveCooldown,
         )>();
@@ -1231,6 +1232,7 @@ impl Sim {
                     Option<&Study>,
                     Option<&Researching>,
                     Option<&Crafting>,
+                    Option<&Equipping>,
                     Option<&Squad>,
                     Option<&Away>,
                 ),
@@ -1248,6 +1250,7 @@ impl Sim {
                     study,
                     researching,
                     crafting,
+                    equipping,
                     squad,
                     away,
                 ) = tasks;
@@ -1260,6 +1263,7 @@ impl Sim {
                     study,
                     researching,
                     crafting,
+                    equipping,
                     squad,
                     away,
                 );

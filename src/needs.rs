@@ -134,6 +134,7 @@ fn release_work(
         Study,
         Researching,
         Crafting,
+        Equipping,
         Path,
         MoveCooldown,
     )>();
@@ -183,6 +184,7 @@ pub(crate) fn assign_rest(
             Without<Study>,
             Without<Researching>,
             Without<Crafting>,
+            Without<Equipping>,
             Without<Squad>,
             Without<Path>,
         ),
@@ -210,6 +212,7 @@ pub(crate) fn assign_rest(
                 With<Study>,
                 With<Researching>,
                 With<Crafting>,
+                With<Equipping>,
                 With<Squad>,
                 With<Path>,
             )>,

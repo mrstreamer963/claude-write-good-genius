@@ -159,14 +159,15 @@ impl Sim {
             Option<&Study>,
             Option<&Researching>,
             Option<&Crafting>,
+            Option<&Equipping>,
             Option<&Squad>,
             Option<&Away>,
         )>();
         let map = self.world.resource::<BaseMap>();
         q.iter(&self.world)
             .find(|(id, ..)| id.0 == unit)
-            .map(|(_, p, o, path, a, h, r, st, re, cr, s, away)| {
-                is_stuck(map, p, Busy::of(o, path, a, h, r, st, re, cr, s, away))
+            .map(|(_, p, o, path, a, h, r, st, re, cr, eq, s, away)| {
+                is_stuck(map, p, Busy::of(o, path, a, h, r, st, re, cr, eq, s, away))
             })
             .expect("кот не найден")
     }
@@ -688,6 +689,25 @@ impl Sim {
     /// Задать шаблон снаряжения: что коты носят. Один на всех (§12.29).
     fn set_loadout(&mut self, items: &[usize]) {
         self.world.resource_mut::<LoadoutRules>().0 = items.to_vec();
+    }
+
+    /// Убрать кучу с клетки целиком — как если бы её унесли, пока кот шёл.
+    fn take_item(&mut self, x: i32, y: i32, item: usize) {
+        let mut q = self.world.query::<(Entity, &Position, &Stack)>();
+        let piles: Vec<Entity> = q
+            .iter(&self.world)
+            .filter(|(_, p, s)| (p.x, p.y) == (x, y) && s.item == item)
+            .map(|(e, ..)| e)
+            .collect();
+        for pile in piles {
+            self.world.entity_mut(pile).despawn();
+        }
+    }
+
+    /// Кот идёт за вещью из шаблона (§12.34).
+    fn is_equipping(&mut self, unit: &str) -> bool {
+        let cat = self.entity_of(unit);
+        self.world.get::<Equipping>(cat).is_some()
     }
 
     /// Что надето на коте, в порядке шаблона.

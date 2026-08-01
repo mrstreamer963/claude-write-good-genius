@@ -98,6 +98,7 @@ pub(crate) fn assign_jobs(
             Without<Study>,
             Without<Researching>,
             Without<Crafting>,
+            Without<Equipping>,
             Without<Squad>,
             Without<Path>,
         ),

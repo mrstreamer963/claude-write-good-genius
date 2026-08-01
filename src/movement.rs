@@ -68,6 +68,7 @@ pub(crate) fn retry_orders(
             Without<Study>,
             Without<Researching>,
             Without<Crafting>,
+            Without<Equipping>,
             Without<Squad>,
         ),
     >,
@@ -157,6 +158,7 @@ pub(crate) fn spread_units(
             Option<&Study>,
             Option<&Researching>,
             Option<&Crafting>,
+            Option<&Equipping>,
         ),
         (With<UnitId>, Without<Path>, Without<Away>, Without<Squad>),
     >,
@@ -173,15 +175,18 @@ pub(crate) fn spread_units(
     // `id`, — иначе «кто отойдёт» зависело бы от истории вставок в ECS (§12.24).
     let mut standing: Vec<(bool, &str, Entity, (i32, i32))> = stopped
         .iter()
-        .map(|(e, id, pos, job, haul, rest, study, research, craft)| {
-            let at_work = job.is_some()
-                || haul.is_some()
-                || rest.is_some()
-                || study.is_some()
-                || research.is_some()
-                || craft.is_some();
-            (at_work, id.0.as_str(), e, (pos.x, pos.y))
-        })
+        .map(
+            |(e, id, pos, job, haul, rest, study, research, craft, equip)| {
+                let at_work = job.is_some()
+                    || haul.is_some()
+                    || rest.is_some()
+                    || study.is_some()
+                    || research.is_some()
+                    || craft.is_some()
+                    || equip.is_some();
+                (at_work, id.0.as_str(), e, (pos.x, pos.y))
+            },
+        )
         .collect();
     standing.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
 
@@ -230,9 +235,9 @@ pub(crate) fn is_stuck(map: &BaseMap, pos: &Position, tasks: Busy) -> bool {
 /// Чем кот занят — в том же наборе, что и фильтры `Without<…>` раздатчиков.
 ///
 /// Отдельная структура, а не десяток аргументов: список задач общего слоя растёт
-/// (`Assignment`, `Haul`, `Rest`, `Study`, `Researching`, `Crafting`, `Squad` —
-/// и это не конец), и собирать его в каждой точке вызова заново значит однажды
-/// забыть одну.
+/// (`Assignment`, `Haul`, `Rest`, `Study`, `Researching`, `Crafting`, `Equipping`,
+/// `Squad` — и это не конец), и собирать его в каждой точке вызова заново значит
+/// однажды забыть одну.
 #[derive(Clone, Copy)]
 pub(crate) struct Busy {
     /// Приказ игрока висит, но маршрута под него сейчас нет.
@@ -252,6 +257,7 @@ impl Busy {
         study: Option<&Study>,
         researching: Option<&Researching>,
         crafting: Option<&Crafting>,
+        equipping: Option<&Equipping>,
         squad: Option<&Squad>,
         away: Option<&Away>,
     ) -> Self {
@@ -263,6 +269,7 @@ impl Busy {
                 && study.is_none()
                 && researching.is_none()
                 && crafting.is_none()
+                && equipping.is_none()
                 && squad.is_none(),
             away: away.is_some(),
         }

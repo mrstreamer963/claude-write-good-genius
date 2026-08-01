@@ -1,8 +1,12 @@
-//! Снаряжение: комплект по шаблону, снятый со склада (§12.29).
+//! Снаряжение: комплект по шаблону, за которым кот идёт сам (§12.29, §12.34).
 //!
 //! Снаряжение — свойство предмета (`force`), а не отдельная сущность, поэтому
 //! проверять его надо там, где оно что-то меняет: в силе отряда. Отсюда и мир
 //! на все тесты — коридор со складом и шлюзом: одеться и уйти в поле.
+//!
+//! Одевание — задача с маршрутом (§12.34), поэтому «оделся» здесь всегда стоит
+//! тиков: кот доходит до кучи и берёт вещь оттуда. Это и есть главная разница с
+//! первой редакцией §12.29, где склад одевал мгновенно.
 //!
 //! В схеме `sim_from` предметы бессильны и шаблон пуст, ровно как тайл там
 //! бесплатен: это контент рулсета, и включают его тесты сами (`set_force`,
@@ -19,7 +23,7 @@ fn squad(ids: &[&str]) -> Vec<String> {
 }
 
 /// Коридор: склад в (5,1), шлюз в (6,1), комплект из одного «комбинезона».
-/// Коты `a`, `b` и `c` — в этом порядке их и одевают (по `id`).
+/// Коты `a` (1,1), `b` (3,1) и `c` (6,1) — в этом порядке их и одевают (по `id`).
 fn sim_with_store_and_gate() -> Sim {
     let mut sim = sim_from(&["########", "#a.b..c#", "########"]);
     sim.set_capacity(1, 100);
@@ -34,38 +38,62 @@ fn sim_with_store_and_gate() -> Sim {
 // --- экипировка -------------------------------------------------------------
 
 /// Комплект коты добирают сами: игрок его не выдаёт, как не выдаёт чертёж
-/// конкретному коту (§12.16).
+/// конкретному коту (§12.16). Но добирают **ногами** — вещь лежит на складе, и
+/// за ней надо дойти (§12.34).
 #[test]
-fn a_cat_takes_the_loadout_from_storage() {
+fn a_cat_walks_to_the_storage_for_the_loadout() {
     let mut sim = sim_with_store_and_gate();
     sim.put_item(5, 1, SUIT, 1);
 
-    assert!(sim.gear_of("a").is_empty(), "пока склад не тронут");
     sim.tick_n(1);
-    assert_eq!(sim.gear_of("a"), vec![SUIT], "комбинезон надет");
-    assert_eq!(sim.item_at(5, 1, SUIT), 0, "и снят со склада");
+    assert!(sim.is_equipping("a"), "кот взялся за поход");
+    assert!(sim.gear_of("a").is_empty(), "но пока ни во что не одет");
+
+    sim.tick_n(10);
+    assert_eq!(sim.pos_of("a"), (5, 1), "дошёл до склада");
+    assert_eq!(sim.gear_of("a"), vec![SUIT], "и надел комбинезон");
+    assert_eq!(sim.item_at(5, 1, SUIT), 0, "склад стал легче ровно на него");
+    assert!(!sim.is_equipping("a"), "задача закрыта");
 }
 
-/// **Со склада, а не с пола** (§12.16, §12.29): валяющееся под ногами — ещё не
-/// имущество базы, сперва его свезут туда обычной уборкой. Иначе предмет
-/// исчезал бы с пола «в лапы», против чего и писался инвариант переноса.
+/// **С пола — тоже** (§12.34). Инвариант §12.16 («ничего не исчезает с пола в
+/// лапы») этим не нарушается, а исполняется буквально: у подъёма есть адресат и
+/// дорога к нему, и кот приходит на клетку сам.
 #[test]
-fn gear_is_not_taken_from_the_floor() {
+fn gear_is_picked_up_from_the_floor() {
     let mut sim = sim_with_store_and_gate();
     sim.set_auto_tidy(false); // иначе куча уедет на склад и проверять будет нечего
-    sim.put_item(3, 1, SUIT, 1); // на полу коридора, а не на складе
+    sim.put_item(2, 1, SUIT, 1); // на полу коридора, а не на складе
 
-    sim.tick_n(5);
-    assert!(sim.gear_of("b").is_empty(), "с пола снаряжение не берут");
-    assert_eq!(sim.item_at(3, 1, SUIT), 1, "куча на месте");
+    sim.tick_n(10);
+    assert_eq!(sim.gear_of("a"), vec![SUIT], "поднял с пола и надел");
+    assert_eq!(sim.item_at(2, 1, SUIT), 0, "кучи больше нет");
 }
 
-/// Одетого не одевают снова — иначе склад вычерпывался бы каждый тик.
+/// Ближе — значит первым: выбор кучи тот же, что у любого раздатчика (§12.14).
+#[test]
+fn the_nearest_pile_wins() {
+    let mut sim = sim_with_store_and_gate();
+    sim.set_auto_tidy(false);
+    sim.put_item(2, 1, SUIT, 1); // в шаге от `a`
+    sim.put_item(5, 1, SUIT, 1); // на складе, вчетверо дальше
+
+    sim.tick_n(10);
+    assert_eq!(sim.gear_of("a"), vec![SUIT], "оделся");
+    assert_eq!(
+        sim.pos_of("a"),
+        (2, 1),
+        "сходив за ближней кучей, а не на склад"
+    );
+    assert_eq!(sim.item_at(2, 1, SUIT), 0, "её и забрал");
+}
+
+/// Одетого не одевают снова — иначе склад вычерпывался бы каждую ходку.
 #[test]
 fn an_equipped_cat_is_not_equipped_twice() {
     let mut sim = sim_with_store_and_gate();
     sim.put_item(5, 1, SUIT, 10);
-    sim.tick_n(1);
+    sim.tick_n(20);
     let left = sim.item_at(5, 1, SUIT);
 
     sim.tick_n(20);
@@ -74,24 +102,65 @@ fn an_equipped_cat_is_not_equipped_twice() {
 }
 
 /// Комплектов меньше, чем котов, — и «кому достанется» должно быть решением
-/// правила, а не порядка сущностей ECS (§11, §12.24).
+/// правила, а не порядка сущностей ECS (§11, §12.24). Заодно проверяется, что
+/// за одним комбинезоном не идут трое: раздатчик считает, сколько в куче уже
+/// обещано тем, кто к ней идёт (§12.34).
 #[test]
-fn gear_goes_to_cats_in_a_fixed_order() {
+fn one_suit_goes_to_one_cat_in_a_fixed_order() {
+    let mut sim = sim_with_store_and_gate();
+    sim.put_item(5, 1, SUIT, 1);
+
+    sim.tick_n(1);
+    assert!(sim.is_equipping("a"), "первый по id пошёл за ним");
+    assert!(!sim.is_equipping("b"), "остальные не идут за той же кучей");
+    assert!(!sim.is_equipping("c"));
+
+    sim.tick_n(10);
+    assert_eq!(sim.gear_of("a"), vec![SUIT], "он же его и надел");
+    assert!(sim.gear_of("b").is_empty());
+    assert!(sim.gear_of("c").is_empty());
+}
+
+/// Кучи не стало, пока кот шёл, — это промах, а не ошибка (§12.15): задача
+/// снимается, кот свободен, а раздатчик найдёт ему другую кучу.
+#[test]
+fn a_vanished_pile_just_frees_the_cat() {
     let mut sim = sim_with_store_and_gate();
     sim.put_item(5, 1, SUIT, 1);
     sim.tick_n(1);
+    assert!(sim.is_equipping("a"), "пошёл за комбинезоном");
 
-    assert_eq!(sim.gear_of("a"), vec![SUIT], "первый по id");
-    assert!(sim.gear_of("b").is_empty());
-    assert!(sim.gear_of("c").is_empty());
+    sim.take_item(5, 1, SUIT); // кучу забрали у кота из-под носа
+    sim.tick_n(10);
+    assert!(!sim.is_equipping("a"), "задача снята");
+    assert!(sim.gear_of("a").is_empty(), "надеть было нечего");
+
+    let at = sim.pos_of("a"); // а вот теперь есть — прямо под ногами
+    sim.put_item(at.0, at.1, SUIT, 1);
+    sim.tick_n(5);
+    assert_eq!(sim.gear_of("a"), vec![SUIT], "и кот свободно взялся заново");
 }
 
 /// Пустой склад — это не ошибка: кот работает и ходит в поле как есть.
 #[test]
 fn an_empty_storage_leaves_cats_bare() {
     let mut sim = sim_with_store_and_gate();
-    sim.tick_n(5);
+    sim.tick_n(10);
     assert!(sim.gear_of("a").is_empty(), "надеть нечего — и ладно");
+    assert!(!sim.is_equipping("a"), "и ходить незачем");
+}
+
+/// Экипировка — задача, а значит, занимает кота: приказ игрока её снимает, как
+/// снимает стройку и сон (§12.15, §12.20).
+#[test]
+fn a_players_order_cancels_the_errand() {
+    let mut sim = sim_with_store_and_gate();
+    sim.put_item(5, 1, SUIT, 1);
+    sim.tick_n(1);
+    assert!(sim.is_equipping("a"), "пошёл одеваться");
+
+    assert!(sim.set_target("a", 1, 1), "приказ принят");
+    assert!(!sim.is_equipping("a"), "и снял поход за вещью");
 }
 
 /// Ушедшего склад не достаёт: вне базы кота нет в мире базы (§12.22).
@@ -103,17 +172,33 @@ fn an_away_cat_is_not_equipped() {
     sim.tick_n(3);
     assert!(sim.is_away("c"), "ушёл");
 
-    sim.put_item(5, 1, SUIT, 3);
-    sim.tick_n(1);
+    sim.put_item(6, 1, SUIT, 1); // прямо на шлюзе, откуда он ушёл
+    sim.tick_n(10);
     assert!(
         sim.gear_of("c").is_empty(),
-        "до ушедшего склад не дотянется"
+        "до ушедшего снаряжение не дотянется — он не на базе"
     );
-    assert_eq!(
-        sim.item_at(5, 1, SUIT),
-        1,
-        "комбинезон дождался его на складе"
-    );
+}
+
+// --- отряд ------------------------------------------------------------------
+
+/// Сбор ждёт одевающегося: уходить голым, когда на складе лежит комбинезон, —
+/// это сила отряда, зависящая от того, успел ли склад пополниться до нажатия
+/// кнопки (§12.34).
+#[test]
+fn the_squad_waits_for_a_dressing_cat() {
+    let mut sim = sim_with_store_and_gate();
+    sim.put_item(5, 1, SUIT, 1);
+    let m = sim.set_mission(1, 40, &[]);
+    assert!(sim.launch(m, squad(&["a"])), "заявка принята");
+
+    sim.tick_n(2);
+    assert!(sim.is_equipping("a"), "боец сперва идёт за комбинезоном");
+    assert!(!sim.is_away("a"), "и с базы ещё не ушёл");
+
+    sim.tick_n(20);
+    assert_eq!(sim.gear_of("a"), vec![SUIT], "оделся");
+    assert!(sim.is_away("a"), "и только потом ушёл");
 }
 
 // --- что снаряжение делает --------------------------------------------------
@@ -130,7 +215,7 @@ fn gear_adds_strength_to_the_squad() {
 
     let mut sim = sim_with_store_and_gate();
     sim.put_item(5, 1, SUIT, 2);
-    sim.tick_n(1); // оба оделись
+    sim.tick_n(15); // оба сходили и оделись
     let m = sim.set_risky_mission(2, 10, 4, 0, &[(0, 40)]);
     assert!(sim.launch(m, squad(&["a", "b"])));
     sim.tick_n(40);
@@ -146,7 +231,7 @@ fn gear_adds_strength_to_the_squad() {
 fn a_failed_raid_destroys_the_gear() {
     let mut sim = sim_with_store_and_gate();
     sim.put_item(5, 1, SUIT, 2);
-    sim.tick_n(1);
+    sim.tick_n(15);
     // Сложность 10 против силы 2×(1+1): вдвое меньше нужного — провал.
     let m = sim.set_risky_mission(2, 10, 10, 0, &[(0, 40)]);
     assert!(sim.launch(m, squad(&["a", "b"])));
@@ -163,7 +248,7 @@ fn a_failed_raid_destroys_the_gear() {
 fn a_successful_raid_keeps_the_gear() {
     let mut sim = sim_with_store_and_gate();
     sim.put_item(5, 1, SUIT, 2);
-    sim.tick_n(1);
+    sim.tick_n(15);
     let m = sim.set_risky_mission(2, 10, 2, 0, &[(0, 10)]);
     assert!(sim.launch(m, squad(&["a", "b"])));
     sim.tick_n(40);
@@ -173,22 +258,20 @@ fn a_successful_raid_keeps_the_gear() {
 }
 
 /// Ободранный отряд одевается заново — состояние обратимо (§12.10): комплект
-/// наберётся, как только на складе снова будет из чего.
+/// наберётся, как только на базе снова будет из чего.
 #[test]
 fn a_stripped_cat_is_re_equipped() {
     let mut sim = sim_with_store_and_gate();
-    sim.put_item(5, 1, SUIT, 2); // ровно на двоих: на складе не остаётся запаса
-    sim.tick_n(1);
+    sim.put_item(5, 1, SUIT, 2); // ровно на двоих: запаса не остаётся
+    sim.tick_n(15);
     let m = sim.set_risky_mission(2, 10, 10, 0, &[]);
     assert!(sim.launch(m, squad(&["a", "b"])));
     sim.tick_n(40);
     assert!(sim.gear_of("a").is_empty(), "провал раздел");
 
-    // А был бы запас — оделись бы сами тем же тиком: снаряжение не задача, его
-    // никто не «назначает». Проверяем это, довезя на склад новый комбинезон.
     sim.put_item(5, 1, SUIT, 1);
-    sim.tick_n(1);
-    assert_eq!(sim.gear_of("a"), vec![SUIT], "и склад одел снова");
+    sim.tick_n(15);
+    assert_eq!(sim.gear_of("a"), vec![SUIT], "сходил и оделся снова");
 }
 
 /// Нанятый приходит голым и одевается по общему правилу: второго места, где
@@ -200,16 +283,17 @@ fn a_hired_cat_is_equipped_too() {
     let r = sim.set_recruit("nail", 0, &[], &[]);
     assert!(sim.hire(r));
 
-    sim.tick_n(1);
+    sim.tick_n(15);
     assert_eq!(sim.gear_of("nail"), vec![SUIT], "новичок одет");
 }
 
 // --- боевой рулсет ----------------------------------------------------------
 
 /// На настоящем `core.yaml`: комбинезонов на старте нет, они приезжают со
-/// «Свалки», ложатся на склад обычной уборкой и надеваются сами. Ловит контент,
-/// в котором шаблон ссылается на предмет не тем `id`, снаряжение забыли положить
-/// в добычу или у него нулевая `force`, — синтетическая схема этого не увидит.
+/// «Свалки» и надеваются сами — хоть с пола у шлюза, хоть со склада, куда их
+/// свезёт уборка. Ловит контент, в котором шаблон ссылается на предмет не тем
+/// `id`, снаряжение забыли положить в добычу или у него нулевая `force`, —
+/// синтетическая схема этого не увидит.
 #[test]
 fn the_shipped_ruleset_equips_its_cats_from_loot() {
     let mut sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
@@ -223,7 +307,7 @@ fn the_shipped_ruleset_equips_its_cats_from_loot() {
     sim.tick_n(600);
     assert_eq!(sim.mission_left(), None, "отряд вернулся");
 
-    sim.tick_n(900); // уборка свозит добычу на склад, а склад одевает
+    sim.tick_n(900); // добыча ложится у шлюза, и за ней приходят сами
     assert!(
         !sim.gear_of("excellent").is_empty(),
         "бригада оделась сама, без команды игрока — и добыча впервые ушла не внутрь базы",
