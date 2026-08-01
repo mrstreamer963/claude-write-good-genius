@@ -773,19 +773,51 @@ function costChips(cost) {
   return `<span class="cost">${chips}</span>`;
 }
 
+// Разделы тулбара: раскрыт ровно один. Инструментов стало на четыре механики
+// больше, чем помещается в экран, и список уезжал под записку — а листать
+// скроллом то, чем пользуешься каждые пять секунд, хуже, чем один клик.
+const sections = [];
+// Какой раздел открыт, помним между перестройками: иначе после каждого
+// возвращения к палитре её пришлось бы раскрывать заново.
+let openSection = 'Постройка';
+
+function mkSection(el, title) {
+  const sec = document.createElement('div');
+  const head = document.createElement('button');
+  head.className = 'sec-head';
+  head.innerHTML = `<span>${esc(title)}</span><span class="chev">›</span>`;
+  head.addEventListener('click', () => openOnly(title));
+  const body = document.createElement('div');
+  body.className = 'sec-body';
+  sec.appendChild(head);
+  sec.appendChild(body);
+  el.appendChild(sec);
+  sections.push({ title, head, body });
+  return body;
+}
+
+function openOnly(title) {
+  openSection = title;
+  for (const s of sections) {
+    const on = s.title === title;
+    s.head.classList.toggle('active', on);
+    s.body.hidden = !on;
+  }
+}
+
 function buildToolbar() {
   const el = document.getElementById('toolbar');
   el.innerHTML = '';
+  sections.length = 0;
 
+  // Курсор — вне разделов: это не инструмент в ряду прочих, а состояние «ничего
+  // не размечаю», и оно нужно из любого раздела.
   const cursorBtn = mkTool('<span class="sw sw-cursor"></span><span>Курсор</span>', () =>
     selectCursor(cursorBtn),
   );
   el.appendChild(cursorBtn);
 
-  const tt = document.createElement('div');
-  tt.className = 'tt';
-  tt.textContent = 'Постройка';
-  el.appendChild(tt);
+  const build = mkSection(el, 'Постройка');
 
   tileButtons.length = 0;
   meta.palette.forEach((p, i) => {
@@ -798,23 +830,20 @@ function buildToolbar() {
     // Закрытый технологией тайл виден, но не размечается: невидимая цель не
     // тянет, а ядро такую разметку всё равно отклонит (§12.27, §4.4).
     if (p.tech) tileButtons.push({ btn: b, tech: p.tech });
-    el.appendChild(b);
+    build.appendChild(b);
   });
 
   const er = mkTool('<span class="sw sw-erase"></span><span>Стереть</span>', () =>
     selectBuild(-1, er),
   );
-  el.appendChild(er);
+  build.appendChild(er);
 
-  const tl = document.createElement('div');
-  tl.className = 'tt';
-  tl.textContent = 'Лом';
-  el.appendChild(tl);
+  const scrap = mkSection(el, 'Лом');
 
   // Разметка уборки рамкой: повторный жест по помеченному снимает пометку.
   // Кот не выбирается — задачу возьмёт любой свободный.
   const st = mkTool('<span class="sw sw-scrap"></span><span>На склад</span>', () => selectStore(st));
-  el.appendChild(st);
+  scrap.appendChild(st);
 
   // Автоуборка — не режим ввода, а правило симуляции, поэтому кнопка не входит
   // в общую группу инструментов и своей подсветкой их не сбивает.
@@ -824,16 +853,13 @@ function buildToolbar() {
     worker.postMessage({ type: 'setAutoTidy', on: autoTidy });
   });
   auto.classList.add('toggle', 'on');
-  el.appendChild(auto);
+  scrap.appendChild(auto);
 
   // Вылазки. Не режим ввода: клик — это сразу заявка, отряд наберётся сам
   // (§12.22). Поэтому кнопки не входят в общую подсветку инструментов.
   const missions = meta.missions ?? [];
   if (missions.length) {
-    const tm = document.createElement('div');
-    tm.className = 'tt';
-    tm.textContent = 'Вылазки';
-    el.appendChild(tm);
+    const raids = mkSection(el, 'Вылазки');
 
     missionButtons.length = 0;
     missions.forEach((m, i) => {
@@ -848,7 +874,7 @@ function buildToolbar() {
       b.dataset.requires = m.requires ?? 0;
       b.dataset.hint = `${m.squad} кота · ${m.ticks} тиков · сложность ${m.danger ?? 0}`;
       missionButtons.push(b);
-      el.appendChild(b);
+      raids.appendChild(b);
     });
     syncMissionButtons();
   }
@@ -857,10 +883,7 @@ function buildToolbar() {
   // Цена теми же фишками, что у тайлов и найма: образцы — обычный предмет.
   const topics = meta.research ?? [];
   if (topics.length) {
-    const tn = document.createElement('div');
-    tn.className = 'tt';
-    tn.textContent = 'Наука';
-    el.appendChild(tn);
+    const science = mkSection(el, 'Наука');
 
     topicButtons.length = 0;
     topics.forEach((r, i) => {
@@ -871,7 +894,7 @@ function buildToolbar() {
       b.classList.add('toggle');
       b.dataset.level = r.level ?? 0;
       topicButtons.push(b);
-      el.appendChild(b);
+      science.appendChild(b);
     });
   }
 
@@ -879,10 +902,7 @@ function buildToolbar() {
   // клик заказывает одну, Shift — пять (§12.30). Кота не выбираем.
   const recipes = meta.recipes ?? [];
   if (recipes.length) {
-    const tc = document.createElement('div');
-    tc.className = 'tt';
-    tc.textContent = 'Производство';
-    el.appendChild(tc);
+    const shop = mkSection(el, 'Производство');
 
     recipeButtons.length = 0;
     recipes.forEach((r, i) => {
@@ -894,7 +914,7 @@ function buildToolbar() {
       );
       b.classList.add('toggle');
       recipeButtons.push(b);
-      el.appendChild(b);
+      shop.appendChild(b);
     });
   }
 
@@ -903,10 +923,7 @@ function buildToolbar() {
   // сюда не попадают — «Стройке» парта не нужна.
   const taught = (meta.skills ?? []).filter((s) => (s.taught ?? 0) > 0);
   if (taught.length) {
-    const ts = document.createElement('div');
-    ts.className = 'tt';
-    ts.textContent = 'Обучение';
-    el.appendChild(ts);
+    const school = mkSection(el, 'Обучение');
 
     teachButtons.length = 0;
     for (const s of taught) {
@@ -922,7 +939,7 @@ function buildToolbar() {
       b.dataset.skill = s.id;
       b.dataset.hint = `до ${s.taught}-го уровня, дальше только практика`;
       teachButtons.push(b);
-      el.appendChild(b);
+      school.appendChild(b);
     }
     syncTeachButtons();
   }
@@ -931,10 +948,7 @@ function buildToolbar() {
   // открывает, а платит склад — цена теми же фишками, что и у тайлов (§12.24).
   const recruits = meta.recruits ?? [];
   if (recruits.length) {
-    const tr = document.createElement('div');
-    tr.className = 'tt';
-    tr.textContent = 'Найм';
-    el.appendChild(tr);
+    const hire = mkSection(el, 'Найм');
 
     recruitButtons.length = 0;
     recruits.forEach((r, i) => {
@@ -945,10 +959,13 @@ function buildToolbar() {
       b.classList.add('toggle');
       b.dataset.requires = r.requires ?? 0;
       recruitButtons.push(b);
-      el.appendChild(b);
+      hire.appendChild(b);
     });
   }
 
+  // Раскрыт тот раздел, что был открыт до перестройки; на первом кадре это
+  // палитра — с неё игра и начинается.
+  openOnly(sections.some((s) => s.title === openSection) ? openSection : 'Постройка');
   selectCursor(cursorBtn); // режим по умолчанию
 }
 
@@ -1101,6 +1118,17 @@ function showError(message) {
   console.error(message);
 }
 
+// Подсказка: длинная и закрывает карту, поэтому её можно убрать одной кнопкой.
+// Состояние нигде не хранится — на POC лишняя persistent-настройка дороже, чем
+// один клик после перезагрузки.
+const hintEl = document.getElementById('hint');
+const hintToggle = document.getElementById('hint-toggle');
+hintToggle.classList.add('active');
+hintToggle.addEventListener('click', () => {
+  hintEl.hidden = !hintEl.hidden;
+  hintToggle.classList.toggle('active', !hintEl.hidden);
+});
+
 // --- скорость времени -----------------------------------------------------
 
 // Текущий темп и тот, к которому возвращает пробел: пауза — это не «скорость 0
@@ -1110,6 +1138,9 @@ let speed = 1;
 let lastSpeed = 1;
 
 function setSpeed(s) {
+  // Мусор до воркера не доходит: скорость приходит из разметки и с клавиш, и
+  // одна опечатка в `data-speed` иначе тихо замораживает симуляцию.
+  if (!Number.isFinite(s) || s < 0) return;
   if (s > 0) lastSpeed = s;
   speed = s;
   worker.postMessage({ type: 'setSpeed', speed: s });
@@ -1117,7 +1148,9 @@ function setSpeed(s) {
     b.classList.toggle('active', Number(b.dataset.speed) === s);
   }
 }
-for (const b of document.querySelectorAll('.speed')) {
+// Только кнопки с самой скоростью: без фильтра сюда попадала соседняя «?», и
+// клик по ней слал в воркер `Number(undefined)` — то есть останавливал время.
+for (const b of document.querySelectorAll('.speed[data-speed]')) {
   b.addEventListener('click', () => setSpeed(Number(b.dataset.speed)));
 }
 setSpeed(1);
