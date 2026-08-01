@@ -189,11 +189,17 @@ pub(crate) fn escape_voids(
 /// делают шаг на свободного соседа в фиксированном порядке `DIRS` (§11). Отойти
 /// некуда — стоят вместе: это легальное состояние, как `stuck`.
 ///
+/// **На заставленную клетку развод не отходит** (§12.39): `clear_solids` тут же
+/// погнал бы кота обратно, а обратно — это клетка, из которой его развели.
+/// Двое в одной клетке — состояние покоя, а качели между полкой и соседом —
+/// нет.
+///
 /// **Отряд не трогаем**: сбор у шлюза по определению сводит котов в одну точку,
 /// и `run_missions` ждёт, пока все встанут именно на неё (§12.22). Ушедших с
 /// базы — тем более: их позиция это шлюз, а не место, где они есть.
 pub(crate) fn spread_units(
     map: Res<BaseMap>,
+    rules: Res<TileRules>,
     mut commands: Commands,
     all: Query<(&Position, Option<&Path>), (With<UnitId>, Without<Away>)>,
     stopped: Query<
@@ -254,7 +260,11 @@ pub(crate) fn spread_units(
         let Some(step) = DIRS
             .iter()
             .map(|(dx, dy)| (at.0 + dx, at.1 + dy))
-            .find(|&(nx, ny)| map.walkable(nx, ny) && !blocked.contains(&(nx, ny)))
+            .find(|&(nx, ny)| {
+                map.walkable(nx, ny)
+                    && !rules.is_solid(map.tile_at(nx, ny))
+                    && !blocked.contains(&(nx, ny))
+            })
         else {
             continue; // отойти некуда — стоят вместе, это не ошибка
         };
@@ -282,6 +292,12 @@ pub(crate) fn spread_units(
 /// правило и заводилось: кот, свалившийся на полки. Досыпать он продолжит рядом
 /// (§12.33). Отряд у шлюза не трогаем: шлюз заставленным не бывает, а сбор
 /// сводит котов в одну точку намеренно (§12.22).
+///
+/// **Занятый выход не держит кота на полке** (§12.39). Сойти кот пробует дважды:
+/// сперва на свободного соседа, а если такого нет — на соседа под котом.
+/// Наложение разберётся само (`spread_units`, §12.32), а стеллаж сам себя не
+/// разберёт: в тупике на две клетки первый проход не находит ничего никогда,
+/// и кот сидел бы в мебели, пока сосед не уйдёт по своим делам.
 ///
 /// Некуда сойти — кот стоит на месте: как и `stuck`, это легальное состояние.
 pub(crate) fn clear_solids(
@@ -326,14 +342,15 @@ pub(crate) fn clear_solids(
     standing.sort_unstable_by_key(|&(id, ..)| id);
 
     for (_, cat_e, at) in standing {
-        let Some(step) = DIRS
+        let mut free = DIRS
             .iter()
             .map(|(dx, dy)| (at.0 + dx, at.1 + dy))
-            .find(|&(nx, ny)| {
-                map.walkable(nx, ny)
-                    && !rules.is_solid(map.tile_at(nx, ny))
-                    && !blocked.contains(&(nx, ny))
-            })
+            .filter(|&(nx, ny)| map.walkable(nx, ny) && !rules.is_solid(map.tile_at(nx, ny)));
+        // Свободный сосед — если есть; иначе занятый, лишь бы не полка.
+        let Some(step) = free
+            .clone()
+            .find(|at| !blocked.contains(at))
+            .or_else(|| free.next())
         else {
             continue; // сойти некуда — стоит где стоял, это не ошибка
         };
