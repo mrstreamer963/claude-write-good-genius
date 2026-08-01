@@ -481,7 +481,7 @@ function renderCatPanel(entities) {
   }
   // Пленный — тоже «нет на базе», но по таймеру он не вернётся: за ним надо
   // сходить. Разные слова здесь — это разные решения игрока (§12.40).
-  if (e.captive) parts.push('<div class="cat-sub">в плену: нужна вылазка за своим</div>');
+  if (e.captive) parts.push('<div class="cat-sub">в плену: ранен и не смог уйти со всеми</div>');
   else if (e.away) parts.push('<div class="cat-sub">на вылазке</div>');
   if (e.studying) parts.push('<div class="cat-sub">учится</div>');
   // «Лежит», а не «в лазарете»: койки может и не быть — раны затягиваются и на
@@ -521,7 +521,7 @@ function renderCaptivePanel() {
   captiveEl.innerHTML =
     '<div class="cat-name">В плену</div>' +
     `<div class="cat-sub">${captives.map(esc).join(' · ')}</div>` +
-    '<div class="cat-sub">Сам не вернётся — нужна вылазка за своим</div>';
+    '<div class="cat-sub">Ранен и не смог уйти со всеми — за ним надо сходить</div>';
   captiveEl.hidden = false;
 }
 

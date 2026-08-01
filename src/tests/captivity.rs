@@ -97,6 +97,81 @@ fn without_a_rescue_raid_captivity_does_not_happen() {
     );
 }
 
+/// Пленный уходит в плен **выбывшим**: его оставили не просто так, а потому что
+/// он не мог идти. Рана на нём есть, даже если у вылазки скромный `harm`, —
+/// иначе получается кот, который цел, но почему-то не дошёл.
+#[test]
+fn a_captive_is_left_behind_wounded() {
+    let (mut sim, doomed, _) = world_with_a_doomed_raid();
+    sim.set_health_rules(100, 40, 1);
+    sim.set_mission_harm(doomed, 0); // вылазка «безопасная» — а кот всё равно ранен
+
+    assert!(sim.launch(doomed, squad(&["a", "b"])));
+    sim.tick_n(30);
+
+    assert!(sim.is_captive("a"), "кот в плену");
+    assert!(
+        sim.health_of("a") <= 40,
+        "и выбыл: {} при пороге 40",
+        sim.health_of("a"),
+    );
+    assert_eq!(sim.health_of("b"), 100, "а вернувшийся цел: `harm` нулевой");
+}
+
+/// Хуже, чем есть, плен не делает: рана та, что с вылазки. Порог — это добор
+/// до выбывшего, а не удар сверху.
+#[test]
+fn captivity_does_not_add_to_the_wound() {
+    let (mut sim, doomed, _) = world_with_a_doomed_raid();
+    sim.set_health_rules(100, 40, 1);
+    sim.set_mission_harm(doomed, 90); // ран больше, чем нужно для порога
+
+    assert!(sim.launch(doomed, squad(&["a", "b"])));
+    sim.tick_n(30);
+    assert!(sim.is_captive("a"), "кот в плену");
+    assert_eq!(sim.health_of("a"), 10, "ровно то, что оставила вылазка");
+}
+
+/// В плену с котом ничего не делают: здоровье там не убывает и не заживает —
+/// время в плену не идёт ни в плюс, ни в минус, как и время в поле (§12.22).
+#[test]
+fn captivity_itself_does_no_harm() {
+    let (mut sim, doomed, _) = world_with_a_doomed_raid();
+    sim.set_health_rules(100, 40, 1);
+    sim.set_mission_harm(doomed, 70);
+
+    sim.launch(doomed, squad(&["a", "b"]));
+    sim.tick_n(30);
+    assert!(sim.is_captive("a"), "кот в плену");
+
+    let at_capture = sim.health_of("a");
+    sim.tick_n(500); // сотни тиков в плену
+    assert_eq!(
+        sim.health_of("a"),
+        at_capture,
+        "плен сам по себе не калечит"
+    );
+    assert!(!sim.is_healing("a"), "и не лечит: лазарет остался на базе");
+}
+
+/// Вернувшийся идёт прямо в лазарет: цена плена продолжается котовременем и
+/// после возвращения — за ним сходили, но работать он ещё не может.
+#[test]
+fn a_rescued_cat_goes_straight_to_the_ward() {
+    let (mut sim, doomed, rescue) = world_with_a_doomed_raid();
+    sim.set_health_rules(100, 40, 1);
+    sim.set_mission_harm(doomed, 0);
+
+    sim.launch(doomed, squad(&["a", "b"]));
+    sim.tick_n(30);
+    assert!(sim.is_captive("a"), "кот в плену");
+
+    assert!(sim.launch(rescue, squad(&["c"])));
+    sim.tick_n(30);
+    assert!(!sim.is_captive("a"), "вернулся");
+    assert!(sim.is_healing("a"), "и сразу лёг: он выбыл, а не отдохнул");
+}
+
 // --- что с пленным происходит (ничего) --------------------------------------
 
 /// Пленный не работает: отряда за ним больше нет, и фильтр по `Squad` его бы не
