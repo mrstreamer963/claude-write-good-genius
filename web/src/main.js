@@ -28,6 +28,7 @@ const tickEl = document.getElementById('tick');
 const scrapEl = document.getElementById('scrap');
 const catEl = document.getElementById('cat');
 const missionEl = document.getElementById('mission');
+const captiveEl = document.getElementById('captive');
 const researchEl = document.getElementById('research');
 const craftEl = document.getElementById('craft');
 const noteEl = document.getElementById('note');
@@ -92,6 +93,9 @@ let fame = 0; // известность: копится от вылазок, о�
 // обработчике клика: ранение приходит из ядра между кликами, и кнопка вылазки
 // обязана погаснуть сама, не дожидаясь, пока игрок перевыберет отряд.
 let wounded = new Set();
+// Кто остался в плену (§12.40). По той же причине списком: пленный появляется
+// в снапшоте, а не по клику, и кнопка «За своим» обязана зажечься сама.
+let captives = [];
 const missionButtons = []; // кнопки запуска — их гасим, пока миссия идёт
 const recruitButtons = []; // кнопки найма — гасим по известности и складу
 const teachButtons = []; // кнопки обучения — живы, когда выбран ровно один кот
@@ -298,10 +302,12 @@ function renderSnapshot(snap) {
   wounded = new Set(
     snap.entities.filter((e) => e.health_max > 0 && e.health <= e.health_hurt).map((e) => e.id),
   );
+  captives = snap.entities.filter((e) => e.captive).map((e) => e.id);
   syncMissionButtons();
 
   updateSelectionOverlay();
   renderCatPanel(snap.entities);
+  renderCaptivePanel();
   renderMissionPanel(snap.missions);
   renderResearchPanel(snap.research);
   renderCraftPanel(snap.crafting);
@@ -473,7 +479,10 @@ function renderCatPanel(entities) {
         '</div>',
     );
   }
-  if (e.away) parts.push('<div class="cat-sub">на вылазке</div>');
+  // Пленный — тоже «нет на базе», но по таймеру он не вернётся: за ним надо
+  // сходить. Разные слова здесь — это разные решения игрока (§12.40).
+  if (e.captive) parts.push('<div class="cat-sub">в плену: нужна вылазка за своим</div>');
+  else if (e.away) parts.push('<div class="cat-sub">на вылазке</div>');
   if (e.studying) parts.push('<div class="cat-sub">учится</div>');
   // «Лежит», а не «в лазарете»: койки может и не быть — раны затягиваются и на
   // голом полу, просто дольше (§12.37).
@@ -498,6 +507,22 @@ function renderCatPanel(entities) {
   parts.push(`<div class="cat-sub">${[paws, ...tags].join(' · ')}</div>`);
   catEl.innerHTML = parts.join('');
   catEl.hidden = false;
+}
+
+// Панель плена. Кота на карте нет, кликнуть по нему нельзя, и без этой панели
+// он просто пропал бы — а пропажа обязана быть объяснимой (§12.40). Ушедший
+// отряд объясняет себя панелью миссии и вернётся по таймеру; пленный не
+// вернётся никогда, пока за ним не сходят, и сказать об этом больше некому.
+function renderCaptivePanel() {
+  if (!captives.length) {
+    captiveEl.hidden = true;
+    return;
+  }
+  captiveEl.innerHTML =
+    '<div class="cat-name">В плену</div>' +
+    `<div class="cat-sub">${captives.map(esc).join(' · ')}</div>` +
+    '<div class="cat-sub">Сам не вернётся — нужна вылазка за своим</div>';
+  captiveEl.hidden = false;
 }
 
 // Панель миссии. Пока отряд собирается, показываем состав: игрок не выбирает,
@@ -533,7 +558,13 @@ function renderMissionPanel(list) {
     // можно назвать здесь же — из того самого числа, которым ядро её посчитает.
     const harm = Math.round(((def?.harm ?? 0) * (100 - m.share)) / 100);
     const wounds = harm > 0 ? `, раны ${harm}` : '';
-    const verdict = m.failed ? `провал${wounds}` : `добыча ${m.share}%${wounds}`;
+    // У вылазки за своим доля тоже считается, но говорить о ней процентами
+    // значило бы обещать половину кота: её исход — «вынесут или нет» (§12.40).
+    const verdict = m.failed
+      ? `провал${wounds}`
+      : m.rescue
+        ? `выносят своих${wounds}`
+        : `добыча ${m.share}%${wounds}`;
     parts.push(
       '<div class="cat-skill">' +
         `<div class="cat-row"><span>Сила / сложность</span><b>${m.strength} / ${m.danger}</b></div>` +
@@ -952,6 +983,9 @@ function buildToolbar() {
       b.classList.add('toggle');
       b.dataset.squad = m.squad;
       b.dataset.requires = m.requires ?? 0;
+      // Вылазка за своим доступна, только пока есть кого спасать: это решает
+      // ядро, а кнопка обязана показывать то же самое (§12.40).
+      b.dataset.rescue = m.rescue ? '1' : '';
       b.dataset.hint =
         `${m.squad} кота · ${m.ticks} тиков · сложность ${m.danger ?? 0}` +
         (m.harm ? ` · раны при провале ${m.harm}` : '');
@@ -1154,7 +1188,20 @@ function syncMissionButtons() {
     // Раненого ядро в отряд не пустит (§12.37), и молчащая кнопка читалась бы
     // как поломка: причину называем словом, как и нехватку известности.
     const hurt = selectedUnits.filter((id) => wounded.has(id));
-    const ready = !missionRunning && known && !hurt.length && selectedUnits.length === need;
+    // За своим идут, только пока есть за кем: у вылазки с `rescue` нет ни
+    // добычи, ни цели, если все дома, — и ядро такую заявку отклонит.
+    const nobody = !!b.dataset.rescue && !captives.length;
+    // Пленный остаётся выбранным — на карте его нет, снять выделение игроку
+    // нечем. Ядро такую заявку отклонит (его нет на базе), а молчащая кнопка
+    // читается как поломка — причину называем словом, как и ранение.
+    const gone = selectedUnits.filter((id) => captives.includes(id));
+    const ready =
+      !missionRunning &&
+      known &&
+      !hurt.length &&
+      !gone.length &&
+      !nobody &&
+      selectedUnits.length === need;
     b.disabled = !ready;
     b.classList.toggle('on', ready);
     // Закрытые вылазки видны, а не спрятаны: лестница ответственности — это то,
@@ -1163,9 +1210,13 @@ function syncMissionButtons() {
       ? 'Вылазка уже идёт'
       : !known
         ? `${b.dataset.hint} · нужна известность ${requires}`
-        : hurt.length
-          ? `${b.dataset.hint} · ранен: ${hurt.join(', ')}`
-          : `${b.dataset.hint} · выбрано ${selectedUnits.length} из ${need}`;
+        : nobody
+          ? `${b.dataset.hint} · все дома, спасать некого`
+          : gone.length
+            ? `${b.dataset.hint} · в плену: ${gone.join(', ')}`
+            : hurt.length
+              ? `${b.dataset.hint} · ранен: ${hurt.join(', ')}`
+              : `${b.dataset.hint} · выбрано ${selectedUnits.length} из ${need}`;
   }
 }
 

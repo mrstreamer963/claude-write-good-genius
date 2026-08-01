@@ -61,6 +61,9 @@ pub(crate) fn assign_hauls(
             Without<Healing>,
             Without<Treating>,
             Without<Squad>,
+            // Пленного нет на базе, и отряда за ним больше нет (§12.40):
+            // фильтр по `Squad` его бы не поймал, а работа поймала бы.
+            Without<Away>,
             Without<Path>,
         ),
     >,
@@ -204,6 +207,9 @@ pub(crate) fn assign_tidy(
             Without<Healing>,
             Without<Treating>,
             Without<Squad>,
+            // Пленного нет на базе, и отряда за ним больше нет (§12.40):
+            // фильтр по `Squad` его бы не поймал, а работа поймала бы.
+            Without<Away>,
             Without<Path>,
         ),
     >,

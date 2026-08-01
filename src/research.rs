@@ -62,6 +62,9 @@ pub(crate) fn assign_research(
             Without<Healing>,
             Without<Treating>,
             Without<Squad>,
+            // Пленного нет на базе, и отряда за ним больше нет (§12.40):
+            // фильтр по `Squad` его бы не поймал, а работа поймала бы.
+            Without<Away>,
             Without<Path>,
         ),
     >,

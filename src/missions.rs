@@ -174,11 +174,34 @@ pub(crate) fn pick_gate(map: &BaseMap, tiles: &TileRules, at: &[(i32, i32)]) -> 
         .map(|(_, cell)| cell)
 }
 
+/// Есть ли на базе силы прийти за пленным — считается **до** того, как его
+/// оставят (§12.40).
+///
+/// Плен обратим по определению: он стоит котовремени, а не кота (§12.37). Но
+/// обратимость держится не на обещании, а на этой проверке: если базе некем
+/// снарядить самый маленький спасательный отряд, отряд тащит раненого сам, и
+/// плена не случается вовсе. Иначе провал на трёх котах запирал бы игру
+/// насмерть — та самая необратимость, которой §12.10 избегает.
+///
+/// Считаются вылазки, доступные **прямо сейчас**: известность только растёт
+/// (§12.24), но ждать её, сидя в плену, кот будет столько же, сколько никогда.
+fn rescue_is_possible(rules: &MissionRules, fame: i32, on_base: usize) -> bool {
+    rules
+        .0
+        .iter()
+        .any(|r| r.rescue && r.requires <= fame && r.squad <= on_base)
+}
+
 /// Отправляет собравшийся отряд, крутит таймер и возвращает котов с добычей.
 ///
 /// Стоит после `move_units`: кот, шагнувший на шлюз в этом тике, засчитывается
 /// сразу, — и до `settle_stacks`, чтобы добыча, вывалившаяся в свежую яму,
 /// съехала на пол тем же тиком (§12.15).
+///
+/// **Провал может оставить кота в плену** (§12.40), а вылазка с `rescue` —
+/// привести пленных обратно. И то, и другое — работа с составом отряда, а не с
+/// добычей, поэтому живёт здесь же: другого места, где известно, чем кончилась
+/// вылазка, нет.
 pub(crate) fn run_missions(
     rules: Res<MissionRules>,
     skill_rules: Res<SkillRules>,
@@ -189,6 +212,7 @@ pub(crate) fn run_missions(
     mut crew: Query<(
         Entity,
         &Squad,
+        &UnitId,
         &Position,
         Option<&Path>,
         Option<&Away>,
@@ -197,6 +221,14 @@ pub(crate) fn run_missions(
         Option<&Gear>,
         Option<&mut Health>,
     )>,
+    // Кто остаётся дома: по нему считается, есть ли кому прийти за пленным.
+    // Ушедшие сюда не попадают — у них `Away`, — поэтому возвращающийся отряд
+    // прибавляется отдельно.
+    home: Query<(), (With<UnitId>, Without<Away>)>,
+    // Пленные — те, за кем идёт вылазка с `rescue`. Только сущности: позицию
+    // им ставит `Commands`, иначе этот запрос конфликтовал бы с `crew` за
+    // `Position` и bevy уронил бы систему на старте.
+    captives: Query<Entity, With<Captive>>,
     mut stacks: Query<(Entity, &Position, &mut Stack)>,
 ) {
     let raid = skill_rules.index_of(SKILL_RAID);
@@ -211,7 +243,7 @@ pub(crate) fn run_missions(
         let squad: Vec<(Entity, (i32, i32), bool, bool, i32)> = crew
             .iter()
             .filter(|(_, s, ..)| s.0 == mission_e)
-            .map(|(e, _, p, path, away, skills, _, gear, _)| {
+            .map(|(e, _, _, p, path, away, skills, _, gear, _)| {
                 let walking = path.is_some_and(|p| !p.steps.is_empty());
                 // Вклад кота в силу отряда: сам он стоит единицу, навык —
                 // сверху, надетое — ещё сверху. Нулевой навык поэтому не значит
@@ -243,8 +275,59 @@ pub(crate) fn run_missions(
             // и отнимать этот рост у самой вылазки было бы странно.
             let force = squad.iter().map(|&(.., f)| f).sum();
             let out = outcome(rule.danger, force);
+
+            // Кого не смогли унести (§12.40). Провал бьёт всех одинаково, и
+            // здоровье до вычета упорядочено так же, как после, — поэтому
+            // выбирать можно здесь, не дожидаясь урона: тяжелее всех тому, кто
+            // и шёл самым битым. Ничьи разрешает `id`, а не порядок сущностей
+            // в ECS: «кого оставили» игрок увидит и запомнит (§12.24).
+            //
+            // Своя же вылазка за пленным пленных не оставляет никогда, иначе
+            // неудачное спасение плодит второго пленника и база уходит в
+            // спираль. И некому идти — тоже не оставляет: см. `rescue_is_possible`.
+            let on_base = home.iter().count() + squad.len() - 1;
+            let captive =
+                if out.failed && !rule.rescue && rescue_is_possible(&rules, fame.0, on_base) {
+                    let mut left_behind: Vec<(i32, &str, Entity)> = crew
+                        .iter()
+                        .filter(|(_, s, ..)| s.0 == mission_e)
+                        .map(|(e, _, id, _, _, _, _, _, _, health)| {
+                            (health.map_or(i32::MAX, |h| h.0), id.0.as_str(), e)
+                        })
+                        .collect();
+                    left_behind.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(b.1)));
+                    left_behind.first().map(|&(.., e)| e)
+                } else {
+                    None
+                };
+
+            // Успешное спасение возвращает **всех**, кого нашли: делить своих
+            // на «этого забрали, а за тем сходите ещё раз» — это не сложность,
+            // а вторая ходка за тем же самым. Частичный успех тоже возвращает:
+            // доля считается в добыче, а кот либо дома, либо нет (§12.40).
+            if rule.rescue && !out.failed {
+                for cat_e in &captives {
+                    commands
+                        .entity(cat_e)
+                        .remove::<(Away, Captive)>()
+                        .insert(Position {
+                            x: gate.0,
+                            y: gate.1,
+                        });
+                }
+            }
+
             for &(cat_e, ..) in &squad {
-                commands.entity(cat_e).remove::<(Away, Squad)>();
+                // Пленный остаётся в поле: `Away` при нём, отряда больше нет —
+                // миссия сейчас исчезнет, и ссылка на неё повисла бы.
+                match Some(cat_e) == captive {
+                    true => {
+                        commands.entity(cat_e).remove::<Squad>().insert(Captive);
+                    }
+                    false => {
+                        commands.entity(cat_e).remove::<(Away, Squad)>();
+                    }
+                }
                 // Плата за вылазку — котовремя: та же валюта, в которой
                 // измеряется и сама отправка отряда. Провал забирает всё, и
                 // коты валятся у шлюза — `collapse_exhausted` подберёт их.

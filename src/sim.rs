@@ -140,6 +140,12 @@ impl Sim {
         q.iter(&self.world).next()
     }
 
+    /// Есть ли кого спасать: хоть один кот остался в плену (§12.40).
+    fn has_captive(&mut self) -> bool {
+        let mut q = self.world.query_filtered::<Entity, With<Captive>>();
+        q.iter(&self.world).next().is_some()
+    }
+
     /// Отряд миссии: кто в нём и ушёл ли он уже с базы.
     fn crew_of(&mut self, mission: Entity) -> Vec<(Entity, bool)> {
         let mut q = self.world.query::<(Entity, &Squad, Option<&Away>)>();
@@ -522,6 +528,7 @@ impl Sim {
                         .collect(),
                     fame: m.fame,
                     requires: m.requires,
+                    rescue: m.rescue,
                 })
                 .collect(),
         ));
@@ -845,6 +852,13 @@ impl Sim {
         // Известность — ворота: за дело, о котором ещё не слышали, не берутся,
         // сколько бы сильным ни был отряд (§12.24).
         if self.world.resource::<Fame>().0 < rule.requires {
+            return false;
+        }
+        // За своим идут, только пока есть за кем (§12.40). Вылазка с `rescue`
+        // без пленного — это вылазка без цели: добычи у неё нет, а вернуть ей
+        // некого. Пленных в отряд при этом не берут — но отдельной проверки на
+        // это нет и не нужно: пленный `Away`, а ушедших список уже отсекает.
+        if rule.rescue && !self.has_captive() {
             return false;
         }
 
@@ -1285,6 +1299,7 @@ impl Sim {
                 Option<&Fed>,
                 Option<&Gear>,
                 Option<&Health>,
+                Option<&Captive>,
                 (
                     Option<&Order>,
                     Option<&Path>,
@@ -1307,7 +1322,7 @@ impl Sim {
             let needs = self.world.resource::<NeedRules>();
             let food = self.world.resource::<FoodRules>();
             let hurts = self.world.resource::<HealthRules>();
-            for (id, r, p, load, carry, skills, perks, energy, fed, gear, health, tasks) in
+            for (id, r, p, load, carry, skills, perks, energy, fed, gear, health, captive, tasks) in
                 q.iter(&self.world)
             {
                 let (
@@ -1349,6 +1364,10 @@ impl Sim {
                     y: p.y,
                     stuck: is_stuck(map, p, busy),
                     away: away.is_some(),
+                    // Пленный тоже `away` — на карте его нет. Но пропавший кот
+                    // обязан быть объясним: «ушёл на вылазку» видно в панели
+                    // миссии, а «остался там» — только здесь (§12.40).
+                    captive: captive.is_some(),
                     energy: energy.map_or(0, |e| e.0),
                     energy_max: needs.max,
                     fed: fed.map_or(0, |f| f.0),
@@ -1467,6 +1486,10 @@ impl Sim {
                     danger,
                     share: out.share,
                     failed: out.failed,
+                    // Вылазка за своим возвращает не добычу, а кота, и панель
+                    // обязана говорить об этом иначе: «добыча 50 %» под именем
+                    // спасательной вылазки читается как «половина кота» (§12.40).
+                    rescue: rule.is_some_and(|r| r.rescue),
                 });
             }
         }

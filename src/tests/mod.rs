@@ -6,6 +6,7 @@
 //! а не юнит-тестом функции. Мир собирается из ASCII-схем (`sim_from`), минуя
 //! YAML; общие хелперы — в этом файле, сами тесты разложены по механикам.
 
+mod captivity;
 mod crafting;
 mod crowd;
 mod demolition;
@@ -886,6 +887,40 @@ impl Sim {
             ..MissionRule::default()
         });
         rules.0.len() - 1
+    }
+
+    /// Вылазка за своим (§12.40): за добычей не ходит, зато возвращает пленных.
+    /// В схеме `sim_from` такой миссии нет, как нет и вылазок вообще, — значит
+    /// и плена в чужих тестах не случается.
+    fn set_rescue_mission(&mut self, squad: usize, ticks: i32, danger: i32) -> usize {
+        let m = self.set_risky_mission(squad, ticks, danger, 0, &[]);
+        let mut rules = self.world.resource_mut::<MissionRules>();
+        rules.0[m].rescue = true;
+        m
+    }
+
+    /// Кот остался в плену: провал не смог унести его домой (§12.40).
+    fn is_captive(&mut self, unit: &str) -> bool {
+        let cat = self.entity_of(unit);
+        self.world.get::<Captive>(cat).is_some()
+    }
+
+    /// Вылазки за своим из рулсета: индекс, отряд, сложность, порог известности.
+    fn rescue_missions(&self) -> Vec<(usize, usize, i32, i32)> {
+        self.world
+            .resource::<MissionRules>()
+            .0
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.rescue)
+            .map(|(i, r)| (i, r.squad, r.danger, r.requires))
+            .collect()
+    }
+
+    /// Сколько всего котов у базы — включая тех, кого на базе сейчас нет.
+    fn unit_count(&mut self) -> usize {
+        let mut q = self.world.query::<&UnitId>();
+        q.iter(&self.world).count()
     }
 
     /// Дописать миссии известность: сколько даёт и сколько требует (§12.24).
