@@ -718,10 +718,39 @@ app.stage.on('pointerup', (e) => endDrag(true, e.global));
 // уже нарисованное выделение обиднее, чем применить его на клетку меньше.
 app.stage.on('pointerupoutside', (e) => endDrag(true, e.global));
 
-// Escape — отмена начатой протяжки: единственный способ передумать, не отпуская
-// кнопку. Уже применённую рамку отменяет ластик (или повторный ластик).
+// Клавиши. Escape — отмена начатой протяжки: единственный способ передумать, не
+// отпуская кнопку (уже применённую рамку отменяет ластик).
+//
+// Время — на пробеле и цифрах: рука игрока и так на мыши, а темп меняют чаще
+// всего остального. Пробел **переключает** паузу и возвращает тот темп, на
+// котором остановились, — «пауза» и «×1» это разные вещи, и терять ×10 из-за
+// секундной остановки обидно.
+// Клавишу узнаём по `code`, а не по `key`: `code` — это физическая кнопка, и он
+// одинаков в любой раскладке. Цифровой ряд и цифровой блок — одно и то же.
+const SPEED_KEYS = {
+  Digit1: 1,
+  Numpad1: 1,
+  Digit2: 5,
+  Numpad2: 5,
+  Digit3: 10,
+  Numpad3: 10,
+};
+
 window.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && dragFrom) endDrag(false);
+  if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.code === 'Escape' || e.key === 'Escape') {
+    if (dragFrom) endDrag(false);
+    return;
+  }
+  if (e.code === 'Space' || e.key === ' ') {
+    // Иначе пробел «нажимает» кнопку в фокусе — а это может оказаться вылазка
+    // или найм: клавиша одна, а цена ошибки разная.
+    e.preventDefault();
+    setSpeed(speed > 0 ? 0 : lastSpeed);
+    return;
+  }
+  const speedKey = SPEED_KEYS[e.code] ?? SPEED_KEYS['Digit' + e.key];
+  if (speedKey) setSpeed(speedKey);
 });
 
 // --- тулбар ---------------------------------------------------------------
@@ -1074,7 +1103,15 @@ function showError(message) {
 
 // --- скорость времени -----------------------------------------------------
 
+// Текущий темп и тот, к которому возвращает пробел: пауза — это не «скорость 0
+// навсегда», а снятая на минуту рука с руля, и вернуть игрок хочет тот темп,
+// на котором остановился.
+let speed = 1;
+let lastSpeed = 1;
+
 function setSpeed(s) {
+  if (s > 0) lastSpeed = s;
+  speed = s;
   worker.postMessage({ type: 'setSpeed', speed: s });
   for (const b of document.querySelectorAll('.speed')) {
     b.classList.toggle('active', Number(b.dataset.speed) === s);

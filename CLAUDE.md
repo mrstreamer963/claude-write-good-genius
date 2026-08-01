@@ -220,7 +220,7 @@ retry_orders → escape_voids → spread_units → settle_stacks → sleep → t
 
 ## Тесты
 
-203 теста живут в `src/tests/` по механикам (`paths` · `voids` · `orders` · `jobs` · `demolition` ·
+204 теста живут в `src/tests/` по механикам (`paths` · `voids` · `orders` · `jobs` · `demolition` ·
 `hauling` · `tidying` · `skills` · `study` · `research` · `needs` · `items` · `missions` · `fame` ·
 `timeline` · `gear` · `crafting` · `crowd`); общие хелперы и сборка мира —
 в `tests/mod.rs`. Мир собирается из ASCII-схем, минуя YAML:
