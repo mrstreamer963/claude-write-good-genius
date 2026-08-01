@@ -28,6 +28,7 @@ const scrapEl = document.getElementById('scrap');
 const catEl = document.getElementById('cat');
 const missionEl = document.getElementById('mission');
 const researchEl = document.getElementById('research');
+const craftEl = document.getElementById('craft');
 const noteEl = document.getElementById('note');
 
 const app = new Application();
@@ -83,11 +84,13 @@ let dragFrom = null; // якорь рамки (клетка, где нажали
 let dragTo = null; // текущий угол рамки; переживает выход курсора за карту
 let missionRunning = false; // миссия на POC одна за раз (§12.22)
 let researchRunning = false; // и тема тоже одна за раз (§12.26)
+let craftRunning = false; // и заказ (§12.30)
 let fame = 0; // известность: копится от вылазок, открывает доступ (§12.24)
 const missionButtons = []; // кнопки запуска — их гасим, пока миссия идёт
 const recruitButtons = []; // кнопки найма — гасим по известности и складу
 const teachButtons = []; // кнопки обучения — живы, когда выбран ровно один кот
 const topicButtons = []; // кнопки тем — гасим по технологиям, складу и допуску
+const recipeButtons = []; // кнопки рецептов — гасим по технологии и мастерской
 const tileButtons = []; // кнопки палитры, закрытые технологией (§12.27)
 
 // --- worker ---------------------------------------------------------------
@@ -285,8 +288,10 @@ function renderSnapshot(snap) {
   renderCatPanel(snap.entities);
   renderMissionPanel(snap.missions);
   renderResearchPanel(snap.research);
+  renderCraftPanel(snap.crafting);
   syncRecruitButtons(snap.recruits);
   syncTopicButtons(snap.topics);
+  syncRecipeButtons(snap.recipes);
   syncTileButtons(snap.techs);
   renderNotePanel(snap.notes);
 }
@@ -509,6 +514,37 @@ function renderResearchPanel(list) {
   researchEl
     .querySelector('.research-cancel')
     .addEventListener('click', () => worker.postMessage({ type: 'cancelResearch' }));
+}
+
+// Панель заказа. Показывает **текущую штуку**, а не весь заказ: работа и оплата
+// идут поштучно, и «40% от пяти» игрок прочтёт неверно (§12.30).
+function renderCraftPanel(list) {
+  const c = (list ?? [])[0];
+  craftRunning = !!c;
+  if (!c || !meta) {
+    craftEl.hidden = true;
+    return;
+  }
+  const def = (meta.recipes ?? [])[c.def];
+  const pct = c.total > 0 ? Math.round((c.progress / c.total) * 100) : 0;
+  // Три разных «ничего не происходит», и путать их нельзя: некому взяться,
+  // нечем платить или работа идёт.
+  const state = c.unit ? esc(c.unit) : c.paid ? 'ждёт исполнителя' : 'ждёт материала';
+  const parts = [
+    `<div class="cat-name">${esc(def?.label || def?.id || 'Заказ')}</div>`,
+    '<div class="cat-skill">' +
+      `<div class="cat-row"><span>Штука</span><b>${pct}%</b></div>` +
+      `<div class="bar"><i style="width:${pct}%"></i></div>` +
+      `<div class="cat-sub">осталось ${c.left} шт</div>` +
+      '</div>',
+    `<div class="cat-sub">${state}</div>`,
+    '<button class="tool craft-cancel"><span>Отменить</span></button>',
+  ];
+  craftEl.innerHTML = parts.join('');
+  craftEl.hidden = false;
+  craftEl
+    .querySelector('.craft-cancel')
+    .addEventListener('click', () => worker.postMessage({ type: 'cancelCraft' }));
 }
 
 // Записка (§4.6, §12.28). Что известно о будущем — решает ядро: пока детали не
@@ -810,6 +846,29 @@ function buildToolbar() {
     });
   }
 
+  // Производство. Заказ — разметка работы, как чертёж, но со счётчиком штук:
+  // клик заказывает одну, Shift — пять (§12.30). Кота не выбираем.
+  const recipes = meta.recipes ?? [];
+  if (recipes.length) {
+    const tc = document.createElement('div');
+    tc.className = 'tt';
+    tc.textContent = 'Производство';
+    el.appendChild(tc);
+
+    recipeButtons.length = 0;
+    recipes.forEach((r, i) => {
+      // На кнопке — что выходит, и следом цена: те же фишки, что у тайлов.
+      const b = mkTool(
+        `<span class="sw sw-shop"></span><span>${esc(r.label || r.id)}</span>` +
+          `${costChips(r.gives)}<span class="of">←</span>${costChips(r.cost)}`,
+        (e) => worker.postMessage({ type: 'craft', recipe: i, count: e.shiftKey ? 5 : 1 }),
+      );
+      b.classList.add('toggle');
+      recipeButtons.push(b);
+      el.appendChild(b);
+    });
+  }
+
   // Обучение. Кнопка адресная, а не разметка работы: игрок отправляет за парту
   // конкретного кота, и это решение о его судьбе (§12.18). Домены без `taught`
   // сюда не попадают — «Стройке» парта не нужна.
@@ -910,6 +969,29 @@ function syncTopicButtons(list) {
               : researchRunning
                 ? 'Тема уже изучается'
                 : 'Взяться за тему';
+  });
+}
+
+// Доступность рецепта считает ядро (технологии, мастерская, склад), здесь
+// только показываем. Пустой склад кнопку **не гасит**: заказ без материала ядро
+// примет, он будет ждать — как чертёж без лома (§12.30). Поэтому «нечем платить»
+// живёт в подсказке, а не в `disabled`.
+function syncRecipeButtons(list) {
+  recipeButtons.forEach((b, i) => {
+    const r = (list ?? [])[i];
+    if (!r) return;
+    const ready = r.unlocked && r.shop && !craftRunning;
+    b.disabled = !ready;
+    b.classList.toggle('on', ready && r.affordable);
+    b.title = !r.unlocked
+      ? 'Нужна технология'
+      : !r.shop
+        ? 'Нет мастерской'
+        : craftRunning
+          ? 'Заказ уже в работе'
+          : r.affordable
+            ? 'Заказать: клик — штука, Shift — пять'
+            : 'На складе нет материала — заказ будет ждать';
   });
 }
 

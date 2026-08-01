@@ -88,6 +88,14 @@ onmessage = (e) => {
     sim.start_research(m.topic);
   } else if (m.type === 'cancelResearch' && sim) {
     sim.cancel_research();
+  } else if (m.type === 'craft' && sim) {
+    // Заказ — разметка работы со счётчиком штук: кота не выбираем, к верстаку
+    // встанет ближайший свободный (см. `start_craft` в ядре, §12.30). Склад
+    // платит за каждую штуку отдельно, поэтому пустой склад заявку не отменяет —
+    // заказ ждёт материала.
+    sim.start_craft(m.recipe, m.count);
+  } else if (m.type === 'cancelCraft' && sim) {
+    sim.cancel_craft();
   } else if (m.type === 'teach' && sim) {
     // Обучение адресно: игрок решает судьбу конкретного кота, а не размечает
     // работу базе (см. `teach` в ядре, §12.18).

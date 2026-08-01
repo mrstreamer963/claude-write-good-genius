@@ -55,6 +55,7 @@ pub(crate) fn assign_hauls(
             Without<Rest>,
             Without<Study>,
             Without<Researching>,
+            Without<Crafting>,
             Without<Squad>,
             Without<Path>,
         ),
@@ -193,6 +194,7 @@ pub(crate) fn assign_tidy(
             Without<Rest>,
             Without<Study>,
             Without<Researching>,
+            Without<Crafting>,
             Without<Squad>,
             Without<Path>,
         ),
@@ -477,6 +479,63 @@ fn take_needed(
 }
 
 // --- склад и кучи ----------------------------------------------------------
+
+/// Кучи, лежащие **на складе**, в порядке обхода карты.
+///
+/// Порядок задан явно, а не порядком сущностей: обход ECS зависит от истории
+/// вставок, а любой недетерминизм ломает и тесты, и модель времени (§11).
+/// Лежащее на полу сюда не попадает — платит склад, а не то, что валяется
+/// (§12.24).
+pub(crate) fn storage_order<I>(
+    map: &BaseMap,
+    rules: &TileRules,
+    piles: I,
+) -> Vec<(Entity, usize, i32)>
+where
+    I: IntoIterator<Item = (Entity, (i32, i32), usize, i32)>,
+{
+    let mut shelved: Vec<(i32, i32, Entity, usize, i32)> = piles
+        .into_iter()
+        .filter(|&(_, (x, y), _, count)| count > 0 && rules.capacity_of(map.tile_at(x, y)) > 0)
+        .map(|(e, (x, y), item, count)| (y, x, e, item, count))
+        .collect();
+    shelved.sort_unstable_by_key(|&(y, x, ..)| (y, x));
+    shelved
+        .into_iter()
+        .map(|(_, _, e, i, n)| (e, i, n))
+        .collect()
+}
+
+/// Сколько снять с каждой кучи, чтобы покрыть набор; `None` — не покрывается.
+///
+/// **Либо весь набор, либо ничего**: половинчатая оплата оставила бы игрока и
+/// без предметов, и без покупки. Правило живёт здесь одно на всех, кто платит
+/// складом, — найм и науку (фасад) и производство (система): две арифметики
+/// списания однажды разойдутся на порядке обхода куч (§12.30).
+pub(crate) fn plan_spend(
+    piles: &[(Entity, usize, i32)],
+    cost: &[(usize, i32)],
+) -> Option<Vec<(Entity, i32)>> {
+    let mut takes: Vec<(Entity, i32)> = Vec::new();
+    for &(item, need) in cost {
+        let mut left = need;
+        for &(pile_e, pile_item, count) in piles {
+            if left <= 0 {
+                break;
+            }
+            if pile_item != item {
+                continue;
+            }
+            let taken = left.min(count);
+            left -= taken;
+            takes.push((pile_e, taken));
+        }
+        if left > 0 {
+            return None; // на складе не хватает — не снимаем ничего
+        }
+    }
+    Some(takes)
+}
 
 /// Сколько всего добра лежит на каждой клетке — сеткой, чтобы не искать
 /// линейно. Тип здесь не важен: склад типо-агностичен, ёмкость считает штуки

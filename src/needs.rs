@@ -44,14 +44,16 @@ pub(crate) fn collapse_exhausted(
             Option<&Assignment>,
             Option<&Haul>,
             Option<&Researching>,
+            Option<&Crafting>,
         ),
         (With<UnitId>, Without<Rest>, Without<Away>),
     >,
     mut blueprints: Query<&mut Blueprint>,
     mut marks: Query<&mut ToStore>,
     mut topics: Query<&mut Research>,
+    mut orders: Query<&mut Craft>,
 ) {
-    for (cat_e, energy, assignment, haul, researching) in &cats {
+    for (cat_e, energy, assignment, haul, researching, crafting) in &cats {
         if energy.0 > 0 {
             continue;
         }
@@ -73,6 +75,13 @@ pub(crate) fn collapse_exhausted(
             topic.assignee = None;
             topic.spot = None;
         }
+        // Заказ освобождается так же, как тема, и по той же причине: иначе
+        // мастерская навсегда останется за спящим (§12.30). Оплаченная штука
+        // при этом не пропадает — `paid` живёт у заказа, а не у кота.
+        if let Some(mut order) = crafting.and_then(|c| orders.get_mut(c.0).ok()) {
+            order.assignee = None;
+            order.spot = None;
+        }
         // Груз кот не роняет: донесёт, когда выспится (§12.15). Лежанку он
         // при этом не занимает — падает где стоит, а не идёт к месту. А вот
         // парту отпускает: занятость держит сам `Study`, и уснувший ученик
@@ -80,7 +89,15 @@ pub(crate) fn collapse_exhausted(
         commands
             .entity(cat_e)
             .insert(Rest { spot: None })
-            .remove::<(Assignment, Haul, Study, Researching, Path, MoveCooldown)>();
+            .remove::<(
+                Assignment,
+                Haul,
+                Study,
+                Researching,
+                Crafting,
+                Path,
+                MoveCooldown,
+            )>();
     }
 }
 
@@ -113,6 +130,7 @@ pub(crate) fn assign_rest(
             Without<Rest>,
             Without<Study>,
             Without<Researching>,
+            Without<Crafting>,
             Without<Squad>,
             Without<Path>,
         ),

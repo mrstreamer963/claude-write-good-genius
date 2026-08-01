@@ -5,7 +5,9 @@
 
 use serde::Serialize;
 
-use crate::ruleset::{ItemDef, MissionDef, PerkDef, RecruitDef, ResearchDef, SkillDef, TileDef};
+use crate::ruleset::{
+    ItemDef, MissionDef, PerkDef, RecipeDef, RecruitDef, ResearchDef, SkillDef, TileDef,
+};
 
 #[derive(Serialize)]
 pub(crate) struct MapMeta {
@@ -25,6 +27,8 @@ pub(crate) struct MapMeta {
     pub(crate) recruits: Vec<RecruitDef>,
     /// Темы исследования; заявка ходит по индексу в этом списке (§12.26).
     pub(crate) research: Vec<ResearchDef>,
+    /// Рецепты; заказ ходит по индексу в этом списке (§12.30).
+    pub(crate) recipes: Vec<RecipeDef>,
 }
 
 #[derive(Serialize)]
@@ -52,6 +56,11 @@ pub(crate) struct Snapshot {
     pub(crate) research: Vec<ResearchSnap>,
     /// Темы в порядке палитры: можно ли взяться и если нет, то почему.
     pub(crate) topics: Vec<TopicSnap>,
+    /// Заказ в работе; список, а не одна запись, — но фасад пускает по одному
+    /// за раз, как вылазку и тему (§12.30).
+    pub(crate) crafting: Vec<CraftSnap>,
+    /// Рецепты в порядке палитры: можно ли заказать и если нет, то почему.
+    pub(crate) recipes: Vec<RecipeSnap>,
     /// Изученные технологии. Только растут и только открывают (§12.24, §12.26).
     pub(crate) techs: Vec<String>,
     /// Записка: даты мира и то, что о них известно **сейчас** (§12.28).
@@ -85,6 +94,40 @@ pub(crate) struct NoteSnap {
     /// Событие уже прошло — и вот с каким исходом.
     pub(crate) done: bool,
     pub(crate) succeeded: bool,
+}
+
+/// Заказ в работе: сколько штук осталось, сколько сделано у текущей и кто занят.
+///
+/// Отдельное от темы DTO, потому что у заказа есть то, чего у темы нет и быть не
+/// может, — **счётчик штук** (§12.30). Полоска показывает текущую штуку, а не
+/// весь заказ: работа считается поштучно, и «40% от пяти» игрок прочтёт неверно.
+#[derive(Serialize)]
+pub(crate) struct CraftSnap {
+    /// Индекс записи в палитре рецептов из `map_meta`.
+    pub(crate) def: usize,
+    /// Сколько штук осталось, включая ту, что в работе.
+    pub(crate) left: i32,
+    pub(crate) progress: i32,
+    pub(crate) total: i32,
+    /// Материал текущей штуки списан: заказ работает, а не ждёт склада.
+    pub(crate) paid: bool,
+    /// Кто у верстака; пусто — исполнитель ещё не нашёлся.
+    pub(crate) unit: String,
+}
+
+/// Можно ли заказать рецепт прямо сейчас — и если нет, то почему.
+///
+/// Считает ядро, а не интерфейс, по той же причине, что и у тем (§12.26).
+/// `affordable` здесь — **подсказка, а не запрет**: заказ без материала ядро
+/// примет, он просто будет ждать, как чертёж без лома (§12.30).
+#[derive(Serialize)]
+pub(crate) struct RecipeSnap {
+    /// Технологии рецепта изучены: он вообще существует.
+    pub(crate) unlocked: bool,
+    /// На складе хватает на одну штуку прямо сейчас.
+    pub(crate) affordable: bool,
+    /// И есть мастерская, в которой работать.
+    pub(crate) shop: bool,
 }
 
 /// Тема в работе: сколько сделано и кто этим занят.

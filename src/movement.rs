@@ -67,6 +67,7 @@ pub(crate) fn retry_orders(
             Without<Rest>,
             Without<Study>,
             Without<Researching>,
+            Without<Crafting>,
             Without<Squad>,
         ),
     >,
@@ -146,9 +147,10 @@ pub(crate) fn is_stuck(map: &BaseMap, pos: &Position, tasks: Busy) -> bool {
 
 /// Чем кот занят — в том же наборе, что и фильтры `Without<…>` раздатчиков.
 ///
-/// Отдельная структура, а не девять аргументов: список задач общего слоя растёт
-/// (`Assignment`, `Haul`, `Rest`, `Study`, `Researching`, `Squad` — и это не
-/// конец), и собирать его в каждой точке вызова заново значит однажды забыть одну.
+/// Отдельная структура, а не десяток аргументов: список задач общего слоя растёт
+/// (`Assignment`, `Haul`, `Rest`, `Study`, `Researching`, `Crafting`, `Squad` —
+/// и это не конец), и собирать его в каждой точке вызова заново значит однажды
+/// забыть одну.
 #[derive(Clone, Copy)]
 pub(crate) struct Busy {
     /// Приказ игрока висит, но маршрута под него сейчас нет.
@@ -167,6 +169,7 @@ impl Busy {
         rest: Option<&Rest>,
         study: Option<&Study>,
         researching: Option<&Researching>,
+        crafting: Option<&Crafting>,
         squad: Option<&Squad>,
         away: Option<&Away>,
     ) -> Self {
@@ -177,6 +180,7 @@ impl Busy {
                 && rest.is_none()
                 && study.is_none()
                 && researching.is_none()
+                && crafting.is_none()
                 && squad.is_none(),
             away: away.is_some(),
         }

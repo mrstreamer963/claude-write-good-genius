@@ -6,6 +6,7 @@
 //! а не юнит-тестом функции. Мир собирается из ASCII-схем (`sim_from`), минуя
 //! YAML; общие хелперы — в этом файле, сами тесты разложены по механикам.
 
+mod crafting;
 mod demolition;
 mod fame;
 mod gear;
@@ -92,6 +93,7 @@ fn sim_from(rows: &[&str]) -> Sim {
     world.insert_resource(MissionRules::default());
     world.insert_resource(RecruitRules::default());
     world.insert_resource(ResearchRules::default());
+    world.insert_resource(CraftRules::default());
     world.insert_resource(Techs::default());
     world.insert_resource(TimelineRules::default());
     world.insert_resource(Chronicle::default());
@@ -112,6 +114,7 @@ fn sim_from(rows: &[&str]) -> Sim {
             gate: false,
             teaches: String::new(),
             lab: false,
+            shop: false,
             tech: String::new(),
         }],
         items: Vec::new(),
@@ -120,6 +123,7 @@ fn sim_from(rows: &[&str]) -> Sim {
         missions: Vec::new(),
         recruits: Vec::new(),
         research: Vec::new(),
+        recipes: Vec::new(),
         timeline: Vec::new(),
         width,
         height,
@@ -152,14 +156,15 @@ impl Sim {
             Option<&Rest>,
             Option<&Study>,
             Option<&Researching>,
+            Option<&Crafting>,
             Option<&Squad>,
             Option<&Away>,
         )>();
         let map = self.world.resource::<BaseMap>();
         q.iter(&self.world)
             .find(|(id, ..)| id.0 == unit)
-            .map(|(_, p, o, path, a, h, r, st, re, s, away)| {
-                is_stuck(map, p, Busy::of(o, path, a, h, r, st, re, s, away))
+            .map(|(_, p, o, path, a, h, r, st, re, cr, s, away)| {
+                is_stuck(map, p, Busy::of(o, path, a, h, r, st, re, cr, s, away))
             })
             .expect("кот не найден")
     }
@@ -377,6 +382,54 @@ impl Sim {
     /// Сделать тайл лабораторией: в ней идёт работа над темой.
     fn set_lab(&mut self, tile: i16, on: bool) {
         self.tile_rule(tile, |r| r.lab = on);
+    }
+
+    /// Сделать тайл мастерской: в ней идёт работа над заказом (§12.30).
+    fn set_shop(&mut self, tile: i16, on: bool) {
+        self.tile_rule(tile, |r| r.shop = on);
+    }
+
+    /// Завести рецепт: объём работы на штуку, цена штуки, что выходит и какие
+    /// технологии нужны. Вернёт его индекс — им же зовётся `start_craft`.
+    fn set_recipe(
+        &mut self,
+        work: i32,
+        cost: &[(usize, i32)],
+        gives: &[(usize, i32)],
+        requires: &[&str],
+    ) -> usize {
+        let mut rules = self.world.resource_mut::<CraftRules>();
+        rules.0.push(CraftRule {
+            work,
+            cost: cost.to_vec(),
+            gives: gives.to_vec(),
+            requires: requires.iter().map(|t| t.to_string()).collect(),
+        });
+        rules.0.len() - 1
+    }
+
+    /// Сколько штук осталось в заказе; `None` — заказа нет.
+    fn craft_left(&mut self) -> Option<i32> {
+        let mut q = self.world.query::<&Craft>();
+        q.iter(&self.world).next().map(|o| o.left)
+    }
+
+    /// Очки работы текущей штуки; `None` — заказа нет.
+    fn craft_progress(&mut self) -> Option<i32> {
+        let mut q = self.world.query::<&Craft>();
+        q.iter(&self.world).next().map(|o| o.progress)
+    }
+
+    /// Кто стоит у верстака; `None` — исполнителя нет (или нет заказа).
+    fn crafter(&mut self) -> Option<String> {
+        let mut q = self.world.query::<&Craft>();
+        let assignee = q.iter(&self.world).next().and_then(|o| o.assignee)?;
+        self.world.get::<UnitId>(assignee).map(|u| u.0.clone())
+    }
+
+    fn is_crafting(&mut self, unit: &str) -> bool {
+        let cat = self.entity_of(unit);
+        self.world.get::<Crafting>(cat).is_some()
     }
 
     /// Завести тему исследования: допуск по «Науке», объём работы, цена и

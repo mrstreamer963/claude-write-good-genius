@@ -6,6 +6,7 @@
 use bevy_ecs::prelude::*;
 
 use crate::components::SimTime;
+use crate::crafting::{assign_craft, work_craft};
 use crate::gear::auto_equip;
 use crate::hauling::{assign_hauls, assign_tidy, mark_loose_scrap, settle_stacks, work_hauls};
 use crate::jobs::{assign_jobs, work_jobs};
@@ -32,8 +33,10 @@ fn advance_time(mut time: ResMut<SimTime>) {
 ///   3. `assign_research` — наука. Раньше стройки: за тему уже заплачено
 ///      образцами, а чертёж на базе есть почти всегда, и наука не двинулась бы
 ///      никогда. Это же и есть специализация (§12.17): учёный не строит.
-///   4. `assign_jobs` — стройка и снос.
-///   5. `assign_tidy` — уборка пола. Последняя: подбирать мусор, пока стоит
+///   4. `assign_craft` — производство. Там же и по той же причине: заказ игрок
+///      разметил явно и поштучно, а чертежей на базе всегда больше (§12.30).
+///   5. `assign_jobs` — стройка и снос.
+///   6. `assign_tidy` — уборка пола. Последняя: подбирать мусор, пока стоит
 ///      настоящая работа, — это ровно то, чего игрок не ждёт.
 ///
 /// Вылазки и учёба в этот порядок не входят: отряд назначает игрок в момент
@@ -80,6 +83,7 @@ pub(crate) fn build_schedule() -> Schedule {
         gather_squad,
         assign_hauls,
         assign_research,
+        assign_craft,
         assign_jobs,
         mark_loose_scrap,
         assign_tidy,
@@ -91,6 +95,7 @@ pub(crate) fn build_schedule() -> Schedule {
         work_hauls,
         work_jobs,
         work_research,
+        work_craft,
         study,
         run_missions,
         run_timeline,

@@ -182,6 +182,17 @@ main#stage canvas { display: block; }
 .sw-study {
   background: linear-gradient(180deg, #b08fde 0 45%, #4a4f7a 55% 100%);
 }
+/* Производство: верстак — той же краской, что и мастерская в палитре. */
+.sw-shop {
+  background: linear-gradient(180deg, #c79a3e 0 45%, #8e6f2f 55% 100%);
+}
+/* Стрелка «из чего» в кнопке рецепта: слева выход, справа цена штуки. */
+.of {
+  margin: 0 2px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 /* Найм: новый кот — той же краской, что и коты на карте. */
 .sw-hire {
   background: #8fb8de;
@@ -272,6 +283,23 @@ main#stage canvas { display: block; }
 }
 #research[hidden] { display: none; }
 #research .research-cancel { width: 100%; margin-top: 8px; justify-content: center; }
+
+/* Панель заказа — той же колонкой, ниже темы: производство идёт так же молча,
+   и та же беда — видно только кота, зачем-то стоящего у верстака (§12.30). */
+#craft {
+  position: fixed;
+  right: 12px;
+  top: 600px;
+  width: 190px;
+  padding: 10px 12px;
+  background: rgba(21, 23, 31, 0.92);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  backdrop-filter: blur(4px);
+  font-size: 13px;
+}
+#craft[hidden] { display: none; }
+#craft .craft-cancel { width: 100%; margin-top: 8px; justify-content: center; }
 
 .cat-name {
   font-weight: 600;

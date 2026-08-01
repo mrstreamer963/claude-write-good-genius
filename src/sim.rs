@@ -15,6 +15,8 @@
 //!   * `teach()`         — отправить кота за парту: обучение адресно (§12.18);
 //!   * `start_research()`— взяться за тему: склад платит образцами, сядет допущенный;
 //!   * `cancel_research()` — бросить тему (образцы не возвращаются);
+//!   * `start_craft()`   — заказать штуки по рецепту: склад платит за каждую;
+//!   * `cancel_craft()`  — отменить заказ (материал начатой штуки не вернётся);
 //!   * `demolish()`      — мгновенный снос без котов (тесты/отладка);
 //!   * `set_target()`    — приказ коту идти в тайл (движение по тикам, отменяет его задачу);
 //!   * `tick()`          — один фиксированный шаг симуляции;
@@ -24,19 +26,21 @@ use bevy_ecs::prelude::*;
 use wasm_bindgen::prelude::*;
 
 use crate::components::*;
+use crate::hauling::plan_spend;
 use crate::jobs::BUILD_WORK;
 use crate::map::{BaseMap, rect_cells};
 use crate::missions::{outcome, pick_gate};
 use crate::movement::{Busy, is_stuck};
 use crate::path::find_path;
 use crate::ruleset::{
-    EventDef, ItemDef, MissionDef, PerkDef, RecruitDef, ResearchDef, Ruleset, SkillDef, TileDef,
+    EventDef, ItemDef, MissionDef, PerkDef, RecipeDef, RecruitDef, ResearchDef, Ruleset, SkillDef,
+    TileDef,
 };
 use crate::schedule::build_schedule;
 use crate::skills::{SKILL_RAID, SKILL_SCIENCE, level_of, nearest_desk};
 use crate::snapshot::{
-    BaseMapDto, BlueprintSnap, EntitySnap, MapMeta, MissionSnap, NoteSnap, RecruitSnap,
-    ResearchSnap, SkillSnap, Snapshot, StackSnap, TopicSnap,
+    BaseMapDto, BlueprintSnap, CraftSnap, EntitySnap, MapMeta, MissionSnap, NoteSnap, RecipeSnap,
+    RecruitSnap, ResearchSnap, SkillSnap, Snapshot, StackSnap, TopicSnap,
 };
 use crate::timeline::{ready_for, revealed};
 
@@ -51,6 +55,7 @@ pub struct Sim {
     pub(crate) missions: Vec<MissionDef>,
     pub(crate) recruits: Vec<RecruitDef>,
     pub(crate) research: Vec<ResearchDef>,
+    pub(crate) recipes: Vec<RecipeDef>,
     pub(crate) timeline: Vec<EventDef>,
     pub(crate) width: i32,
     pub(crate) height: i32,
@@ -159,26 +164,21 @@ impl Sim {
 
     /// Списать набор со склада. Либо снимается всё, либо ничего: половинчатая
     /// оплата оставила бы игрока и без предметов, и без кота.
+    ///
+    /// Сам расчёт живёт в `plan_spend` и общий с производством, которое платит
+    /// из системы (§12.30): две арифметики списания однажды разошлись бы на
+    /// порядке обхода куч.
     fn spend_from_storage(&mut self, cost: &[(usize, i32)]) -> bool {
-        if !self.storage_covers(cost) {
+        let piles = self.storage_piles();
+        let Some(takes) = plan_spend(&piles, cost) else {
             return false;
-        }
-        for &(item, need) in cost {
-            let mut left = need;
-            for (pile_e, pile_item, count) in self.storage_piles() {
-                if left <= 0 {
-                    break;
-                }
-                if pile_item != item {
-                    continue;
-                }
-                let taken = left.min(count);
-                left -= taken;
-                if taken >= count {
-                    self.world.entity_mut(pile_e).despawn();
-                } else if let Some(mut stack) = self.world.get_mut::<Stack>(pile_e) {
-                    stack.count -= taken;
-                }
+        };
+        for (pile_e, taken) in takes {
+            let count = self.world.get::<Stack>(pile_e).map_or(0, |s| s.count);
+            if taken >= count {
+                self.world.entity_mut(pile_e).despawn();
+            } else if let Some(mut stack) = self.world.get_mut::<Stack>(pile_e) {
+                stack.count -= taken;
             }
         }
         true
@@ -214,6 +214,12 @@ impl Sim {
                 topic.spot = None;
             }
         }
+        if let Some(order_e) = self.world.get::<Crafting>(cat).map(|c| c.0) {
+            if let Some(mut order) = self.world.get_mut::<Craft>(order_e) {
+                order.assignee = None;
+                order.spot = None;
+            }
+        }
         // Груз кот при этом не бросает: донесёт, когда снова возьмётся за
         // доставку (§12.15). Сон и учёба снимаются — это осознанные действия
         // (§12.20, §12.18); парту при этом отпускает сам снятый `Study`.
@@ -223,6 +229,7 @@ impl Sim {
             Rest,
             Study,
             Researching,
+            Crafting,
             Path,
             MoveCooldown,
         )>();
@@ -262,6 +269,21 @@ impl Sim {
         let rules = self.world.resource::<SkillRules>();
         q.iter(&self.world)
             .any(|skills| level_of(rules, skills, science) >= level)
+    }
+
+    /// Заказ, который сейчас в работе (на POC не больше одного).
+    fn order(&mut self) -> Option<Entity> {
+        let mut q = self.world.query_filtered::<Entity, With<Craft>>();
+        q.iter(&self.world).next()
+    }
+
+    /// Есть ли на базе клетка мастерской — без неё работать негде.
+    fn has_shop(&mut self) -> bool {
+        let map = self.world.resource::<BaseMap>();
+        let rules = self.world.resource::<TileRules>();
+        (0..map.height)
+            .flat_map(|y| (0..map.width).map(move |x| (x, y)))
+            .any(|(x, y)| rules.is_shop(map.tile_at(x, y)))
     }
 
     /// Клетки, занятые учениками: и та, за которой сидят, и та, к которой идут.
@@ -372,6 +394,7 @@ impl Sim {
                     gate: t.gate,
                     teaches: skill_index(&t.teaches),
                     lab: t.lab,
+                    shop: t.shop,
                     tech: t.tech.clone(),
                 })
                 .collect(),
@@ -385,6 +408,25 @@ impl Sim {
                     work: r.work,
                     cost: r
                         .cost
+                        .iter()
+                        .filter_map(|(id, &n)| item_index(id).map(|i| (i, n)))
+                        .collect(),
+                    requires: r.requires.clone(),
+                })
+                .collect(),
+        ));
+        world.insert_resource(CraftRules(
+            rs.recipes
+                .iter()
+                .map(|r| CraftRule {
+                    work: r.work,
+                    cost: r
+                        .cost
+                        .iter()
+                        .filter_map(|(id, &n)| item_index(id).map(|i| (i, n)))
+                        .collect(),
+                    gives: r
+                        .gives
                         .iter()
                         .filter_map(|(id, &n)| item_index(id).map(|i| (i, n)))
                         .collect(),
@@ -510,6 +552,7 @@ impl Sim {
             missions: rs.missions,
             recruits: rs.recruits,
             research: rs.research,
+            recipes: rs.recipes,
             timeline: rs.timeline,
             width: w,
             height: h,
@@ -528,6 +571,7 @@ impl Sim {
             missions: self.missions.clone(),
             recruits: self.recruits.clone(),
             research: self.research.clone(),
+            recipes: self.recipes.clone(),
         };
         serde_wasm_bindgen::to_value(&meta).map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -902,6 +946,64 @@ impl Sim {
         true
     }
 
+    /// Заказать `count` штук по рецепту `def` (индекс в палитре из `map_meta`).
+    ///
+    /// **Заказ — разметка работы, как чертёж** (§12.16): игрок решает, что и
+    /// сколько сделать, а к верстаку встанет ближайший свободный кот. Допуска по
+    /// навыку здесь нет — рецепт открывает технология, «Ремесло» лишь ускоряет
+    /// (§12.30).
+    ///
+    /// **Вперёд не платят.** Материал списывается за штуку и в тот момент, когда
+    /// за неё берутся: заказ на десять штук, оплаченный сразу, заморозил бы склад
+    /// под работу, которая начнётся через полтысячи тиков. Поэтому и пустой склад
+    /// заявку не отклоняет — заказ ждёт материала, как чертёж ждёт лом (§12.15).
+    ///
+    /// Заказ один за раз, как вылазка и тема. Вернёт false, если рецепта нет,
+    /// счётчик неположителен, заказ уже идёт, не хватает технологий или на базе
+    /// нет мастерской.
+    pub fn start_craft(&mut self, def: usize, count: i32) -> bool {
+        let Some(rule) = self.world.resource::<CraftRules>().0.get(def).cloned() else {
+            return false;
+        };
+        if count <= 0 || self.order().is_some() {
+            return false;
+        }
+        if !self.world.resource::<Techs>().covers(&rule.requires) {
+            return false;
+        }
+        if !self.has_shop() {
+            return false;
+        }
+        self.world.spawn(Craft {
+            def,
+            left: count,
+            progress: 0,
+            paid: false,
+            assignee: None,
+            spot: None,
+        });
+        true
+    }
+
+    /// Отменить заказ и освободить мастера.
+    ///
+    /// Материал уже начатой штуки **не возвращается** — та же цена поспешной
+    /// разметки, что у брошенной темы и у отменённого чертежа с завезённым ломом
+    /// (§12.26). Неоплаченные штуки не стоили ничего и просто исчезают.
+    /// Вернёт false, если заказывать нечего.
+    pub fn cancel_craft(&mut self) -> bool {
+        let Some(order_e) = self.order() else {
+            return false;
+        };
+        if let Some(cat_e) = self.world.get::<Craft>(order_e).and_then(|o| o.assignee) {
+            self.world
+                .entity_mut(cat_e)
+                .remove::<(Crafting, Path, MoveCooldown)>();
+        }
+        self.world.entity_mut(order_e).despawn();
+        true
+    }
+
     /// Отправить кота `unit_id` учиться домену `skill_id`.
     ///
     /// **Обучение адресно** (§12.18) — как приказ «иди туда» и как заявка на
@@ -1084,6 +1186,7 @@ impl Sim {
                     Option<&Rest>,
                     Option<&Study>,
                     Option<&Researching>,
+                    Option<&Crafting>,
                     Option<&Squad>,
                     Option<&Away>,
                 ),
@@ -1092,7 +1195,18 @@ impl Sim {
             let rules = self.world.resource::<SkillRules>();
             let needs = self.world.resource::<NeedRules>();
             for (id, r, p, load, carry, skills, perks, energy, gear, tasks) in q.iter(&self.world) {
-                let (order, path, assignment, haul, rest, study, researching, squad, away) = tasks;
+                let (
+                    order,
+                    path,
+                    assignment,
+                    haul,
+                    rest,
+                    study,
+                    researching,
+                    crafting,
+                    squad,
+                    away,
+                ) = tasks;
                 let busy = Busy::of(
                     order,
                     path,
@@ -1101,6 +1215,7 @@ impl Sim {
                     rest,
                     study,
                     researching,
+                    crafting,
                     squad,
                     away,
                 );
@@ -1279,6 +1394,47 @@ impl Sim {
             }
         }
 
+        let mut crafting = Vec::new();
+        {
+            let mut q = self.world.query::<&Craft>();
+            let names: Vec<(Entity, String)> = {
+                let mut cats = self.world.query::<(Entity, &UnitId)>();
+                cats.iter(&self.world)
+                    .map(|(e, u)| (e, u.0.clone()))
+                    .collect()
+            };
+            let rules = self.world.resource::<CraftRules>();
+            for order in q.iter(&self.world) {
+                crafting.push(CraftSnap {
+                    def: order.def,
+                    left: order.left,
+                    progress: order.progress,
+                    total: rules.0.get(order.def).map_or(0, |r| r.work),
+                    paid: order.paid,
+                    unit: order
+                        .assignee
+                        .and_then(|e| names.iter().find(|&&(cat, _)| cat == e))
+                        .map(|(_, id)| id.clone())
+                        .unwrap_or_default(),
+                });
+            }
+        }
+
+        let has_shop = self.has_shop();
+        let mut recipes = Vec::new();
+        {
+            let rules = self.world.resource::<CraftRules>().0.clone();
+            for rule in &rules {
+                recipes.push(RecipeSnap {
+                    unlocked: self.world.resource::<Techs>().covers(&rule.requires),
+                    // Подсказка, а не запрет: заказ без материала ядро примет,
+                    // он просто будет ждать склада (§12.30).
+                    affordable: self.storage_covers(&rule.cost),
+                    shop: has_shop,
+                });
+            }
+        }
+
         // Записка. Что игрок знает о будущем — решает ядро: до `reveal` детали
         // в снапшот просто не кладутся (§4.6, §12.28).
         let mut notes = Vec::new();
@@ -1322,6 +1478,8 @@ impl Sim {
             recruits,
             research,
             topics,
+            crafting,
+            recipes,
             techs,
             notes,
         })
