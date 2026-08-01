@@ -412,6 +412,18 @@ function renderCatPanel(entities) {
   }
   if (e.away) parts.push('<div class="cat-sub">на вылазке</div>');
   if (e.studying) parts.push('<div class="cat-sub">учится</div>');
+  // Надетое: снаряжение молча прибавляет отряду силы, и без этой строки игрок
+  // не свяжет пропавший со склада комбинезон с выросшим прогнозом вылазки
+  // (§12.29). Пустой комплект показываем тоже — иначе непонятно, что он бывает.
+  const gear = e.gear ?? [];
+  const force = gear.reduce((sum, i) => sum + ((meta.items ?? [])[i]?.force ?? 0), 0);
+  parts.push(
+    '<div class="cat-sub">' +
+      (gear.length
+        ? `надето: ${gear.map((i) => esc(itemLabel(i))).join(' · ')} (+${force} к силе)`
+        : 'не экипирован') +
+      '</div>',
+  );
   const held = e.carrying > 0 ? ` ${esc(itemLabel(e.carrying_item))}` : '';
   const paws =
     (e.carry_max > 0 ? `лапы ${e.carrying}/${e.carry_max}` : `в лапах ${e.carrying}`) + held;

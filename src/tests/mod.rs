@@ -8,6 +8,7 @@
 
 mod demolition;
 mod fame;
+mod gear;
 mod hauling;
 mod items;
 mod jobs;
@@ -95,6 +96,8 @@ fn sim_from(rows: &[&str]) -> Sim {
     world.insert_resource(TimelineRules::default());
     world.insert_resource(Chronicle::default());
     world.insert_resource(Fame::default());
+    world.insert_resource(ItemRules::default());
+    world.insert_resource(LoadoutRules::default());
     world.insert_resource(UnitRules::default());
     Sim {
         world,
@@ -595,6 +598,31 @@ impl Sim {
     /// Сделать тайл шлюзом: отсюда отряд уходит на миссию и сюда возвращается.
     fn set_gate(&mut self, tile: i16, on: bool) {
         self.tile_rule(tile, |r| r.gate = on);
+    }
+
+    /// Сделать предмет снаряжением: сколько силы он даёт отряду (§12.29).
+    /// В схеме `sim_from` предметы бессильны, как тайл бесплатен: снаряжение —
+    /// контент рулсета, и тесты чужих механик о нём не знают.
+    fn set_force(&mut self, item: usize, force: i32) {
+        let mut rules = self.world.resource_mut::<ItemRules>();
+        if rules.0.len() <= item {
+            rules.0.resize(item + 1, ItemRule::default());
+        }
+        rules.0[item].force = force;
+    }
+
+    /// Задать шаблон снаряжения: что коты носят. Один на всех (§12.29).
+    fn set_loadout(&mut self, items: &[usize]) {
+        self.world.resource_mut::<LoadoutRules>().0 = items.to_vec();
+    }
+
+    /// Что надето на коте, в порядке шаблона.
+    fn gear_of(&mut self, unit: &str) -> Vec<usize> {
+        let cat = self.entity_of(unit);
+        self.world
+            .get::<Gear>(cat)
+            .map(|g| g.0.clone())
+            .unwrap_or_default()
     }
 
     /// Завести миссию в мире теста: размер отряда, длительность и добыча.

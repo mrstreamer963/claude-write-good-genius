@@ -6,6 +6,7 @@
 use bevy_ecs::prelude::*;
 
 use crate::components::SimTime;
+use crate::gear::auto_equip;
 use crate::hauling::{assign_hauls, assign_tidy, mark_loose_scrap, settle_stacks, work_hauls};
 use crate::jobs::{assign_jobs, work_jobs};
 use crate::missions::{gather_squad, run_missions};
@@ -40,6 +41,12 @@ fn advance_time(mut time: ResMut<SimTime>) {
 /// `gather_squad` и `study` только держат выбранных котов идущими к месту,
 /// поэтому стоят рядом с раздатчиками, но пула не трогают.
 ///
+/// `auto_equip` не входит в него тем более: экипировка — **состояние кота, а не
+/// задача** (§12.29), она никого не занимает и ни у кого ничего не отнимает.
+/// Стоит первой, чтобы новичок с найма и вернувшийся отряд успели одеться до
+/// того, как их посчитают: сила отряда считается на возвращении, и надетое
+/// входит в неё наравне с навыком.
+///
 /// `run_missions` — после `move_units`: кот, шагнувший на шлюз в этом тике,
 /// засчитывается в отряд сразу. И до `settle_stacks`: добыча ложится кучей на
 /// шлюз, а он к возвращению отряда может оказаться ямой.
@@ -67,6 +74,7 @@ pub(crate) fn build_schedule() -> Schedule {
     // Кто чем занят: раздача работы и сбор тех, кого назначил игрок.
     let assign = (
         advance_time,
+        auto_equip,
         collapse_exhausted,
         assign_rest,
         gather_squad,

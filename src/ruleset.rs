@@ -37,6 +37,11 @@ pub(crate) struct Ruleset {
     /// выключено), как `cost: 0` у тайла. Перк «Носильщик» удваивает (§12.17).
     #[serde(default)]
     pub(crate) carry: i32,
+    /// Шаблон снаряжения: `id` предметов, которые кот носит (§4.2, §12.29).
+    /// Один на всех — редактор шаблонов это интерфейс поверх выбора, которого
+    /// на POC нет. Пусто = снаряжения в мире нет.
+    #[serde(default)]
+    pub(crate) loadout: Vec<String>,
     #[serde(default)]
     pub(crate) energy: EnergyDef,
 }
@@ -256,6 +261,12 @@ pub(crate) struct ItemDef {
     #[serde(default)]
     pub(crate) label: String,
     pub(crate) color: String,
+    /// Сколько силы предмет добавляет отряду, если надет (§12.29). Больше нуля =
+    /// это снаряжение. Свойство предмета, а не отдельная сущность: та же схема,
+    /// по которой `capacity` делает тайл складом, — вещь значит что-то сверх
+    /// цвета, оставаясь обычным предметом в кучах, в лапах и на складе.
+    #[serde(default)]
+    pub(crate) force: i32,
 }
 
 #[derive(Debug, Deserialize, Clone)]

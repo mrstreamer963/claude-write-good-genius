@@ -179,6 +179,7 @@ pub(crate) fn pick_gate(map: &BaseMap, tiles: &TileRules, at: &[(i32, i32)]) -> 
 pub(crate) fn run_missions(
     rules: Res<MissionRules>,
     skill_rules: Res<SkillRules>,
+    items: Res<ItemRules>,
     mut fame: ResMut<Fame>,
     mut commands: Commands,
     mut missions: Query<(Entity, &mut Mission)>,
@@ -190,6 +191,7 @@ pub(crate) fn run_missions(
         Option<&Away>,
         Option<&Skills>,
         Option<&mut Energy>,
+        Option<&Gear>,
     )>,
     mut stacks: Query<(Entity, &Position, &mut Stack)>,
 ) {
@@ -205,11 +207,15 @@ pub(crate) fn run_missions(
         let squad: Vec<(Entity, (i32, i32), bool, bool, i32)> = crew
             .iter()
             .filter(|(_, s, ..)| s.0 == mission_e)
-            .map(|(e, _, p, path, away, skills, _)| {
+            .map(|(e, _, p, path, away, skills, _, gear)| {
                 let walking = path.is_some_and(|p| !p.steps.is_empty());
                 // Вклад кота в силу отряда: сам он стоит единицу, навык —
-                // сверху. Нулевой навык поэтому не значит «бесполезен».
-                let force = 1 + raid.map_or(0, |s| level_of(&skill_rules, skills, s));
+                // сверху, надетое — ещё сверху. Нулевой навык поэтому не значит
+                // «бесполезен», а снаряжение — второе слагаемое, которое растёт
+                // не от навыка и не упирается в его потолок (§12.29).
+                let force = 1
+                    + raid.map_or(0, |s| level_of(&skill_rules, skills, s))
+                    + items.force_of_gear(gear);
                 (e, (p.x, p.y), walking, away.is_some(), force)
             })
             .collect();
@@ -238,9 +244,18 @@ pub(crate) fn run_missions(
                 // Плата за вылазку — котовремя: та же валюта, в которой
                 // измеряется и сама отправка отряда. Провал забирает всё, и
                 // коты валятся у шлюза — `collapse_exhausted` подберёт их.
-                if let Ok((.., Some(mut energy))) = crew.get_mut(cat_e) {
+                if let Ok((.., Some(mut energy), _)) = crew.get_mut(cat_e) {
                     let toll = if out.failed { energy.0 } else { rule.toll };
                     energy.0 = (energy.0 - toll).max(0);
+                }
+                // Провал ломает снаряжение: до него он стоил только бодрости, а
+                // она восстанавливается бесплатно — то есть заведомо провальная
+                // вылазка была способом качать «Вылазку» за одно лишь время
+                // (§12.29). Успех не изнашивает: износ за каждый выход
+                // превратил бы петлю «добыча → сила» в оброк. Комплект наберётся
+                // заново, как только на складе снова будет из чего.
+                if out.failed {
+                    commands.entity(cat_e).remove::<Gear>();
                 }
             }
             // Добыча ложится кучей на шлюз — ровно как возврат от сноса ложится

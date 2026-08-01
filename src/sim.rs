@@ -451,6 +451,17 @@ impl Sim {
                 .collect(),
         ));
         world.insert_resource(Fame::default());
+        // Снаряжение — свойство предмета, а шаблон ссылается на предметы по
+        // имени: в правилах, как и в цене тайла, остаются индексы палитры.
+        world.insert_resource(ItemRules(
+            rs.items
+                .iter()
+                .map(|i| ItemRule { force: i.force })
+                .collect(),
+        ));
+        world.insert_resource(LoadoutRules(
+            rs.loadout.iter().filter_map(|id| item_index(id)).collect(),
+        ));
         world.insert_resource(UnitRules { carry: rs.carry });
         world.insert_resource(AutoTidy(true));
         world.insert_resource(NeedRules {
@@ -1064,6 +1075,7 @@ impl Sim {
                 Option<&Skills>,
                 Option<&Perks>,
                 Option<&Energy>,
+                Option<&Gear>,
                 (
                     Option<&Order>,
                     Option<&Path>,
@@ -1079,7 +1091,7 @@ impl Sim {
             let map = self.world.resource::<BaseMap>();
             let rules = self.world.resource::<SkillRules>();
             let needs = self.world.resource::<NeedRules>();
-            for (id, r, p, load, carry, skills, perks, energy, tasks) in q.iter(&self.world) {
+            for (id, r, p, load, carry, skills, perks, energy, gear, tasks) in q.iter(&self.world) {
                 let (order, path, assignment, haul, rest, study, researching, squad, away) = tasks;
                 let busy = Busy::of(
                     order,
@@ -1119,6 +1131,10 @@ impl Sim {
                         })
                         .collect(),
                     perks: perks.map(|p| p.0.clone()).unwrap_or_default(),
+                    // Надетое видно в панели кота: снаряжение молча прибавляет
+                    // отряду силы, и без этого игрок не свяжет пропавший со
+                    // склада комбинезон с выросшим прогнозом вылазки (§12.29).
+                    gear: gear.map(|g| g.0.clone()).unwrap_or_default(),
                 });
             }
         }
@@ -1159,16 +1175,24 @@ impl Sim {
         let mut missions = Vec::new();
         {
             let raid = self.world.resource::<SkillRules>().index_of(SKILL_RAID);
-            let mut crew = self
-                .world
-                .query::<(&UnitId, &Squad, Option<&Away>, Option<&Skills>)>();
+            let mut crew = self.world.query::<(
+                &UnitId,
+                &Squad,
+                Option<&Away>,
+                Option<&Skills>,
+                Option<&Gear>,
+            )>();
             let skill_rules = self.world.resource::<SkillRules>();
+            let items = self.world.resource::<ItemRules>();
             // Вклад кота в силу отряда считается ровно как в `run_missions`:
-            // сам он стоит единицу, уровень «Вылазки» — сверху.
+            // сам он стоит единицу, уровень «Вылазки» — сверху, надетое — ещё
+            // сверху. Прогноз и результат обязаны быть одним выражением (§12.23).
             let members: Vec<(Entity, String, bool, i32)> = crew
                 .iter(&self.world)
-                .map(|(id, squad, away, skills)| {
-                    let force = 1 + raid.map_or(0, |s| level_of(skill_rules, skills, s));
+                .map(|(id, squad, away, skills, gear)| {
+                    let force = 1
+                        + raid.map_or(0, |s| level_of(skill_rules, skills, s))
+                        + items.force_of_gear(gear);
                     (squad.0, id.0.clone(), away.is_some(), force)
                 })
                 .collect();
