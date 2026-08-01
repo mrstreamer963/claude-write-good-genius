@@ -21,6 +21,7 @@ mod paths;
 mod research;
 mod skills;
 mod study;
+mod terrain;
 mod tidying;
 mod timeline;
 mod voids;
@@ -117,6 +118,7 @@ fn sim_from(rows: &[&str]) -> Sim {
             teaches: String::new(),
             lab: false,
             shop: false,
+            solid: false,
             tech: String::new(),
         }],
         items: Vec::new(),
@@ -225,6 +227,25 @@ impl Sim {
     /// Сделать тайл складом с такой ёмкостью (0 = обычный пол).
     fn set_capacity(&mut self, tile: i16, capacity: i32) {
         self.tile_rule(tile, |r| r.capacity = capacity);
+    }
+
+    /// Индексы заставленных тайлов палитры — для контентных проверок (§12.35).
+    fn solid_tiles(&self) -> Vec<i16> {
+        let rules = self.world.resource::<TileRules>();
+        (0..rules.0.len())
+            .map(|i| i as i16)
+            .filter(|&t| rules.is_solid(t))
+            .collect()
+    }
+
+    /// Ёмкость тайла палитры.
+    fn capacity_of(&self, tile: i16) -> i32 {
+        self.world.resource::<TileRules>().capacity_of(tile)
+    }
+
+    /// Заставить тайл доверху: пройти можно, остаться нельзя (§12.35).
+    fn set_solid(&mut self, tile: i16, on: bool) {
+        self.tile_rule(tile, |r| r.solid = on);
     }
 
     fn tile_rule(&mut self, tile: i16, edit: impl FnOnce(&mut TileRule)) {

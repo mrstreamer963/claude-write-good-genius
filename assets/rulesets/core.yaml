@@ -37,6 +37,8 @@ items:
 # вместо построенного тайла — так заводится домен, работы по которому ещё нет.
 # lab — лаборатория: здесь идёт работа над темой исследования.
 # shop — мастерская: здесь идёт работа над заказом (§12.30).
+# solid — заставлено доверху: пройти клетку можно, остаться на ней нельзя
+# (§12.35). Кот, которому тут нечего делать, сходит на соседнюю сам.
 # tech — технология, без которой тайл не построить. Пусто = доступен сразу.
 # Это вторые ворота прогрессии после известности: та открывает вылазки и котов,
 # эта — саму базу, и открывается только своей же наукой.
@@ -47,7 +49,7 @@ tiles:
   - { id: garage,  label: "Гараж",       color: "#6e5a26", cost: { scrap: 2, part: 1 }, gate: true }
   - { id: bed,     label: "Лежанка",     color: "#3f5a3a", cost: { scrap: 1, part: 1 }, rest: 12 }
   - { id: desk,    label: "Парта",       color: "#4a4f7a", cost: { scrap: 2, part: 1 }, teaches: science }
-  - { id: rack,    label: "Стеллаж",     color: "#2f6f8e", cost: { scrap: 4, part: 3 }, capacity: 60, tech: materials }
+  - { id: rack,    label: "Стеллаж",     color: "#2f6f8e", cost: { scrap: 4, part: 3 }, capacity: 60, solid: true, tech: materials }
   - { id: nest,    label: "Гнездо",      color: "#4d7a44", cost: { scrap: 2, part: 2 }, rest: 30,     tech: comfort }
   - { id: shop,    label: "Мастерская",  color: "#8e6f2f", cost: { scrap: 3, part: 2 }, shop: true,   tech: materials }
 

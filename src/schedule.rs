@@ -11,7 +11,7 @@ use crate::gear::{assign_equip, work_equip};
 use crate::hauling::{assign_hauls, assign_tidy, mark_loose_scrap, settle_stacks, work_hauls};
 use crate::jobs::{assign_jobs, work_jobs};
 use crate::missions::{gather_squad, run_missions};
-use crate::movement::{escape_voids, move_units, retry_orders, spread_units};
+use crate::movement::{clear_solids, escape_voids, move_units, retry_orders, spread_units};
 use crate::needs::{assign_rest, collapse_exhausted, sleep, tire};
 use crate::research::{assign_research, work_research};
 use crate::skills::{study, train_skills};
@@ -67,6 +67,8 @@ fn advance_time(mut time: ResMut<SimTime>) {
 /// причине: он разбирает после факта то, что запретом стоило бы дороже, —
 /// двух котов, оставшихся в одной клетке (§12.32). Идёт после `escape_voids`,
 /// потому что кот с только что выданным маршрутом уже не «стоит».
+/// `clear_solids` — сразу за ним и по той же причине: он сгоняет котов с
+/// заставленных клеток (§12.35), и «стоит» для него значит ровно то же самое.
 ///
 /// `study` — после `move_units`, по той же причине, что и `run_missions`: кот,
 /// шагнувший к парте в этом тике, тикает сразу, а не со следующего. `work_equip`
@@ -111,6 +113,7 @@ pub(crate) fn build_schedule() -> Schedule {
         retry_orders,
         escape_voids,
         spread_units,
+        clear_solids,
         settle_stacks,
         sleep,
         tire,

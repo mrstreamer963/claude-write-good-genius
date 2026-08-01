@@ -9,12 +9,46 @@ use crate::path::find_path;
 /// Тиков между шагами юнита (при BASE_TPS=6 и периоде 1 — ~3 тайла/сек на ×1).
 const MOVE_PERIOD: u8 = 1;
 
+/// Сколько штук в куче стоит одного лишнего тика на шаг (§12.35).
+const CLUTTER_PER_TICK: i32 = 8;
+
+/// Потолок задержки от завала: дальше куча уже не растёт в помеху. Без него
+/// склад, случайно высыпанный в коридор, встал бы стеной на сотню тиков.
+const CLUTTER_MAX: u8 = 3;
+
 /// Двигает юнитов по маршруту; на прибытии снимает компоненты движения.
+///
+/// **Завал под лапами замедляет шаг** (§12.35): кот, шагнувший на клетку с
+/// кучей, задерживается тем дольше, чем куча больше, — до потолка. Считается
+/// только то, что валяется **на полу**: сложенное в склад или на стеллаж — это
+/// порядок, а не завал, иначе собственное хранилище становилось бы болотом, а
+/// уборка наказывала бы сама себя.
+///
+/// **Маршрут этого не знает и знать не должен.** BFS считает шаги, а не время
+/// (§11): дай ему веса — и коты начнут обходить кучи, которые сами же и пришли
+/// разбирать, а «ближайший кот» в шести раздатчиках станет считаться иначе.
+/// Завал — это цена прохода, а не крюк.
 pub(crate) fn move_units(
     map: Res<BaseMap>,
+    rules: Res<TileRules>,
     mut commands: Commands,
+    // `Without<Path>` не сужает выборку — у куч маршрута не бывает, — а делает
+    // запросы непересекающимися по `Position`: идущих котов забирает `q`.
+    stacks: Query<(&Position, &Stack), Without<Path>>,
     mut q: Query<(Entity, &mut Position, &mut Path, &mut MoveCooldown)>,
 ) {
+    // Что и где валяется: клетки хранения сюда не попадают вовсе.
+    let mut clutter: Vec<((i32, i32), i32)> = Vec::new();
+    for (pos, stack) in &stacks {
+        if stack.count <= 0 || rules.capacity_of(map.tile_at(pos.x, pos.y)) > 0 {
+            continue;
+        }
+        match clutter.iter_mut().find(|(at, _)| *at == (pos.x, pos.y)) {
+            Some((_, n)) => *n += stack.count,
+            None => clutter.push(((pos.x, pos.y), stack.count)),
+        }
+    }
+
     for (e, mut pos, mut path, mut cd) in &mut q {
         if path.steps.is_empty() {
             commands.entity(e).remove::<(Path, MoveCooldown)>();
@@ -39,12 +73,24 @@ pub(crate) fn move_units(
         path.steps.pop();
         pos.x = next.0;
         pos.y = next.1;
-        cd.0 = MOVE_PERIOD;
+        cd.0 = MOVE_PERIOD + clutter_delay(&clutter, next);
 
         if path.steps.is_empty() {
             commands.entity(e).remove::<(Path, MoveCooldown)>();
         }
     }
+}
+
+/// Сколько лишних тиков стоит шаг на клетку с завалом.
+///
+/// Задержка ложится на клетку, **в которую** кот шагнул: он уже в куче и
+/// выбирается из неё. Так замедление видно там же, где видна куча.
+fn clutter_delay(clutter: &[((i32, i32), i32)], at: (i32, i32)) -> u8 {
+    let count = clutter
+        .iter()
+        .find(|(cell, _)| *cell == at)
+        .map_or(0, |&(_, n)| n);
+    (count / CLUTTER_PER_TICK).clamp(0, CLUTTER_MAX as i32) as u8
 }
 
 /// Пытается проложить маршрут котам с активным приказом (`Order`), у которых
@@ -204,6 +250,79 @@ pub(crate) fn spread_units(
             continue; // отойти некуда — стоят вместе, это не ошибка
         };
         // Цель занимаем сразу: иначе двое из одной клетки шагнут в одну и ту же.
+        blocked.push(step);
+        commands
+            .entity(cat_e)
+            .insert((Path { steps: vec![step] }, MoveCooldown(0)));
+    }
+}
+
+/// Сгоняет котов с клеток, заставленных доверху (`solid`, §12.35).
+///
+/// Стеллаж — мебель, а не комната: между полками протискиваются, но не живут.
+/// Правило разбирается **после факта**, тем же приёмом, что `spread_units`
+/// разводит двоих из одной клетки (§12.32): запрет в проходимости изменил бы
+/// маршруты и отрезал бы склад от носильщиков, а условие «сюда не вставать» в
+/// каждом раздатчике — это восемь мест, где его однажды забудут.
+///
+/// **Кто при деле, тот остаётся**: носильщик сдаёт груз именно здесь, строитель
+/// работает с соседней клетки, которой мог оказаться стеллаж, и согнать их
+/// значит остановить работу на ровном месте. Уйдут они сами, закончив.
+///
+/// Сходят **свободные и спящие**. Спящий — ровно та картинка, ради которой
+/// правило и заводилось: кот, свалившийся на полки. Досыпать он продолжит рядом
+/// (§12.33). Отряд у шлюза не трогаем: шлюз заставленным не бывает, а сбор
+/// сводит котов в одну точку намеренно (§12.22).
+///
+/// Некуда сойти — кот стоит на месте: как и `stuck`, это легальное состояние.
+pub(crate) fn clear_solids(
+    map: Res<BaseMap>,
+    rules: Res<TileRules>,
+    mut commands: Commands,
+    all: Query<(&Position, Option<&Path>), (With<UnitId>, Without<Away>)>,
+    stopped: Query<
+        (Entity, &UnitId, &Position),
+        (
+            With<UnitId>,
+            Without<Path>,
+            Without<Away>,
+            Without<Squad>,
+            Without<Assignment>,
+            Without<Haul>,
+            Without<Study>,
+            Without<Researching>,
+            Without<Crafting>,
+            Without<Equipping>,
+        ),
+    >,
+) {
+    let mut blocked: Vec<(i32, i32)> = all
+        .iter()
+        .filter(|(_, path)| path.is_none())
+        .map(|(p, _)| (p.x, p.y))
+        .collect();
+
+    // Порядок обхода задан по `id`: когда сойти есть куда не всем, «кто куда»
+    // не должно зависеть от истории вставок в ECS (§11, §12.24).
+    let mut standing: Vec<(&str, Entity, (i32, i32))> = stopped
+        .iter()
+        .filter(|(_, _, pos)| rules.is_solid(map.tile_at(pos.x, pos.y)))
+        .map(|(e, id, pos)| (id.0.as_str(), e, (pos.x, pos.y)))
+        .collect();
+    standing.sort_unstable_by_key(|&(id, ..)| id);
+
+    for (_, cat_e, at) in standing {
+        let Some(step) = DIRS
+            .iter()
+            .map(|(dx, dy)| (at.0 + dx, at.1 + dy))
+            .find(|&(nx, ny)| {
+                map.walkable(nx, ny)
+                    && !rules.is_solid(map.tile_at(nx, ny))
+                    && !blocked.contains(&(nx, ny))
+            })
+        else {
+            continue; // сойти некуда — стоит где стоял, это не ошибка
+        };
         blocked.push(step);
         commands
             .entity(cat_e)

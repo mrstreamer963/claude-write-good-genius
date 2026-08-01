@@ -427,6 +427,7 @@ impl Sim {
                     teaches: skill_index(&t.teaches),
                     lab: t.lab,
                     shop: t.shop,
+                    solid: t.solid,
                     tech: t.tech.clone(),
                 })
                 .collect(),

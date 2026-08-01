@@ -78,7 +78,8 @@ cargo test whole_room_is_erased_completely -- --nocapture
 `advance_time → collapse_exhausted → assign_rest → assign_equip → gather_squad → assign_hauls →
 assign_research → assign_craft → assign_jobs → mark_loose_scrap → assign_tidy → move_units →
 work_hauls → work_equip → work_jobs → work_research → work_craft → study → run_missions → run_timeline →
-retry_orders → escape_voids → spread_units → settle_stacks → sleep → tire → train_skills`.
+retry_orders → escape_voids → spread_units → clear_solids → settle_stacks → sleep → tire →
+train_skills`.
 Цепочка собирается двумя группами (`assign` и `act`) только из-за предела арности кортежа систем;
 порядок ровно тот же, что и одним списком.
 Тесты гоняют ровно эту функцию, поэтому новую систему добавлять только сюда, а не в тестовую копию.
@@ -139,6 +140,14 @@ retry_orders → escape_voids → spread_units → settle_stacks → sleep → t
    точку (§12.22).
    **Материал тоже не исчезает:** отмена площадки возвращает уже сданное кучей на её клетку
    (§12.31) — в лапах носильщика груз при этом остаётся у него.
+   Той же природы `clear_solids` (§12.35): на клетке со свойством `solid` (стеллаж) **пройти
+   можно, остаться нельзя**. Проходимость правило не трогает — иначе стеллаж отрезал бы себя от
+   носильщиков, которым сдавать груз, стоя на нём; сходят только свободные и спящие, кто при
+   деле — остаётся. **Завал на полу замедляет шаг** тем сильнее, чем куча больше, до потолка
+   (`CLUTTER_PER_TICK` / `CLUTTER_MAX` в `movement.rs`), и это второй смысл уборки. Считается
+   только пол: сложенное в склад — порядок, а не завал. **BFS о завалах не знает** и не должен:
+   он считает шаги, а не время, иначе коты обходили бы кучи, которые сами пришли разбирать, а
+   «ближайший кот» в раздатчиках стал бы считаться иначе, чем видно на карте (§11, §12.35).
 9. **Навык не влияет на выбор исполнителя, только на скорость работы.** Раздатчики берут
    ближайшего кота (§12.14); мастер на дальнем конце базы вернёт ровно ту беготню через
    полкарты, ради которой §12.14 и писалась. Работа считается в **очках**, а не в тиках
@@ -237,8 +246,8 @@ retry_orders → escape_voids → spread_units → settle_stacks → sleep → t
 
 ## Тесты
 
-216 тестов живут в `src/tests/` по механикам (`paths` · `voids` · `orders` · `jobs` · `demolition` ·
-`hauling` · `tidying` · `skills` · `study` · `research` · `needs` · `items` · `missions` · `fame` ·
+226 тестов живут в `src/tests/` по механикам (`paths` · `voids` · `orders` · `jobs` · `demolition` ·
+`hauling` · `tidying` · `skills` · `study` · `research` · `needs` · `items` · `missions` · `fame` · `terrain` ·
 `timeline` · `gear` · `crafting` · `crowd`); общие хелперы и сборка мира —
 в `tests/mod.rs`. Мир собирается из ASCII-схем, минуя YAML:
 
@@ -262,7 +271,8 @@ let mut sim = sim_from(&["#####", "#a..#", "#####"]); // '#' пустота, '.'
   по науке — `set_lab`, `set_topic`, `set_tile_tech`, `knows_tech`, `set_tech`,
   `research_progress`, `researcher`, `is_researching`; по таймлайну — `set_event`, `set_reveal`,
   `happened`, `note_revealed`, `note_requires`, `note_ready`, `without_timeline`; по снаряжению —
-  `set_force`, `set_loadout`, `gear_of`, `is_equipping`, `take_item`;
+  `set_force`, `set_loadout`, `gear_of`, `is_equipping`, `take_item`; по клетке — `set_solid`,
+  `solid_tiles`, `capacity_of`;
   по производству — `set_shop`, `set_recipe`, `craft_left`,
   `craft_progress`, `crafter`, `is_crafting`.
 - **`add_blueprint(x, y, 0)` в схеме `sim_from` — пустышка:** пол схемы это уже тайл `0`, и
@@ -277,10 +287,12 @@ let mut sim = sim_from(&["#####", "#a..#", "#####"]); // '#' пустота, '.'
   `taught`, `set_lab` и `set_topic` включают тесты обучения и науки сами. Снаряжения тоже нет:
   предметы бессильны (`ItemRules` пуст) и шаблон пустой (`LoadoutRules`), одеваться коты не идут.
   Ни мастерской, ни рецептов (`CraftRules` пуст) — их включает `set_shop` + `set_recipe`.
-- Двенадцать тестов ходят на боевой `core.yaml` (`the_shipped_ruleset_*`): уборка сноса, рост навыков
+  Заставленных клеток тоже нет (`solid` у тайла схемы выключен) — их включает `set_solid`;
+  а вот **завал замедляет шаг всегда**: это свойство самой кучи, а не контента (§12.35).
+- Тринадцать тестов ходят на боевой `core.yaml` (`the_shipped_ruleset_*`): уборка сноса, рост навыков
   и лапы, отправка спать, стройка из двух типов, успешная вылазка, заведомо провальная,
   проходимость лестницы известности, обучение «Науке», первая тема исследования, читаемость
-  записки, экипировка добытым комбинезоном и деталь из лома в мастерской. Тем из них, что меряют запасы и известность на длинных прогонах, таймлайн выключают
+  записки, экипировка добытым комбинезоном, деталь из лома в мастерской и заставленный стеллаж. Тем из них, что меряют запасы и известность на длинных прогонах, таймлайн выключают
   явно (`without_timeline`): мир по расписанию — это шум для чужой механики. Они ловят рассогласование кода и контента (пропавшую
   `capacity`, склад или лежанку без прохода, навык под другим `id`, забытый `carry`, порог сна
   выше потолка, критический порог выше порога усталости или забытый вовсе, предмет под
