@@ -561,11 +561,13 @@ fn the_shipped_ruleset_has_a_mission_that_is_out_of_reach() {
     let mut sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
     let before = sim.scrap_total();
 
-    // Известность выдаём напрямую: здесь проверяется потолок сложности, а не
-    // лестница ворот — её ведёт `the_shipped_ruleset_has_a_reachable_ladder`.
+    // Известность и доверие Полиции выдаём напрямую: здесь проверяется потолок
+    // сложности, а не лестница ворот — её ведут
+    // `the_shipped_ruleset_has_a_reachable_ladder` и тесты фракций (§12.43).
     sim.set_fame(60);
+    sim.set_standing(0, 30);
     assert!(
-        sim.launch(2, squad(&["excellent", "sp2"])),
+        sim.launch(3, squad(&["excellent", "sp2"])),
         "«Логово» заявлено"
     );
     // Вылазка идёт 360 тиков; 500 — возвращение плюс запас на сбор у шлюза, но
@@ -583,4 +585,46 @@ fn the_shipped_ruleset_has_a_mission_that_is_out_of_reach() {
     // причины плена игра не называет. Вернувшийся валится у шлюза без сил.
     assert!(sim.is_captive("excellent"), "одного оставили там");
     assert!(sim.is_resting("sp2"), "а второй свалился без сил");
+}
+
+/// Ворота вылазки считает ядро, а не панель (§12.24).
+///
+/// До этого «хватает ли известности» жило в JS, рядом с тем же правилом,
+/// посчитанным в `launch`. Два экземпляра одного правила однажды расходятся, и
+/// расхождение это видно игроку как кнопка, которая нажимается и ничего не
+/// делает.
+#[test]
+fn the_core_says_whether_a_raid_is_open() {
+    let (mut sim, mission) = sim_with_gate(&["#####", "#a.b#", "#####"], (2, 1), 2, 10);
+    sim.set_mission_fame(mission, 0, 30);
+
+    let gates = sim.raid_gates(mission);
+    assert!(!gates.unlocked, "о базе ещё не слышали — вылазка закрыта");
+    assert!(gates.possible, "но цель у неё есть");
+    assert!(
+        !sim.launch(mission, squad(&["a", "b"])),
+        "и заявку ядро отклоняет — панель говорит то же, что фасад",
+    );
+
+    sim.set_fame(30);
+    assert!(sim.raid_gates(mission).unlocked, "порог взят");
+    assert!(sim.launch(mission, squad(&["a", "b"])), "теперь пускают");
+}
+
+/// У вылазки за своим цель появляется вместе с пленным (§12.40).
+///
+/// Второе правило, жившее в JS: «все дома, спасать некого». Оно того же рода,
+/// что и известность, — знание ядра о том, есть ли ещё кого возвращать.
+#[test]
+fn a_rescue_raid_has_no_target_while_everyone_is_home() {
+    let (mut sim, _) = sim_with_gate(&["#####", "#a.b#", "#####"], (2, 1), 2, 10);
+    let rescue = sim.set_rescue_mission(1, 10, 0);
+
+    let gates = sim.raid_gates(rescue);
+    assert!(gates.unlocked, "порога у неё нет");
+    assert!(!gates.possible, "но идти не за кем");
+    assert!(
+        !sim.launch(rescue, squad(&["a"])),
+        "и заявку ядро отклоняет",
+    );
 }

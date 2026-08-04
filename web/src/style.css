@@ -5,6 +5,9 @@
   --text: #c7cedd;
   --muted: #7a839a;
   --accent: #e0c060;
+  /* Тревожное: из того же красного семейства, что рамка сноса (#7a2b3a),
+     но читаемое как текст на тёмном. */
+  --bad: #d4788c;
 }
 
 * { box-sizing: border-box; }
@@ -277,6 +280,19 @@ main#stage canvas { display: block; }
   padding-left: 8px;
   border-left: 1px solid var(--line);
   color: var(--accent);
+}
+
+/* Репутация по фракциям (§12.43): та же фишка, что у предметов, но со знаком.
+   Минус подсвечивается — «−40» рядом с «+40» иначе читается как просто число. */
+.standing {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 6px;
+}
+
+.standing.bad b {
+  color: var(--bad);
 }
 
 .tool:disabled {

@@ -34,16 +34,16 @@ use crate::missions::{outcome, pick_gate};
 use crate::movement::{Busy, is_stuck};
 use crate::path::find_path;
 use crate::ruleset::{
-    EventDef, ItemDef, MissionDef, PerkDef, RecipeDef, RecruitDef, ResearchDef, Ruleset, SkillDef,
-    StatDef, TileDef,
+    EventDef, FactionDef, ItemDef, MissionDef, PerkDef, RecipeDef, RecruitDef, ResearchDef,
+    Ruleset, SkillDef, StatDef, TileDef,
 };
 use crate::schedule::build_schedule;
 use crate::skills::{
     SKILL_RAID, SKILL_SCIENCE, desk_cap, level_cap_of, level_of, nearest_desk, xp_ceiling,
 };
 use crate::snapshot::{
-    BaseMapDto, BlueprintSnap, CraftSnap, EntitySnap, MapMeta, MissionSnap, NoteSnap, RecipeSnap,
-    RecruitSnap, ResearchSnap, SkillSnap, Snapshot, StackSnap, TopicSnap,
+    BaseMapDto, BlueprintSnap, CraftSnap, EntitySnap, MapMeta, MissionSnap, NoteSnap, RaidGates,
+    RaidSnap, RecipeSnap, RecruitSnap, ResearchSnap, SkillSnap, Snapshot, StackSnap, TopicSnap,
 };
 use crate::timeline::{ready_for, revealed};
 
@@ -56,6 +56,7 @@ pub struct Sim {
     pub(crate) skills: Vec<SkillDef>,
     pub(crate) stats: Vec<StatDef>,
     pub(crate) perks: Vec<PerkDef>,
+    pub(crate) factions: Vec<FactionDef>,
     pub(crate) missions: Vec<MissionDef>,
     pub(crate) recruits: Vec<RecruitDef>,
     pub(crate) research: Vec<ResearchDef>,
@@ -147,6 +148,27 @@ impl Sim {
     fn has_captive(&mut self) -> bool {
         let mut q = self.world.query_filtered::<Entity, With<Captive>>();
         q.iter(&self.world).next().is_some()
+    }
+
+    /// Открыта ли вылазка и есть ли у неё цель — то, что решает ядро, а не
+    /// интерфейс (§12.24).
+    ///
+    /// Ровно те же две проверки, что и в `launch`: известность как ворота и
+    /// «есть ли кого спасать» у вылазки за своим. Третьего экземпляра этих
+    /// правил в JS быть не должно — он однажды разойдётся с ядром и покажет
+    /// кнопку, которую заявка отклонит.
+    ///
+    /// Состав отряда здесь не проверяется: кого выбрал игрок, знает только
+    /// интерфейс, и спрашивать об этом снапшот каждый кадр незачем.
+    pub(crate) fn raid_gates(&mut self, def: usize) -> RaidGates {
+        let Some(rule) = self.world.resource::<MissionRules>().0.get(def).cloned() else {
+            return RaidGates::default();
+        };
+        RaidGates {
+            unlocked: self.world.resource::<Fame>().0 >= rule.requires,
+            welcome: self.world.resource::<Standing>().covers(&rule.needs),
+            possible: !rule.rescue || self.has_captive(),
+        }
     }
 
     /// Отряд миссии: кто в нём и ушёл ли он уже с базы.
@@ -539,6 +561,16 @@ impl Sim {
                 .collect(),
         ));
         world.insert_resource(Chronicle::default());
+        // Фракции — такая же палитра, как предметы и параметры: в правилах от
+        // фракции остаётся индекс записи (§12.43).
+        let faction_index = |id: &str| rs.factions.iter().position(|f| f.id == id);
+        world.insert_resource(FactionRules(
+            rs.factions
+                .iter()
+                .map(|f| FactionRule { span: f.span })
+                .collect(),
+        ));
+        world.insert_resource(Standing::default());
         world.insert_resource(MissionRules(
             rs.missions
                 .iter()
@@ -556,6 +588,14 @@ impl Sim {
                     fame: m.fame,
                     requires: m.requires,
                     rescue: m.rescue,
+                    patron: faction_index(&m.patron),
+                    against: faction_index(&m.against),
+                    standing: m.standing,
+                    needs: m
+                        .needs
+                        .iter()
+                        .filter_map(|(id, &n)| faction_index(id).map(|f| (f, n)))
+                        .collect(),
                 })
                 .collect(),
         ));
@@ -582,6 +622,11 @@ impl Sim {
                         .filter_map(|(id, &v)| stat_index(id).map(|i| (i, v)))
                         .collect(),
                     perks: r.perks.clone(),
+                    needs: r
+                        .needs
+                        .iter()
+                        .filter_map(|(id, &n)| faction_index(id).map(|f| (f, n)))
+                        .collect(),
                 })
                 .collect(),
         ));
@@ -664,6 +709,7 @@ impl Sim {
             skills: rs.skills,
             stats: rs.stats,
             perks: rs.perks,
+            factions: rs.factions,
             missions: rs.missions,
             recruits: rs.recruits,
             research: rs.research,
@@ -684,6 +730,7 @@ impl Sim {
             skills: self.skills.clone(),
             stats: self.stats.clone(),
             perks: self.perks.clone(),
+            factions: self.factions.clone(),
             missions: self.missions.clone(),
             recruits: self.recruits.clone(),
             research: self.research.clone(),
@@ -894,6 +941,13 @@ impl Sim {
         if self.world.resource::<Fame>().0 < rule.requires {
             return false;
         }
+        // Вторые ворота: заказчик должен с базой разговаривать (§12.43).
+        // Известность решает, дорос ли ты вообще; репутация — станут ли с тобой
+        // говорить именно эти. Отказ молчаливый, как и на нехватку известности:
+        // причину игрок читает в панели, где её называет словом `RaidSnap`.
+        if !self.world.resource::<Standing>().covers(&rule.needs) {
+            return false;
+        }
         // За своим идут, только пока есть за кем (§12.40). Вылазка с `rescue`
         // без пленного — это вылазка без цели: добычи у неё нет, а вернуть ей
         // некого. Пленных в отряд при этом не берут — но отдельной проверки на
@@ -1007,6 +1061,13 @@ impl Sim {
             return false;
         };
         if self.world.resource::<Fame>().0 < rule.requires {
+            return false;
+        }
+        // Вторые ворота: кандидата присылают те, кто базе доверяет (§12.43).
+        // Репутация при этом **не тратится** — она открывает, а платит склад:
+        // найм это покупка, а не поступок, и списывать за него доверие значило
+        // бы сделать репутацию валютой, то есть ловушку §12.24.
+        if !self.world.resource::<Standing>().covers(&rule.needs) {
             return false;
         }
         // Нанят ли — спрашиваем у самого кота: список нанятых был бы вторым
@@ -1579,6 +1640,11 @@ impl Sim {
                     danger,
                     share: out.share,
                     failed: out.failed,
+                    patron: rule.and_then(|r| r.patron).map_or(-1, |f| f as i32),
+                    against: rule.and_then(|r| r.against).map_or(-1, |f| f as i32),
+                    // Той же долей, что и добыча: прогноз и результат — одно
+                    // выражение, иначе игрок увидит одно, а получит другое.
+                    standing: rule.map_or(0, |r| r.standing) * out.share / 100,
                     // Вылазка за своим возвращает не добычу, а кота, и панель
                     // обязана говорить об этом иначе: «добыча 50 %» под именем
                     // спасательной вылазки читается как «половина кота» (§12.40).
@@ -1587,7 +1653,17 @@ impl Sim {
             }
         }
 
+        let raids: Vec<RaidSnap> = {
+            let count = self.world.resource::<MissionRules>().0.len();
+            (0..count).map(|def| self.raid_gates(def)).collect()
+        };
+
         let fame = self.world.resource::<Fame>().0;
+        // Репутация уходит наружу целиком, в порядке палитры: чего не видно,
+        // того для игрока нет, а решение о стороне обязано быть читаемым.
+        let standing: Vec<i32> = (0..self.factions.len())
+            .map(|f| self.world.resource::<Standing>().value_of(f))
+            .collect();
         let mut recruits = Vec::new();
         {
             let rules = self.world.resource::<RecruitRules>().0.clone();
@@ -1599,6 +1675,7 @@ impl Sim {
                 recruits.push(RecruitSnap {
                     hired: hired.contains(&rule.id),
                     unlocked: fame >= rule.requires,
+                    welcome: self.world.resource::<Standing>().covers(&rule.needs),
                     affordable: self.storage_covers(&rule.cost),
                 });
             }
@@ -1726,7 +1803,9 @@ impl Sim {
             blueprints,
             stacks,
             missions,
+            raids,
             fame,
+            standing,
             recruits,
             research,
             topics,

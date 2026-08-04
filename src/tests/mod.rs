@@ -10,6 +10,7 @@ mod captivity;
 mod crafting;
 mod crowd;
 mod demolition;
+mod factions;
 mod fame;
 mod food;
 mod gear;
@@ -108,6 +109,11 @@ fn sim_from(rows: &[&str]) -> Sim {
     world.insert_resource(TimelineRules::default());
     world.insert_resource(Chronicle::default());
     world.insert_resource(Fame::default());
+    // Фракций в схеме нет, как нет вылазок, навыков и голода: репутация — это
+    // контент рулсета, и тесты чужих механик о ней не знают (§12.43). Заводит
+    // её `set_faction`.
+    world.insert_resource(FactionRules::default());
+    world.insert_resource(Standing::default());
     world.insert_resource(ItemRules::default());
     world.insert_resource(LoadoutRules::default());
     world.insert_resource(UnitRules::default());
@@ -133,6 +139,7 @@ fn sim_from(rows: &[&str]) -> Sim {
         skills: Vec::new(),
         stats: Vec::new(),
         perks: Vec::new(),
+        factions: Vec::new(),
         missions: Vec::new(),
         recruits: Vec::new(),
         research: Vec::new(),
@@ -1011,6 +1018,102 @@ impl Sim {
         self.world.resource::<Fame>().0
     }
 
+    /// Завести фракцию в мире теста. Вернёт её индекс — им же адресуются
+    /// `patron`, `against` и `needs` (§12.43).
+    fn set_faction(&mut self, span: i32) -> usize {
+        let mut rules = self.world.resource_mut::<FactionRules>();
+        rules.0.push(FactionRule { span });
+        rules.0.len() - 1
+    }
+
+    /// Приписать вылазке заказчика и пострадавшего (§12.43). `None` — ничей:
+    /// так выглядит нейтральная вылазка, и в схеме `sim_from` все они такие.
+    fn set_mission_factions(
+        &mut self,
+        mission: usize,
+        patron: Option<usize>,
+        against: Option<usize>,
+        standing: i32,
+    ) {
+        let mut rules = self.world.resource_mut::<MissionRules>();
+        if let Some(rule) = rules.0.get_mut(mission) {
+            rule.patron = patron;
+            rule.against = against;
+            rule.standing = standing;
+        }
+    }
+
+    /// Пол доверия у вылазки: ниже него заказчик её не даёт (§12.43).
+    fn set_mission_needs(&mut self, mission: usize, needs: &[(usize, i32)]) {
+        let mut rules = self.world.resource_mut::<MissionRules>();
+        if let Some(rule) = rules.0.get_mut(mission) {
+            rule.needs = needs.to_vec();
+        }
+    }
+
+    /// Пределы репутации по фракциям рулсета, в порядке палитры.
+    fn faction_spans(&self) -> Vec<i32> {
+        self.world
+            .resource::<FactionRules>()
+            .0
+            .iter()
+            .map(|f| f.span)
+            .collect()
+    }
+
+    /// Стороны и ворота вылазок рулсета: `(заказчик, пострадавший, репутация за
+    /// успех, пол доверия, вылазка ли за своим, порог известности)`.
+    #[allow(clippy::type_complexity)]
+    fn mission_sides(
+        &self,
+    ) -> Vec<(
+        Option<usize>,
+        Option<usize>,
+        i32,
+        Vec<(usize, i32)>,
+        bool,
+        i32,
+    )> {
+        self.world
+            .resource::<MissionRules>()
+            .0
+            .iter()
+            .map(|r| {
+                (
+                    r.patron,
+                    r.against,
+                    r.standing,
+                    r.needs.clone(),
+                    r.rescue,
+                    r.requires,
+                )
+            })
+            .collect()
+    }
+
+    /// Пол доверия у кандидатов рулсета, в порядке палитры.
+    fn recruit_needs(&self) -> Vec<Vec<(usize, i32)>> {
+        self.world
+            .resource::<RecruitRules>()
+            .0
+            .iter()
+            .map(|r| r.needs.clone())
+            .collect()
+    }
+
+    /// Репутация базы у фракции: копится не она, а сторона.
+    fn standing(&self, faction: usize) -> i32 {
+        self.world.resource::<Standing>().value_of(faction)
+    }
+
+    fn set_standing(&mut self, faction: usize, value: i32) {
+        let span = self.world.resource::<FactionRules>().span_of(faction);
+        let now = self.standing(faction);
+        self.world
+            .resource_mut::<Standing>()
+            .add(faction, value - now, span);
+    }
+
     fn set_fame(&mut self, value: i32) {
         self.world.resource_mut::<Fame>().0 = value;
     }
@@ -1034,8 +1137,19 @@ impl Sim {
             // включают тесты §12.42 своим `set_recruit_stats`.
             stats: Vec::new(),
             perks: Vec::new(),
+            // Фракций в синтетическом мире нет — пол доверия ставит
+            // `set_recruit_needs` из тестов §12.43.
+            needs: Vec::new(),
         });
         rules.0.len() - 1
+    }
+
+    /// Пол доверия у кандидата: `(фракция, сколько)` (§12.43).
+    fn set_recruit_needs(&mut self, recruit: usize, needs: &[(usize, i32)]) {
+        let mut rules = self.world.resource_mut::<RecruitRules>();
+        if let Some(rule) = rules.0.get_mut(recruit) {
+            rule.needs = needs.to_vec();
+        }
     }
 
     /// Выдать кандидату врождённые параметры: `(параметр, сколько)` (§12.42).

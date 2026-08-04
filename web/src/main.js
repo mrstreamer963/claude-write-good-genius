@@ -96,7 +96,7 @@ let cursorBtn = null;
 let missionRunning = false; // миссия на POC одна за раз (§12.22)
 let researchRunning = false; // и тема тоже одна за раз (§12.26)
 let craftRunning = false; // и заказ (§12.30)
-let fame = 0; // известность: копится от вылазок, открывает доступ (§12.24)
+let fame = 0; // известность — только для показа: ворота считает ядро (§12.24)
 // Кто сейчас выбыл по ранению (§12.37). Держим списком id, а не пересчитываем в
 // обработчике клика: ранение приходит из ядра между кликами, и кнопка вылазки
 // обязана погаснуть сама, не дожидаясь, пока игрок перевыберет отряд.
@@ -104,6 +104,13 @@ let wounded = new Set();
 // Кто остался в плену (§12.40). По той же причине списком: пленный появляется
 // в снапшоте, а не по клику, и кнопка «За своим» обязана зажечься сама.
 let captives = [];
+// Ворота вылазок в порядке палитры — их считает ядро (§12.24). Известность и
+// «есть ли кого спасать» здесь не пересчитываются: второй экземпляр правила
+// однажды разойдётся с фасадом, и кнопка нажмётся вхолостую.
+let raids = [];
+// Репутация по фракциям в порядке палитры (§12.43). Нужна не для ворот — их
+// считает ядро, — а чтобы назвать отказ словом: «нужно 30, у вас −10».
+let standing = [];
 const missionButtons = []; // кнопки запуска — их гасим, пока миссия идёт
 const recruitButtons = []; // кнопки найма — гасим по известности и складу
 const teachButtons = []; // кнопки обучения — живы, когда выбран ровно один кот
@@ -292,6 +299,7 @@ function renderSnapshot(snap) {
   // у куч на полу и у цены в палитре. Известность рядом: она не предмет, но
   // считается так же и решает, что базе вообще доступно.
   fame = snap.fame ?? 0;
+  standing = snap.standing ?? [];
   scrapEl.innerHTML =
     (meta.items ?? [])
       .map(
@@ -299,7 +307,21 @@ function renderSnapshot(snap) {
           `<i class="chip" style="background:${it.color}" title="${esc(it.label || it.id)}"></i>` +
           `<b>${totals.get(i) ?? 0}</b>`,
       )
-      .join(' ') + `<span class="fame" title="Известность">★<b>${fame}</b></span>`;
+      .join(' ') +
+    `<span class="fame" title="Известность">★<b>${fame}</b></span>` +
+    // Репутация рядом с известностью, но врозь: та отвечает «насколько высоко»
+    // и только копится, эта — «от кого» и ходит в обе стороны (§12.43). Знак
+    // пишем всегда: «0» и «−0» читаются одинаково, а «+20» и «−20» — нет.
+    (meta.factions ?? [])
+      .map((f, i) => {
+        const v = standing[i] ?? 0;
+        const sign = v > 0 ? `+${v}` : `${v}`;
+        return (
+          `<span class="standing${v < 0 ? ' bad' : ''}" title="${esc(f.label || f.id)}">` +
+          `<i class="chip" style="background:${f.color}"></i><b>${sign}</b></span>`
+        );
+      })
+      .join('');
   for (const [id, c] of units) {
     if (!seen.has(id)) {
       c.destroy({ children: true });
@@ -318,6 +340,7 @@ function renderSnapshot(snap) {
     snap.entities.filter((e) => e.health_max > 0 && e.health <= e.health_hurt).map((e) => e.id),
   );
   captives = snap.entities.filter((e) => e.captive).map((e) => e.id);
+  raids = snap.raids ?? [];
   syncMissionButtons();
 
   updateSelectionOverlay();
@@ -668,6 +691,22 @@ function renderMissionPanel(list) {
         `<div class="cat-row"><span>Сила / сложность</span><b>${m.strength} / ${m.danger}</b></div>` +
         `<div class="bar"><i class="${m.failed ? 'fail' : ''}" style="width:${m.failed ? 100 : m.share}%"></i></div>` +
         `<div class="cat-sub">${verdict}</div>` +
+        '</div>',
+    );
+  }
+  // Цена решения — рядом с прогнозом добычи и тем же числом, которым ядро её
+  // посчитает на возвращении (§12.43). Это главное, что панель обязана сказать
+  // до клика: закрывшиеся ворота честны ровно постольку, поскольку игрок видел,
+  // чем платит. У провала здесь ноль — и это тоже новость.
+  if (m.patron >= 0 || m.against >= 0) {
+    const name = (f) => esc((meta.factions ?? [])[f]?.label || '—');
+    const moves = [];
+    if (m.patron >= 0) moves.push(`${name(m.patron)} +${m.standing}`);
+    if (m.against >= 0) moves.push(`${name(m.against)} −${m.standing}`);
+    parts.push(
+      '<div class="cat-skill">' +
+        '<div class="cat-row"><span>Репутация</span></div>' +
+        `<div class="cat-sub">${moves.join(' · ')}</div>` +
         '</div>',
     );
   }
@@ -1239,16 +1278,21 @@ function syncRecruitButtons(list) {
   recruitButtons.forEach((b, i) => {
     const r = (list ?? [])[i];
     if (!r) return;
-    const ready = !r.hired && r.unlocked && r.affordable;
+    const ready = !r.hired && r.unlocked && r.welcome && r.affordable;
     b.disabled = !ready;
     b.classList.toggle('on', ready);
+    // Своего присылают тем, кому доверяют (§12.43), и репутацией за него не
+    // платят — платит склад. Поэтому причин отказа три и они разные.
+    const distrust = r.welcome ? null : trustGap((meta.recruits ?? [])[i]?.needs);
     const why = r.hired
       ? 'Уже на базе'
       : !r.unlocked
         ? `Откликнется при известности ${b.dataset.requires}`
-        : !r.affordable
-          ? 'На складе нечем заплатить'
-          : 'Нанять';
+        : distrust
+          ? distrust
+          : !r.affordable
+            ? 'На складе нечем заплатить'
+            : 'Нанять';
     // Параметры называем и у закрытого кандидата: к нему идут заранее, и
     // «зачем мне этот кот» игрок спрашивает до того, как накопит.
     b.title = [b.dataset.hint, why].filter(Boolean).join(' · ');
@@ -1330,17 +1374,45 @@ function syncTeachButtons() {
   }
 }
 
+/// Кто из фракций не доверяет базе настолько, чтобы дать этот заказ, — и
+/// насколько не хватает. Само «дают или нет» решает ядро (`welcome`); здесь
+/// только слова для игрока: молчащая кнопка читается как поломка (§12.24).
+function trustGap(needs) {
+  const factions = meta.factions ?? [];
+  // `BTreeMap` из рулсета приезжает сюда как `Map`, а не как объект — тот же
+  // случай, что у цены и добычи (см. `costChips`). `Object.entries` на нём молча
+  // вернул бы пусто, и отказ остался бы без причины.
+  const entries = needs instanceof Map ? [...needs.entries()] : Object.entries(needs ?? {});
+  for (const [id, want] of entries) {
+    const i = factions.findIndex((f) => f.id === id);
+    if (i < 0) continue;
+    const have = standing[i] ?? 0;
+    if (have < want) {
+      return `${factions[i].label || id} вам не доверяет: нужно ${want}, у вас ${have}`;
+    }
+  }
+  return null;
+}
+
 function syncMissionButtons() {
-  for (const b of missionButtons) {
+  missionButtons.forEach((b, i) => {
     const need = Number(b.dataset.squad);
     const requires = Number(b.dataset.requires);
-    const known = fame >= requires;
+    // Открыта ли вылазка и есть ли у неё цель, решает ядро (§12.24): те же две
+    // проверки стоят в `launch`, и считать их здесь во второй раз значит однажды
+    // разойтись с фасадом. До первого снапшота ворот ещё нет — считаем закрытыми.
+    const gates = raids[i];
+    const known = !!gates?.unlocked;
+    // За своим идут, только пока есть за кем: у вылазки с `rescue` нет ни
+    // добычи, ни цели, если все дома.
+    const nobody = !(gates?.possible ?? true);
+    // Заказчик с базой не разговаривает (§12.43). Отдельно от известности:
+    // «не дорос» и «эти вас не жалуют» — разные новости, и вторая обратима.
+    const welcome = !!gates?.welcome;
+    const distrust = welcome ? null : trustGap((meta.missions ?? [])[i]?.needs);
     // Раненого ядро в отряд не пустит (§12.37), и молчащая кнопка читалась бы
     // как поломка: причину называем словом, как и нехватку известности.
     const hurt = selectedUnits.filter((id) => wounded.has(id));
-    // За своим идут, только пока есть за кем: у вылазки с `rescue` нет ни
-    // добычи, ни цели, если все дома, — и ядро такую заявку отклонит.
-    const nobody = !!b.dataset.rescue && !captives.length;
     // Пленный остаётся выбранным — на карте его нет, снять выделение игроку
     // нечем. Ядро такую заявку отклонит (его нет на базе), а молчащая кнопка
     // читается как поломка — причину называем словом, как и ранение.
@@ -1348,6 +1420,7 @@ function syncMissionButtons() {
     const ready =
       !missionRunning &&
       known &&
+      welcome &&
       !hurt.length &&
       !gone.length &&
       !nobody &&
@@ -1360,14 +1433,16 @@ function syncMissionButtons() {
       ? 'Вылазка уже идёт'
       : !known
         ? `${b.dataset.hint} · нужна известность ${requires}`
-        : nobody
-          ? `${b.dataset.hint} · все дома, спасать некого`
-          : gone.length
-            ? `${b.dataset.hint} · в плену: ${gone.join(', ')}`
-            : hurt.length
-              ? `${b.dataset.hint} · ранен: ${hurt.join(', ')}`
-              : `${b.dataset.hint} · выбрано ${selectedUnits.length} из ${need}`;
-  }
+        : distrust
+          ? `${b.dataset.hint} · ${distrust}`
+          : nobody
+            ? `${b.dataset.hint} · все дома, спасать некого`
+            : gone.length
+              ? `${b.dataset.hint} · в плену: ${gone.join(', ')}`
+              : hurt.length
+                ? `${b.dataset.hint} · ранен: ${hurt.join(', ')}`
+                : `${b.dataset.hint} · выбрано ${selectedUnits.length} из ${need}`;
+  });
 }
 
 function mkTool(html, onClick) {

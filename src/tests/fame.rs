@@ -222,11 +222,11 @@ fn the_shipped_ruleset_has_a_reachable_ladder() {
     // Первая вылазка доступна безвестной базе, остальные — нет.
     assert_eq!(sim.fame(), 0);
     assert!(
-        !sim.launch(1, squad(&["excellent", "sp2", "sp3"])),
+        !sim.launch(2, squad(&["excellent", "sp2", "sp3"])),
         "ангар закрыт"
     );
     assert!(
-        !sim.launch(2, squad(&["excellent", "sp2"])),
+        !sim.launch(3, squad(&["excellent", "sp2"])),
         "логово закрыто"
     );
     assert!(
@@ -245,9 +245,13 @@ fn the_shipped_ruleset_has_a_reachable_ladder() {
     assert!(sim.launch(0, squad(&["excellent", "sp2"])));
     sim.tick_n(1200);
     assert_eq!(sim.fame(), 20);
+    // Доверие Синдиката выдаём напрямую: здесь проверяется лестница
+    // известности, а репутация — чужая механика со своей лестницей (§12.43),
+    // ровно как таймлайн выключен выше по той же причине.
+    sim.set_standing(1, 30);
     assert!(sim.hire(0), "теперь и откликается, и по карману");
     assert!(
-        sim.launch(1, squad(&["excellent", "sp2", "sp3"])),
+        sim.launch(2, squad(&["excellent", "sp2", "sp3"])),
         "ангар открыт"
     );
 
