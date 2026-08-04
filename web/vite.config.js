@@ -5,6 +5,8 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   root: '.',
   publicDir: '../assets',
-  server: { port: 5173 },
+  // Порт можно занять снаружи (PORT): 5173 бывает занят соседним запуском, а
+  // адрес превью должен совпадать с тем, что вправду слушает Vite.
+  server: { port: Number(process.env.PORT) || 5173 },
   worker: { format: 'es' },
 });
