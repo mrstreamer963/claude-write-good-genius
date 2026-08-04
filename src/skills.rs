@@ -8,6 +8,11 @@
 //! Начисление живёт здесь одной системой: система работы только вешает маркер
 //! `Worked`. Правило роста, потолок и кривая не расползаются по работам.
 //!
+//! **Врождённый параметр живёт здесь же** (§12.19, §12.42): он не третья
+//! система, а предел, в который упираются обе, — «докуда доучишься». Растёт
+//! навык от работы, а докуда он вырастет, решено при рождении кота, и потому
+//! потолок опыта у каждого кота свой.
+//!
 //! **Обучение — вторая система этого же модуля**, потому что это работа,
 //! продукт которой сам навык (§12.18). Рост от работы не умеет стартовать сам:
 //! чтобы набрать опыт исследования, надо уже уметь исследовать, — а «Наука»
@@ -53,6 +58,36 @@ const XP_PER_TICK: i32 = 1;
 /// механик, коты из ASCII-схем) — это нулевой уровень, а не ошибка.
 pub(crate) fn level_of(rules: &SkillRules, skills: Option<&Skills>, skill: usize) -> i32 {
     rules.level(skill, skills.map_or(0, |s| s.xp_of(skill)))
+}
+
+/// Значение врождённого параметра, которым домен ограничен (§12.42); ноль —
+/// домен не ограничен вовсе либо параметра у кота нет.
+fn stat_value(rules: &SkillRules, stats: Option<&Stats>, skill: usize) -> i32 {
+    let Some(stat) = rules.0.get(skill).and_then(|r| r.stat) else {
+        return 0;
+    };
+    stats.map_or(0, |s| s.value_of(stat))
+}
+
+/// Докуда этот кот вырастет в домене: предел уровня по врождённому параметру
+/// (§12.42). Равен потолку навыка, если домен параметром не ограничен.
+pub(crate) fn level_cap_of(rules: &SkillRules, stats: Option<&Stats>, skill: usize) -> i32 {
+    rules.stat_level_cap(skill, stat_value(rules, stats, skill))
+}
+
+/// Потолок опыта этого кота в домене — с учётом врождённого параметра.
+///
+/// Одно место, где предел превращается в число: и рост от работы, и парта
+/// упираются в него, а разошлись бы они молча — кот сидел бы за партой,
+/// которая ничего ему не даёт.
+pub(crate) fn xp_ceiling(rules: &SkillRules, stats: Option<&Stats>, skill: usize) -> i32 {
+    rules.stat_xp_cap(skill, stat_value(rules, stats, skill))
+}
+
+/// Докуда доводит парта **этого** кота: ниже из двух пределов — потолка парты
+/// (§12.18) и врождённого (§12.42). Первый — свойство домена, второй — кота.
+pub(crate) fn desk_cap(rules: &SkillRules, stats: Option<&Stats>, skill: usize) -> i32 {
+    rules.taught_cap(skill).min(xp_ceiling(rules, stats, skill))
 }
 
 /// Ближайшая свободная парта нужного домена; `None` — их нет или не дойти.
@@ -103,14 +138,17 @@ pub(crate) fn study(
         &mut Study,
         Option<&Path>,
         Option<&Skills>,
+        Option<&Stats>,
     )>,
 ) {
     let taken: Vec<(i32, i32)> = students.iter().map(|(_, _, s, ..)| s.spot).collect();
 
-    for (cat_e, pos, mut task, path, skills) in &mut students {
+    for (cat_e, pos, mut task, path, skills, stats) in &mut students {
         // Доучился: дальше парта не помогает, и держать за ней кота — значит
-        // молча отнимать у базы работника.
-        if skills.map_or(0, |s| s.xp_of(task.skill)) >= rules.taught_cap(task.skill) {
+        // молча отнимать у базы работника. Предел здесь двойной: докуда доводит
+        // парта (§12.18) и докуда пускает врождённый параметр (§12.42) —
+        // тупому коту парта помогает меньше, а не дольше.
+        if skills.map_or(0, |s| s.xp_of(task.skill)) >= desk_cap(&rules, stats, task.skill) {
             commands.entity(cat_e).remove::<Study>();
             continue;
         }
@@ -163,11 +201,14 @@ pub(crate) fn study(
 pub(crate) fn train_skills(
     rules: Res<SkillRules>,
     mut commands: Commands,
-    mut cats: Query<(Entity, &Worked, Option<&mut Skills>)>,
+    mut cats: Query<(Entity, &Worked, Option<&mut Skills>, Option<&Stats>)>,
 ) {
-    for (cat_e, worked, skills) in &mut cats {
+    for (cat_e, worked, skills, stats) in &mut cats {
         // Нет порогов — расти нечему: домена нет в рулсете либо он без уровней.
-        let cap = rules.xp_cap(worked.0);
+        // Потолок у каждого кота свой: врождённый параметр режет опыт, а не
+        // показанный уровень (§12.42), — иначе кот копил бы очки, которые
+        // никогда ни во что не превратятся.
+        let cap = xp_ceiling(&rules, stats, worked.0);
         match skills {
             Some(mut skills) => skills.add_xp(worked.0, XP_PER_TICK, cap),
             None => {

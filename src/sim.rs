@@ -35,10 +35,12 @@ use crate::movement::{Busy, is_stuck};
 use crate::path::find_path;
 use crate::ruleset::{
     EventDef, ItemDef, MissionDef, PerkDef, RecipeDef, RecruitDef, ResearchDef, Ruleset, SkillDef,
-    TileDef,
+    StatDef, TileDef,
 };
 use crate::schedule::build_schedule;
-use crate::skills::{SKILL_RAID, SKILL_SCIENCE, level_of, nearest_desk};
+use crate::skills::{
+    SKILL_RAID, SKILL_SCIENCE, desk_cap, level_cap_of, level_of, nearest_desk, xp_ceiling,
+};
 use crate::snapshot::{
     BaseMapDto, BlueprintSnap, CraftSnap, EntitySnap, MapMeta, MissionSnap, NoteSnap, RecipeSnap,
     RecruitSnap, ResearchSnap, SkillSnap, Snapshot, StackSnap, TopicSnap,
@@ -52,6 +54,7 @@ pub struct Sim {
     pub(crate) palette: Vec<TileDef>,
     pub(crate) items: Vec<ItemDef>,
     pub(crate) skills: Vec<SkillDef>,
+    pub(crate) stats: Vec<StatDef>,
     pub(crate) perks: Vec<PerkDef>,
     pub(crate) missions: Vec<MissionDef>,
     pub(crate) recruits: Vec<RecruitDef>,
@@ -353,14 +356,27 @@ fn spawn_cat(
     at: (i32, i32),
     perks: &[String],
     skills: &[(usize, i32)],
+    stats: &[(usize, i32)],
 ) -> Entity {
     let carry = world.resource::<UnitRules>().carry;
     let energy_max = world.resource::<NeedRules>().max;
     let fed_max = world.resource::<FoodRules>().max;
     let health_max = world.resource::<HealthRules>().max;
+    // Врождённое собирается первым: потолок стартового опыта зависит от него
+    // (§12.42), а не наоборот.
+    let born = {
+        let mut born = Stats::default();
+        for &(stat, value) in stats {
+            born.set(stat, value);
+        }
+        born
+    };
     let caps: Vec<(usize, i32)> = {
         let rules = world.resource::<SkillRules>();
-        skills.iter().map(|&(s, _)| (s, rules.xp_cap(s))).collect()
+        skills
+            .iter()
+            .map(|&(s, _)| (s, xp_ceiling(rules, Some(&born), s)))
+            .collect()
     };
 
     let hauler = perks.iter().any(|p| p == PERK_HAULER);
@@ -372,6 +388,12 @@ fn spawn_cat(
         Position { x: at.0, y: at.1 },
         Perks(perks.to_vec()),
     ));
+    // Ни одного параметра — компоненты тоже нет: так живут коты из ASCII-схем,
+    // в мире которых палитры параметров не существует. А вот нулевое значение
+    // — это уже свойство кота, и оно видно в карточке (§12.42).
+    if !born.0.is_empty() {
+        cat.insert(born);
+    }
     if carry > 0 {
         cat.insert(Carry(carry * if hauler { 2 } else { 1 }));
     }
@@ -425,6 +447,9 @@ impl Sim {
         // Навыки заводим до тайлов: парта ссылается на домен по имени, а в
         // правилах остаётся его индекс — как цена ссылается на предмет.
         let skill_index = |id: &str| rs.skills.iter().position(|s| s.id == id);
+        // Параметр навык тоже держит индексом: имена живут в рулсете, по коду
+        // ходят номера палитры (§12.42).
+        let stat_index = |id: &str| rs.stats.iter().position(|s| s.id == id);
         world.insert_resource(SkillRules(
             rs.skills
                 .iter()
@@ -432,6 +457,8 @@ impl Sim {
                     id: s.id.clone(),
                     levels: s.levels.clone(),
                     taught: s.taught,
+                    stat: stat_index(&s.stat),
+                    demands: s.demands.clone(),
                 })
                 .collect(),
         ));
@@ -549,6 +576,11 @@ impl Sim {
                         .iter()
                         .filter_map(|(id, &xp)| skill_index(id).map(|i| (i, xp)))
                         .collect(),
+                    stats: r
+                        .stats
+                        .iter()
+                        .filter_map(|(id, &v)| stat_index(id).map(|i| (i, v)))
+                        .collect(),
                     perks: r.perks.clone(),
                 })
                 .collect(),
@@ -607,6 +639,11 @@ impl Sim {
         }
 
         for u in &rs.units {
+            let stats: Vec<(usize, i32)> = u
+                .stats
+                .iter()
+                .filter_map(|(id, &v)| stat_index(id).map(|i| (i, v)))
+                .collect();
             spawn_cat(
                 &mut world,
                 &u.id,
@@ -614,6 +651,7 @@ impl Sim {
                 (u.pos[0], u.pos[1]),
                 &u.perks,
                 &[],
+                &stats,
             );
         }
 
@@ -624,6 +662,7 @@ impl Sim {
             palette: rs.tiles,
             items: rs.items,
             skills: rs.skills,
+            stats: rs.stats,
             perks: rs.perks,
             missions: rs.missions,
             recruits: rs.recruits,
@@ -643,6 +682,7 @@ impl Sim {
             palette: self.palette.clone(),
             items: self.items.clone(),
             skills: self.skills.clone(),
+            stats: self.stats.clone(),
             perks: self.perks.clone(),
             missions: self.missions.clone(),
             recruits: self.recruits.clone(),
@@ -995,6 +1035,7 @@ impl Sim {
             gate,
             &rule.perks,
             &rule.skills,
+            &rule.stats,
         );
         true
     }
@@ -1140,29 +1181,43 @@ impl Sim {
             return false;
         };
         // Ноль — домену не учат вовсе («Стройка»): парта ему не поможет.
-        let cap = rules.taught_cap(skill);
-        if cap <= 0 {
+        if rules.taught_cap(skill) <= 0 {
             return false;
         }
 
         let mut found = None;
         {
-            let mut q = self
-                .world
-                .query::<(Entity, &UnitId, &Position, Option<&Skills>, Option<&Away>)>();
-            for (e, id, p, skills, away) in q.iter(&self.world) {
+            let mut q = self.world.query::<(
+                Entity,
+                &UnitId,
+                &Position,
+                Option<&Skills>,
+                Option<&Stats>,
+                Option<&Away>,
+            )>();
+            let rules = self.world.resource::<SkillRules>();
+            for (e, id, p, skills, stats, away) in q.iter(&self.world) {
                 if id.0 == unit_id && away.is_none() {
-                    found = Some((e, (p.x, p.y), skills.map_or(0, |s| s.xp_of(skill))));
+                    // Предел у каждого кота свой: парта доводит до `taught`, но
+                    // не выше врождённого (§12.42).
+                    found = Some((
+                        e,
+                        (p.x, p.y),
+                        skills.map_or(0, |s| s.xp_of(skill)),
+                        desk_cap(rules, stats, skill),
+                    ));
                     break;
                 }
             }
         }
         // Кота нет на базе — учить некого: его позиция это шлюз, с которого он
         // ушёл (§12.22).
-        let Some((cat_e, from, xp)) = found else {
+        let Some((cat_e, from, xp, cap)) = found else {
             return false;
         };
-        // Парта — вход в домен, а не тренажёр: доученного она не берёт.
+        // Парта — вход в домен, а не тренажёр: доученного она не берёт. И не
+        // берёт того, кому парта уже ничего не даст: отправленный за неё кот
+        // встал бы с неё в тот же тик, а игрок прочёл бы это как поломку.
         if xp >= cap {
             return false;
         }
@@ -1293,6 +1348,9 @@ impl Sim {
                 .collect()
         };
 
+        // Палитра параметров живёт рядом с палитрой тайлов, а не в мире: у кота
+        // лежат только значения, и длину списка задаёт рулсет (§12.42).
+        let stat_count = self.stats.len();
         let mut entities = Vec::new();
         {
             // Задачи кота собраны вложенным кортежем: их ровно столько, сколько
@@ -1305,6 +1363,7 @@ impl Sim {
                 Option<&Carrying>,
                 Option<&Carry>,
                 Option<&Skills>,
+                Option<&Stats>,
                 Option<&Perks>,
                 Option<&Energy>,
                 Option<&Fed>,
@@ -1333,8 +1392,22 @@ impl Sim {
             let needs = self.world.resource::<NeedRules>();
             let food = self.world.resource::<FoodRules>();
             let hurts = self.world.resource::<HealthRules>();
-            for (id, r, p, load, carry, skills, perks, energy, fed, gear, health, captive, tasks) in
-                q.iter(&self.world)
+            for (
+                id,
+                r,
+                p,
+                load,
+                carry,
+                skills,
+                stats,
+                perks,
+                energy,
+                fed,
+                gear,
+                health,
+                captive,
+                tasks,
+            ) in q.iter(&self.world)
             {
                 let (
                     order,
@@ -1410,10 +1483,17 @@ impl Sim {
                                 level: rules.level(i, xp),
                                 xp,
                                 next: rules.next_threshold(i, xp),
+                                cap: level_cap_of(rules, stats, i),
                             }
                         })
                         .collect(),
                     perks: perks.map(|p| p.0.clone()).unwrap_or_default(),
+                    // Врождённое: полоска опыта, упёршаяся в предел, объясняется
+                    // только здесь — без этой строки игрок читает застрявший
+                    // навык как поломку, а не как свойство кота (§12.42).
+                    stats: (0..stat_count)
+                        .map(|i| stats.map_or(0, |s| s.value_of(i)))
+                        .collect(),
                     // Надетое видно в панели кота: снаряжение молча прибавляет
                     // отряду силы, и без этого игрок не свяжет пропавший со
                     // склада комбинезон с выросшим прогнозом вылазки (§12.29).

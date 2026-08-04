@@ -24,6 +24,8 @@ pub(crate) struct Ruleset {
     #[serde(default)]
     pub(crate) skills: Vec<SkillDef>,
     #[serde(default)]
+    pub(crate) stats: Vec<StatDef>,
+    #[serde(default)]
     pub(crate) perks: Vec<PerkDef>,
     #[serde(default)]
     pub(crate) missions: Vec<MissionDef>,
@@ -343,6 +345,12 @@ pub(crate) struct RecruitDef {
     /// по порогам, второго места для него не заводится (§12.17).
     #[serde(default)]
     pub(crate) skills: BTreeMap<String, i32>,
+    /// Врождённые параметры: `{ параметр: сколько }` (§12.42). Ровно то, ради
+    /// чего игрок смотрит на кандидата: опыт добирается работой, а предел дан
+    /// раз и навсегда. `BTreeMap` по той же причине, что и цена, — порядок
+    /// обхода должен быть детерминирован (§12.21).
+    #[serde(default)]
+    pub(crate) stats: BTreeMap<String, i32>,
     #[serde(default)]
     pub(crate) perks: Vec<String>,
 }
@@ -394,6 +402,11 @@ pub(crate) struct UnitDef {
     /// (§12.17). Код знает по имени только те, для которых у него есть эффект.
     #[serde(default)]
     pub(crate) perks: Vec<String>,
+    /// Врождённые параметры: `{ параметр: сколько }` (§12.42). Как и перки,
+    /// даны рулсетом и не растут, но, в отличие от них, это не переключатель,
+    /// а предел: докуда кот вырастет в домене.
+    #[serde(default)]
+    pub(crate) stats: BTreeMap<String, i32>,
 }
 
 /// Перк: коту он выдаётся по `id` в `units:`, здесь лежит только подпись для
@@ -425,4 +438,28 @@ pub(crate) struct SkillDef {
     /// мастерство — из домена, поэтому потолок парты ниже потолка навыка.
     #[serde(default)]
     pub(crate) taught: i32,
+    /// Врождённый параметр, которым домен ограничен (§12.42): `id` записи в
+    /// `stats:`. Пусто — домен не ограничен ничем, и в нём все коты дорастают
+    /// до потолка: так живут «Ремесло» и «Медицина».
+    #[serde(default)]
+    pub(crate) stat: String,
+    /// Сколько параметра нужно на 2-й, 3-й, … уровень. Список начинается со
+    /// **второго** уровня намеренно: первый параметром не закрыт никогда —
+    /// вход в домен это допуск, и живёт он у навыка (`taught`), а не здесь
+    /// (§12.19: параметр — мягкий предел, а не запрет).
+    #[serde(default)]
+    pub(crate) demands: Vec<i32>,
+}
+
+/// Врождённый параметр кота (§12.19, §12.42). Порядок записей `stats:` — это
+/// индекс, который лежит в `Stats` и уходит в снапшот, как порядок `skills:`
+/// для навыков и `items:` для предметов.
+///
+/// Что параметр делает, знает не он, а навык: `stat` + `demands` у записи в
+/// `skills:`. Здесь только подпись — как у перка.
+#[derive(Debug, Deserialize, Clone, Serialize)]
+pub(crate) struct StatDef {
+    pub(crate) id: String,
+    #[serde(default)]
+    pub(crate) label: String,
 }

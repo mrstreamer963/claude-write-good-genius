@@ -24,6 +24,7 @@ mod panel;
 mod paths;
 mod research;
 mod skills;
+mod stats;
 mod study;
 mod terrain;
 mod tidying;
@@ -130,6 +131,7 @@ fn sim_from(rows: &[&str]) -> Sim {
         }],
         items: Vec::new(),
         skills: Vec::new(),
+        stats: Vec::new(),
         perks: Vec::new(),
         missions: Vec::new(),
         recruits: Vec::new(),
@@ -432,8 +434,48 @@ impl Sim {
             id: id.to_string(),
             levels: levels.to_vec(),
             taught: 0,
+            // Предела по параметру у домена нет, пока его не задали явно:
+            // тесты чужих механик о врождённом знать не должны (§12.42).
+            stat: None,
+            demands: Vec::new(),
         });
         rules.0.len() - 1
+    }
+
+    /// Ограничить домен врождённым параметром: каким и сколько его нужно на
+    /// 2-й, 3-й, … уровень (§12.42). Первый уровень не закрыт никогда.
+    fn set_demands(&mut self, skill: usize, stat: usize, demands: &[i32]) {
+        let mut rules = self.world.resource_mut::<SkillRules>();
+        if let Some(rule) = rules.0.get_mut(skill) {
+            rule.stat = Some(stat);
+            rule.demands = demands.to_vec();
+        }
+    }
+
+    /// Выдать коту врождённый параметр. Палитры параметров в синтетическом мире
+    /// нет — индекс задаёт сам тест, как и индекс домена.
+    fn set_stat(&mut self, unit: &str, stat: usize, value: i32) {
+        let cat = self.entity_of(unit);
+        let mut stats = self
+            .world
+            .entity_mut(cat)
+            .take::<Stats>()
+            .unwrap_or_default();
+        stats.set(stat, value);
+        self.world.entity_mut(cat).insert(stats);
+    }
+
+    /// Значение врождённого параметра кота; 0 — параметра у него нет.
+    fn stat_of(&mut self, unit: &str, stat: usize) -> i32 {
+        let cat = self.entity_of(unit);
+        self.world.get::<Stats>(cat).map_or(0, |s| s.value_of(stat))
+    }
+
+    /// Докуда кот вырастет в домене — предел по врождённому параметру (§12.42).
+    fn level_cap_of(&mut self, unit: &str, skill: usize) -> i32 {
+        let cat = self.entity_of(unit);
+        let stats = self.world.get::<Stats>(cat);
+        crate::skills::level_cap_of(self.world.resource::<SkillRules>(), stats, skill)
     }
 
     /// До какого уровня доводит домен парта; 0 — домену не учат (§12.18).
@@ -988,9 +1030,20 @@ impl Sim {
             requires,
             cost: cost.to_vec(),
             skills: skills.to_vec(),
+            // Врождённого у кандидата в синтетическом мире нет: параметры
+            // включают тесты §12.42 своим `set_recruit_stats`.
+            stats: Vec::new(),
             perks: Vec::new(),
         });
         rules.0.len() - 1
+    }
+
+    /// Выдать кандидату врождённые параметры: `(параметр, сколько)` (§12.42).
+    fn set_recruit_stats(&mut self, recruit: usize, stats: &[(usize, i32)]) {
+        let mut rules = self.world.resource_mut::<RecruitRules>();
+        if let Some(rule) = rules.0.get_mut(recruit) {
+            rule.stats = stats.to_vec();
+        }
     }
 
     /// Есть ли такой кот на базе.

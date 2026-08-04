@@ -38,7 +38,7 @@ cargo test whole_room_is_erased_completely -- --nocapture
   `components` (компоненты ECS и ресурсы, без поведения). Поведение: `schedule` (цепочка тика) ·
   `jobs` (чертежи) · `hauling` (перенос лома: подвоз на площадку и уборка на склад) ·
   `movement` (шаги, приказы, выход из пустоты) · `demolition` (порядок сноса) ·
-  `skills` (навыки: рост от работы, скорость работы и обучение у парты) ·
+  `skills` (навыки: рост от работы, скорость работы, обучение у парты и врождённый предел) ·
   `needs` (усталость: два порога, отдых и переезд упавшего) ·
   `food` (голод: сытость, поход за пайком, вдвое горящая бодрость) ·
   `health` (здоровье: ранение на вылазке, лазарет и работа медика) ·
@@ -176,6 +176,14 @@ spread_units → clear_solids → settle_stacks → sleep → heal → tire → 
    (`BUILD_WORK` / `WORK_RATE`): при `progress += 1` минимальный шаг навыка — двукратное
    ускорение. Новая система работы обязана вешать `Worked(домен)` — иначе навык за неё молча
    не растёт, а начисляет опыт только `train_skills` в конце цепочки (§12.17).
+   **Потолок опыта у каждого кота свой** (§12.42): врождённый параметр (`Stats`) режет предел
+   уровня в домене — `demands` у навыка задаёт, сколько параметра нужно на 2-й, 3-й, … уровень
+   (первый не закрыт **никогда**: список начинается со второго, и «домен недоступен» рулсетом
+   невыразимо). Считается это одним местом — `skills::xp_ceiling`, и в него обязаны упираться
+   оба источника опыта: работа (`train_skills`) и парта (`desk_cap` = ниже из `taught` и
+   врождённого). Разойдись они — кот сидел бы за партой, которая ему ничего не даёт. Параметр
+   **не пишет ни одна система**: две шкалы, двигающиеся одним действием, — это один навык под
+   двумя именами.
 10. **У бодрости два порога, и они забирают кота по-разному** (§12.20, §12.33). Выше `tired` кот
    работает; ниже — уходит спать, **но только свободным**: начатое дело обычная усталость не
    срывает, как не срывает его приказ игрока. Ниже `critical` срывает — и **только под свободную
@@ -314,8 +322,8 @@ spread_units → clear_solids → settle_stacks → sleep → heal → tire → 
 
 ## Тесты
 
-285 тестов живут в `src/tests/` по механикам (`paths` · `voids` · `orders` · `jobs` · `demolition` ·
-`hauling` · `tidying` · `skills` · `study` · `research` · `needs` · `food` · `health` · `items` · `missions` ·
+299 тестов живут в `src/tests/` по механикам (`paths` · `voids` · `orders` · `jobs` · `demolition` ·
+`hauling` · `tidying` · `skills` · `stats` · `study` · `research` · `needs` · `food` · `health` · `items` · `missions` ·
 `captivity` · `fame` · `terrain` · `timeline` · `gear` · `crafting` · `crowd` · `panel`); общие хелперы и сборка мира —
 в `tests/mod.rs`. Мир собирается из ASCII-схем, минуя YAML:
 
@@ -330,6 +338,7 @@ let mut sim = sim_from(&["#####", "#a..#", "#####"]); // '#' пустота, '.'
   `floors_left`; по материалу — `set_cost`, `set_capacity`, `put_scrap`, `scrap_at`, `scrap_total`,
   `scrap_is_on_floor`, `scrap_is_in_storage`, `carrying_of`, `delivered_at`; по навыкам —
   `set_skill`, `set_xp`, `xp_of`, `level_of`, `skill_index`, `set_carry`, `carry_max_of`;
+  по врождённому — `set_demands`, `set_stat`, `stat_of`, `level_cap_of`, `set_recruit_stats`;
   по усталости — `set_needs`, `set_critical`, `thresholds`, `set_rest`, `set_energy`, `energy_of`,
   `is_resting`, `rest_spot_of`; по типам —
   `set_cost_items`, `put_item`, `item_at`, `item_total`, `carrying_item_of`, `delivered_item_at`;

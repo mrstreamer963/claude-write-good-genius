@@ -500,18 +500,34 @@ function renderCatPanel(entities) {
   // здесь же: `stuck` — состояние легальное, но кот из него сам не выйдет.
   const job = e.stuck ? 'не может дойти' : jobLabel(e);
   if (job) parts.push(`<div class="cat-job${e.stuck ? ' stuck' : ''}">${job}</div>`);
+  // Врождённое — до навыков: оно объясняет их пределы, а не наоборот (§12.42).
+  // Опыт кот доберёт работой, а эти числа даны ему навсегда, и ровно поэтому
+  // коты остаются разными после того, как бригада выработалась.
+  const stats = (meta.stats ?? [])
+    .map((st, i) => `${esc(st.label || st.id)} ${e.stats?.[i] ?? 0}`)
+    .join(' · ');
+  if (stats) parts.push(`<div class="cat-sub">${stats}</div>`);
   for (let i = 0; i < defs.length; i++) {
     const s = e.skills?.[i];
     if (!s) continue;
     const levels = defs[i].levels ?? [];
     const from = s.level > 0 ? levels[s.level - 1] : 0;
+    // Врождённый предел — это не потолок навыка: полоска, вставшая на месте,
+    // обязана назвать причину, иначе игрок прочтёт её как поломку (§12.42).
+    const capped = s.cap > 0 && s.level >= s.cap;
+    const born = capped && s.cap < levels.length;
     // next = 0 — навык на потолке: полоска полная, порога дальше нет.
-    const pct = s.next > from ? Math.round(((s.xp - from) / (s.next - from)) * 100) : 100;
+    const pct = capped || s.next <= from ? 100 : Math.round(((s.xp - from) / (s.next - from)) * 100);
+    const note = born
+      ? `предел: ${esc(statLabel(defs[i].stat))} ${e.stats?.[statIndex(defs[i].stat)] ?? 0}`
+      : capped || s.next <= 0
+        ? 'потолок'
+        : `${s.xp} / ${s.next}`;
     parts.push(
       '<div class="cat-skill">' +
         `<div class="cat-row"><span>${esc(defs[i].label || defs[i].id)}</span><b>${s.level}</b></div>` +
-        `<div class="bar"><i style="width:${pct}%"></i></div>` +
-        `<div class="cat-sub">${s.next > 0 ? `${s.xp} / ${s.next}` : 'потолок'}</div>` +
+        `<div class="bar"><i class="${born ? 'capped' : ''}" style="width:${pct}%"></i></div>` +
+        `<div class="cat-sub">${note}</div>` +
         '</div>',
     );
   }
@@ -773,6 +789,29 @@ function itemLabel(item) {
 
 function perkLabel(id) {
   const def = (meta.perks ?? []).find((p) => p.id === id);
+  return def?.label || id;
+}
+
+// Врождённые параметры кандидата словами: «Ум 4 · Реакция 9 · Выносливость 6».
+// serde-wasm-bindgen отдаёт отображение из YAML настоящим `Map`, как и цену.
+function statsHint(stats) {
+  const entries = stats instanceof Map ? [...stats.entries()] : Object.entries(stats ?? {});
+  if (!entries.length) return '';
+  return (meta.stats ?? [])
+    .map((st) => {
+      const found = entries.find(([id]) => id === st.id);
+      return found ? `${st.label || st.id} ${found[1]}` : '';
+    })
+    .filter(Boolean)
+    .join(' · ');
+}
+
+function statIndex(id) {
+  return (meta.stats ?? []).findIndex((s) => s.id === id);
+}
+
+function statLabel(id) {
+  const def = (meta.stats ?? []).find((s) => s.id === id);
   return def?.label || id;
 }
 
@@ -1179,6 +1218,9 @@ function buildToolbar() {
       );
       b.classList.add('toggle');
       b.dataset.requires = r.requires ?? 0;
+      // Врождённое кандидата — это и есть то, ради чего на него смотрят
+      // (§12.42): опыт база доберёт работой, а предел даётся раз и навсегда.
+      b.dataset.hint = statsHint(r.stats);
       recruitButtons.push(b);
       hire.appendChild(b);
     });
@@ -1200,13 +1242,16 @@ function syncRecruitButtons(list) {
     const ready = !r.hired && r.unlocked && r.affordable;
     b.disabled = !ready;
     b.classList.toggle('on', ready);
-    b.title = r.hired
+    const why = r.hired
       ? 'Уже на базе'
       : !r.unlocked
         ? `Откликнется при известности ${b.dataset.requires}`
         : !r.affordable
           ? 'На складе нечем заплатить'
           : 'Нанять';
+    // Параметры называем и у закрытого кандидата: к нему идут заранее, и
+    // «зачем мне этот кот» игрок спрашивает до того, как накопит.
+    b.title = [b.dataset.hint, why].filter(Boolean).join(' · ');
   });
 }
 
