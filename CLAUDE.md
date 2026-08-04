@@ -133,7 +133,8 @@ spread_units → clear_solids → settle_stacks → sleep → heal → tire → 
    каждая новая обязана попасть во все места, где кот считается свободным: `assign_heal`,
    `assign_eat`, `assign_rest`, `assign_treat`, `assign_equip`, `assign_jobs`, `assign_hauls`,
    `assign_research`, `assign_craft`,
-   `assign_tidy`, `retry_orders`, `Busy::of` (для `is_stuck`), `spread_units`, `clear_solids`,
+   `assign_tidy`, `retry_orders`, `Busy::of` (для `is_stuck` **и** для `job` — того, что игрок
+   читает в карточке, §12.41), `spread_units`, `clear_solids`,
    а также в оба места, где задачу отбирают: `release_task` (приказ игрока, заявка на вылазку) и
    `release_work` (усталость, §12.33; ранение, §12.37).
    Пропущенный `Without<…>` даёт не падение, а тихое перехватывание кота посреди работы или сна.
@@ -313,9 +314,9 @@ spread_units → clear_solids → settle_stacks → sleep → heal → tire → 
 
 ## Тесты
 
-278 тестов живут в `src/tests/` по механикам (`paths` · `voids` · `orders` · `jobs` · `demolition` ·
+285 тестов живут в `src/tests/` по механикам (`paths` · `voids` · `orders` · `jobs` · `demolition` ·
 `hauling` · `tidying` · `skills` · `study` · `research` · `needs` · `food` · `health` · `items` · `missions` ·
-`captivity` · `fame` · `terrain` · `timeline` · `gear` · `crafting` · `crowd`); общие хелперы и сборка мира —
+`captivity` · `fame` · `terrain` · `timeline` · `gear` · `crafting` · `crowd` · `panel`); общие хелперы и сборка мира —
 в `tests/mod.rs`. Мир собирается из ASCII-схем, минуя YAML:
 
 ```rust
@@ -343,7 +344,8 @@ let mut sim = sim_from(&["#####", "#a..#", "#####"]); // '#' пустота, '.'
   `solid_tiles`, `capacity_of`;
   по производству — `set_shop`, `set_recipe`, `craft_left`,
   `craft_progress`, `crafter`, `is_crafting`; по здоровью — `set_health_rules`, `set_health`,
-  `health_of`, `set_heal`, `is_healing`, `ward_of`, `medic_of`, `is_treating`, `set_mission_harm`.
+  `health_of`, `set_heal`, `is_healing`, `ward_of`, `medic_of`, `is_treating`, `set_mission_harm`;
+  по панели — `job_of` (ключ занятия и «в пути ли», §12.41).
 - **`add_blueprint(x, y, 0)` в схеме `sim_from` — пустышка:** пол схемы это уже тайл `0`, и
   чертёж отсекается как «уже построено». Тест с ним зелёный и ничего не проверяет (наступали).
   Занимать кота стройкой — любым другим индексом, как `OTHER` в `tests/missions.rs`.

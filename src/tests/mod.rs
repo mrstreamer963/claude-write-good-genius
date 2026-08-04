@@ -20,6 +20,7 @@ mod jobs;
 mod missions;
 mod needs;
 mod orders;
+mod panel;
 mod paths;
 mod research;
 mod skills;
@@ -188,6 +189,38 @@ impl Sim {
                     p,
                     Busy::of(o, path, a, h, r, st, re, cr, eq, ea, he, tr, s, away),
                 )
+            })
+            .expect("кот не найден")
+    }
+
+    /// Чем кот занят и в пути ли он — ровно то, что уходит в панель (§12.41).
+    /// Тот же вложенный кортеж и по той же причине, что у `stuck_of`.
+    fn job_of(&mut self, unit: &str) -> (&'static str, bool) {
+        let mut q = self.world.query::<(
+            &UnitId,
+            (
+                Option<&Order>,
+                Option<&Path>,
+                Option<&Assignment>,
+                Option<&Haul>,
+                Option<&Rest>,
+                Option<&Study>,
+                Option<&Researching>,
+                Option<&Crafting>,
+                Option<&Equipping>,
+                Option<&Eating>,
+                Option<&Healing>,
+                Option<&Treating>,
+                Option<&Squad>,
+                Option<&Away>,
+            ),
+        )>();
+        q.iter(&self.world)
+            .find(|(id, _)| id.0 == unit)
+            .map(|(_, tasks)| {
+                let (o, path, a, h, r, st, re, cr, eq, ea, he, tr, s, away) = tasks;
+                let busy = Busy::of(o, path, a, h, r, st, re, cr, eq, ea, he, tr, s, away);
+                (busy.job, busy.moving)
             })
             .expect("кот не найден")
     }

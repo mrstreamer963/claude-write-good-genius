@@ -364,6 +364,22 @@ main#stage canvas { display: block; }
   margin-bottom: 8px;
 }
 
+/* Занятие — первой строкой и заметнее шкал: «чем он занят» игрок спрашивает
+   раньше, чем «сколько у него сил» (§12.41). Застрявший подсвечен тем же
+   цветом, что и кольцо вокруг него на карте: одно состояние — одна краска. */
+.cat-job {
+  margin: -4px 0 8px;
+  padding: 3px 6px;
+  border-radius: 3px;
+  background: #1b1f2a;
+  border: 1px solid var(--line);
+  font-size: 12px;
+}
+.cat-job.stuck {
+  color: #ff9a3c;
+  border-color: #ff9a3c;
+}
+
 .cat-skill { margin-bottom: 8px; }
 
 .cat-row {
@@ -390,6 +406,9 @@ main#stage canvas { display: block; }
   background: var(--accent);
 }
 .bar i.rest { background: #7fd6b5; }
+/* Второй порог бодрости (§12.33): ниже него кот бросает начатое. Это не «скоро
+   устанет», а «сейчас уйдёт с площадки», и цвет должен предупредить заранее. */
+.bar i.spent { background: #ff9a3c; }
 .bar i.fed { background: #c96f4a; }
 /* Пустой желудок жжёт бодрость вдвое (§12.36) — цена невидима в цифрах, поэтому
    видна в цвете: полоска на нуле не «почти пустая», а тревожная. */

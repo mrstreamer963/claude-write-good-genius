@@ -389,8 +389,13 @@ pub(crate) fn is_stuck(map: &BaseMap, pos: &Position, tasks: Busy) -> bool {
 ///
 /// Отдельная структура, а не десяток аргументов: список задач общего слоя растёт
 /// (`Assignment`, `Haul`, `Rest`, `Study`, `Researching`, `Crafting`, `Equipping`,
-/// `Eating`, `Squad` — и это не конец), и собирать его в каждой точке вызова
-/// заново значит однажды забыть одну.
+/// `Eating`, `Healing`, `Treating`, `Squad` — и это не конец), и собирать его в
+/// каждой точке вызова заново значит однажды забыть одну.
+///
+/// Отсюда же берётся `job` — то, что видит игрок в карточке кота (§12.41).
+/// Второй такой же разбор задач в снапшоте был бы ровно тем дублированием,
+/// ради которого эта структура и заведена: одна из двух копий однажды отстанет
+/// на новую задачу, и кот молча станет «бездельником».
 #[derive(Clone, Copy)]
 pub(crate) struct Busy {
     /// Приказ игрока висит, но маршрута под него сейчас нет.
@@ -398,6 +403,13 @@ pub(crate) struct Busy {
     /// Ни одной задачи — то есть невыполнимый приказ и правда некому отменить.
     pub(crate) idle: bool,
     pub(crate) away: bool,
+    /// Ключ текущего занятия для панели; текст живёт в UI, как подписи тайлов.
+    /// Пустая строка — кот свободен.
+    pub(crate) job: &'static str,
+    /// Кот **в пути** к своему делу, а не за ним. Отдельно от `job`, потому что
+    /// «идёт спать» и «спит» — разные картинки при одной задаче, и различает их
+    /// везде один и тот же признак: маршрут ещё есть.
+    pub(crate) moving: bool,
 }
 
 impl Busy {
@@ -418,6 +430,42 @@ impl Busy {
         squad: Option<&Squad>,
         away: Option<&Away>,
     ) -> Self {
+        // Порядок разбора — тот же, что у раздатчиков (§12.15): задачи друг
+        // друга исключают фильтрами, так что выбирать обычно не из чего, но там,
+        // где всё-таки есть (кот в отряде идёт одеваться, §12.34), показать надо
+        // то же, что решила симуляция. `away` первым: ушедшего с базы не
+        // касается ни одна задача, а `Squad` у пленного и вовсе нет (§12.40).
+        let job = if away.is_some() {
+            "away"
+        } else if healing.is_some() {
+            "heal"
+        } else if eating.is_some() {
+            "eat"
+        } else if rest.is_some() {
+            "rest"
+        } else if treating.is_some() {
+            "treat"
+        } else if equipping.is_some() {
+            "equip"
+        } else if squad.is_some() {
+            "squad"
+        } else if haul.is_some() {
+            "haul"
+        } else if researching.is_some() {
+            "research"
+        } else if crafting.is_some() {
+            "craft"
+        } else if study.is_some() {
+            "study"
+        } else if assignment.is_some() {
+            // Снос от стройки здесь не отличить: `Busy` знает, какая задача, а
+            // не во что она обернулась, — чертёж читает снапшот (§12.41).
+            "build"
+        } else if order.is_some() {
+            "order"
+        } else {
+            ""
+        };
         Busy {
             ordered: order.is_some() && path.is_none(),
             idle: assignment.is_none()
@@ -432,6 +480,8 @@ impl Busy {
                 && treating.is_none()
                 && squad.is_none(),
             away: away.is_some(),
+            job,
+            moving: path.is_some(),
         }
     }
 }

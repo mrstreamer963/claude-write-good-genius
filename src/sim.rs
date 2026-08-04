@@ -1282,6 +1282,17 @@ impl Sim {
     pub fn snapshot(&mut self) -> Result<JsValue, JsValue> {
         let tick = self.world.resource::<SimTime>().tick;
 
+        // Площадки сноса: `Busy` знает, что кот занят чертежом, но не тем, во что
+        // тот обернётся, — а «строит» и «разбирает» игрок читает по-разному
+        // (§12.41). Собирается до котов, потому что чертёж читают по `Assignment`.
+        let doomed: std::collections::HashSet<Entity> = {
+            let mut q = self.world.query::<(Entity, &Blueprint)>();
+            q.iter(&self.world)
+                .filter(|(_, bp)| bp.tile < 0)
+                .map(|(e, _)| e)
+                .collect()
+        };
+
         let mut entities = Vec::new();
         {
             // Задачи кота собраны вложенным кортежем: их ровно столько, сколько
@@ -1370,6 +1381,8 @@ impl Sim {
                     captive: captive.is_some(),
                     energy: energy.map_or(0, |e| e.0),
                     energy_max: needs.max,
+                    energy_tired: needs.tired,
+                    energy_critical: needs.critical,
                     fed: fed.map_or(0, |f| f.0),
                     fed_max: food.max,
                     // Порог голода уходит наружу вместе со шкалой: без него
@@ -1380,13 +1393,13 @@ impl Sim {
                     health: health.map_or(0, |h| h.0),
                     health_max: hurts.max,
                     health_hurt: hurts.hurt,
-                    // Лежит, а не идёт в лазарет — тот же признак, что у сна.
-                    healing: healing.is_some() && path.is_none(),
-                    treating: treating.is_some(),
-                    // Спит, а не идёт спать: маршрут ещё есть — значит в пути.
-                    sleeping: rest.is_some() && path.is_none(),
-                    // Учится, а не идёт к парте — по тому же признаку.
-                    studying: study.is_some() && path.is_none(),
+                    // Чем занят — разобрано в `Busy` вместе с самой занятостью
+                    // (§12.41); здесь чертёж только уточняется до сноса.
+                    job: match busy.job {
+                        "build" if assignment.is_some_and(|a| doomed.contains(&a.0)) => "demolish",
+                        job => job,
+                    },
+                    moving: busy.moving,
                     carrying: load.map_or(0, |c| c.count),
                     carrying_item: load.map_or(-1, |c| c.item as i32),
                     carry_max: carry.map_or(0, |c| c.0),

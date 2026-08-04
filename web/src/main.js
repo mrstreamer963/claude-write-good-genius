@@ -260,17 +260,24 @@ function renderSnapshot(snap) {
     c.stuckRing.visible = !!e.stuck;
     c.load.visible = e.carrying > 0;
     if (e.carrying > 0) c.load.tint = itemColor(e.carrying_item);
+    // «Дошёл и делает» против «ещё идёт»: маркер вешается только на первое —
+    // кот в пути к лежанке не спит, а идёт (§12.41).
+    const asleep = e.job === 'rest' && !e.moving;
+    const lying = e.job === 'heal' && !e.moving;
     // Спящий кот пригашен: игрок должен видеть, почему тот не работает.
     // Лежачий раненый — тоже: причины разные, а следствие для базы одно (§12.37).
-    c.alpha = e.sleeping || e.healing ? 0.55 : 1;
-    c.sleepMark.visible = !!e.sleeping && !e.healing;
+    c.alpha = asleep || lying ? 0.55 : 1;
+    c.sleepMark.visible = asleep;
     // Крест — над раненым; он важнее «зззз», потому что лежачий кот выбыл не на
     // сотню тиков, а до конца лечения, и это единственная необратимая на вид
     // потеря, какая в игре есть.
-    c.woundMark.visible = !!e.healing;
+    c.woundMark.visible = lying;
     // Учёба — потраченное котовремя, и это вся её цена (§12.18): не видно её —
     // игрок просто недосчитается рабочих лап.
-    c.studyMark.visible = !!e.studying;
+    c.studyMark.visible = e.job === 'study' && !e.moving;
+    // Медик — только дошедший: лечит он с соседней клетки, и до неё ещё надо
+    // добраться. Иначе пустой крест ехал бы через полбазы, обещая лечение.
+    c.medicMark.visible = e.job === 'treat' && !e.moving;
     unitTiles.set(e.id, { x: e.x, y: e.y });
   }
   // В шапке — только фишка и число: подписи распирают её, а цвет тот же, что
@@ -366,17 +373,29 @@ function createUnit(e) {
     .rect(-TILE * 0.11, -TILE * 0.71, TILE * 0.22, 4)
     .fill(COLORS.wound);
   woundMark.visible = false;
+  // Тот же крест, но пустой — над медиком: лечение шло всегда, а видно его не
+  // было, и база выглядела так, будто раны затягиваются сами (§12.41).
+  // Контур против заливки — это «лечит» против «лечится»: одна картинка на
+  // двоих читается как пара, а не как два разных состояния.
+  const medicMark = new Graphics();
+  medicMark
+    .rect(-2, -TILE * 0.78, 4, TILE * 0.22)
+    .rect(-TILE * 0.11, -TILE * 0.71, TILE * 0.22, 4)
+    .stroke({ color: COLORS.wound, width: 1.5 });
+  medicMark.visible = false;
   c.addChild(body);
   c.addChild(stuckRing);
   c.addChild(load);
   c.addChild(sleepMark);
   c.addChild(studyMark);
   c.addChild(woundMark);
+  c.addChild(medicMark);
   c.stuckRing = stuckRing;
   c.load = load;
   c.sleepMark = sleepMark;
   c.studyMark = studyMark;
   c.woundMark = woundMark;
+  c.medicMark = medicMark;
   unitLayer.addChild(c);
   units.set(e.id, c);
   return c;
@@ -409,6 +428,51 @@ function updateSelectionOverlay() {
   }
 }
 
+// Чем кот занят — словами. Ключ считает ядро (`Busy::job`), текст живёт здесь,
+// как подписи тайлов и навыков: симуляция знает задачи, а не язык (§12.41).
+//
+// У каждой задачи две формулировки — «идёт» и «делает», и различает их маршрут.
+// Без этого панель врала бы ровно в тот момент, когда игрок в неё смотрит:
+// «лечит раненого» о коте, который только вышел с другого конца базы.
+function jobLabel(e) {
+  const going = !!e.moving;
+  switch (e.job) {
+    // Ушедшего с базы объясняют отдельные строки: «на вылазке» и «в плену» —
+    // разные решения игрока, а не одно состояние (§12.40).
+    case 'away':
+      return '';
+    case 'heal':
+      return going ? 'идёт в лазарет' : 'лежит: раны заживают';
+    case 'eat':
+      return going ? 'идёт есть' : 'ест';
+    case 'rest':
+      return going ? 'идёт спать' : 'спит';
+    case 'treat':
+      return going ? 'идёт к раненому' : 'лечит раненого';
+    case 'equip':
+      return going ? 'идёт за снаряжением' : 'снаряжается';
+    case 'squad':
+      return going ? 'идёт к шлюзу' : 'ждёт отряд';
+    case 'haul':
+      return e.carrying > 0 ? `несёт ${itemLabel(e.carrying_item)}` : 'идёт за грузом';
+    case 'research':
+      return going ? 'идёт в лабораторию' : 'исследует';
+    case 'craft':
+      return going ? 'идёт в мастерскую' : 'работает в мастерской';
+    case 'study':
+      return going ? 'идёт к парте' : 'учится';
+    case 'build':
+      return going ? 'идёт на площадку' : 'строит';
+    case 'demolish':
+      return going ? 'идёт на снос' : 'разбирает';
+    // Приказ без маршрута — это и есть `stuck`, и он подписан отдельно.
+    case 'order':
+      return going ? 'идёт по приказу' : '';
+    default:
+      return 'без дела';
+  }
+}
+
 // Панель выбранного кота. Навык растёт молча, и это единственное место, где
 // рост виден игроку (§12.17): уровень, полоска до следующего, лапы и перки.
 function renderCatPanel(entities) {
@@ -423,6 +487,11 @@ function renderCatPanel(entities) {
   if (selectedUnits.length > 1) {
     parts.push(`<div class="cat-sub">выбрано ${selectedUnits.length}: ${selectedUnits.map(esc).join(' · ')}</div>`);
   }
+  // Занятие — первой строкой и до всех шкал: «чем он вообще занят» игрок
+  // спрашивает раньше, чем «сколько у него бодрости». Застрявший объясняется
+  // здесь же: `stuck` — состояние легальное, но кот из него сам не выйдет.
+  const job = e.stuck ? 'не может дойти' : jobLabel(e);
+  if (job) parts.push(`<div class="cat-job${e.stuck ? ' stuck' : ''}">${job}</div>`);
   for (let i = 0; i < defs.length; i++) {
     const s = e.skills?.[i];
     if (!s) continue;
@@ -438,13 +507,23 @@ function renderCatPanel(entities) {
         '</div>',
     );
   }
+  // У бодрости два порога, и они забирают кота по-разному (§12.33): выше
+  // `tired` он работает, ниже — уходит спать освободившись, ниже `critical` —
+  // бросает начатое. Оба надо назвать словами: без них полоска на 30 % и
+  // полоска на 10 % выглядят одинаково, а кот с них ведёт себя по-разному.
   if (e.energy_max > 0) {
     const pct = Math.round((e.energy / e.energy_max) * 100);
+    const spent = e.energy_critical > 0 && e.energy <= e.energy_critical;
+    const note = spent
+      ? 'на исходе сил: бросит работу'
+      : e.energy <= e.energy_tired
+        ? 'устал: доработает и пойдёт спать'
+        : '';
     parts.push(
       '<div class="cat-skill">' +
         `<div class="cat-row"><span>Бодрость</span><b>${pct}%</b></div>` +
-        `<div class="bar"><i class="rest" style="width:${pct}%"></i></div>` +
-        (e.sleeping ? '<div class="cat-sub">спит</div>' : '') +
+        `<div class="bar"><i class="${spent ? 'spent' : 'rest'}" style="width:${pct}%"></i></div>` +
+        (note ? `<div class="cat-sub">${note}</div>` : '') +
         '</div>',
     );
   }
@@ -483,11 +562,6 @@ function renderCatPanel(entities) {
   // сходить. Разные слова здесь — это разные решения игрока (§12.40).
   if (e.captive) parts.push('<div class="cat-sub">в плену: нужна вылазка за своим</div>');
   else if (e.away) parts.push('<div class="cat-sub">на вылазке</div>');
-  if (e.studying) parts.push('<div class="cat-sub">учится</div>');
-  // «Лежит», а не «в лазарете»: койки может и не быть — раны затягиваются и на
-  // голом полу, просто дольше (§12.37).
-  if (e.healing) parts.push('<div class="cat-sub">лежит: раны заживают</div>');
-  if (e.treating) parts.push('<div class="cat-sub">лечит раненого</div>');
   // Надетое: снаряжение молча прибавляет отряду силы, и без этой строки игрок
   // не свяжет пропавший со склада комбинезон с выросшим прогнозом вылазки
   // (§12.29). Пустой комплект показываем тоже — иначе непонятно, что он бывает.
