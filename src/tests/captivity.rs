@@ -50,10 +50,11 @@ fn a_failed_raid_leaves_a_cat_behind() {
     assert!(!sim.in_squad("a"), "но отряда за ним больше нет");
 }
 
-/// Оставляют самого битого: он и шёл тяжелее всех. Провал бьёт всех одинаково,
-/// поэтому порядок здоровья до вычета урона тот же, что и после.
+/// Раны на выбор не влияют: остаётся первый по `id`, кто бы каким ни вернулся.
+/// «Оставили того, кому досталось больше» — это история про отряд, бросающий
+/// раненого, и её в игре нет (§12.40).
 #[test]
-fn the_worst_hurt_cat_is_the_one_left_behind() {
+fn who_is_left_behind_does_not_depend_on_wounds() {
     let (mut sim, doomed, _) = world_with_a_doomed_raid();
     sim.set_health_rules(100, 20, 1);
     sim.set_health("a", 90);
@@ -62,8 +63,11 @@ fn the_worst_hurt_cat_is_the_one_left_behind() {
     assert!(sim.launch(doomed, squad(&["a", "b"])));
     sim.tick_n(30);
 
-    assert!(sim.is_captive("b"), "оставили того, кому досталось больше");
-    assert!(!sim.is_captive("a"), "а целого унесли");
+    assert!(
+        sim.is_captive("a"),
+        "остался первый по id, а не самый битый"
+    );
+    assert!(!sim.is_captive("b"), "битого унесли, как и любого другого");
 }
 
 /// Идти за пленным должно быть кому. Некем набрать самый маленький
@@ -97,29 +101,30 @@ fn without_a_rescue_raid_captivity_does_not_happen() {
     );
 }
 
-/// Пленный уходит в плен **выбывшим**: его оставили не просто так, а потому что
-/// он не мог идти. Рана на нём есть, даже если у вылазки скромный `harm`, —
-/// иначе получается кот, который цел, но почему-то не дошёл.
+/// Плен не ранит: у пленного ровно те раны, что посчитал исход вылазки, — и
+/// если вылазка не ранит вовсе, домой он вернётся целым и сразу в дело.
+/// Отдельной раны «чтобы объяснить, почему его не унесли», нет (§12.40).
 #[test]
-fn a_captive_is_left_behind_wounded() {
-    let (mut sim, doomed, _) = world_with_a_doomed_raid();
+fn captivity_leaves_no_wound_of_its_own() {
+    let (mut sim, doomed, rescue) = world_with_a_doomed_raid();
     sim.set_health_rules(100, 40, 1);
-    sim.set_mission_harm(doomed, 0); // вылазка «безопасная» — а кот всё равно ранен
+    sim.set_mission_harm(doomed, 0); // «безопасная» вылазка: провал есть, ран нет
 
     assert!(sim.launch(doomed, squad(&["a", "b"])));
     sim.tick_n(30);
 
     assert!(sim.is_captive("a"), "кот в плену");
-    assert!(
-        sim.health_of("a") <= 40,
-        "и выбыл: {} при пороге 40",
-        sim.health_of("a"),
-    );
-    assert_eq!(sim.health_of("b"), 100, "а вернувшийся цел: `harm` нулевой");
+    assert_eq!(sim.health_of("a"), 100, "и цел: `harm` нулевой");
+    assert_eq!(sim.health_of("b"), 100, "как и вернувшийся");
+
+    assert!(sim.launch(rescue, squad(&["c"])));
+    sim.tick_n(30);
+    assert!(!sim.is_captive("a"), "вернулся");
+    assert!(!sim.is_healing("a"), "и не лёг: лечить нечего");
 }
 
-/// Хуже, чем есть, плен не делает: рана та, что с вылазки. Порог — это добор
-/// до выбывшего, а не удар сверху.
+/// Хуже, чем сделала вылазка, плену делать нечем: рана — ровно та, что посчитал
+/// исход, порогов и доборов сверху нет.
 #[test]
 fn captivity_does_not_add_to_the_wound() {
     let (mut sim, doomed, _) = world_with_a_doomed_raid();
@@ -154,13 +159,14 @@ fn captivity_itself_does_no_harm() {
     assert!(!sim.is_healing("a"), "и не лечит: лазарет остался на базе");
 }
 
-/// Вернувшийся идёт прямо в лазарет: цена плена продолжается котовременем и
-/// после возвращения — за ним сходили, но работать он ещё не может.
+/// Раненого вернули — и он тут же попадает под обычные правила базы: ложится,
+/// как любой выбывший. Раны у него с той вылазки, а не с плена, но лечить их
+/// всё равно базе: пленный возвращается в мир целиком, а не наполовину.
 #[test]
-fn a_rescued_cat_goes_straight_to_the_ward() {
+fn a_rescued_cat_lands_in_the_ward_if_he_was_hurt() {
     let (mut sim, doomed, rescue) = world_with_a_doomed_raid();
     sim.set_health_rules(100, 40, 1);
-    sim.set_mission_harm(doomed, 0);
+    sim.set_mission_harm(doomed, 70); // провал доводит до выбывшего
 
     sim.launch(doomed, squad(&["a", "b"]));
     sim.tick_n(30);
