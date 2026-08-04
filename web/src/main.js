@@ -85,6 +85,14 @@ let autoRest = true; // и сами бросают работу на исход�
 let selectedUnits = [];
 let dragFrom = null; // якорь рамки (клетка, где нажали), null = не тянем
 let dragTo = null; // текущий угол рамки; переживает выход курсора за карту
+// Кот, стоявший под началом рамки. Запоминается в момент нажатия, а не читается
+// на отпускании: на ×10 кот успевает уйти за время клика, а игрок целился в
+// того, кого видел.
+let dragUnit = null;
+// Кнопка «Курсор» — единственная, к которой обращаются извне тулбара: клик по
+// коту любым инструментом возвращает игру в режим выбора, и подсветка обязана
+// поехать вместе с режимом.
+let cursorBtn = null;
 let missionRunning = false; // миссия на POC одна за раз (§12.22)
 let researchRunning = false; // и тема тоже одна за раз (§12.26)
 let craftRunning = false; // и заказ (§12.30)
@@ -819,11 +827,32 @@ function applyDrag() {
 // под курсором. Без этого рамка висела бы на экране до следующего движения мыши
 // и читалась как «что-то ещё выделено».
 function endDrag(apply, global) {
-  if (dragFrom && apply) applyDrag();
+  if (dragFrom && apply) {
+    // Клик по коту — это «покажи мне его», а не «застрой клетку под ним»:
+    // возвращаемся в курсор и выбираем кота. Отличает клик от разметки размер
+    // жеста: одна клетка — клик, две и больше — рамка, и застроить (или снести)
+    // клетку под котом по-прежнему можно, протянув через неё.
+    const rect = rectOf(dragFrom, dragTo);
+    if (dragUnit && rect.w === 1 && rect.h === 1) {
+      selectCursor(cursorBtn);
+      selectUnit(dragUnit);
+    } else {
+      applyDrag();
+    }
+  }
   dragFrom = null;
   dragTo = null;
+  dragUnit = null;
   hoverRect.clear();
   if (global) updateHover(global);
+}
+
+// Выбрать кота; `add` (Shift) — добавить в отряд или убрать из него.
+function selectUnit(id, add) {
+  if (!add) selectedUnits = [id];
+  else if (selectedUnits.includes(id)) selectedUnits = selectedUnits.filter((u) => u !== id);
+  else selectedUnits.push(id);
+  updateSelectionOverlay();
 }
 
 // режим курсора: выбрать кота (Shift — добавить в отряд) / приказать идти
@@ -832,10 +861,7 @@ function command(global, add) {
   if (!t) return;
   const hit = unitAt(t.tx, t.ty);
   if (hit) {
-    if (!add) selectedUnits = [hit];
-    else if (selectedUnits.includes(hit)) selectedUnits = selectedUnits.filter((u) => u !== hit);
-    else selectedUnits.push(hit);
-    updateSelectionOverlay();
+    selectUnit(hit, add);
     return;
   }
   if (!isWalkable(t.tx, t.ty)) return;
@@ -854,14 +880,18 @@ function updateHover(global) {
   // Во время протяжки показываем всю рамку — даже если курсор ушёл за карту.
   const r = dragFrom ? rectOf(dragFrom, dragTo) : t && { x: t.tx, y: t.ty, w: 1, h: 1 };
   if (!r) return;
+  // Одна клетка с котом под ней подсвечивается как выбор, а не как разметка:
+  // отпустив кнопку здесь, игрок выберет кота, и цвет обязан сказать это до
+  // клика, а не после.
+  const overUnit = r.w === 1 && r.h === 1 && (dragFrom ? dragUnit : t && unitAt(t.tx, t.ty));
   const col =
-    mode === 'store'
-      ? COLORS.scrap
-      : mode === 'build'
-        ? buildTile >= 0
+    overUnit || mode === 'cursor'
+      ? COLORS.select
+      : mode === 'store'
+        ? COLORS.scrap
+        : buildTile >= 0
           ? paletteColors[buildTile]
-          : COLORS.erase
-        : COLORS.select;
+          : COLORS.erase;
   hoverRect
     .rect(r.x * TILE, r.y * TILE, r.w * TILE, r.h * TILE)
     .fill({ color: col, alpha: 0.16 })
@@ -877,6 +907,7 @@ app.stage.on('pointerdown', (e) => {
   if (!t) return;
   dragFrom = t;
   dragTo = t;
+  dragUnit = unitAt(t.tx, t.ty);
   updateHover(e.global);
 });
 app.stage.on('pointermove', (e) => {
@@ -983,7 +1014,7 @@ function buildToolbar() {
 
   // Курсор — вне разделов: это не инструмент в ряду прочих, а состояние «ничего
   // не размечаю», и оно нужно из любого раздела.
-  const cursorBtn = mkTool('<span class="sw sw-cursor"></span><span>Курсор</span>', () =>
+  cursorBtn = mkTool('<span class="sw sw-cursor"></span><span>Курсор</span>', () =>
     selectCursor(cursorBtn),
   );
   el.appendChild(cursorBtn);
