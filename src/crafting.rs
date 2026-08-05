@@ -55,9 +55,8 @@ pub(crate) fn assign_craft(
     mut orders: Query<(Entity, &mut Craft)>,
     stacks: Query<(Entity, &Position, &Stack)>,
     free_cats: Query<
-        (Entity, &Position),
+        (Entity, &UnitId, &Position),
         (
-            With<UnitId>,
             Without<Assignment>,
             Without<Haul>,
             Without<Rest>,
@@ -96,14 +95,17 @@ pub(crate) fn assign_craft(
             }
         }
 
+        // При равном расстоянии — по `id` кота, а не по порядку сущностей:
+        // обход ECS зависит от истории вставок (§11).
         let chosen = free_cats
             .iter()
-            .filter_map(|(cat_e, pos)| {
+            .filter_map(|(cat_e, id, pos)| {
                 let reach = Reach::all(&map, (pos.x, pos.y));
-                shop_spot(&map, &tiles, &reach).map(|(spot, steps)| (steps, cat_e, spot, reach))
+                shop_spot(&map, &tiles, &reach)
+                    .map(|(spot, steps)| (steps, id.0.as_str(), cat_e, spot, reach))
             })
-            .min_by_key(|&(steps, ..)| steps);
-        let Some((_, cat_e, spot, reach)) = chosen else {
+            .min_by_key(|&(steps, id, ..)| (steps, id));
+        let Some((_, _, cat_e, spot, reach)) = chosen else {
             continue; // некому взяться или до мастерской не дойти
         };
 

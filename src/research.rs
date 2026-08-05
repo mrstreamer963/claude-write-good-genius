@@ -48,9 +48,8 @@ pub(crate) fn assign_research(
     mut commands: Commands,
     mut topics: Query<(Entity, &mut Research)>,
     free_cats: Query<
-        (Entity, &Position, Option<&Skills>),
+        (Entity, &UnitId, &Position, Option<&Skills>),
         (
-            With<UnitId>,
             Without<Assignment>,
             Without<Haul>,
             Without<Rest>,
@@ -79,17 +78,21 @@ pub(crate) fn assign_research(
         };
 
         // Допуск отсекает исполнителей, расстояние выбирает из оставшихся.
+        // При равном расстоянии — по `id` кота, а не по порядку сущностей:
+        // обход ECS зависит от истории вставок (§11), и та же пара котов после
+        // загрузки сохранения решилась бы иначе.
         let chosen = free_cats
             .iter()
-            .filter(|(_, _, skills)| {
+            .filter(|(_, _, _, skills)| {
                 science.map_or(0, |s| level_of(&skill_rules, *skills, s)) >= rule.level
             })
-            .filter_map(|(cat_e, pos, _)| {
+            .filter_map(|(cat_e, id, pos, _)| {
                 let reach = Reach::all(&map, (pos.x, pos.y));
-                lab_spot(&map, &tiles, &reach).map(|(spot, steps)| (steps, cat_e, spot, reach))
+                lab_spot(&map, &tiles, &reach)
+                    .map(|(spot, steps)| (steps, id.0.as_str(), cat_e, spot, reach))
             })
-            .min_by_key(|&(steps, ..)| steps);
-        let Some((_, cat_e, spot, reach)) = chosen else {
+            .min_by_key(|&(steps, id, ..)| (steps, id));
+        let Some((_, _, cat_e, spot, reach)) = chosen else {
             continue; // некому взяться или до лаборатории не дойти
         };
 

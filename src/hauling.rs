@@ -56,9 +56,8 @@ pub(crate) fn assign_hauls(
     mut deals: Query<(Entity, &mut Deal)>,
     stacks: Query<(&Position, &Stack)>,
     free_cats: Query<
-        (Entity, &Position, Option<&Carrying>),
+        (Entity, &UnitId, &Position, Option<&Carrying>),
         (
-            With<UnitId>,
             Without<Assignment>,
             Without<Haul>,
             Without<Rest>,
@@ -111,23 +110,42 @@ pub(crate) fn assign_hauls(
     if needy.is_empty() {
         return;
     }
+    // Все три списка приходят в порядке обхода ECS, а он зависит от истории
+    // вставок (§11). Жадный выбор ниже при равной длине маршрута берёт первую
+    // пару, поэтому порядок протекал бы в поведение: та же база после загрузки
+    // сохранения повезла бы лом иначе (§12.45). Сортируем входы — адресаты и
+    // кучи по клетке, коты по `id` (как в `assign_equip`, §12.34). Тип в ключе
+    // кучи нужен потому, что на одной клетке лежат кучи разных типов (§12.21),
+    // а флаг продажи — потому, что сделка адресуется шлюзом, на котором может
+    // стоять и чертёж.
+    needy.sort_unstable_by_key(|&(_, (x, y), _, _, sale)| (y, x, sale));
 
     let map = &*map;
-    let mut idle: Vec<(Entity, Option<usize>, Reach)> = free_cats
+    let mut idle: Vec<(&str, Entity, Option<usize>, Reach)> = free_cats
         .iter()
-        .map(|(e, p, load)| (e, load.map(|l| l.item), Reach::all(map, (p.x, p.y))))
+        .map(|(e, id, p, load)| {
+            (
+                id.0.as_str(),
+                e,
+                load.map(|l| l.item),
+                Reach::all(map, (p.x, p.y)),
+            )
+        })
         .collect();
+    idle.sort_unstable_by_key(|&(id, ..)| id);
 
     // Обходы от куч нужны только пустым котам — гружёный идёт сразу на площадку.
-    let piles: Vec<((i32, i32), usize, Reach)> = if idle.iter().any(|(_, load, _)| load.is_none()) {
-        stacks
-            .iter()
-            .filter(|(_, s)| s.count > 0)
-            .map(|(p, s)| ((p.x, p.y), s.item, Reach::all(map, (p.x, p.y))))
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let mut piles: Vec<((i32, i32), usize, Reach)> =
+        if idle.iter().any(|(_, _, load, _)| load.is_none()) {
+            stacks
+                .iter()
+                .filter(|(_, s)| s.count > 0)
+                .map(|(p, s)| ((p.x, p.y), s.item, Reach::all(map, (p.x, p.y))))
+                .collect()
+        } else {
+            Vec::new()
+        };
+    piles.sort_unstable_by_key(|&((x, y), item, _)| (y, x, item));
     let piles: &[((i32, i32), usize, Reach)] = &piles;
 
     while !idle.is_empty() && !needy.is_empty() {
@@ -137,7 +155,7 @@ pub(crate) fn assign_hauls(
         let chosen = idle
             .iter()
             .enumerate()
-            .flat_map(|(ci, (_, loaded, reach))| {
+            .flat_map(|(ci, (_, _, loaded, reach))| {
                 needy
                     .iter()
                     .enumerate()
@@ -168,7 +186,7 @@ pub(crate) fn assign_hauls(
             break;
         };
 
-        let (cat_e, _, reach) = idle.remove(ci);
+        let (_, cat_e, _, reach) = idle.remove(ci);
         let (target_e, _, _, _, sale) = needy.remove(ni);
         let path = reach.path_to(goal.0, goal.1).unwrap_or_default();
         // Claim у обоих на адресате и по одному носильщику за раз: у площадки
@@ -235,9 +253,8 @@ pub(crate) fn assign_tidy(
     mut marks: Query<(Entity, &Position, &mut ToStore)>,
     stacks: Query<(&Position, &Stack)>,
     free_cats: Query<
-        (Entity, &Position, Option<&Carrying>),
+        (Entity, &UnitId, &Position, Option<&Carrying>),
         (
-            With<UnitId>,
             Without<Assignment>,
             Without<Haul>,
             Without<Rest>,
@@ -269,11 +286,11 @@ pub(crate) fn assign_tidy(
 
     // Гружёные коты: каждому — ближайший склад со свободным местом. Драться за
     // клетку им незачем, ёмкость проверяется ещё раз при сдаче.
-    let mut empty: Vec<(Entity, Reach)> = Vec::new();
-    for (cat_e, pos, load) in &free_cats {
+    let mut empty: Vec<(&str, Entity, Reach)> = Vec::new();
+    for (cat_e, id, pos, load) in &free_cats {
         let reach = Reach::all(map, (pos.x, pos.y));
         if load.is_none() {
-            empty.push((cat_e, reach));
+            empty.push((id.0.as_str(), cat_e, reach));
             continue;
         }
         if let Some((cell, _)) = nearest_store(map, &rules, &reach, &stock) {
@@ -292,12 +309,18 @@ pub(crate) fn assign_tidy(
         .filter(|(_, _, mark)| mark.hauler.is_none())
         .map(|(e, p, _)| (e, (p.x, p.y)))
         .collect();
+    // Порядок обхода ECS в поведение протекать не должен (§11): при равном
+    // расстоянии жадный выбор берёт первую пару. Коты — по `id`, кучи — по
+    // клетке; помеченных куч разных типов на одной клетке бывает несколько
+    // (§12.21), поэтому в ключе ещё и сущность.
+    empty.sort_unstable_by_key(|&(id, ..)| id);
+    open.sort_unstable_by_key(|&(e, (x, y))| (y, x, e.index()));
 
     while !empty.is_empty() && !open.is_empty() {
         let chosen = empty
             .iter()
             .enumerate()
-            .flat_map(|(ci, (_, reach))| {
+            .flat_map(|(ci, (_, _, reach))| {
                 open.iter().enumerate().filter_map(move |(oi, &(_, xy))| {
                     reach.dist_at(xy.0, xy.1).map(|d| (d, ci, oi, xy))
                 })
@@ -307,7 +330,7 @@ pub(crate) fn assign_tidy(
             break;
         };
 
-        let (cat_e, reach) = empty.remove(ci);
+        let (_, cat_e, reach) = empty.remove(ci);
         let (pile_e, _) = open.remove(oi);
         let path = reach.path_to(goal.0, goal.1).unwrap_or_default();
         if let Ok((_, _, mut mark)) = marks.get_mut(pile_e) {

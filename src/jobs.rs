@@ -89,9 +89,8 @@ pub(crate) fn assign_jobs(
     mut blueprints: Query<(Entity, &mut Blueprint)>,
     cats: Query<&Position, With<UnitId>>,
     free_cats: Query<
-        (Entity, &Position),
+        (Entity, &UnitId, &Position),
         (
-            With<UnitId>,
             Without<Assignment>,
             Without<Haul>,
             Without<Rest>,
@@ -143,14 +142,21 @@ pub(crate) fn assign_jobs(
     if open.is_empty() {
         return;
     }
+    // Оба списка приходят в порядке обхода ECS, а он зависит от истории
+    // вставок (§11). Жадный выбор ниже берёт при равном расстоянии первую
+    // пару, поэтому порядок протекал бы в поведение: та же база после
+    // загрузки сохранения раздала бы работу иначе. Сортируем входы — коты по
+    // `id` (как в `assign_equip`, §12.34), чертежи по клетке.
+    open.sort_unstable_by_key(|&(_, (x, y), _)| (y, x));
 
     // Достижимость считаем по разу на кота: одного обхода хватает, чтобы
     // сравнить между собой все доступные ему места работы.
     let (map, front) = (&*map, front.as_ref());
-    let mut idle: Vec<(Entity, Reach)> = free_cats
+    let mut idle: Vec<(&str, Entity, Reach)> = free_cats
         .iter()
-        .map(|(e, p)| (e, Reach::all(map, (p.x, p.y))))
+        .map(|(e, id, p)| (id.0.as_str(), e, Reach::all(map, (p.x, p.y))))
         .collect();
+    idle.sort_unstable_by_key(|&(id, ..)| id);
 
     // Жадно разбираем самые дешёвые пары (кот, чертёж). Раздача в порядке
     // самих чертежей гнала кота с только что законченной клетки через
@@ -159,7 +165,7 @@ pub(crate) fn assign_jobs(
         let chosen = idle
             .iter()
             .enumerate()
-            .flat_map(|(ci, (_, reach))| {
+            .flat_map(|(ci, (_, _, reach))| {
                 open.iter()
                     .enumerate()
                     .filter_map(move |(oi, &(_, bp_xy, bp_tile))| {
@@ -173,7 +179,7 @@ pub(crate) fn assign_jobs(
             break;
         };
 
-        let (cat_e, reach) = idle.remove(ci);
+        let (_, cat_e, reach) = idle.remove(ci);
         let (bp_e, _, _) = open.remove(oi);
         let path = reach.path_to(spot.0, spot.1).unwrap_or_default();
         if let Ok((_, mut bp)) = blueprints.get_mut(bp_e) {
