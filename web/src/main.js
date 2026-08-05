@@ -1314,7 +1314,9 @@ function buildToolbar() {
       .map((it, ii) => ({ it, ii }))
       .filter(({ it }) => list.includes(it.id));
     if (!traded.length) return;
-    const sec = mkSection(el, `Торговля: ${fac.label || fac.id}`);
+    // «Рынок», а не «Торговля»: в одну строку заголовка помещается только он, а
+    // перенос делал бы эти два раздела вдвое выше всех остальных.
+    const sec = mkSection(el, `Рынок: ${fac.label || fac.id}`);
     for (const { it, ii } of traded) {
       for (const buying of [true, false]) {
         const b = mkTool(

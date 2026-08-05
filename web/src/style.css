@@ -151,6 +151,10 @@ main#stage canvas { display: block; }
   align-items: center;
   justify-content: space-between;
   width: 100%;
+  /* У `<button>` браузерный `text-align: center`, и однословные заголовки это
+     не выдают: `space-between` и так прижимает их влево. Видно становится на
+     первом же длинном — он переносится, и обе строки встают по центру. */
+  text-align: left;
   padding: 6px 8px;
   border: 1px solid transparent;
   border-radius: 8px;
