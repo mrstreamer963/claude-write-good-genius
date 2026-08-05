@@ -443,19 +443,6 @@ impl Sim {
         Some(((pos.x, pos.y), aim.item))
     }
 
-    /// Какого рода задача подвоза у кота: "site" / "sale" / "store" / "".
-    fn haul_kind_of(&mut self, unit: &str) -> &'static str {
-        let mut q = self.world.query::<(&UnitId, Option<&Haul>)>();
-        q.iter(&self.world)
-            .find(|(id, _)| id.0 == unit)
-            .and_then(|(_, h)| h)
-            .map_or("", |h| match h.to {
-                HaulTo::Site(_) => "site",
-                HaulTo::Sale(_) => "sale",
-                HaulTo::Store(_) => "store",
-            })
-    }
-
     fn has_haul(&mut self, unit: &str) -> bool {
         let mut q = self.world.query::<(&UnitId, Option<&Haul>)>();
         q.iter(&self.world)
