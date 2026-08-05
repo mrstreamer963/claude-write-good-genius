@@ -14,6 +14,10 @@ use crate::ruleset::{
 pub(crate) struct MapMeta {
     pub(crate) width: i32,
     pub(crate) height: i32,
+    /// Сколько тиков в сутках (§12.46). Едет один раз, как палитры, и нужен
+    /// ровно для подписи: «день 12» вместо «тик 42327». Ядро календаря не
+    /// считает — это единственное место, где число вообще всплывает.
+    pub(crate) day: u64,
     pub(crate) palette: Vec<TileDef>,
     /// Палитра предметов: тип в снапшоте — это её индекс (§12.21).
     pub(crate) items: Vec<ItemDef>,

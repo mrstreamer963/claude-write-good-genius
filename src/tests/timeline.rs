@@ -199,3 +199,61 @@ fn the_shipped_ruleset_has_a_readable_note() {
     );
     assert!(!sim.knows_tech("materials"), "и база к нему пока не готова");
 }
+
+/// Сутки на боевом рулсете — это цикл кота, а не круглое число с потолка
+/// (§12.4, §12.46).
+///
+/// День нигде не участвует в механике: ядро о календаре не знает, число ходит
+/// только в подпись. Ровно поэтому его легко разойтись с содержимым — и ловится
+/// это здесь. Проверяем три вещи: календарь вообще есть; кот спит **раз в
+/// сутки**, а не дважды и не через день; даты записки идут по возрастанию.
+#[test]
+fn the_shipped_ruleset_day_is_the_cats_cycle() {
+    let sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
+
+    let day = sim.day;
+    assert!(day > 0, "суток нет — вид покажет сырой тик вместо дня");
+
+    // Полный цикл: от полного заряда до порога усталости и обратно на лучшей
+    // лежанке, какая в палитре есть.
+    let needs = sim.world.resource::<NeedRules>();
+    let best_rest = sim
+        .world
+        .resource::<TileRules>()
+        .0
+        .iter()
+        .map(|t| t.rest)
+        .max()
+        .unwrap_or(0);
+    assert!(best_rest > 0, "лежанок в палитре нет — коту негде спать");
+
+    let awake = needs.max - needs.tired;
+    let asleep = awake / best_rest;
+    let cycle = u64::try_from(awake + asleep).expect("цикл не отрицателен");
+
+    assert!(
+        cycle <= day,
+        "цикл кота ({cycle}) длиннее суток ({day}): кот спит реже, чем раз в день, \
+         и «день» перестаёт быть его ритмом",
+    );
+    assert!(
+        cycle * 2 > day,
+        "цикл кота ({cycle}) меньше половины суток ({day}): кот успевает выспаться \
+         дважды за день, и сутки взяты с потолка",
+    );
+
+    // Две даты в один тик игрок прочтёт как одну, а убывающие — как ошибку
+    // записки: она читается сверху вниз.
+    let dates: Vec<u64> = sim
+        .world
+        .resource::<TimelineRules>()
+        .0
+        .iter()
+        .map(|e| e.at)
+        .collect();
+    assert!(dates.len() >= 2, "записки нет — забег ничем не размечен");
+    assert!(
+        dates.windows(2).all(|w| w[0] < w[1]),
+        "даты записки не возрастают строго: {dates:?}",
+    );
+}

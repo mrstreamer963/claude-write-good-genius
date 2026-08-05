@@ -66,6 +66,10 @@ pub struct Sim {
     pub(crate) timeline: Vec<EventDef>,
     pub(crate) width: i32,
     pub(crate) height: i32,
+    /// Сколько тиков в сутках (§12.46). Лежит рядом с размерами карты и по той
+    /// же причине: это описание мира для вида, а не правило — ни одна система
+    /// его не читает.
+    pub(crate) day: u64,
     /// Отпечаток рулсета, на котором собран этот мир (§12.45). Лежит здесь, а
     /// не в ресурсах, ровно потому, что миру он не нужен: он нужен снимку —
     /// чтобы тот не загрузился в мир, собранный по другим правилам.
@@ -791,6 +795,7 @@ impl Sim {
             timeline: rs.timeline,
             width: w,
             height: h,
+            day: rs.day,
             ruleset: fingerprint(ruleset_yaml),
         })
     }
@@ -830,6 +835,7 @@ impl Sim {
         let meta = MapMeta {
             width: self.width,
             height: self.height,
+            day: self.day,
             palette: self.palette.clone(),
             items: self.items.clone(),
             skills: self.skills.clone(),

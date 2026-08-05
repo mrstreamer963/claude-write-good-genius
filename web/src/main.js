@@ -297,8 +297,44 @@ function drawBlueprints(list) {
   bpLayer.addChild(g);
 }
 
+// --- календарь (§12.46) ----------------------------------------------------
+//
+// Сутки — подача, а не механика: ядро о них не знает, тик остаётся
+// единственными часами мира (§12.28). Число тиков в сутках приезжает в `meta`
+// один раз, как палитры, и разворачивается здесь.
+
+/// Номер суток, считая с первых. Ноль в `meta.day` = календаря нет.
+function dayOf(tick) {
+  const len = meta?.day ?? 0;
+  return len > 0 ? Math.floor(tick / len) + 1 : 0;
+}
+
+/// Время внутри суток. Сутки растягиваются на 24 часа независимо от того,
+/// сколько в них тиков, — иначе подпись пришлось бы менять вместе с балансом.
+function clockOf(tick) {
+  const len = meta?.day ?? 0;
+  if (len <= 0) return '';
+  const part = (tick % len) / len;
+  const mins = Math.floor(part * 24 * 60);
+  return `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`;
+}
+
+/// «2 дня», «5 дней», «21 день» — без этого записка читается как машинный лог.
+function days(n) {
+  const tens = n % 100;
+  const ones = n % 10;
+  if (tens >= 11 && tens <= 14) return `${n} дней`;
+  if (ones === 1) return `${n} день`;
+  if (ones >= 2 && ones <= 4) return `${n} дня`;
+  return `${n} дней`;
+}
+
 function renderSnapshot(snap) {
-  tickEl.textContent = snap.tick;
+  // Сырой тик остаётся под наведением: он нужен для отладки и для сверки с
+  // тестами, которые меряют время тиками и ничем другим мерить не могут.
+  const day = dayOf(snap.tick);
+  tickEl.textContent = day ? `${day}, ${clockOf(snap.tick)}` : snap.tick;
+  tickEl.parentElement.title = `тик ${snap.tick}`;
   drawScrap(snap.stacks);
   drawBlueprints(snap.blueprints);
   // Всё добро мира по типам: и лежащее, и уже поднятое — иначе счётчик
@@ -410,7 +446,7 @@ function renderSnapshot(snap) {
   syncTopicButtons(snap.topics);
   syncRecipeButtons(snap.recipes);
   syncTileButtons(snap.techs);
-  renderNotePanel(snap.notes);
+  renderNotePanel(snap.notes, snap.tick);
 }
 
 function createUnit(e) {
@@ -883,21 +919,34 @@ function renderDealPanel(list) {
 // Записка (§4.6, §12.28). Что известно о будущем — решает ядро: пока детали не
 // проступили, их в снапшоте просто нет, и показывать тут нечего. Прошедшее не
 // стирается — записка заодно и журнал: видно, чем кончился каждый срок.
-function renderNotePanel(list) {
+function renderNotePanel(list, tick = 0) {
   const notes = list ?? [];
   if (!notes.length || !meta) {
     noteEl.hidden = true;
     return;
   }
+  const today = dayOf(tick);
   const rows = notes.map((n) => {
+    // Срок в днях, а не в тиках: «через 5780» не переводится в решение, а
+    // «послезавтра» переводится. Считаем по номеру суток, а не делением
+    // остатка, — иначе событие в конце дня показывалось бы «сегодня» до
+    // самого утра.
+    const until = dayOf(n.at) - today;
     const when = n.done
       ? n.succeeded
         ? '<span class="good">успели</span>'
         : '<span class="warn">не успели</span>'
-      : `через ${n.left}`;
+      : !today
+        ? `через ${n.left}`
+        : until <= 0
+          ? 'сегодня'
+          : until === 1
+            ? 'завтра'
+            : `через ${days(until)}`;
+    const stamp = today ? `день ${dayOf(n.at)} — ` : '';
     const parts = [
       `<div class="cat-row"><span>${esc(n.label)}</span><b>${when}</b></div>`,
-      `<div class="cat-sub">${esc(n.detail || n.hint)}</div>`,
+      `<div class="cat-sub">${stamp}${esc(n.detail || n.hint)}</div>`,
     ];
     // Требование показываем, только пока событие впереди: после срока важно уже
     // не «чего не хватало», а чем всё кончилось.
@@ -911,6 +960,24 @@ function renderNotePanel(list) {
     }
     return `<div class="row${n.done ? ' past' : ''}">${parts.join('')}</div>`;
   });
+
+  // Записка кончилась — но кончился не мир, а предзнание (§4.6, §12.46).
+  // Итог договаривает сама записка, потому что она же и журнал; модального
+  // экрана нет намеренно: песочница не прерывается (§10), играть можно дальше.
+  if (notes.every((n) => n.done)) {
+    const kept = notes.filter((n) => n.succeeded).length;
+    const last = Math.max(...notes.map((n) => n.at));
+    rows.push(
+      `<div class="row past">` +
+        `<div class="cat-row"><span>Записка кончилась</span>` +
+        `<b>${kept} из ${notes.length}</b></div>` +
+        `<div class="cat-sub">` +
+        (today ? `день ${dayOf(last)} — ` : '') +
+        `дальше дат нет: база живёт вслепую</div>` +
+        `</div>`,
+    );
+  }
+
   noteEl.innerHTML = `<div class="cat-name">Записка</div>${rows.join('')}`;
   noteEl.hidden = false;
 }
