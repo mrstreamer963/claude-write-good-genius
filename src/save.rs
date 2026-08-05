@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 2;
+pub(crate) const FORMAT: u32 = 4;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -250,11 +250,13 @@ pub(crate) struct EntityDto {
 
     // Приказ игрока и одиннадцать задач общего слоя.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) order: Option<(i32, i32, u64)>,
+    pub(crate) order: Option<(i32, i32, Option<u64>)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) assignment: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) haul: Option<HaulDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) aim: Option<AimDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) rest: Option<RestDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -285,8 +287,9 @@ pub(crate) struct EntityDto {
     pub(crate) blueprint: Option<BlueprintDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) stack: Option<(usize, i32)>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) to_store: Option<ToStoreDto>,
+    /// Пометка «на склад» — чистый флаг: носильщика она не держит (§12.48).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) to_store: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) research: Option<ResearchDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -303,6 +306,14 @@ pub(crate) enum HaulDto {
     Site(u32),
     Sale(u32),
     Store(Option<u32>),
+}
+
+/// Наводка носильщика: за какой кучей и за каким типом он пошёл (§12.49).
+/// Куча — номер сущности, как и все ссылки снимка.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct AimDto {
+    pub(crate) pile: u32,
+    pub(crate) item: usize,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -324,11 +335,6 @@ pub(crate) struct HealingDto {
 }
 
 #[derive(Serialize, Deserialize)]
-pub(crate) struct ToStoreDto {
-    pub(crate) hauler: Option<u32>,
-}
-
-#[derive(Serialize, Deserialize)]
 pub(crate) struct BlueprintDto {
     pub(crate) x: i32,
     pub(crate) y: i32,
@@ -336,7 +342,6 @@ pub(crate) struct BlueprintDto {
     pub(crate) progress: i32,
     pub(crate) assignee: Option<u32>,
     pub(crate) delivered: Vec<(usize, i32)>,
-    pub(crate) hauler: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -366,7 +371,6 @@ pub(crate) struct DealDto {
     pub(crate) buying: bool,
     pub(crate) left: i32,
     pub(crate) delivered: i32,
-    pub(crate) hauler: Option<u32>,
     pub(crate) gate: (i32, i32),
 }
 
@@ -420,11 +424,15 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
 
                 order: e.get::<Order>().map(|o| (o.x, o.y, o.tried_version)),
                 assignment: e.get::<Assignment>().and_then(|a| at(a.0)),
-                haul: e.get::<Haul>().map(|h| match h.0 {
+                haul: e.get::<Haul>().map(|h| match h.to {
                     HaulTo::Site(t) => HaulDto::Site(at(t).unwrap_or(u32::MAX)),
                     HaulTo::Sale(t) => HaulDto::Sale(at(t).unwrap_or(u32::MAX)),
                     HaulTo::Store(t) => HaulDto::Store(t.and_then(at)),
                 }),
+                aim: e
+                    .get::<Haul>()
+                    .and_then(|h| h.aim)
+                    .and_then(|a| at(a.pile).map(|pile| AimDto { pile, item: a.item })),
                 rest: e.get::<Rest>().map(|r| RestDto { spot: r.spot }),
                 study: e.get::<Study>().map(|s| StudyDto {
                     skill: s.skill,
@@ -456,12 +464,9 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                     progress: b.progress,
                     assignee: b.assignee.and_then(at),
                     delivered: b.delivered.clone(),
-                    hauler: b.hauler.and_then(at),
                 }),
                 stack: e.get::<Stack>().map(|s| (s.item, s.count)),
-                to_store: e.get::<ToStore>().map(|t| ToStoreDto {
-                    hauler: t.hauler.and_then(at),
-                }),
+                to_store: e.contains::<ToStore>(),
                 research: e.get::<Research>().map(|r| ResearchDto {
                     def: r.def,
                     progress: r.progress,
@@ -484,7 +489,6 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                     buying: d.buying,
                     left: d.left,
                     delivered: d.delivered,
-                    hauler: d.hauler.and_then(at),
                     gate: d.gate,
                 }),
                 mission: e.get::<Mission>().map(|m| MissionDto {
@@ -649,8 +653,14 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
                 HaulDto::Sale(n) => at(n).map(HaulTo::Sale),
                 HaulDto::Store(n) => Some(HaulTo::Store(n.and_then(at))),
             };
+            // Наводка без кучи — не беда: кот дойдёт и возьмёт что под ногами,
+            // а раздатчик пересчитает обещания (§12.49).
+            let aim = dto
+                .aim
+                .as_ref()
+                .and_then(|a| at(a.pile).map(|pile| Aim { pile, item: a.item }));
             if let Some(to) = to {
-                e.insert(Haul(to));
+                e.insert(Haul { to, aim });
             }
         }
         if let Some(r) = &dto.rest {
@@ -707,16 +717,13 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
                 progress: b.progress,
                 assignee: b.assignee.and_then(at),
                 delivered: b.delivered.clone(),
-                hauler: b.hauler.and_then(at),
             });
         }
         if let Some((item, count)) = dto.stack {
             e.insert(Stack { item, count });
         }
-        if let Some(t) = &dto.to_store {
-            e.insert(ToStore {
-                hauler: t.hauler.and_then(at),
-            });
+        if dto.to_store {
+            e.insert(ToStore);
         }
         if let Some(r) = &dto.research {
             e.insert(Research {
@@ -745,7 +752,6 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
                 buying: d.buying,
                 left: d.left,
                 delivered: d.delivered,
-                hauler: d.hauler.and_then(at),
                 gate: d.gate,
             });
         }

@@ -248,11 +248,13 @@ impl Sim {
     }
 
     /// `tried_version` приказа, если приказ ещё висит.
+    /// Отметка провалившейся попытки: `None` — приказа нет либо последняя
+    /// попытка удалась (маршрут проложен).
     fn order_tried_version(&mut self, unit: &str) -> Option<u64> {
         let mut q = self.world.query::<(&UnitId, Option<&Order>)>();
         q.iter(&self.world)
             .find(|(id, _)| id.0 == unit)
-            .and_then(|(_, o)| o.map(|o| o.tried_version))
+            .and_then(|(_, o)| o.and_then(|o| o.tried_version))
     }
 
     fn has_assignment(&mut self, unit: &str) -> bool {
@@ -427,6 +429,31 @@ impl Sim {
         q.iter(&self.world)
             .find(|bp| (bp.x, bp.y) == (x, y))
             .map_or(0, |bp| delivered_of(&bp.delivered, item))
+    }
+
+    /// Куда кот нацелился за грузом: клетка кучи и тип (§12.49). `None` — идёт
+    /// с грузом, идёт на склад или не несёт вовсе.
+    fn haul_aim_of(&mut self, unit: &str) -> Option<((i32, i32), usize)> {
+        let mut q = self.world.query::<(&UnitId, &Haul)>();
+        let aim = q
+            .iter(&self.world)
+            .find(|(id, _)| id.0 == unit)
+            .and_then(|(_, h)| h.aim)?;
+        let pos = self.world.get::<Position>(aim.pile)?;
+        Some(((pos.x, pos.y), aim.item))
+    }
+
+    /// Какого рода задача подвоза у кота: "site" / "sale" / "store" / "".
+    fn haul_kind_of(&mut self, unit: &str) -> &'static str {
+        let mut q = self.world.query::<(&UnitId, Option<&Haul>)>();
+        q.iter(&self.world)
+            .find(|(id, _)| id.0 == unit)
+            .and_then(|(_, h)| h)
+            .map_or("", |h| match h.to {
+                HaulTo::Site(_) => "site",
+                HaulTo::Sale(_) => "sale",
+                HaulTo::Store(_) => "store",
+            })
     }
 
     fn has_haul(&mut self, unit: &str) -> bool {

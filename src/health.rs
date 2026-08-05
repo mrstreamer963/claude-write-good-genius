@@ -87,10 +87,8 @@ pub(crate) fn assign_heal(
         (With<UnitId>, Without<Healing>, Without<Away>),
     >,
     mut blueprints: Query<&mut Blueprint>,
-    mut marks: Query<&mut ToStore>,
     mut topics: Query<&mut Research>,
     mut orders: Query<&mut Craft>,
-    mut deals: Query<&mut Deal>,
 ) {
     if rules.max <= 0 {
         return; // ранений в мире нет
@@ -130,10 +128,8 @@ pub(crate) fn assign_heal(
             cat_e,
             work,
             &mut blueprints,
-            &mut marks,
             &mut topics,
             &mut orders,
-            &mut deals,
         );
         // Койка вешается строго после освобождения задачи: `release_work`
         // снимает `Path`, а команды применяются в порядке добавления.

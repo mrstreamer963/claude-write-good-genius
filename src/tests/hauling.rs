@@ -228,3 +228,125 @@ fn material_returned_into_a_void_settles_onto_the_floor() {
     assert_eq!(sim.scrap_total(), before, "он съехал на пол, а не пропал");
     assert!(sim.scrap_is_on_floor(), "и лежит на проходимой клетке");
 }
+
+// --- сколько носильщиков на одну площадку (§12.48) -------------------------
+
+/// Дорогую площадку снабжают несколько котов разом: ходка на кота, пока
+/// недостача больше обещанного.
+///
+/// До §12.48 у чертежа был claim на одного носильщика, и тайл в восемь ломов
+/// означал восемь ходок подряд одним котом при свободных соседях.
+#[test]
+fn an_expensive_site_gets_several_haulers() {
+    let mut sim = sim_from(&["##########", "#a.b.....#", "##########"]);
+    sim.set_cost(0, 8);
+    sim.set_carry("a", 4);
+    sim.set_carry("b", 4);
+    sim.put_scrap(5, 1, 8);
+    assert!(sim.add_blueprint(9, 1, 0));
+
+    sim.tick_n(1);
+    assert!(sim.has_haul("a"), "поехал 'a'");
+    assert!(sim.has_haul("b"), "и 'b' — недостачи хватает на обоих");
+}
+
+/// А дешёвую — один: пол в один лом это одна ходка, и второй кот приехал бы к
+/// уже снабжённой площадке.
+#[test]
+fn a_cheap_site_takes_only_one_hauler() {
+    let mut sim = sim_from(&["##########", "#a.b.....#", "##########"]);
+    sim.set_cost(0, 1);
+    sim.set_carry("a", 4);
+    sim.set_carry("b", 4);
+    sim.put_scrap(5, 1, 8);
+    assert!(sim.add_blueprint(9, 1, 0));
+
+    sim.tick_n(1);
+    let went = ["a", "b"].iter().filter(|c| sim.has_haul(c)).count();
+    assert_eq!(went, 1, "поехал ровно один");
+}
+
+/// Двое на одну площадку не привозят лишнего: берущий с кучи вычитает груз,
+/// который уже везёт другой, — иначе излишек осел бы в лапах, где игроку его
+/// не видно (§12.16).
+#[test]
+fn two_haulers_bring_exactly_what_is_missing() {
+    let mut sim = sim_from(&["##########", "#a.b.....#", "##########"]);
+    sim.set_cost(0, 6);
+    sim.set_carry("a", 4);
+    sim.set_carry("b", 4);
+    sim.put_scrap(5, 1, 12);
+    let before = sim.scrap_total();
+    assert!(sim.add_blueprint(9, 1, 0));
+
+    sim.tick_n(300);
+    assert_eq!(sim.tile(9, 1), 0, "площадка достроена");
+    assert_eq!(sim.scrap_total(), before - 6, "потрачено ровно шесть");
+    for cat in ["a", "b"] {
+        assert_eq!(sim.carrying_of(cat), 0, "в лапах у {cat} пусто");
+    }
+}
+
+// --- наводка на кучу (§12.49) ----------------------------------------------
+
+/// Двое, снабжающие одну площадку с ценой из двух типов, идут к разным кучам.
+///
+/// Тип кот выбирает у кучи, под ногами (§12.21), поэтому без наводки оба шли к
+/// ближайшей — за ломом, — и второй возвращался пустым: деталь всё равно нужна.
+#[test]
+fn two_haulers_for_one_site_aim_at_different_piles() {
+    let mut sim = sim_from(&["##########", "#a.b.....#", "##########"]);
+    sim.set_cost_items(0, &[(0, 2), (1, 2)]);
+    sim.set_carry("a", 4);
+    sim.set_carry("b", 4);
+    sim.put_item(5, 1, 0, 4); // лом
+    sim.put_item(6, 1, 1, 4); // деталь
+    assert!(sim.add_blueprint(9, 1, 0));
+
+    sim.tick_n(1);
+    let (x, y) = (sim.haul_aim_of("a"), sim.haul_aim_of("b"));
+    assert!(x.is_some() && y.is_some(), "поехали оба");
+    assert_ne!(x, y, "и нацелились на разные кучи");
+}
+
+/// Куча, расписанная идущему, второму коту не предлагается — ни в этом тике,
+/// ни в следующих: наводка живёт в задаче и переживает тик.
+#[test]
+fn a_promised_pile_is_not_offered_to_another_cat() {
+    let mut sim = sim_from(&["##########", "#a.b.....#", "##########"]);
+    sim.set_cost(0, 1);
+    sim.set_carry("a", 4);
+    sim.set_carry("b", 4);
+    sim.put_scrap(5, 1, 1); // ровно на одну ходку
+    assert!(sim.add_blueprint(9, 1, 0));
+    assert!(sim.add_blueprint(9, 0, 0), "вторая площадка, тоже за ломом");
+
+    sim.tick_n(1);
+    let went = ["a", "b"].iter().filter(|c| sim.has_haul(c)).count();
+    assert_eq!(went, 1, "куча на одну ходку забирает одного кота");
+
+    sim.tick_n(1);
+    let went = ["a", "b"].iter().filter(|c| sim.has_haul(c)).count();
+    assert_eq!(went, 1, "и на следующем тике второго тоже не зовут");
+}
+
+/// Наводка ничего не обещает: кучу могли разобрать, пока кот шёл. Тогда это
+/// промах ценой ходки — задача снимается, кот свободен, материал цел (§12.15).
+#[test]
+fn a_vanished_pile_is_just_a_missed_trip() {
+    let mut sim = sim_from(&["##########", "#a.......#", "##########"]);
+    sim.set_cost(0, 1);
+    sim.set_carry("a", 4);
+    sim.put_scrap(7, 1, 1);
+    assert!(sim.add_blueprint(9, 1, 0));
+
+    sim.tick_n(1);
+    assert!(sim.has_haul("a"), "поехал за ломом");
+    let before = sim.scrap_total();
+    sim.take_item(7, 1, 0); // кучу убрали из-под носа
+
+    sim.tick_n(20);
+    assert_eq!(sim.scrap_total(), before - 1, "пропала только снятая штука");
+    assert_eq!(sim.carrying_of("a"), 0, "в лапах пусто");
+    assert!(!sim.has_haul("a"), "задача отпущена");
+}

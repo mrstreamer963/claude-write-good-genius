@@ -27,7 +27,6 @@
 use bevy_ecs::prelude::*;
 
 use crate::components::*;
-use crate::hauling::release_claim;
 use crate::map::BaseMap;
 use crate::path::Reach;
 
@@ -36,8 +35,9 @@ const TIRE_PER_TICK: i32 = 1;
 
 /// Кот на нуле бодрости засыпает где стоит, отпустив задачу.
 ///
-/// Чертёж и пометку кучи надо освободить явно: иначе площадка останется
-/// «занятой» спящим и её больше никто не возьмёт.
+/// Чертёж, тему и заказ надо освободить явно: иначе работа останется «занятой»
+/// спящим и её больше никто не возьмёт. Подвоз освобождать нечего — носильщика
+/// у адресата больше не записано (§12.48).
 ///
 /// А вот из **отряда** истощённый не выпадает: состав выбрал игрок, заменить
 /// бойца некем, и вылазка просто ждёт, пока тот выспится (§12.23). Это и есть
@@ -58,10 +58,8 @@ pub(crate) fn collapse_exhausted(
         (With<UnitId>, Without<Rest>, Without<Away>),
     >,
     mut blueprints: Query<&mut Blueprint>,
-    mut marks: Query<&mut ToStore>,
     mut topics: Query<&mut Research>,
     mut orders: Query<&mut Craft>,
-    mut deals: Query<&mut Deal>,
 ) {
     for (cat_e, energy, assignment, haul, researching, crafting, treating) in &cats {
         if energy.0 > 0 {
@@ -72,17 +70,15 @@ pub(crate) fn collapse_exhausted(
             cat_e,
             (assignment, haul, researching, crafting, treating),
             &mut blueprints,
-            &mut marks,
             &mut topics,
             &mut orders,
-            &mut deals,
         );
         // Лежанку упавший не занимает — падает где стоит, а не идёт к месту.
         commands.entity(cat_e).insert(Rest { spot: None });
     }
 }
 
-/// Отпустить всё, за что кот держался: чертёж, кучу, тему, заказ и парту.
+/// Отпустить всё, за что кот держался: чертёж, тему, заказ и парту.
 ///
 /// Одна на два случая, когда усталость забирает кота с работы, —
 /// `collapse_exhausted` (ноль бодрости) и критический порог в `assign_rest`
@@ -109,30 +105,18 @@ pub(crate) fn release_work(
         Option<&Treating>,
     ),
     blueprints: &mut Query<&mut Blueprint>,
-    marks: &mut Query<&mut ToStore>,
     topics: &mut Query<&mut Research>,
     orders: &mut Query<&mut Craft>,
-    deals: &mut Query<&mut Deal>,
 ) {
-    let (assignment, haul, researching, crafting, _treating) = work;
+    // Подвоз (`_haul`) освобождать нечего: сколько котов везут к адресату, видно
+    // по ним самим, и снятого ниже `Haul` достаточно — claim'а, который надо
+    // гасить, у площадки, сделки и кучи больше нет (§12.48). Груз при этом
+    // остаётся в лапах: донесёт следующей ходкой (§12.15).
+    let (assignment, _haul, researching, crafting, _treating) = work;
     if let Some(bp_e) = assignment.map(|a| a.0) {
         if let Ok(mut bp) = blueprints.get_mut(bp_e) {
             bp.assignee = None;
         }
-    }
-    match haul.map(|h| h.0) {
-        Some(HaulTo::Site(bp_e)) => {
-            if let Ok(mut bp) = blueprints.get_mut(bp_e) {
-                bp.hauler = None;
-            }
-        }
-        Some(HaulTo::Sale(deal_e)) => {
-            if let Ok(mut deal) = deals.get_mut(deal_e) {
-                deal.hauler = None;
-            }
-        }
-        Some(HaulTo::Store(pile)) => release_claim(marks, pile),
-        None => {}
     }
     if let Some(mut topic) = researching.and_then(|r| topics.get_mut(r.0).ok()) {
         topic.assignee = None;
@@ -254,10 +238,8 @@ pub(crate) fn assign_rest(
         (With<UnitId>, Without<Path>, Without<Away>, Without<Healing>),
     >,
     mut blueprints: Query<&mut Blueprint>,
-    mut marks: Query<&mut ToStore>,
     mut topics: Query<&mut Research>,
     mut orders: Query<&mut Craft>,
-    mut deals: Query<&mut Deal>,
 ) {
     // Занято и то, к чему идут, и то, на чём лежат: кот, свалившийся прямо на
     // лежанку, места в `Rest` не держит, но занимает его собой.
@@ -293,10 +275,8 @@ pub(crate) fn assign_rest(
                 cat_e,
                 (assignment, haul, researching, crafting, treating),
                 &mut blueprints,
-                &mut marks,
                 &mut topics,
                 &mut orders,
-                &mut deals,
             );
             // Маршрут вешается строго после освобождения задачи: `release_work`
             // снимает `Path`, а команды применяются в порядке добавления.

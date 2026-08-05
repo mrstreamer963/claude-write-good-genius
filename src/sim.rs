@@ -131,7 +131,7 @@ impl Sim {
             return false;
         };
         let bp = self.world.get::<Blueprint>(e);
-        let (assignee, hauler) = (bp.and_then(|b| b.assignee), bp.and_then(|b| b.hauler));
+        let assignee = bp.and_then(|b| b.assignee);
         let delivered: Vec<(usize, i32)> = bp.map(|b| b.delivered.clone()).unwrap_or_default();
         for (item, count) in delivered {
             self.drop_stack(x, y, item, count);
@@ -141,7 +141,15 @@ impl Sim {
                 .entity_mut(cat)
                 .remove::<(Assignment, Path, MoveCooldown)>();
         }
-        if let Some(cat) = hauler {
+        // Носильщиков у площадки может быть несколько, и записаны они не у неё,
+        // а у себя (§12.48): разворачиваем всех, кто вёз сюда.
+        let mut q = self.world.query::<(Entity, &Haul)>();
+        let going: Vec<Entity> = q
+            .iter(&self.world)
+            .filter(|(_, haul)| matches!(haul.to, HaulTo::Site(bp_e) if bp_e == e))
+            .map(|(cat, _)| cat)
+            .collect();
+        for cat in going {
             self.world
                 .entity_mut(cat)
                 .remove::<(Haul, Path, MoveCooldown)>();
@@ -291,24 +299,9 @@ impl Sim {
                 bp.assignee = None;
             }
         }
-        match self.world.get::<Haul>(cat).map(|h| h.0) {
-            Some(HaulTo::Site(bp_e)) => {
-                if let Some(mut bp) = self.world.get_mut::<Blueprint>(bp_e) {
-                    bp.hauler = None;
-                }
-            }
-            Some(HaulTo::Sale(deal_e)) => {
-                if let Some(mut deal) = self.world.get_mut::<Deal>(deal_e) {
-                    deal.hauler = None;
-                }
-            }
-            Some(HaulTo::Store(pile)) => {
-                if let Some(mut mark) = pile.and_then(|e| self.world.get_mut::<ToStore>(e)) {
-                    mark.hauler = None;
-                }
-            }
-            None => {}
-        }
+        // Подвоз освобождать нечего: носильщиков у адресата столько, сколько
+        // котов к нему идёт, и записаны они у себя, а не у него (§12.48). Снять
+        // с кота `Haul` (ниже) — и есть всё освобождение.
         if let Some(topic_e) = self.world.get::<Researching>(cat).map(|r| r.0) {
             if let Some(mut topic) = self.world.get_mut::<Research>(topic_e) {
                 topic.assignee = None;
@@ -901,7 +894,6 @@ impl Sim {
             progress: 0,
             assignee: None,
             delivered: Vec::new(),
-            hauler: None,
         });
         true
     }
@@ -977,7 +969,7 @@ impl Sim {
         let mut q = self.world.query::<(Entity, &Haul, Option<&Carrying>)>();
         let going: Vec<Entity> = q
             .iter(&self.world)
-            .filter(|(_, haul, load)| matches!(haul.0, HaulTo::Store(_)) && load.is_none())
+            .filter(|(_, haul, load)| matches!(haul.to, HaulTo::Store(_)) && load.is_none())
             .map(|(e, ..)| e)
             .collect();
         for e in going {
@@ -1029,7 +1021,7 @@ impl Sim {
                     self.world.entity_mut(e).remove::<ToStore>();
                 }
                 (false, false) => {
-                    self.world.entity_mut(e).insert(ToStore::default());
+                    self.world.entity_mut(e).insert(ToStore);
                 }
                 _ => {}
             }
@@ -1419,7 +1411,6 @@ impl Sim {
             buying,
             left: if buying { lead.max(1) } else { 0 },
             delivered: 0,
-            hauler: None,
             gate,
         });
         true
@@ -1571,10 +1562,14 @@ impl Sim {
         // Приказ сохраняется даже без пути прямо сейчас — `retry_orders`
         // перепроложит маршрут при следующем изменении карты (например, после
         // постройки коридора, открывающего доступ к цели).
+        // Отметку ставим только на неудаче: приказ с найденным маршрутом ещё
+        // ничего не пробовал безуспешно, и если маршрут потом потеряется (сон,
+        // рана, вылазка), `retry_orders` обязан проложить его заново тем же
+        // тиком, не дожидаясь смены карты.
         self.world.entity_mut(entity).insert(Order {
             x,
             y,
-            tried_version: map_version,
+            tried_version: path.is_none().then_some(map_version),
         });
         match path {
             Some(p) => {

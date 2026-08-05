@@ -269,3 +269,79 @@ fn a_tie_over_a_pile_is_broken_by_id() {
         assert!(!sim.has_haul("b"), "и только он");
     }
 }
+
+// --- сколько котов на одну кучу (§12.48) -----------------------------------
+
+/// Большую кучу разбирают несколько котов разом: одна ходка на кота, пока в
+/// куче есть необещанное.
+///
+/// До §12.48 у пометки был claim на одного носильщика, и куча с вылазки или от
+/// каравана превращала базу в одного работника и двух зрителей.
+#[test]
+fn a_big_pile_is_shared_by_several_cats() {
+    let mut sim = sim_from(&["#########", "#a.b.c..#", "####.####", "#########"]);
+    sim.set_capacity(1, 60);
+    sim.force_tile(4, 2, 1);
+    for cat in ["a", "b", "c"] {
+        sim.set_carry(cat, 4);
+    }
+    sim.put_scrap(4, 1, 12); // трижды по четыре лапы
+
+    sim.tick_n(1);
+    for cat in ["a", "b", "c"] {
+        assert!(sim.has_haul(cat), "за кучей пошёл и {cat}");
+    }
+}
+
+/// А маленькую — один: обещанного хватило, и гнать вторую пару лап через
+/// полбазы за пустым местом незачем (§12.34).
+#[test]
+fn a_small_pile_takes_only_one_cat() {
+    let mut sim = sim_from(&["#########", "#a.b.c..#", "####.####", "#########"]);
+    sim.set_capacity(1, 60);
+    sim.force_tile(4, 2, 1);
+    for cat in ["a", "b", "c"] {
+        sim.set_carry(cat, 4);
+    }
+    sim.put_scrap(4, 1, 3); // меньше одних лап
+
+    sim.tick_n(1);
+    let went = ["a", "b", "c"].iter().filter(|c| sim.has_haul(c)).count();
+    assert_eq!(went, 1, "пошёл ровно один кот");
+}
+
+/// Раздачу режет и место на складе: коту, которому некуда сдать, груз осел бы
+/// в лапах, а лапы игроку не видны и не размечаются (§12.16).
+#[test]
+fn tidying_sends_no_more_cats_than_the_storage_holds() {
+    let mut sim = sim_from(&["#########", "#a.b.c..#", "####.####", "#########"]);
+    sim.set_capacity(1, 4); // одна клетка склада на четыре штуки
+    sim.force_tile(4, 2, 1);
+    for cat in ["a", "b", "c"] {
+        sim.set_carry(cat, 4);
+    }
+    sim.put_scrap(4, 1, 12);
+
+    sim.tick_n(1);
+    let went = ["a", "b", "c"].iter().filter(|c| sim.has_haul(c)).count();
+    assert_eq!(went, 1, "склад держит одну ходку — идёт один кот");
+}
+
+/// Куча уезжает целиком и ничего не оседает в лапах, сколько бы котов её ни
+/// разбирало.
+#[test]
+fn a_shared_pile_leaves_nothing_in_paws() {
+    let mut sim = sim_from(&["#########", "#a.b.c..#", "####.####", "#########"]);
+    sim.set_capacity(1, 60);
+    sim.force_tile(4, 2, 1);
+    for cat in ["a", "b", "c"] {
+        sim.set_carry(cat, 4);
+    }
+    sim.put_scrap(4, 1, 12);
+
+    sim.tick_n(300);
+    assert_eq!(sim.scrap_at(4, 2), 12, "весь лом на складе");
+    for cat in ["a", "b", "c"] {
+        assert_eq!(sim.carrying_of(cat), 0, "и ничего не осталось у {cat}");
+    }
+}

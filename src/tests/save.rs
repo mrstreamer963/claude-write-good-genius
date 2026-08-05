@@ -313,7 +313,7 @@ fn links_of(sim: &Sim) -> Vec<String> {
             out.push(format!("build {who} -> {}", spot(a.0)));
         }
         if let (Some(who), Some(h)) = (&who, e.get::<Haul>()) {
-            let to = match h.0 {
+            let to = match h.to {
                 HaulTo::Site(t) => format!("site {}", spot(t)),
                 HaulTo::Sale(t) => {
                     format!("sale {}", w.get::<Deal>(t).map_or(-1, |d| d.item as i32))
@@ -321,6 +321,15 @@ fn links_of(sim: &Sim) -> Vec<String> {
                 HaulTo::Store(t) => format!("store {}", t.map_or("-".into(), name)),
             };
             out.push(format!("haul {who} -> {to}"));
+            // Наводка — тоже ссылка на сущность, и она обязана пережить круг
+            // снимка (§12.49): по ней раздатчик считает обещанное.
+            if let Some(aim) = h.aim {
+                let at = w
+                    .get::<Position>(aim.pile)
+                    .map(|p| format!("{},{}", p.x, p.y))
+                    .unwrap_or_else(|| "?".to_string());
+                out.push(format!("aim {who} -> {at} {}", aim.item));
+            }
         }
         if let (Some(who), Some(r)) = (&who, e.get::<Researching>()) {
             out.push(format!(
@@ -367,14 +376,6 @@ fn links_of(sim: &Sim) -> Vec<String> {
             if let Some(a) = b.assignee {
                 out.push(format!("site {},{} <- {}", b.x, b.y, name(a)));
             }
-            if let Some(h) = b.hauler {
-                out.push(format!("site {},{} <= {}", b.x, b.y, name(h)));
-            }
-        }
-        if let Some(t) = e.get::<ToStore>() {
-            if let Some(h) = t.hauler {
-                out.push(format!("pile <- {}", name(h)));
-            }
         }
         if let Some(r) = e.get::<Research>() {
             if let Some(a) = r.assignee {
@@ -384,11 +385,6 @@ fn links_of(sim: &Sim) -> Vec<String> {
         if let Some(c) = e.get::<Craft>() {
             if let Some(a) = c.assignee {
                 out.push(format!("order {} <- {}", c.def, name(a)));
-            }
-        }
-        if let Some(d) = e.get::<Deal>() {
-            if let Some(h) = d.hauler {
-                out.push(format!("deal {} <- {}", d.item, name(h)));
             }
         }
     }

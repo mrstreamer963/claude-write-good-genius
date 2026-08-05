@@ -19,6 +19,15 @@
 //! Объём лап (`Carry`, §12.17) режет только подъём: сколько кот уже несёт, он
 //! донесёт. Остаток кучи честнее оставить лежать — раздатчик пришлёт за ним
 //! следующую ходку.
+//!
+//! **Работу делят по остатку, а не по одному коту на адресат** (§12.48).
+//! Носильщиков у площадки, сделки и кучи столько, на сколько хватает остатка:
+//! каждый идущий обещает ходку (не больше лап и не больше остатка), и пока
+//! обещанного меньше, чем нужно, зовётся следующий. Обещания нигде не хранятся —
+//! они считаются по самим котам, по их `Haul` и `Carrying`, тем же приёмом,
+//! каким `assign_equip` не отправляет троих за одним комбинезоном (§12.34).
+//! Отдельного claim'а поэтому нет ни у чертежа, ни у сделки, ни у пометки: его
+//! пришлось бы снимать в пяти местах, откуда задачу отбирают, и однажды забыть.
 
 use bevy_ecs::prelude::*;
 
@@ -29,13 +38,72 @@ use crate::path::Reach;
 
 // --- доставка на площадку --------------------------------------------------
 
-/// Адресат подвоза для раздачи: сущность, куда идти, тайл этой клетки (его
-/// читает `build_spot`), чего не хватает и **сделка ли это**.
+/// Адресат подвоза для раздачи.
 ///
 /// Площадка и заказ на продажу лежат в одном списке намеренно: снабжаются они
-/// одинаково, и последний флаг решает ровно две вещи — чей claim ставить и
-/// какой `HaulTo` выдать (§12.44).
-type Needy = (Entity, (i32, i32), i16, Vec<(usize, i32)>, bool);
+/// одинаково, и `sale` решает ровно одно — какой `HaulTo` выдать (§12.44).
+struct Needy {
+    target: Entity,
+    /// Куда идти; тайл этой клетки читает `build_spot`.
+    at: (i32, i32),
+    tile: i16,
+    /// Чего не хватает — уже за вычетом груза, который сюда везут (§12.48).
+    miss: Vec<(usize, i32)>,
+    sale: bool,
+    /// Сколько ещё не обещано: остаток минус ходки тех, кто уже идёт. Дошёл до
+    /// нуля — адресат снабжён, и новых котов к нему не зовут.
+    budget: i32,
+}
+
+/// Куча-источник в раздаче: сущность (её запоминает наводка), клетка, тип,
+/// сколько в ней осталось необещанного и обход от неё.
+type Pile = (Entity, (i32, i32), usize, i32, Reach);
+
+/// Сколько этого типа адресату не хватает; ноль — не нужен вовсе.
+fn need_of(miss: &[(usize, i32)], item: usize) -> i32 {
+    miss.iter()
+        .find(|&&(i, _)| i == item)
+        .map_or(0, |&(_, n)| n)
+}
+
+/// Сколько лежит в куче; кучи может уже не быть — тогда ноль.
+fn pile_count(stacks: &Query<(Entity, &Position, &Stack)>, pile: Entity) -> i32 {
+    stacks.get(pile).map_or(0, |(_, _, s)| s.count)
+}
+
+/// Сколько из каждой кучи расписано на **уборку**: кот идёт за ней и унесёт
+/// ходку. Считать это обязаны обе раздачи (§12.49): кучи у них общие, и
+/// носильщик, не попавший в счёт, уносит лом из-под того, кто за ним приехал.
+fn tidy_promises<'a>(
+    going: impl Iterator<Item = (&'a Haul, Option<&'a Carrying>, Option<&'a Carry>)>,
+    stacks: &Query<(Entity, &Position, &Stack)>,
+) -> Vec<(Entity, i32)> {
+    let mut promised: Vec<(Entity, i32)> = Vec::new();
+    for (haul, load, carry) in going {
+        let HaulTo::Store(Some(pile)) = haul.to else {
+            continue;
+        };
+        if load.is_some() {
+            continue; // из кучи уже взял — она посчитана самой собой
+        }
+        let trip = portion(carry, pile_count(stacks, pile));
+        match promised.iter_mut().find(|(e, _)| *e == pile) {
+            Some((_, n)) => *n += trip,
+            None => promised.push((pile, trip)),
+        }
+    }
+    promised
+}
+
+/// Вычесть из недостачи то, что к адресату уже несут — в лапах или обещанием.
+fn less_incoming(miss: &mut Vec<(usize, i32)>, incoming: &[(usize, i32)]) {
+    for &(item, count) in incoming {
+        if let Some(slot) = miss.iter_mut().find(|(i, _)| *i == item) {
+            slot.1 -= count;
+        }
+    }
+    miss.retain(|&(_, n)| n > 0);
+}
 
 /// Назначает свободных котов на доставку материала к чертежам, которым его не хватает.
 ///
@@ -47,16 +115,31 @@ type Needy = (Entity, (i32, i32), i16, Vec<(usize, i32)>, bool);
 /// Раздача жадная, как и в `assign_jobs` (§12.14): каждый раз берём самую
 /// дешёвую пару (кот, чертёж) из оставшихся.
 ///
+/// **Носильщиков у площадки столько, на сколько хватает недостачи** (§12.48).
+/// Дорогой тайл — это несколько ходок, и делать их по очереди одним котом,
+/// когда рядом стоят свободные, значит превращать базу в одного работника и
+/// зрителей. Считается это по самим котам: гружёные вычитаются из недостачи
+/// (`less_incoming`), идущие налегке — обещанной ходкой своего типа: за какой
+/// кучей и за каким типом пошёл кот, записано наводкой в самой задаче (§12.49).
+///
 /// Чертежи сноса сюда не попадают: снос ничего не стоит, он материал возвращает.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn assign_hauls(
     map: Res<BaseMap>,
     rules: Res<TileRules>,
     mut commands: Commands,
-    mut blueprints: Query<(Entity, &mut Blueprint)>,
-    mut deals: Query<(Entity, &mut Deal)>,
-    stacks: Query<(&Position, &Stack)>,
+    blueprints: Query<(Entity, &Blueprint)>,
+    deals: Query<(Entity, &Deal)>,
+    stacks: Query<(Entity, &Position, &Stack)>,
+    going: Query<(&UnitId, &Haul, Option<&Carrying>, Option<&Carry>)>,
     free_cats: Query<
-        (Entity, &UnitId, &Position, Option<&Carrying>),
+        (
+            Entity,
+            &UnitId,
+            &Position,
+            Option<&Carrying>,
+            Option<&Carry>,
+        ),
         (
             Without<Assignment>,
             Without<Haul>,
@@ -76,13 +159,53 @@ pub(crate) fn assign_hauls(
         ),
     >,
 ) {
-    // Адресаты, которым чего-то не хватает и к которым сейчас никто не едет.
+    // Что уже везут к каждому адресату — по самим носильщикам, а не по claim'у
+    // на адресате (§12.48). Гружёный вычитается из недостачи своим грузом,
+    // идущий налегке — обещанной ходкой; тип у обоих известен, потому что у
+    // второго он записан наводкой (§12.49).
+    let mut incoming: Vec<(Entity, usize, i32)> = Vec::new();
+    // Идущие налегке — отдельным списком: их обещание меряется не только лапами
+    // и кучей, но и нуждой адресата, а она известна только после того, как из
+    // недостачи вычтен весь груз в пути. Порядок — по `id`, чтобы обрезание по
+    // остатку не зависело от обхода ECS (§11).
+    let mut aiming: Vec<(&str, Entity, Aim, Option<&Carry>)> = Vec::new();
+    for (id, haul, load, carry) in &going {
+        let target = match haul.to {
+            HaulTo::Site(e) | HaulTo::Sale(e) => e,
+            HaulTo::Store(_) => continue,
+        };
+        match (load, haul.aim) {
+            (Some(load), _) => incoming.push((target, load.item, load.count)),
+            (None, Some(aim)) => aiming.push((id.0.as_str(), target, aim, carry)),
+            // Наводки нет и груза нет: кот идёт к адресату, но за чем — не
+            // записано. У живой раздачи такого не бывает; снимок мог приехать
+            // из партии, где наводки ещё не было.
+            (None, None) => {}
+        }
+    }
+    aiming.sort_unstable_by_key(|&(id, ..)| id);
+    let brought = |target: Entity| -> Vec<(usize, i32)> {
+        incoming
+            .iter()
+            .filter(|&&(e, ..)| e == target)
+            .map(|&(_, item, count)| (item, count))
+            .collect()
+    };
+
+    // Адресаты, которым чего-то не хватает сверх уже обещанного.
     let mut needy: Vec<Needy> = blueprints
         .iter()
-        .filter(|(_, bp)| bp.hauler.is_none())
         .filter_map(|(e, bp)| {
-            let miss = missing(&rules, bp);
-            (!miss.is_empty()).then(|| (e, (bp.x, bp.y), bp.tile, miss, false))
+            let mut miss = missing(&rules, bp);
+            less_incoming(&mut miss, &brought(e));
+            (!miss.is_empty()).then_some(Needy {
+                target: e,
+                at: (bp.x, bp.y),
+                tile: bp.tile,
+                miss,
+                sale: false,
+                budget: 0,
+            })
         })
         .collect();
     // **Заказ на продажу — третий адресат подвоза** (§12.44), и снабжается он
@@ -95,18 +218,50 @@ pub(crate) fn assign_hauls(
             .iter()
             .filter(|(_, d)| !d.buying)
             .filter_map(|(e, d)| {
-                let left = d.count - d.delivered;
-                (d.hauler.is_none() && left > 0).then(|| {
-                    (
-                        e,
-                        d.gate,
-                        map.tile_at(d.gate.0, d.gate.1),
-                        vec![(d.item, left)],
-                        true,
-                    )
+                let mut miss = vec![(d.item, d.count - d.delivered)];
+                less_incoming(&mut miss, &brought(e));
+                (!miss.is_empty()).then(|| Needy {
+                    target: e,
+                    at: d.gate,
+                    tile: map.tile_at(d.gate.0, d.gate.1),
+                    miss,
+                    sale: true,
+                    budget: 0,
                 })
             }),
     );
+    // Теперь обещания идущих налегке: каждый увезёт не больше лап, не больше
+    // необещанного в куче и не больше, чем адресату нужно этого типа (§12.49).
+    // Заодно копится, сколько из кучи расписано, — по этому остатку раздача
+    // ниже решает, звать ли к ней ещё кота.
+    //
+    // Считаются **обе** раздачи разом: уборка ходит к тем же кучам, и её
+    // носильщик, не попавший в счёт, уносит лом из-под приехавшего за ним
+    // подвоза. Это и была большая часть промахов.
+    let mut spoken_for: Vec<(Entity, i32)> =
+        tidy_promises(going.iter().map(|(_, h, l, c)| (h, l, c)), &stacks);
+    for (_, target, aim, carry) in aiming {
+        let Some(n) = needy.iter_mut().find(|n| n.target == target) else {
+            continue; // адресат уже снабжён — обещать нечего
+        };
+        let left = pile_count(&stacks, aim.pile) - claimed(&spoken_for, aim.pile);
+        let promise = portion(carry, left.max(0)).min(need_of(&n.miss, aim.item));
+        if promise <= 0 {
+            continue;
+        }
+        less_incoming(&mut n.miss, &[(aim.item, promise)]);
+        match spoken_for.iter_mut().find(|(e, _)| *e == aim.pile) {
+            Some((_, n)) => *n += promise,
+            None => spoken_for.push((aim.pile, promise)),
+        }
+    }
+
+    // Бюджет: остаток после всех обещаний. Ушёл в ноль — адресат снабжён, и
+    // звать к нему некого.
+    for n in &mut needy {
+        n.budget = n.miss.iter().map(|&(_, count)| count).sum::<i32>();
+    }
+    needy.retain(|n| n.budget > 0);
     if needy.is_empty() {
         return;
     }
@@ -118,16 +273,17 @@ pub(crate) fn assign_hauls(
     // кучи нужен потому, что на одной клетке лежат кучи разных типов (§12.21),
     // а флаг продажи — потому, что сделка адресуется шлюзом, на котором может
     // стоять и чертёж.
-    needy.sort_unstable_by_key(|&(_, (x, y), _, _, sale)| (y, x, sale));
+    needy.sort_unstable_by_key(|n| (n.at.1, n.at.0, n.sale));
 
     let map = &*map;
-    let mut idle: Vec<(&str, Entity, Option<usize>, Reach)> = free_cats
+    let mut idle: Vec<(&str, Entity, Option<(usize, i32)>, Option<&Carry>, Reach)> = free_cats
         .iter()
-        .map(|(e, id, p, load)| {
+        .map(|(e, id, p, load, carry)| {
             (
                 id.0.as_str(),
                 e,
-                load.map(|l| l.item),
+                load.map(|l| (l.item, l.count)),
+                carry,
                 Reach::all(map, (p.x, p.y)),
             )
         })
@@ -135,79 +291,97 @@ pub(crate) fn assign_hauls(
     idle.sort_unstable_by_key(|&(id, ..)| id);
 
     // Обходы от куч нужны только пустым котам — гружёный идёт сразу на площадку.
-    let mut piles: Vec<((i32, i32), usize, Reach)> =
-        if idle.iter().any(|(_, _, load, _)| load.is_none()) {
-            stacks
-                .iter()
-                .filter(|(_, s)| s.count > 0)
-                .map(|(p, s)| ((p.x, p.y), s.item, Reach::all(map, (p.x, p.y))))
-                .collect()
-        } else {
-            Vec::new()
-        };
-    piles.sort_unstable_by_key(|&((x, y), item, _)| (y, x, item));
-    let piles: &[((i32, i32), usize, Reach)] = &piles;
+    // Остаток кучи считается за вычетом обещанного идущим (§12.49): расписанная
+    // куча из списка уходит, и второго кота к пустому месту не зовут.
+    let mut piles: Vec<Pile> = if idle.iter().any(|(_, _, load, ..)| load.is_none()) {
+        stacks
+            .iter()
+            .filter_map(|(e, p, s)| {
+                let left = s.count - claimed(&spoken_for, e);
+                (left > 0).then(|| (e, (p.x, p.y), s.item, left, Reach::all(map, (p.x, p.y))))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    piles.sort_unstable_by_key(|&(_, (x, y), item, ..)| (y, x, item));
 
     while !idle.is_empty() && !needy.is_empty() {
+        // Взгляд на кучи внутри итерации: жадный выбор их только читает, а
+        // правит остаток уже после того, как пара выбрана.
+        let view: &[Pile] = &piles;
         // Куда идти первым шагом: гружёный — на площадку, пустой — к куче. Тип
         // связывает обоих: гружёный годится только той площадке, которой нужен
-        // его груз, пустой идёт лишь к куче нужного типа (§12.21).
+        // его груз, пустой идёт лишь к куче нужного типа (§12.21). У пустого
+        // выбранная куча запоминается наводкой, поэтому в паре едет её индекс.
         let chosen = idle
             .iter()
             .enumerate()
-            .flat_map(|(ci, (_, _, loaded, reach))| {
-                needy
-                    .iter()
-                    .enumerate()
-                    .filter_map(move |(ni, (_, bp_xy, bp_tile, miss, _))| {
-                        let wanted = |item: usize| miss.iter().any(|&(i, _)| i == item);
-                        if let Some(item) = *loaded {
-                            if !wanted(item) {
-                                return None;
-                            }
-                            let (spot, steps) = build_spot(map, reach, *bp_xy, *bp_tile, None)?;
-                            return Some((steps, ci, ni, spot));
+            .flat_map(|(ci, (_, _, loaded, _, reach))| {
+                needy.iter().enumerate().filter_map(move |(ni, n)| {
+                    let wanted = |item: usize| n.miss.iter().any(|&(i, _)| i == item);
+                    if let Some((item, _)) = *loaded {
+                        if !wanted(item) {
+                            return None;
                         }
-                        piles
-                            .iter()
-                            .filter(|&&(_, item, _)| wanted(item))
-                            .filter_map(|(pile, _, from_pile)| {
-                                let to_pile = reach.dist_at(pile.0, pile.1)?;
-                                let (_, rest) = build_spot(map, from_pile, *bp_xy, *bp_tile, None)?;
-                                Some((to_pile + rest, ci, ni, *pile))
-                            })
-                            .min_by_key(|&(steps, ..)| steps)
-                    })
+                        let (spot, steps) = build_spot(map, reach, n.at, n.tile, None)?;
+                        return Some((steps, ci, ni, spot, None));
+                    }
+                    view.iter()
+                        .enumerate()
+                        .filter(|(_, (_, _, item, ..))| wanted(*item))
+                        .filter_map(|(pi, (_, pile, _, _, from_pile))| {
+                            let to_pile = reach.dist_at(pile.0, pile.1)?;
+                            let (_, rest) = build_spot(map, from_pile, n.at, n.tile, None)?;
+                            Some((to_pile + rest, ci, ni, *pile, Some(pi)))
+                        })
+                        .min_by_key(|&(steps, ..)| steps)
+                })
             })
             .min_by_key(|&(steps, ..)| steps);
         // Ни одна пара не сошлась: нужного нет вовсе или до него не дойти. Коты
         // остаются свободными — `assign_jobs` найдёт им бесплатную работу.
-        let Some((_, ci, ni, goal)) = chosen else {
+        let Some((_, ci, ni, goal, pi)) = chosen else {
             break;
         };
 
-        let (_, cat_e, _, reach) = idle.remove(ci);
-        let (target_e, _, _, _, sale) = needy.remove(ni);
+        let (_, cat_e, loaded, carry, reach) = idle.remove(ci);
         let path = reach.path_to(goal.0, goal.1).unwrap_or_default();
-        // Claim у обоих на адресате и по одному носильщику за раз: у площадки
-        // это `Blueprint::hauler`, у сделки — `Deal::hauler`.
+        // Адресат остаётся в списке, пока ему есть что везти (§12.48): гружёный
+        // забирает из недостачи ровно свой груз, идущий налегке — обещанную
+        // ходку своего типа. Ушёл бюджет в ноль — снабжён, следующего кота
+        // позовут другие. Учёт ведётся тут же, потому что команды применяются
+        // после системы, и `going` только что назначенных ещё не видит.
+        let n = &mut needy[ni];
+        let (target_e, sale) = (n.target, n.sale);
+        let (promise, aim) = match (loaded, pi) {
+            (Some((item, count)), _) => {
+                less_incoming(&mut n.miss, &[(item, count)]);
+                (count, None)
+            }
+            (None, Some(pi)) => {
+                let (pile_e, _, item, left, _) = piles[pi];
+                let take = portion(carry, left).min(need_of(&n.miss, item));
+                less_incoming(&mut n.miss, &[(item, take)]);
+                piles[pi].3 -= take;
+                (take, Some(Aim { pile: pile_e, item }))
+            }
+            // Пустой кот без кучи в паре недостижим: у пустого пара строится
+            // только через кучу.
+            (None, None) => (0, None),
+        };
+        n.budget -= promise;
+        if n.budget <= 0 || n.miss.is_empty() {
+            needy.remove(ni);
+        }
+        piles.retain(|&(_, _, _, left, _)| left > 0);
         let to = match sale {
-            true => {
-                if let Ok((_, mut deal)) = deals.get_mut(target_e) {
-                    deal.hauler = Some(cat_e);
-                }
-                HaulTo::Sale(target_e)
-            }
-            false => {
-                if let Ok((_, mut bp)) = blueprints.get_mut(target_e) {
-                    bp.hauler = Some(cat_e);
-                }
-                HaulTo::Site(target_e)
-            }
+            true => HaulTo::Sale(target_e),
+            false => HaulTo::Site(target_e),
         };
         commands
             .entity(cat_e)
-            .insert((Haul(to), Path { steps: path }, MoveCooldown(0)));
+            .insert((Haul { to, aim }, Path { steps: path }, MoveCooldown(0)));
     }
 }
 
@@ -232,7 +406,7 @@ pub(crate) fn mark_loose_scrap(
                 commands.entity(e).remove::<ToStore>();
             }
             (false, false) if auto.0 => {
-                commands.entity(e).insert(ToStore::default());
+                commands.entity(e).insert(ToStore);
             }
             _ => {}
         }
@@ -246,14 +420,29 @@ pub(crate) fn mark_loose_scrap(
 /// и сноса. Здесь, в отличие от `assign_hauls`, вторая нога маршрута (куча →
 /// склад) не оптимизируется: склад обычно одна комната, а платить пришлось бы
 /// обходом на каждую кучу каждый тик, пока на полу есть мусор.
+///
+/// **Кучу разбирают столько котов, на сколько её хватает** (§12.48). Куча в три
+/// десятка — это восемь ходок, и делать их по очереди одним котом, пока рядом
+/// стоят свободные, значит превращать базу в одного работника и зрителей; а
+/// падает такая куча ровно там, где игрок её видит, — с вылазки и от каравана.
+/// Сколько из кучи уже обещано идущим, считается по ним самим, как в
+/// `assign_equip` (§12.34), и ограничено ещё и местом на складе: кот, которому
+/// некуда сдать груз, встанет с ломом в лапах, а лапы игроку не видны (§12.16).
 pub(crate) fn assign_tidy(
     map: Res<BaseMap>,
     rules: Res<TileRules>,
     mut commands: Commands,
-    mut marks: Query<(Entity, &Position, &mut ToStore)>,
-    stacks: Query<(&Position, &Stack)>,
+    marks: Query<(Entity, &Position), With<ToStore>>,
+    going: Query<(&Haul, Option<&Carrying>, Option<&Carry>)>,
+    stacks: Query<(Entity, &Position, &Stack)>,
     free_cats: Query<
-        (Entity, &UnitId, &Position, Option<&Carrying>),
+        (
+            Entity,
+            &UnitId,
+            &Position,
+            Option<&Carrying>,
+            Option<&Carry>,
+        ),
         (
             Without<Assignment>,
             Without<Haul>,
@@ -277,7 +466,7 @@ pub(crate) fn assign_tidy(
         return;
     }
     let map = &*map;
-    let stock = stock_grid(map, stacks.iter().map(|(p, s)| ((p.x, p.y), s.count)));
+    let stock = stock_grid(map, stacks.iter().map(|(_, p, s)| ((p.x, p.y), s.count)));
     // Склада нет или он забит — уборки не будет вовсе. Без этой проверки коты
     // ходили бы к кучам и возвращались ни с чем, тик за тиком.
     if !any_store_room(map, &rules, &stock) {
@@ -286,62 +475,118 @@ pub(crate) fn assign_tidy(
 
     // Гружёные коты: каждому — ближайший склад со свободным местом. Драться за
     // клетку им незачем, ёмкость проверяется ещё раз при сдаче.
-    let mut empty: Vec<(&str, Entity, Reach)> = Vec::new();
-    for (cat_e, id, pos, load) in &free_cats {
+    let mut empty: Vec<(&str, Entity, Option<&Carry>, Reach)> = Vec::new();
+    for (cat_e, id, pos, load, carry) in &free_cats {
         let reach = Reach::all(map, (pos.x, pos.y));
         if load.is_none() {
-            empty.push((id.0.as_str(), cat_e, reach));
+            empty.push((id.0.as_str(), cat_e, carry, reach));
             continue;
         }
         if let Some((cell, _)) = nearest_store(map, &rules, &reach, &stock) {
             let path = reach.path_to(cell.0, cell.1).unwrap_or_default();
             commands.entity(cat_e).insert((
-                Haul(HaulTo::Store(None)),
+                Haul {
+                    to: HaulTo::Store(None),
+                    aim: None,
+                },
                 Path { steps: path },
                 MoveCooldown(0),
             ));
         }
     }
 
+    // Сколько из каждой кучи уже обещано тем, кто к ней идёт, и сколько места
+    // осталось на складе. Место — общий бюджет на всю раздачу: кот, которому
+    // некуда сдать, встал бы с грузом в лапах, а лапы игроку не видны (§12.16).
+    let mut promised: Vec<(Entity, i32)> = Vec::new();
+    let mut room: i32 = (0..stock.len())
+        .map(|i| (rules.capacity_of(map.cells[i]) - stock[i]).max(0))
+        .sum();
+    for (haul, load, carry) in &going {
+        // Груз в лапах места на складе уже ждёт, но в `stock` его нет — он не
+        // лежит на полу. Из кучи он при этом **уже взят**, поэтому обещанием не
+        // считается: обещает только тот, кто за ней ещё идёт.
+        if let Some(load) = load {
+            if matches!(haul.to, HaulTo::Store(_)) {
+                room -= load.count;
+            }
+            continue;
+        }
+        // Кучи у уборки и подвоза общие, поэтому считаются обе раздачи разом
+        // (§12.49): носильщик подвоза, не попавший в счёт, уносит лом из-под
+        // приехавшего за ним уборщика — и наоборот.
+        let pile_e = match (haul.to, haul.aim) {
+            (HaulTo::Store(Some(pile)), _) => pile,
+            (_, Some(aim)) => aim.pile,
+            _ => continue,
+        };
+        let trip = portion(carry, pile_count(&stacks, pile_e));
+        match promised.iter_mut().find(|(e, _)| *e == pile_e) {
+            Some((_, n)) => *n += trip,
+            None => promised.push((pile_e, trip)),
+        }
+    }
+
     // Пустые коты: жадно разбираем пары (кот, помеченная куча) от ближней.
-    let mut open: Vec<(Entity, (i32, i32))> = marks
+    // Куча остаётся в списке, пока в ней есть необещанное, — тогда её разбирают
+    // несколько котов разом (§12.48).
+    let mut open: Vec<(Entity, (i32, i32), i32)> = marks
         .iter()
-        .filter(|(_, _, mark)| mark.hauler.is_none())
-        .map(|(e, p, _)| (e, (p.x, p.y)))
+        .filter_map(|(e, p)| {
+            let count = stacks.get(e).map_or(0, |(_, _, s)| s.count);
+            let left = count - claimed(&promised, e);
+            (left > 0).then_some((e, (p.x, p.y), left))
+        })
         .collect();
     // Порядок обхода ECS в поведение протекать не должен (§11): при равном
     // расстоянии жадный выбор берёт первую пару. Коты — по `id`, кучи — по
     // клетке; помеченных куч разных типов на одной клетке бывает несколько
     // (§12.21), поэтому в ключе ещё и сущность.
     empty.sort_unstable_by_key(|&(id, ..)| id);
-    open.sort_unstable_by_key(|&(e, (x, y))| (y, x, e.index()));
+    open.sort_unstable_by_key(|&(e, (x, y), _)| (y, x, e.index()));
 
-    while !empty.is_empty() && !open.is_empty() {
+    while !empty.is_empty() && !open.is_empty() && room > 0 {
         let chosen = empty
             .iter()
             .enumerate()
-            .flat_map(|(ci, (_, _, reach))| {
-                open.iter().enumerate().filter_map(move |(oi, &(_, xy))| {
-                    reach.dist_at(xy.0, xy.1).map(|d| (d, ci, oi, xy))
-                })
+            .flat_map(|(ci, (_, _, _, reach))| {
+                open.iter()
+                    .enumerate()
+                    .filter_map(move |(oi, &(_, xy, _))| {
+                        reach.dist_at(xy.0, xy.1).map(|d| (d, ci, oi, xy))
+                    })
             })
             .min_by_key(|&(steps, ..)| steps);
         let Some((_, ci, oi, goal)) = chosen else {
             break;
         };
 
-        let (_, cat_e, reach) = empty.remove(ci);
-        let (pile_e, _) = open.remove(oi);
-        let path = reach.path_to(goal.0, goal.1).unwrap_or_default();
-        if let Ok((_, _, mut mark)) = marks.get_mut(pile_e) {
-            mark.hauler = Some(cat_e);
+        let (_, cat_e, carry, reach) = empty.remove(ci);
+        let (pile_e, _, left) = open[oi];
+        let trip = portion(carry, left.min(room));
+        open[oi].2 -= trip;
+        room -= trip;
+        if open[oi].2 <= 0 {
+            open.remove(oi);
         }
+        let path = reach.path_to(goal.0, goal.1).unwrap_or_default();
         commands.entity(cat_e).insert((
-            Haul(HaulTo::Store(Some(pile_e))),
+            Haul {
+                to: HaulTo::Store(Some(pile_e)),
+                aim: None,
+            },
             Path { steps: path },
             MoveCooldown(0),
         ));
     }
+}
+
+/// Сколько из кучи уже обещано идущим к ней.
+fn claimed(promised: &[(Entity, i32)], pile: Entity) -> i32 {
+    promised
+        .iter()
+        .find(|&&(e, _)| e == pile)
+        .map_or(0, |&(_, n)| n)
 }
 
 // --- работа носильщика -----------------------------------------------------
@@ -352,6 +597,7 @@ pub(crate) fn assign_tidy(
 /// ошибка: кучу могли разобрать раньше, склад — заполниться, маршрут —
 /// оборваться. Раздатчик на следующем тике попробует снова, груз при этом
 /// остаётся на коте.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn work_hauls(
     map: Res<BaseMap>,
     rules: Res<TileRules>,
@@ -368,10 +614,31 @@ pub(crate) fn work_hauls(
     mut deals: Query<&mut Deal>,
     mut money: ResMut<Money>,
     mut stacks: Query<(Entity, &Position, &mut Stack)>,
-    mut marks: Query<&mut ToStore>,
 ) {
+    // Что уже везут к каждому адресату. Носильщиков у него теперь несколько
+    // (§12.48), и берущий с кучи обязан вычесть чужой груз: иначе второй кот
+    // поднимет то же самое, а на площадке этого уже никто не ждёт — и груз
+    // осядет в лапах, где игроку его не видно и не разметить (§12.16).
+    let incoming: Vec<(Entity, usize, i32)> = cats
+        .iter()
+        .filter_map(|(_, _, haul, load, ..)| {
+            let target = match haul.to {
+                HaulTo::Site(e) | HaulTo::Sale(e) => e,
+                HaulTo::Store(_) => return None,
+            };
+            load.map(|l| (target, l.item, l.count))
+        })
+        .collect();
+    let brought = |target: Entity| -> Vec<(usize, i32)> {
+        incoming
+            .iter()
+            .filter(|&&(e, ..)| e == target)
+            .map(|&(_, item, count)| (item, count))
+            .collect()
+    };
+
     for (cat_e, pos, haul, load, path, carry) in &cats {
-        match haul.0 {
+        match haul.to {
             HaulTo::Site(bp_e) => {
                 // Чертёж отменили, пока кот был в пути.
                 let Ok(mut bp) = blueprints.get_mut(bp_e) else {
@@ -387,10 +654,12 @@ pub(crate) fn work_hauls(
                     // Пришёл к куче: берём тот тип, которого площадке не хватает,
                     // и ровно столько, сколько не хватает и влезает в лапы. Какая
                     // именно куча под ногами — решается здесь, а не при раздаче.
+                    // Чужой груз в пути вычитается: везут его уже без нас.
+                    let mut left = miss.clone();
+                    less_incoming(&mut left, &brought(bp_e));
                     let taken =
-                        take_needed(&mut commands, &mut stacks, (pos.x, pos.y), &miss, carry);
+                        take_needed(&mut commands, &mut stacks, (pos.x, pos.y), &left, carry);
                     let Some((item, taken)) = taken else {
-                        bp.hauler = None;
                         commands.entity(cat_e).remove::<Haul>();
                         continue;
                     };
@@ -399,7 +668,13 @@ pub(crate) fn work_hauls(
                     match build_spot(&map, &reach, (bp.x, bp.y), bp.tile, None) {
                         Some((spot, _)) => {
                             let path = reach.path_to(spot.0, spot.1).unwrap_or_default();
+                            // Наводка отработала: дальше кота считают по грузу,
+                            // и оставленная она посчиталась бы вторым разом.
                             commands.entity(cat_e).insert((
+                                Haul {
+                                    to: haul.to,
+                                    aim: None,
+                                },
                                 Carrying { item, count: taken },
                                 Path { steps: path },
                                 MoveCooldown(0),
@@ -408,7 +683,6 @@ pub(crate) fn work_hauls(
                         // Площадка стала недостижима, пока кот шёл за грузом:
                         // груз при нём, задача отпущена.
                         None => {
-                            bp.hauler = None;
                             commands
                                 .entity(cat_e)
                                 .insert(Carrying { item, count: taken })
@@ -428,7 +702,6 @@ pub(crate) fn work_hauls(
                     add_delivered(&mut bp.delivered, load.item, given);
                     keep_rest(&mut commands, cat_e, load.item, load.count - given);
                 }
-                bp.hauler = None;
                 commands.entity(cat_e).remove::<Haul>();
             }
             // Продажа — зеркало площадки, и отличий ровно два: на месте товар
@@ -443,13 +716,13 @@ pub(crate) fn work_hauls(
                     continue; // ещё в дороге
                 }
                 let left = deal.count - deal.delivered;
-                let miss = vec![(deal.item, left)];
 
                 let Some(load) = load else {
+                    let mut miss = vec![(deal.item, left)];
+                    less_incoming(&mut miss, &brought(deal_e));
                     let taken =
                         take_needed(&mut commands, &mut stacks, (pos.x, pos.y), &miss, carry);
                     let Some((item, taken)) = taken else {
-                        deal.hauler = None;
                         commands.entity(cat_e).remove::<Haul>();
                         continue;
                     };
@@ -459,13 +732,16 @@ pub(crate) fn work_hauls(
                         Some((spot, _)) => {
                             let path = reach.path_to(spot.0, spot.1).unwrap_or_default();
                             commands.entity(cat_e).insert((
+                                Haul {
+                                    to: haul.to,
+                                    aim: None,
+                                },
                                 Carrying { item, count: taken },
                                 Path { steps: path },
                                 MoveCooldown(0),
                             ));
                         }
                         None => {
-                            deal.hauler = None;
                             commands
                                 .entity(cat_e)
                                 .insert(Carrying { item, count: taken })
@@ -487,7 +763,6 @@ pub(crate) fn work_hauls(
                     }
                 }
                 let done = deal.delivered >= deal.count;
-                deal.hauler = None;
                 commands.entity(cat_e).remove::<Haul>();
                 if done {
                     commands.entity(deal_e).despawn();
@@ -507,7 +782,6 @@ pub(crate) fn work_hauls(
                     let stock =
                         stock_grid(&map, stacks.iter().map(|(_, p, s)| ((p.x, p.y), s.count)));
                     let Some((cell, _)) = nearest_store(&map, &rules, &reach, &stock) else {
-                        release_claim(&mut marks, pile_e);
                         commands.entity(cat_e).remove::<Haul>();
                         continue;
                     };
@@ -520,7 +794,6 @@ pub(crate) fn work_hauls(
                     let taken =
                         take_from_pile(&mut commands, &mut stacks, pile_e, (pos.x, pos.y), free);
                     let Some((item, taken)) = taken else {
-                        release_claim(&mut marks, pile_e);
                         commands.entity(cat_e).remove::<Haul>();
                         continue;
                     };
@@ -541,7 +814,6 @@ pub(crate) fn work_hauls(
                     spill(&mut commands, &mut stacks, (pos.x, pos.y), load.item, given);
                     keep_rest(&mut commands, cat_e, load.item, load.count - given);
                 }
-                release_claim(&mut marks, pile_e);
                 commands.entity(cat_e).remove::<Haul>();
             }
         }
@@ -563,14 +835,6 @@ fn keep_rest(commands: &mut Commands, cat: Entity, item: usize, left: i32) {
         commands.entity(cat).insert(Carrying { item, count: left });
     } else {
         commands.entity(cat).remove::<Carrying>();
-    }
-}
-
-/// Снять с кучи претензию носильщика (сама пометка остаётся). Кучи может уже не
-/// быть — её и подняли; это штатный конец задачи, а не ошибка.
-pub(crate) fn release_claim(marks: &mut Query<&mut ToStore>, pile: Option<Entity>) {
-    if let Some(Ok(mut mark)) = pile.map(|e| marks.get_mut(e)) {
-        mark.hauler = None;
     }
 }
 
@@ -786,7 +1050,7 @@ pub(crate) fn settle_stacks(
             stack.count += count;
         }
         if pass_mark {
-            commands.entity(keeper).insert(ToStore::default());
+            commands.entity(keeper).insert(ToStore);
         }
         commands.entity(e).despawn();
     }

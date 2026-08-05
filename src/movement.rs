@@ -130,15 +130,21 @@ pub(crate) fn retry_orders(
             commands.entity(e).remove::<Order>();
             continue;
         }
-        // Карта не менялась с прошлой попытки — результат будет тот же.
-        if order.tried_version == map.version {
+        // Карта не менялась с прошлой **провалившейся** попытки — результат
+        // будет тот же. Отметка снимается на удаче: маршрут теряется и от сна,
+        // и от раны, и от вылазки, и такому коту повтор нужен сразу, иначе он
+        // остаётся «не может дойти» при живой дороге до цели.
+        if order.tried_version == Some(map.version) {
             continue;
         }
-        order.tried_version = map.version;
-        if let Some(path) = find_path(&map, (pos.x, pos.y), (order.x, order.y)) {
-            commands
-                .entity(e)
-                .insert((Path { steps: path }, MoveCooldown(0)));
+        match find_path(&map, (pos.x, pos.y), (order.x, order.y)) {
+            Some(path) => {
+                order.tried_version = None;
+                commands
+                    .entity(e)
+                    .insert((Path { steps: path }, MoveCooldown(0)));
+            }
+            None => order.tried_version = Some(map.version),
         }
     }
 }
