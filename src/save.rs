@@ -41,6 +41,10 @@ pub(crate) const FORMAT: u32 = 1;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
+///
+/// Список — оснастка сторожа, а не рабочие данные: `capture` и `restore`
+/// перечисляют компоненты кодом, и в боевую сборку он не едет.
+#[cfg(test)]
 pub(crate) const SAVED: &[&str] = &[
     // Кот и его тело.
     "Position",
@@ -95,7 +99,9 @@ pub(crate) const SAVED: &[&str] = &[
 ];
 
 /// Что в снимок не уходит — и почему. Причина обязательна: список без причин
-/// через полгода неотличим от списка забытого.
+/// через полгода неотличим от списка забытого. Как и `SAVED` — оснастка
+/// сторожа.
+#[cfg(test)]
 pub(crate) const SKIPPED: &[(&str, &str)] = &[
     (
         "Worked",
@@ -749,7 +755,8 @@ pub(crate) fn note(world: &mut World, cmd: impl Into<String>) {
 }
 
 /// Короткое имя типа из полного пути `bevy_ecs` (`sp_sim::components::Position`
-/// → `Position`).
+/// → `Position`). Нужно только сторожу — реестр он читает сам.
+#[cfg(test)]
 pub(crate) fn short_name(full: &str) -> &str {
     full.rsplit("::").next().unwrap_or(full)
 }
