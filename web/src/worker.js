@@ -11,10 +11,21 @@ import wasmUrl from './wasm/sp_sim_bg.wasm?url';
 const BASE_TPS = 6; // сим-тиков в секунду на ×1
 const SIM_DT_MS = 1000 / BASE_TPS;
 const MAX_STEPS_PER_FRAME = 2000;
-// Автосохранение раз в столько сим-тиков (§12.45). Считаем тиками, а не
-// секундами: на ×10 час игры проходит вшестеро быстрее, и по настенным часам
-// снимок отставал бы тем сильнее, чем быстрее играют.
-const AUTOSAVE_EVERY = 600;
+// Автосохранение (§12.45) — по двум часам сразу, что наступит раньше.
+//
+// Тики меряют потерю в игровом времени и не зависят от скорости. Но на паузе
+// они не идут вовсе, а игрок при этом размечает стройку, шлёт приказы и
+// заказывает сделки — то есть меняет ровно то, что лежит в снимке. Поэтому
+// вторые часы настенные.
+//
+// В §11 это не дыра: снимок снимается по `&World` и мир не трогает, поэтому
+// момент фотографирования ни на что в симуляции повлиять не может. Настенное
+// время решает «когда», а не «что».
+const AUTOSAVE_EVERY = 120; // сим-тиков (20 с на ×1)
+const AUTOSAVE_EVERY_MS = 20000; // и не реже этого по реальным часам
+
+// Команды, которые мир не меняют: после них сохранять нечего.
+const READ_ONLY = new Set(['setSpeed', 'save', 'trace']);
 
 let sim = null;
 let speed = 1; // 0 (пауза) | 1 | 5 | 10
@@ -25,9 +36,16 @@ let lastMapVersion = -1;
 // загруженная — правил в снимке нет и быть не должно (§12.45).
 let yamlText = null;
 let sinceSave = 0;
+let lastSaveAt = 0;
+// Менялся ли мир с последнего снимка. Без этого вкладка, забытая на паузе,
+// переписывала бы одно и то же каждые двадцать секунд до конца времён.
+let dirty = false;
 
 function announce() {
   lastMapVersion = sim.map_version();
+  sinceSave = 0;
+  lastSaveAt = performance.now();
+  dirty = false;
   postMessage({ type: 'ready', meta: sim.map_meta(), map: sim.base_map() });
 }
 
@@ -54,14 +72,20 @@ function loop() {
       acc -= SIM_DT_MS;
       steps++;
     }
-    // Снимок кладёт в localStorage главный поток: у воркера его нет вовсе.
     sinceSave += steps;
-    if (sinceSave >= AUTOSAVE_EVERY) {
-      sinceSave = 0;
-      postMessage({ type: 'saved', json: sim.save(), auto: true });
-    }
+    if (steps > 0) dirty = true;
   } else {
     acc = 0;
+  }
+
+  // Снимок кладёт в localStorage главный поток: у воркера его нет вовсе.
+  // Проверка снаружи ветки скорости — иначе на паузе она не выполнялась бы
+  // никогда, а размеченное игроком терялось бы целиком.
+  if (sim && dirty && (sinceSave >= AUTOSAVE_EVERY || now - lastSaveAt >= AUTOSAVE_EVERY_MS)) {
+    sinceSave = 0;
+    lastSaveAt = now;
+    dirty = false;
+    postMessage({ type: 'saved', json: sim.save(), auto: true });
   }
 
   if (sim) {
@@ -77,6 +101,9 @@ function loop() {
 
 onmessage = (e) => {
   const m = e.data;
+  // Любая команда, кроме читающих, делает мир несохранённым — в том числе на
+  // паузе, где тиков нет, а разметка есть.
+  if (!READ_ONLY.has(m.type)) dirty = true;
   if (m.type === 'setSpeed') {
     speed = m.speed;
   } else if (m.type === 'build' && sim) {
@@ -131,22 +158,26 @@ onmessage = (e) => {
     // Известность открывает кандидата, платит склад (см. `hire` в ядре, §12.24).
     sim.hire(m.recruit);
   } else if (m.type === 'save' && sim) {
-    // Ручное сохранение: главный поток решит, в хранилище оно или в файл.
-    postMessage({ type: 'saved', json: sim.save(), auto: false });
+    // Один запрос, два адресата: `toSlot` — это уход со вкладки (пишем в
+    // хранилище), без него — кнопка «Сохранить в файл».
+    if (m.toSlot) {
+      sinceSave = 0;
+      lastSaveAt = performance.now();
+      dirty = false;
+    }
+    postMessage({ type: 'saved', json: sim.save(), auto: !!m.toSlot });
   } else if (m.type === 'load' && yamlText) {
     // Снимок собирается в мир из **того же** рулсета: правил в нём нет (§12.45).
     // Отказ — это чужая версия формата или чужой рулсет, и он именно отказ:
     // молча загруженная чужая партия была бы тихо другим миром.
     try {
       sim = Sim.load(yamlText, m.json);
-      sinceSave = 0;
       announce();
     } catch (err) {
       postMessage({ type: 'loadFailed', message: String((err && err.message) || err) });
     }
   } else if (m.type === 'newGame' && yamlText) {
     sim = new Sim(yamlText);
-    sinceSave = 0;
     announce();
   } else if (m.type === 'trace' && sim) {
     postMessage({ type: 'traced', text: sim.trace() });

@@ -170,6 +170,13 @@ worker.onmessage = (e) => {
   }
 };
 
+// Уход со вкладки — момент, когда партию стоит дописать не дожидаясь таймера.
+// Рефреш этим не покрыть: состояние держит воркер, а ответ асинхронный и до
+// умирающей страницы уже не дойдёт — там работает короткий интервал автосейва.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') worker.postMessage({ type: 'save', toSlot: true });
+});
+
 function stamp() {
   return new Date().toISOString().slice(0, 19).replaceAll(':', '-');
 }

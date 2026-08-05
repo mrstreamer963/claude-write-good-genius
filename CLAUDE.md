@@ -78,8 +78,8 @@ cargo test whole_room_is_erased_completely -- --nocapture
 | main → worker | `launch {mission, units}` | кнопка вылазки: `launch(def, units)`, отряд выбран игроком |
 | main → worker | `cancelMission` | «Отозвать» в панели миссии (только пока отряд на базе) |
 | main → worker | `hire {recruit}` | кнопка найма: `hire(def)`, известность открывает, склад платит |
-| main → worker | `save` | «Сохранить в файл»: воркер отвечает `saved {auto: false}` |
-| worker → main | `saved {json, auto}` | снимок партии: `auto` — автосохранение (раз в 600 тиков) в `localStorage`, иначе файл |
+| main → worker | `save {toSlot}` | `toSlot` — уход со вкладки (в хранилище), без него — кнопка «Сохранить в файл» |
+| worker → main | `saved {json, auto}` | снимок партии: `auto` → в `localStorage`, иначе файл. Автосейв — 120 тиков **или** 20 с реального времени, что раньше (§12.45) |
 | main → worker | `load {json}` | «Продолжить» при старте и «Загрузить файл»: `Sim::load`, дальше обычный `ready` |
 | worker → main | `loadFailed {message}` | снимок не подошёл: чужой формат или чужой рулсет; главный поток чистит слот |
 | main → worker | `newGame` | «Новая партия»: `Sim::new` заново, дальше обычный `ready` |
