@@ -284,6 +284,24 @@ main#stage canvas { display: block; }
 
 /* Репутация по фракциям (§12.43): та же фишка, что у предметов, но со знаком.
    Минус подсвечивается — «−40» рядом с «+40» иначе читается как просто число. */
+/* Котоденьги (§12.44): рядом с известностью, но врозь — та только копится,
+   эти и приходят, и уходят. */
+.money {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 8px;
+  padding-left: 8px;
+  border-left: 1px solid var(--line);
+  color: #8fd6a0;
+}
+
+/* Курс на кнопке сделки — справа, как цена в фишках у тайла. */
+.rate {
+  margin-left: auto;
+  color: var(--muted);
+}
+
 .standing {
   display: inline-flex;
   align-items: center;

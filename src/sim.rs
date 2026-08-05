@@ -42,8 +42,9 @@ use crate::skills::{
     SKILL_RAID, SKILL_SCIENCE, desk_cap, level_cap_of, level_of, nearest_desk, xp_ceiling,
 };
 use crate::snapshot::{
-    BaseMapDto, BlueprintSnap, CraftSnap, EntitySnap, MapMeta, MissionSnap, NoteSnap, RaidGates,
-    RaidSnap, RecipeSnap, RecruitSnap, ResearchSnap, SkillSnap, Snapshot, StackSnap, TopicSnap,
+    BaseMapDto, BlueprintSnap, CraftSnap, DealSnap, EntitySnap, MapMeta, MissionSnap, NoteSnap,
+    PriceSnap, RaidGates, RaidSnap, RecipeSnap, RecruitSnap, ResearchSnap, SkillSnap, Snapshot,
+    StackSnap, TopicSnap,
 };
 use crate::timeline::{ready_for, revealed};
 
@@ -263,6 +264,11 @@ impl Sim {
                     bp.hauler = None;
                 }
             }
+            Some(HaulTo::Sale(deal_e)) => {
+                if let Some(mut deal) = self.world.get_mut::<Deal>(deal_e) {
+                    deal.hauler = None;
+                }
+            }
             Some(HaulTo::Store(pile)) => {
                 if let Some(mut mark) = pile.and_then(|e| self.world.get_mut::<ToStore>(e)) {
                     mark.hauler = None;
@@ -345,6 +351,23 @@ impl Sim {
     fn order(&mut self) -> Option<Entity> {
         let mut q = self.world.query_filtered::<Entity, With<Craft>>();
         q.iter(&self.world).next()
+    }
+
+    /// Сделка, которая сейчас идёт (её, как вылазку и заказ, не больше одной).
+    fn deal(&mut self) -> Option<Entity> {
+        let mut q = self.world.query_filtered::<Entity, With<Deal>>();
+        q.iter(&self.world).next()
+    }
+
+    /// Есть ли на базе торговый пост — без него с внешним миром не говорят
+    /// (§12.44). За постом никто не работает: это лицензия, а не рабочее место,
+    /// поэтому от него нужен только сам факт.
+    fn has_trade_post(&mut self) -> bool {
+        let map = self.world.resource::<BaseMap>();
+        let rules = self.world.resource::<TileRules>();
+        (0..map.height)
+            .flat_map(|y| (0..map.width).map(move |x| (x, y)))
+            .any(|(x, y)| rules.is_trade_post(map.tile_at(x, y)))
     }
 
     /// Есть ли на базе клетка мастерской — без неё работать негде.
@@ -503,6 +526,7 @@ impl Sim {
                     lab: t.lab,
                     shop: t.shop,
                     solid: t.solid,
+                    trade: t.trade,
                     tech: t.tech.clone(),
                 })
                 .collect(),
@@ -567,10 +591,30 @@ impl Sim {
         world.insert_resource(FactionRules(
             rs.factions
                 .iter()
-                .map(|f| FactionRule { span: f.span })
+                .map(|f| FactionRule {
+                    span: f.span,
+                    lead: f.lead,
+                    spread: f.spread,
+                    favor: f.favor,
+                    period: f.period,
+                    // Прайс упорядочен по индексу предмета, а не по имени: он
+                    // доходит до раздачи задач и до цены на кнопке, а
+                    // недетерминированный обход ломает и тесты, и модель
+                    // времени (§11, §12.21).
+                    prices: {
+                        let mut list: Vec<(usize, Vec<i32>)> = f
+                            .prices
+                            .iter()
+                            .filter_map(|(id, phases)| item_index(id).map(|i| (i, phases.clone())))
+                            .collect();
+                        list.sort_unstable_by_key(|&(i, _)| i);
+                        list
+                    },
+                })
                 .collect(),
         ));
         world.insert_resource(Standing::default());
+        world.insert_resource(Money::default());
         world.insert_resource(MissionRules(
             rs.missions
                 .iter()
@@ -1225,6 +1269,73 @@ impl Sim {
         true
     }
 
+    /// Заключить сделку с фракцией: купить или продать `count` штук предмета
+    /// `item` (§12.44).
+    ///
+    /// **Курс фиксируется здесь и сейчас** и дальше живёт в самой сделке. Цена
+    /// обязана быть видна до клика, а показать в панели одно и списать другое
+    /// запрещает та же дисциплина, что и у прогноза вылазки (§12.23): курс
+    /// считает `trade::quote`, и это единственное место, где он считается.
+    ///
+    /// **Покупка платится сразу и целиком**, а товар едет `lead` тиков — за это
+    /// время расписание успеет уйти, и в том и смысл: решение принимается
+    /// вперёд. **Продажа не платится вовсе**, пока коты не донесут: деньги
+    /// капают поштучно в `work_hauls`.
+    ///
+    /// Сделка одна за раз, как вылазка, тема и заказ, и **отменить её нельзя** —
+    /// команды для этого нет намеренно: иначе это бесплатный опцион.
+    /// Вернёт false, если счётчик неположителен, сделка уже идёт, нет поста или
+    /// шлюза, фракция этим не торгует или на покупку не хватает денег.
+    pub fn trade(&mut self, faction: usize, item: usize, count: i32, buying: bool) -> bool {
+        if count <= 0 || self.deal().is_some() || !self.has_trade_post() {
+            return false;
+        }
+        // Товар приходит к шлюзу и уходит через него же: гараж — точка контакта
+        // базы с миром (§12.22), и второго особого места для торговли не нужно.
+        let Some(gate) = pick_gate(
+            self.world.resource::<BaseMap>(),
+            self.world.resource::<TileRules>(),
+            &[],
+        ) else {
+            return false;
+        };
+        let Some(unit) = crate::trade::quote(
+            self.world.resource::<FactionRules>(),
+            self.world.resource::<Standing>(),
+            faction,
+            item,
+            self.world.resource::<SimTime>().tick,
+            buying,
+        ) else {
+            return false; // фракция этим предметом не торгует
+        };
+        let lead = self
+            .world
+            .resource::<FactionRules>()
+            .0
+            .get(faction)
+            .map_or(0, |f| f.lead);
+        if buying {
+            let total = unit * count;
+            if self.world.resource::<Money>().0 < total {
+                return false;
+            }
+            self.world.resource_mut::<Money>().0 -= total;
+        }
+        self.world.spawn(Deal {
+            faction,
+            item,
+            count,
+            unit,
+            buying,
+            left: if buying { lead.max(1) } else { 0 },
+            delivered: 0,
+            hauler: None,
+            gate,
+        });
+        true
+    }
+
     /// Отправить кота `unit_id` учиться домену `skill_id`.
     ///
     /// **Обучение адресно** (§12.18) — как приказ «иди туда» и как заявка на
@@ -1664,6 +1775,49 @@ impl Sim {
         let standing: Vec<i32> = (0..self.factions.len())
             .map(|f| self.world.resource::<Standing>().value_of(f))
             .collect();
+        let money = self.world.resource::<Money>().0;
+        let deals: Vec<DealSnap> = {
+            let mut q = self.world.query::<&Deal>();
+            q.iter(&self.world)
+                .map(|d| DealSnap {
+                    faction: d.faction,
+                    item: d.item,
+                    count: d.count,
+                    unit: d.unit,
+                    buying: d.buying,
+                    left: d.left,
+                    delivered: d.delivered,
+                })
+                .collect()
+        };
+        // Курсы считаются тем же `quote`, которым посчитается заказ, — двух
+        // арифметик цены быть не должно (§12.44).
+        let prices: Vec<PriceSnap> = {
+            let tick = self.world.resource::<SimTime>().tick;
+            let factions = self.world.resource::<FactionRules>();
+            let standing = self.world.resource::<Standing>();
+            let mut out = Vec::new();
+            for (f, rule) in factions.0.iter().enumerate() {
+                let ahead = crate::trade::phase_left(rule, tick);
+                for (item, _) in &rule.prices {
+                    let at = |t: u64, buying: bool| {
+                        crate::trade::quote(factions, standing, f, *item, t, buying).unwrap_or(0)
+                    };
+                    let next_tick = tick + ahead.unwrap_or(0);
+                    out.push(PriceSnap {
+                        faction: f,
+                        item: *item,
+                        buy: at(tick, true),
+                        sell: at(tick, false),
+                        next_buy: at(next_tick, true),
+                        next_sell: at(next_tick, false),
+                        next_in: ahead.unwrap_or(0),
+                    });
+                }
+            }
+            out
+        };
+        let post = self.has_trade_post();
         let mut recruits = Vec::new();
         {
             let rules = self.world.resource::<RecruitRules>().0.clone();
@@ -1806,6 +1960,10 @@ impl Sim {
             raids,
             fame,
             standing,
+            money,
+            deals,
+            prices,
+            post,
             recruits,
             research,
             topics,

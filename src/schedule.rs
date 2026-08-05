@@ -18,6 +18,7 @@ use crate::needs::{assign_rest, collapse_exhausted, sleep, tire};
 use crate::research::{assign_research, work_research};
 use crate::skills::{study, train_skills};
 use crate::timeline::run_timeline;
+use crate::trade::run_trade;
 
 fn advance_time(mut time: ResMut<SimTime>) {
     time.tick += 1;
@@ -70,6 +71,10 @@ fn advance_time(mut time: ResMut<SimTime>) {
 ///
 /// `run_timeline` — рядом с ним и по той же причине: мир тоже дотягивается до
 /// базы через шлюз, и его груз должен успеть съехать из ямы тем же тиком.
+///
+/// `run_trade` — там же и по той же третьей причине (§12.44): купленный товар
+/// приезжает к шлюзу, а не на склад. Продажи в этой системе нет вовсе — её
+/// везут коты обычным подвозом, и деньги начисляет `work_hauls` по мере сдачи.
 ///
 /// `escape_voids` — под конец: если приказ или джоб уже дали маршрут, он и
 /// выводит кота из ямы, отдельный шаг не нужен. `settle_stacks` после
@@ -135,6 +140,7 @@ pub(crate) fn build_schedule() -> Schedule {
         study,
         run_missions,
         run_timeline,
+        run_trade,
     )
         .chain();
     // Последствия прожитого тика: кто где оказался, что с ним стало и чему он

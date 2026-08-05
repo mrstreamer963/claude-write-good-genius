@@ -61,6 +61,7 @@ pub(crate) fn collapse_exhausted(
     mut marks: Query<&mut ToStore>,
     mut topics: Query<&mut Research>,
     mut orders: Query<&mut Craft>,
+    mut deals: Query<&mut Deal>,
 ) {
     for (cat_e, energy, assignment, haul, researching, crafting, treating) in &cats {
         if energy.0 > 0 {
@@ -74,6 +75,7 @@ pub(crate) fn collapse_exhausted(
             &mut marks,
             &mut topics,
             &mut orders,
+            &mut deals,
         );
         // Лежанку упавший не занимает — падает где стоит, а не идёт к месту.
         commands.entity(cat_e).insert(Rest { spot: None });
@@ -110,6 +112,7 @@ pub(crate) fn release_work(
     marks: &mut Query<&mut ToStore>,
     topics: &mut Query<&mut Research>,
     orders: &mut Query<&mut Craft>,
+    deals: &mut Query<&mut Deal>,
 ) {
     let (assignment, haul, researching, crafting, _treating) = work;
     if let Some(bp_e) = assignment.map(|a| a.0) {
@@ -121,6 +124,11 @@ pub(crate) fn release_work(
         Some(HaulTo::Site(bp_e)) => {
             if let Ok(mut bp) = blueprints.get_mut(bp_e) {
                 bp.hauler = None;
+            }
+        }
+        Some(HaulTo::Sale(deal_e)) => {
+            if let Ok(mut deal) = deals.get_mut(deal_e) {
+                deal.hauler = None;
             }
         }
         Some(HaulTo::Store(pile)) => release_claim(marks, pile),
@@ -249,6 +257,7 @@ pub(crate) fn assign_rest(
     mut marks: Query<&mut ToStore>,
     mut topics: Query<&mut Research>,
     mut orders: Query<&mut Craft>,
+    mut deals: Query<&mut Deal>,
 ) {
     // Занято и то, к чему идут, и то, на чём лежат: кот, свалившийся прямо на
     // лежанку, места в `Rest` не держит, но занимает его собой.
@@ -287,6 +296,7 @@ pub(crate) fn assign_rest(
                 &mut marks,
                 &mut topics,
                 &mut orders,
+                &mut deals,
             );
             // Маршрут вешается строго после освобождения задачи: `release_work`
             // снимает `Path`, а команды применяются в порядке добавления.

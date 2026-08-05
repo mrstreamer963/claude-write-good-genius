@@ -30,6 +30,7 @@ mod study;
 mod terrain;
 mod tidying;
 mod timeline;
+mod trade;
 mod voids;
 
 use bevy_ecs::prelude::*;
@@ -114,6 +115,9 @@ fn sim_from(rows: &[&str]) -> Sim {
     // её `set_faction`.
     world.insert_resource(FactionRules::default());
     world.insert_resource(Standing::default());
+    // Денег у базы нет и торговать не с кем: внешний рынок — тоже контент
+    // рулсета (§12.44). Заводят его `set_trade_post` и `set_prices`.
+    world.insert_resource(Money::default());
     world.insert_resource(ItemRules::default());
     world.insert_resource(LoadoutRules::default());
     world.insert_resource(UnitRules::default());
@@ -133,6 +137,7 @@ fn sim_from(rows: &[&str]) -> Sim {
             lab: false,
             shop: false,
             solid: false,
+            trade: false,
             tech: String::new(),
         }],
         items: Vec::new(),
@@ -1018,11 +1023,27 @@ impl Sim {
         self.world.resource::<Fame>().0
     }
 
+    fn money(&self) -> i32 {
+        self.world.resource::<Money>().0
+    }
+
+    fn set_money(&mut self, value: i32) {
+        self.world.resource_mut::<Money>().0 = value;
+    }
+
+    /// Сделать тайл торговым постом: без него база не торгует (§12.44).
+    fn set_trade_post(&mut self, tile: i16, on: bool) {
+        self.tile_rule(tile, |r| r.trade = on);
+    }
+
     /// Завести фракцию в мире теста. Вернёт её индекс — им же адресуются
     /// `patron`, `against` и `needs` (§12.43).
     fn set_faction(&mut self, span: i32) -> usize {
         let mut rules = self.world.resource_mut::<FactionRules>();
-        rules.0.push(FactionRule { span });
+        rules.0.push(FactionRule {
+            span,
+            ..FactionRule::default()
+        });
         rules.0.len() - 1
     }
 
@@ -1041,6 +1062,97 @@ impl Sim {
             rule.against = against;
             rule.standing = standing;
         }
+    }
+
+    /// Открыть фракции внешний рынок (§12.44): задержка поставки, наценка на
+    /// покупку, вес репутации в курсе и длина фазы расписания.
+    fn set_market(&mut self, faction: usize, lead: i32, spread: i32, favor: i32, period: u64) {
+        let mut rules = self.world.resource_mut::<FactionRules>();
+        if let Some(rule) = rules.0.get_mut(faction) {
+            rule.lead = lead;
+            rule.spread = spread;
+            rule.favor = favor;
+            rule.period = period;
+        }
+    }
+
+    /// Расписание базового курса по предмету: фазы идут по кругу.
+    fn set_prices(&mut self, faction: usize, item: usize, phases: &[i32]) {
+        let mut rules = self.world.resource_mut::<FactionRules>();
+        if let Some(rule) = rules.0.get_mut(faction) {
+            rule.prices.retain(|&(i, _)| i != item);
+            rule.prices.push((item, phases.to_vec()));
+            rule.prices.sort_unstable_by_key(|&(i, _)| i);
+        }
+    }
+
+    /// Сколько предметов в палитре рулсета.
+    fn item_count(&self) -> usize {
+        self.world.resource::<ItemRules>().0.len()
+    }
+
+    /// Длина фазы расписания — общая у всех фракций боевого рулсета; берём
+    /// первую ненулевую, чтобы шагать по фазам в тестах.
+    fn market_period(&self) -> u64 {
+        self.world
+            .resource::<FactionRules>()
+            .0
+            .iter()
+            .map(|f| f.period)
+            .find(|&p| p > 0)
+            .unwrap_or(1)
+    }
+
+    /// Задержка поставки у фракции.
+    fn market_lead(&self, faction: usize) -> i32 {
+        self.world
+            .resource::<FactionRules>()
+            .0
+            .get(faction)
+            .map_or(0, |f| f.lead)
+    }
+
+    /// Индексы торговых постов палитры — для контентных проверок (§12.44).
+    fn trade_post_tiles(&self) -> Vec<i16> {
+        let rules = self.world.resource::<TileRules>();
+        (0..rules.0.len())
+            .map(|i| i as i16)
+            .filter(|&t| rules.is_trade_post(t))
+            .collect()
+    }
+
+    /// Технология, запирающая тайл; `None` — доступен сразу.
+    fn tile_tech(&self, tile: i16) -> Option<String> {
+        self.world
+            .resource::<TileRules>()
+            .tech_of(tile)
+            .map(|t| t.to_string())
+    }
+
+    /// Перемотать часы: расписание курсов — чистая функция тика, поэтому фазу
+    /// в тесте можно выбрать, а не отсчитывать её тиками (§12.44).
+    fn set_tick(&mut self, tick: u64) {
+        self.world.resource_mut::<SimTime>().tick = tick;
+    }
+
+    /// Сделка в работе: `(покупаем ли, штук, курс, тиков до поставки, донесено)`.
+    fn deal_of(&mut self) -> Option<(bool, i32, i32, i32, i32)> {
+        let mut q = self.world.query::<&Deal>();
+        q.iter(&self.world)
+            .next()
+            .map(|d| (d.buying, d.count, d.unit, d.left, d.delivered))
+    }
+
+    /// Курс так, как его видит и панель, и фасад, — одно выражение (§12.44).
+    fn quote(&self, faction: usize, item: usize, buying: bool) -> Option<i32> {
+        crate::trade::quote(
+            self.world.resource::<FactionRules>(),
+            self.world.resource::<Standing>(),
+            faction,
+            item,
+            self.world.resource::<SimTime>().tick,
+            buying,
+        )
     }
 
     /// Пол доверия у вылазки: ниже него заказчик её не даёт (§12.43).

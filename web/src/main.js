@@ -31,6 +31,7 @@ const missionEl = document.getElementById('mission');
 const captiveEl = document.getElementById('captive');
 const researchEl = document.getElementById('research');
 const craftEl = document.getElementById('craft');
+const dealEl = document.getElementById('deal');
 const noteEl = document.getElementById('note');
 
 const app = new Application();
@@ -111,6 +112,13 @@ let raids = [];
 // Репутация по фракциям в порядке палитры (§12.43). Нужна не для ворот — их
 // считает ядро, — а чтобы назвать отказ словом: «нужно 30, у вас −10».
 let standing = [];
+// Курсы и сделка (§12.44). Цену считает ядро тем же выражением, каким её
+// спишет заказ, — здесь только показываем.
+let money = 0;
+let prices = [];
+let hasPost = false;
+let dealRunning = false;
+const tradeButtons = []; // кнопки сделок — гасим, пока идёт другая
 const missionButtons = []; // кнопки запуска — их гасим, пока миссия идёт
 const recruitButtons = []; // кнопки найма — гасим по известности и складу
 const teachButtons = []; // кнопки обучения — живы, когда выбран ровно один кот
@@ -300,6 +308,9 @@ function renderSnapshot(snap) {
   // считается так же и решает, что базе вообще доступно.
   fame = snap.fame ?? 0;
   standing = snap.standing ?? [];
+  money = snap.money ?? 0;
+  prices = snap.prices ?? [];
+  hasPost = !!snap.post;
   scrapEl.innerHTML =
     (meta.items ?? [])
       .map(
@@ -321,7 +332,10 @@ function renderSnapshot(snap) {
           `<i class="chip" style="background:${f.color}"></i><b>${sign}</b></span>`
         );
       })
-      .join('');
+      .join('') +
+    // Деньги — единственная величина, которая и копится, и тратится: это счёт,
+    // а не ворота (§12.44). Потому и стоят отдельно от известности.
+    `<span class="money" title="Котоденьги">¤<b>${money}</b></span>`;
   for (const [id, c] of units) {
     if (!seen.has(id)) {
       c.destroy({ children: true });
@@ -349,6 +363,7 @@ function renderSnapshot(snap) {
   renderMissionPanel(snap.missions);
   renderResearchPanel(snap.research);
   renderCraftPanel(snap.crafting);
+  renderDealPanel(snap.deals);
   syncRecruitButtons(snap.recruits);
   syncTopicButtons(snap.topics);
   syncRecipeButtons(snap.recipes);
@@ -779,6 +794,48 @@ function renderCraftPanel(list) {
   craftEl
     .querySelector('.craft-cancel')
     .addEventListener('click', () => worker.postMessage({ type: 'cancelCraft' }));
+}
+
+// Сделка (§12.44). Показываем **зафиксированный** курс, а не сегодняшний:
+// рассчитаются именно по нему, а расписание за это время могло уйти — в этом и
+// весь риск торговли. Кнопки «Отменить» здесь нет намеренно: деньги за покупку
+// уже ушли, и возврат превратил бы сделку в бесплатный опцион.
+function renderDealPanel(list) {
+  const d = (list ?? [])[0];
+  dealRunning = !!d;
+  syncTradeButtons();
+  if (!d || !meta) {
+    dealEl.hidden = true;
+    return;
+  }
+  const item = (meta.items ?? [])[d.item];
+  const who = (meta.factions ?? [])[d.faction];
+  const name = esc(item?.label || item?.id || 'товар');
+  const parts = [
+    `<div class="cat-name">${d.buying ? 'Покупка' : 'Продажа'}: ${name}</div>`,
+    `<div class="cat-sub">${esc(who?.label || '—')} · ${d.count} шт по ${d.unit} = ${d.unit * d.count}¤</div>`,
+  ];
+  if (d.buying) {
+    parts.push(
+      '<div class="cat-skill">' +
+        `<div class="cat-row"><span>В пути</span><b>${d.left}</b></div>` +
+        '<div class="cat-sub">приедет в гараж</div>' +
+        '</div>',
+    );
+  } else {
+    // У продажи «срок» — это ходки котов, и мерить его тиками нечем: показываем
+    // сделанное, а не оставшееся время.
+    const pct = d.count > 0 ? Math.round((d.delivered / d.count) * 100) : 0;
+    parts.push(
+      '<div class="cat-skill">' +
+        `<div class="cat-row"><span>Отнесли</span><b>${d.delivered} из ${d.count}</b></div>` +
+        `<div class="bar"><i style="width:${pct}%"></i></div>` +
+        `<div class="cat-sub">получено ${d.unit * d.delivered}¤</div>` +
+        '</div>',
+    );
+  }
+  dealEl.innerHTML = parts.join('');
+  dealEl.hidden = false;
 }
 
 // Записка (§4.6, §12.28). Что известно о будущем — решает ядро: пока детали не
@@ -1243,6 +1300,44 @@ function buildToolbar() {
     syncTeachButtons();
   }
 
+  // Торговля (§12.44). Раздел на фракцию: у каждой свой прайс, свой темп и своя
+  // наценка, и это второе лицо развилки §12.43 — сторону выбирают уже не только
+  // по заказам. Кнопок по две на предмет: купить и продать, чтобы направление
+  // не пряталось за модификатором.
+  tradeButtons.length = 0;
+  (meta.factions ?? []).forEach((fac, fi) => {
+    // Чем фракция торгует, видно из палитры, а не из снапшота: тулбар строится
+    // один раз по `ready`, когда курсов ещё нет. `prices` приезжает `Map`, а не
+    // объектом, — та же идиома, что у цены и добычи (см. `costChips`).
+    const list = fac.prices instanceof Map ? [...fac.prices.keys()] : Object.keys(fac.prices ?? {});
+    const traded = (meta.items ?? [])
+      .map((it, ii) => ({ it, ii }))
+      .filter(({ it }) => list.includes(it.id));
+    if (!traded.length) return;
+    const sec = mkSection(el, `Торговля: ${fac.label || fac.id}`);
+    for (const { it, ii } of traded) {
+      for (const buying of [true, false]) {
+        const b = mkTool(
+          `<span class="sw" style="background:${it.color}"></span>` +
+            `<span>${buying ? 'Купить' : 'Продать'} ${esc(it.label || it.id)}</span>` +
+            '<b class="rate">—</b>',
+          (ev) => {
+            // Клик — пять штук, Shift — двадцать пять: тот же идиом, что у
+            // заказа в мастерской, только товар возят мешками.
+            const count = ev.shiftKey ? 25 : 5;
+            worker.postMessage({ type: 'trade', faction: fi, item: ii, count, buying });
+          },
+        );
+        b.classList.add('toggle');
+        b.dataset.faction = fi;
+        b.dataset.item = ii;
+        b.dataset.buying = buying ? '1' : '';
+        tradeButtons.push(b);
+        sec.appendChild(b);
+      }
+    }
+  });
+
   // Найм. Кандидаты уникальны (§4.2): каждый приходит один раз, известность
   // открывает, а платит склад — цена теми же фишками, что и у тайлов (§12.24).
   const recruits = meta.recruits ?? [];
@@ -1269,6 +1364,45 @@ function buildToolbar() {
   // палитра — с неё игра и начинается.
   openOnly(sections.some((s) => s.title === openSection) ? openSection : 'Постройка');
   selectCursor(cursorBtn); // режим по умолчанию
+}
+
+/// Курс фракции по предмету — из снапшота, где его посчитало ядро тем же
+/// выражением, каким его посчитает заказ (§12.44). Второй арифметики цены в JS
+/// быть не должно.
+function quoteOf(faction, item) {
+  return prices.find((p) => p.faction === faction && p.item === item);
+}
+
+// Доступность сделки: пост считает ядро, деньги — умножение уже названной им
+// цены. Причину отказа называем словом: молчащая кнопка читается как поломка.
+function syncTradeButtons() {
+  for (const b of tradeButtons) {
+    const fi = Number(b.dataset.faction);
+    const ii = Number(b.dataset.item);
+    const buying = !!b.dataset.buying;
+    const q = quoteOf(fi, ii);
+    if (!q) continue;
+    const unit = buying ? q.buy : q.sell;
+    const total = unit * 5;
+    const broke = buying && money < total;
+    const ready = hasPost && !dealRunning && !broke;
+    b.disabled = !ready;
+    b.classList.toggle('on', ready);
+    const rate = b.querySelector('.rate');
+    if (rate) rate.textContent = `${unit}¤`;
+    // Расписание видно вперёд — это и есть разница между планированием и
+    // караулом с секундомером (§12.40).
+    const next = buying ? q.next_buy : q.next_sell;
+    const ahead =
+      q.next_in > 0 && next !== unit ? ` · через ${q.next_in} станет ${next}¤` : '';
+    b.title = !hasPost
+      ? 'Нужен «Торговый пост»'
+      : dealRunning
+        ? 'Сделка уже идёт'
+        : broke
+          ? `Нужно ${total}¤ за пять, у вас ${money}¤`
+          : `${unit}¤ за штуку · клик — пять (${total}¤), Shift — двадцать пять${ahead}`;
+  }
 }
 
 // Доступность кандидата считает ядро (известность + содержимое склада), здесь

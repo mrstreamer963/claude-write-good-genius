@@ -29,6 +29,14 @@ use crate::path::Reach;
 
 // --- доставка на площадку --------------------------------------------------
 
+/// Адресат подвоза для раздачи: сущность, куда идти, тайл этой клетки (его
+/// читает `build_spot`), чего не хватает и **сделка ли это**.
+///
+/// Площадка и заказ на продажу лежат в одном списке намеренно: снабжаются они
+/// одинаково, и последний флаг решает ровно две вещи — чей claim ставить и
+/// какой `HaulTo` выдать (§12.44).
+type Needy = (Entity, (i32, i32), i16, Vec<(usize, i32)>, bool);
+
 /// Назначает свободных котов на доставку материала к чертежам, которым его не хватает.
 ///
 /// Стоимость назначения — длина всего маршрута: `кот → куча → площадка`. Вторая
@@ -45,6 +53,7 @@ pub(crate) fn assign_hauls(
     rules: Res<TileRules>,
     mut commands: Commands,
     mut blueprints: Query<(Entity, &mut Blueprint)>,
+    mut deals: Query<(Entity, &mut Deal)>,
     stacks: Query<(&Position, &Stack)>,
     free_cats: Query<
         (Entity, &Position, Option<&Carrying>),
@@ -68,15 +77,37 @@ pub(crate) fn assign_hauls(
         ),
     >,
 ) {
-    // Площадки, которым чего-то не хватает и к которым сейчас никто не едет.
-    let mut needy: Vec<(Entity, (i32, i32), i16, Vec<(usize, i32)>)> = blueprints
+    // Адресаты, которым чего-то не хватает и к которым сейчас никто не едет.
+    let mut needy: Vec<Needy> = blueprints
         .iter()
         .filter(|(_, bp)| bp.hauler.is_none())
         .filter_map(|(e, bp)| {
             let miss = missing(&rules, bp);
-            (!miss.is_empty()).then(|| (e, (bp.x, bp.y), bp.tile, miss))
+            (!miss.is_empty()).then(|| (e, (bp.x, bp.y), bp.tile, miss, false))
         })
         .collect();
+    // **Заказ на продажу — третий адресат подвоза** (§12.44), и снабжается он
+    // ровно как площадка: игрок разметил, куда деть товар, а несёт его любой
+    // свободный кот (§12.16). Отдельного механизма для продажи не заводится —
+    // разница только в том, что на месте товар не укладывается в тайл, а
+    // превращается в деньги.
+    needy.extend(
+        deals
+            .iter()
+            .filter(|(_, d)| !d.buying)
+            .filter_map(|(e, d)| {
+                let left = d.count - d.delivered;
+                (d.hauler.is_none() && left > 0).then(|| {
+                    (
+                        e,
+                        d.gate,
+                        map.tile_at(d.gate.0, d.gate.1),
+                        vec![(d.item, left)],
+                        true,
+                    )
+                })
+            }),
+    );
     if needy.is_empty() {
         return;
     }
@@ -110,7 +141,7 @@ pub(crate) fn assign_hauls(
                 needy
                     .iter()
                     .enumerate()
-                    .filter_map(move |(ni, (_, bp_xy, bp_tile, miss))| {
+                    .filter_map(move |(ni, (_, bp_xy, bp_tile, miss, _))| {
                         let wanted = |item: usize| miss.iter().any(|&(i, _)| i == item);
                         if let Some(item) = *loaded {
                             if !wanted(item) {
@@ -138,16 +169,27 @@ pub(crate) fn assign_hauls(
         };
 
         let (cat_e, _, reach) = idle.remove(ci);
-        let (bp_e, ..) = needy.remove(ni);
+        let (target_e, _, _, _, sale) = needy.remove(ni);
         let path = reach.path_to(goal.0, goal.1).unwrap_or_default();
-        if let Ok((_, mut bp)) = blueprints.get_mut(bp_e) {
-            bp.hauler = Some(cat_e);
-        }
-        commands.entity(cat_e).insert((
-            Haul(HaulTo::Site(bp_e)),
-            Path { steps: path },
-            MoveCooldown(0),
-        ));
+        // Claim у обоих на адресате и по одному носильщику за раз: у площадки
+        // это `Blueprint::hauler`, у сделки — `Deal::hauler`.
+        let to = match sale {
+            true => {
+                if let Ok((_, mut deal)) = deals.get_mut(target_e) {
+                    deal.hauler = Some(cat_e);
+                }
+                HaulTo::Sale(target_e)
+            }
+            false => {
+                if let Ok((_, mut bp)) = blueprints.get_mut(target_e) {
+                    bp.hauler = Some(cat_e);
+                }
+                HaulTo::Site(target_e)
+            }
+        };
+        commands
+            .entity(cat_e)
+            .insert((Haul(to), Path { steps: path }, MoveCooldown(0)));
     }
 }
 
@@ -300,6 +342,8 @@ pub(crate) fn work_hauls(
         Option<&Carry>,
     )>,
     mut blueprints: Query<&mut Blueprint>,
+    mut deals: Query<&mut Deal>,
+    mut money: ResMut<Money>,
     mut stacks: Query<(Entity, &Position, &mut Stack)>,
     mut marks: Query<&mut ToStore>,
 ) {
@@ -363,6 +407,68 @@ pub(crate) fn work_hauls(
                 }
                 bp.hauler = None;
                 commands.entity(cat_e).remove::<Haul>();
+            }
+            // Продажа — зеркало площадки, и отличий ровно два: на месте товар
+            // не укладывается в тайл, а исчезает из мира, и вместо `delivered`
+            // растут деньги (§12.44).
+            HaulTo::Sale(deal_e) => {
+                let Ok(mut deal) = deals.get_mut(deal_e) else {
+                    commands.entity(cat_e).remove::<Haul>();
+                    continue;
+                };
+                if path.is_some() {
+                    continue; // ещё в дороге
+                }
+                let left = deal.count - deal.delivered;
+                let miss = vec![(deal.item, left)];
+
+                let Some(load) = load else {
+                    let taken =
+                        take_needed(&mut commands, &mut stacks, (pos.x, pos.y), &miss, carry);
+                    let Some((item, taken)) = taken else {
+                        deal.hauler = None;
+                        commands.entity(cat_e).remove::<Haul>();
+                        continue;
+                    };
+                    let reach = Reach::all(&map, (pos.x, pos.y));
+                    let tile = map.tile_at(deal.gate.0, deal.gate.1);
+                    match build_spot(&map, &reach, deal.gate, tile, None) {
+                        Some((spot, _)) => {
+                            let path = reach.path_to(spot.0, spot.1).unwrap_or_default();
+                            commands.entity(cat_e).insert((
+                                Carrying { item, count: taken },
+                                Path { steps: path },
+                                MoveCooldown(0),
+                            ));
+                        }
+                        None => {
+                            deal.hauler = None;
+                            commands
+                                .entity(cat_e)
+                                .insert(Carrying { item, count: taken })
+                                .remove::<Haul>();
+                        }
+                    }
+                    continue;
+                };
+
+                // Донёс до шлюза — товар уходит, деньги приходят. **Поштучно и
+                // по факту сдачи**: у кота может не хватить лап (§12.17), и
+                // «донёс половину, а денег нет» читалось бы как потеря.
+                if (pos.x - deal.gate.0).abs() + (pos.y - deal.gate.1).abs() <= 1 {
+                    let given = load.count.min(left).max(0);
+                    if load.item == deal.item {
+                        deal.delivered += given;
+                        money.0 += deal.unit * given;
+                        keep_rest(&mut commands, cat_e, load.item, load.count - given);
+                    }
+                }
+                let done = deal.delivered >= deal.count;
+                deal.hauler = None;
+                commands.entity(cat_e).remove::<Haul>();
+                if done {
+                    commands.entity(deal_e).despawn();
+                }
             }
 
             HaulTo::Store(pile_e) => {

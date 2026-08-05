@@ -57,6 +57,7 @@ mod sim;
 mod skills;
 mod snapshot;
 mod timeline;
+mod trade;
 
 #[cfg(test)]
 mod tests;
