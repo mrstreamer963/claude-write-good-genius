@@ -356,3 +356,104 @@ fn the_shipped_ruleset_can_treat_its_wounded() {
         "провал первой вылазки кладёт кота в лазарет, а не царапает"
     );
 }
+
+// --- аптечка (§12.47) -------------------------------------------------------
+
+/// Аптечка режет срок лечения, а склад платит за неё один раз на раненого.
+///
+/// Мир один и тот же, разница только в непустом складе — иначе сравнивались бы
+/// два разных мира, а не наличие аптечки.
+#[test]
+fn a_medkit_speeds_the_healing_and_is_spent_once() {
+    const KIT: usize = 0;
+
+    let healed = |with_kit: bool| {
+        let mut sim = sim_from(&["#########", "#a.....b#", "#########"]);
+        sim.set_health_rules(1000, 600, 1);
+        sim.set_health("a", 100);
+        // Склад с аптечками: платит он, а не пол под ногами (§12.47).
+        sim.set_capacity(1, 20);
+        sim.force_tile(4, 1, 1);
+        sim.set_mends(KIT, 8);
+        if with_kit {
+            sim.put_item(4, 1, KIT, 3);
+        }
+
+        sim.tick_n(30);
+        assert!(sim.is_treating("b"), "медик взялся в обоих мирах");
+        let start = sim.health_of("a");
+        sim.tick_n(40);
+        (sim.health_of("a") - start, sim.item_total(KIT))
+    };
+
+    let (without, _) = healed(false);
+    let (with, left) = healed(true);
+
+    assert!(
+        with > without,
+        "с аптечкой заживает быстрее: {with} против {without}",
+    );
+    assert_eq!(
+        left, 2,
+        "и потрачена ровно одна штука, а не по одной за тик"
+    );
+}
+
+/// Главное свойство: аптечка **ускоряет, а не открывает**. Пустой склад — это
+/// не тупик, а просто дольше (§12.37: базу, где выбывшего некому поднять, мы
+/// не строим).
+#[test]
+fn healing_works_without_any_medkit() {
+    let mut sim = sim_from(&["#########", "#a.....b#", "#########"]);
+    sim.set_health_rules(100, 60, 1);
+    sim.set_health("a", 50);
+    sim.set_mends(0, 8); // аптечки в мире есть как понятие, но не на складе
+
+    sim.tick_n(80);
+    assert!(!sim.is_healing("a"), "раненый встал и без аптечки");
+}
+
+/// На боевом рулсете аптечку есть чем сделать, и она правда ускоряет.
+///
+/// Ловит контент, где `mends` забыли вовсе, рецепт ссылается на предмет не тем
+/// `id`, или аптечка спрятана за технологией, до которой ещё дожить надо, —
+/// раненые появляются раньше второй ступени науки.
+#[test]
+fn the_shipped_ruleset_can_bandage_the_wounded() {
+    let sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
+
+    let kits: Vec<(usize, i32)> = sim.world.resource::<ItemRules>().medkits().collect();
+    let &(kit, mends) = kits.first().expect("в палитре нет ни одной аптечки");
+
+    // Аптечка должна быть сравнима с койкой, иначе она украшение: с ней ставка
+    // обязана заметно отличаться от лучшей койки без неё.
+    let best_bed = sim
+        .world
+        .resource::<TileRules>()
+        .0
+        .iter()
+        .map(|t| t.heal)
+        .max()
+        .unwrap_or(0);
+    assert!(best_bed > 0, "в палитре нет лазарета");
+    assert!(
+        mends >= best_bed,
+        "аптечка ({mends}) слабее койки ({best_bed}) — это украшение, а не расходник",
+    );
+
+    // Её должно быть чем сделать, и до рецепта должно быть можно дожить.
+    let recipes = sim.world.resource::<CraftRules>();
+    let recipe = recipes
+        .0
+        .iter()
+        .find(|r| r.gives.iter().any(|&(item, n)| item == kit && n > 0))
+        .expect("аптечку нечем сделать: нет рецепта, который её даёт");
+
+    let topics = sim.world.resource::<ResearchRules>();
+    for tech in &recipe.requires {
+        assert!(
+            topics.0.iter().any(|t| &t.id == tech),
+            "рецепт аптечки закрыт технологией «{tech}», которой нет ни в одной теме",
+        );
+    }
+}

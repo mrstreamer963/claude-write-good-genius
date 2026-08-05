@@ -7,7 +7,7 @@ use bevy_ecs::prelude::Entity;
 
 use crate::components::*;
 use crate::map::BaseMap;
-use crate::save::{SAVED, SKIPPED, short_name};
+use crate::save::{FORMAT, SAVED, SKIPPED, short_name};
 use crate::sim::Sim;
 
 const CORE: &str = include_str!("../../assets/rulesets/core.yaml");
@@ -416,6 +416,27 @@ fn a_save_from_another_ruleset_is_refused() {
         "снимок загрузился в мир с другими правилами",
     );
     assert!(Sim::load_from(CORE, &json).is_ok(), "а на своём — грузится");
+}
+
+/// Снимок чужой версии формата не грузится.
+///
+/// `FORMAT` поднимают руками при каждой правке DTO, и это единственное, что
+/// стоит между «схема разъехалась» и молча другим миром (см. комментарий у
+/// самой константы). Проверяем, что отказ вообще работает.
+#[test]
+fn a_save_from_another_format_is_refused() {
+    let mut live = Sim::new(CORE).expect("рулсет");
+    live.tick_n(20);
+    let json = live.save().expect("снимок");
+
+    let older = json.replacen(&format!("\"version\":{FORMAT}"), "\"version\":0", 1);
+    assert_ne!(older, json, "версия должна была найтись в файле");
+
+    assert!(
+        Sim::load_from(CORE, &older).is_err(),
+        "снимок чужого формата загрузился",
+    );
+    assert!(Sim::load_from(CORE, &json).is_ok(), "а свой — грузится");
 }
 
 /// Журнал помнит, что делал игрок, и переживает сохранение.

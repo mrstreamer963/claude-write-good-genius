@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 1;
+pub(crate) const FORMAT: u32 = 2;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -320,6 +320,7 @@ pub(crate) struct StudyDto {
 pub(crate) struct HealingDto {
     pub(crate) spot: Option<(i32, i32)>,
     pub(crate) medic: Option<u32>,
+    pub(crate) kit: i32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -440,6 +441,7 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                 healing: e.get::<Healing>().map(|h| HealingDto {
                     spot: h.spot,
                     medic: h.medic.and_then(at),
+                    kit: h.kit,
                 }),
                 treating: e.get::<Treating>().and_then(|t| at(t.0)),
                 squad: e.get::<Squad>().and_then(|s| at(s.0)),
@@ -680,6 +682,7 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
             e.insert(Healing {
                 spot: h.spot,
                 medic: h.medic.and_then(at),
+                kit: h.kit,
             });
         }
         if let Some(n) = dto.treating.and_then(at) {

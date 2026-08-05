@@ -922,6 +922,16 @@ impl Sim {
         rules.0[item].force = force;
     }
 
+    /// Сделать предмет аптечкой: сколько заживления за тик он добавляет
+    /// израсходованным (§12.47). Ноль — обычный предмет.
+    fn set_mends(&mut self, item: usize, mends: i32) {
+        let mut rules = self.world.resource_mut::<ItemRules>();
+        if rules.0.len() <= item {
+            rules.0.resize(item + 1, ItemRule::default());
+        }
+        rules.0[item].mends = mends;
+    }
+
     /// Задать шаблон снаряжения: что коты носят. Один на всех (§12.29).
     fn set_loadout(&mut self, items: &[usize]) {
         self.world.resource_mut::<LoadoutRules>().0 = items.to_vec();

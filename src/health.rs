@@ -36,6 +36,7 @@
 use bevy_ecs::prelude::*;
 
 use crate::components::*;
+use crate::hauling::{plan_spend, storage_order};
 use crate::map::{BaseMap, DIRS};
 use crate::needs::release_work;
 use crate::path::Reach;
@@ -142,7 +143,11 @@ pub(crate) fn assign_heal(
             None => (None, Vec::new()),
         };
         commands.entity(cat_e).insert((
-            Healing { spot, medic: None },
+            Healing {
+                spot,
+                medic: None,
+                kit: 0,
+            },
             Path { steps: path },
             MoveCooldown(0),
         ));
@@ -309,6 +314,20 @@ fn treat_spot(map: &BaseMap, reach: &Reach, at: (i32, i32)) -> Option<((i32, i32
         .min_by_key(|&(_, d)| d)
 }
 
+/// Какую аптечку израсходовать и что для этого снять со склада (§12.47).
+///
+/// Перебор идёт по палитре предметов, а не по кучам: какую именно возьмут,
+/// когда аптечек несколько, должно быть предсказуемо (§11). Считает и списывает
+/// это общий `plan_spend` — та же арифметика, что у найма, науки и заказа.
+fn plan_kit(
+    piles: &[(Entity, usize, i32)],
+    items: &ItemRules,
+) -> Option<(i32, Vec<(Entity, i32)>)> {
+    items
+        .medkits()
+        .find_map(|(item, mends)| plan_spend(piles, &[(item, 1)]).map(|takes| (mends, takes)))
+}
+
 /// Лежачие коты заживают; дошедший медик ускоряет, а на полной шкале кот встаёт.
 ///
 /// Близнец `sleep` (§12.20): скорость даёт клетка под котом — койка свою, всё
@@ -318,14 +337,21 @@ fn treat_spot(map: &BaseMap, reach: &Reach, at: (i32, i32)) -> Option<((i32, i32
 /// Медик прибавляет `TREAT_RATE` плюс уровень «Медицины» и растит его сам: здесь
 /// только маркер `Worked`, опыт начисляет `train_skills` в конце цепочки
 /// (§12.17). Пока медик идёт — он не лечит: дорога это дорога.
+///
+/// Здесь же тратится аптечка (§12.47) — **в момент, когда лечение действительно
+/// началось**, а не при назначении медика: оплаченное вперёд заморозило бы склад
+/// под работу, которая может не начаться (тот же довод, что у заказа, §12.30).
+/// Аптечка **ускоряет, а не открывает**: не нашлось — лечение идёт как раньше.
 pub(crate) fn heal(
     map: Res<BaseMap>,
     tiles: Res<TileRules>,
     rules: Res<HealthRules>,
     skill_rules: Res<SkillRules>,
+    items: Res<ItemRules>,
     mut commands: Commands,
-    mut patients: Query<(Entity, &Position, &mut Health, &Healing, Option<&Path>)>,
+    mut patients: Query<(Entity, &Position, &mut Health, &mut Healing, Option<&Path>)>,
     medics: Query<(Entity, &Position, &Treating, Option<&Path>, Option<&Skills>)>,
+    mut stacks: Query<(Entity, &Position, &mut Stack)>,
 ) {
     if rules.max <= 0 {
         return;
@@ -342,7 +368,7 @@ pub(crate) fn heal(
         })
         .collect();
 
-    for (cat_e, pos, mut health, task, path) in &mut patients {
+    for (cat_e, pos, mut health, mut task, path) in &mut patients {
         if path.is_some() {
             continue; // ещё идёт к койке
         }
@@ -352,8 +378,9 @@ pub(crate) fn heal(
             .max(1);
         // Считается только свой медик и только дошедший: соседняя клетка — то же
         // условие, по которому строитель работает у чертежа (§12.12).
+        let own = task.medic;
         let helper = arrived.iter().find(|&&(medic_e, patient_e, at, _)| {
-            Some(medic_e) == task.medic
+            Some(medic_e) == own
                 && patient_e == cat_e
                 && (at.0 - pos.x).abs() + (at.1 - pos.y).abs() <= 1
         });
@@ -362,7 +389,32 @@ pub(crate) fn heal(
             if let Some(skill) = medicine {
                 commands.entity(medic_e).insert(Worked(skill));
             }
+            // Аптечка тратится один раз на раненого: признак «уже потратили» —
+            // сам `kit`, второго флага не заводим. Списание общее с наймом,
+            // наукой и заказом (§12.47).
+            if task.kit == 0 {
+                let piles = storage_order(
+                    &map,
+                    &tiles,
+                    stacks
+                        .iter()
+                        .map(|(e, p, s)| (e, (p.x, p.y), s.item, s.count)),
+                );
+                if let Some((mends, takes)) = plan_kit(&piles, &items) {
+                    for (pile_e, taken) in takes {
+                        if let Ok((_, _, mut stack)) = stacks.get_mut(pile_e) {
+                            stack.count -= taken;
+                            if stack.count <= 0 {
+                                commands.entity(pile_e).despawn();
+                            }
+                        }
+                    }
+                    task.kit = mends;
+                }
+            }
         }
+        // Перевязка помогает и после ухода медика: аптечку уже израсходовали.
+        rate += task.kit;
 
         health.0 = (health.0 + rate).min(rules.max);
         if health.0 >= rules.max {

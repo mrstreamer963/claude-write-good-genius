@@ -716,6 +716,7 @@ impl Sim {
                 .map(|i| ItemRule {
                     force: i.force,
                     nutrition: i.nutrition,
+                    mends: i.mends,
                 })
                 .collect(),
         ));
