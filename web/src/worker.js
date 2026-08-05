@@ -11,19 +11,31 @@ import wasmUrl from './wasm/sp_sim_bg.wasm?url';
 const BASE_TPS = 6; // сим-тиков в секунду на ×1
 const SIM_DT_MS = 1000 / BASE_TPS;
 const MAX_STEPS_PER_FRAME = 2000;
+// Автосохранение раз в столько сим-тиков (§12.45). Считаем тиками, а не
+// секундами: на ×10 час игры проходит вшестеро быстрее, и по настенным часам
+// снимок отставал бы тем сильнее, чем быстрее играют.
+const AUTOSAVE_EVERY = 600;
 
 let sim = null;
 let speed = 1; // 0 (пауза) | 1 | 5 | 10
 let acc = 0;
 let last = 0;
 let lastMapVersion = -1;
+// Текст рулсета нужен и после старта: из него собирается и новая партия, и
+// загруженная — правил в снимке нет и быть не должно (§12.45).
+let yamlText = null;
+let sinceSave = 0;
+
+function announce() {
+  lastMapVersion = sim.map_version();
+  postMessage({ type: 'ready', meta: sim.map_meta(), map: sim.base_map() });
+}
 
 async function boot() {
   await init(wasmUrl);
-  const yaml = await (await fetch('/rulesets/core.yaml')).text();
-  sim = new Sim(yaml);
-  lastMapVersion = sim.map_version();
-  postMessage({ type: 'ready', meta: sim.map_meta(), map: sim.base_map() });
+  yamlText = await (await fetch('/rulesets/core.yaml')).text();
+  sim = new Sim(yamlText);
+  announce();
   last = performance.now();
   loop();
 }
@@ -41,6 +53,12 @@ function loop() {
       sim.tick();
       acc -= SIM_DT_MS;
       steps++;
+    }
+    // Снимок кладёт в localStorage главный поток: у воркера его нет вовсе.
+    sinceSave += steps;
+    if (sinceSave >= AUTOSAVE_EVERY) {
+      sinceSave = 0;
+      postMessage({ type: 'saved', json: sim.save(), auto: true });
     }
   } else {
     acc = 0;
@@ -112,6 +130,26 @@ onmessage = (e) => {
   } else if (m.type === 'hire' && sim) {
     // Известность открывает кандидата, платит склад (см. `hire` в ядре, §12.24).
     sim.hire(m.recruit);
+  } else if (m.type === 'save' && sim) {
+    // Ручное сохранение: главный поток решит, в хранилище оно или в файл.
+    postMessage({ type: 'saved', json: sim.save(), auto: false });
+  } else if (m.type === 'load' && yamlText) {
+    // Снимок собирается в мир из **того же** рулсета: правил в нём нет (§12.45).
+    // Отказ — это чужая версия формата или чужой рулсет, и он именно отказ:
+    // молча загруженная чужая партия была бы тихо другим миром.
+    try {
+      sim = Sim.load(yamlText, m.json);
+      sinceSave = 0;
+      announce();
+    } catch (err) {
+      postMessage({ type: 'loadFailed', message: String((err && err.message) || err) });
+    }
+  } else if (m.type === 'newGame' && yamlText) {
+    sim = new Sim(yamlText);
+    sinceSave = 0;
+    announce();
+  } else if (m.type === 'trace' && sim) {
+    postMessage({ type: 'traced', text: sim.trace() });
   }
 };
 

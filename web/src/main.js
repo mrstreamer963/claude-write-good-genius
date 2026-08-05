@@ -130,6 +130,13 @@ const tileButtons = []; // кнопки палитры, закрытые тех�
 
 const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
 
+// Сохранение партии (§12.45). Слот один: снимок описывает мир целиком, а
+// выбирать между слотами пока нечем — ни смерти, ни отката в игре нет.
+const SAVE_KEY = 'sp.save.v1';
+// Продолжаем ровно один раз за загрузку страницы: `ready` приходит и после
+// самой загрузки снимка, и повторная попытка была бы бесконечной.
+let triedResume = false;
+
 worker.onmessage = (e) => {
   const m = e.data;
   if (m.type === 'ready') {
@@ -139,14 +146,42 @@ worker.onmessage = (e) => {
     buildToolbar();
     layout();
     drawMap(m.map);
+    if (!triedResume) {
+      triedResume = true;
+      const saved = localStorage.getItem(SAVE_KEY);
+      if (saved) worker.postMessage({ type: 'load', json: saved });
+    }
   } else if (m.type === 'map') {
     drawMap(m.map);
   } else if (m.type === 'snapshot') {
     renderSnapshot(m.snap);
+  } else if (m.type === 'saved') {
+    if (m.auto) localStorage.setItem(SAVE_KEY, m.json);
+    else download(`sp-save-${stamp()}.json`, m.json);
+  } else if (m.type === 'traced') {
+    download(`sp-trace-${stamp()}.txt`, m.text);
+  } else if (m.type === 'loadFailed') {
+    // Снимок не подошёл к текущим правилам. Держать его дальше незачем: он
+    // не подойдёт и завтра, а базовая партия уже идёт.
+    localStorage.removeItem(SAVE_KEY);
+    showError(`Сохранение не загрузилось: ${m.message}. Партия начата заново.`);
   } else if (m.type === 'error') {
     showError(m.message);
   }
 };
+
+function stamp() {
+  return new Date().toISOString().slice(0, 19).replaceAll(':', '-');
+}
+
+function download(name, text) {
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 function hex(s) {
   return parseInt(s.replace('#', ''), 16);
@@ -1361,6 +1396,50 @@ function buildToolbar() {
       hire.appendChild(b);
     });
   }
+
+  // Партия (§12.45). Автосохранение идёт само и молча, поэтому здесь только
+  // то, что игрок решает сам: начать заново, унести партию файлом, принести
+  // обратно и снять трейс.
+  const game = mkSection(el, 'Партия');
+
+  const fresh = mkTool('<span class="sw sw-cursor"></span><span>Новая партия</span>', () => {
+    // Спрашиваем: действие разрушительное и необратимое — автосохранение
+    // затрёт старую партию через десяток секунд.
+    if (!confirm('Начать новую партию? Текущая будет потеряна.')) return;
+    localStorage.removeItem(SAVE_KEY);
+    worker.postMessage({ type: 'newGame' });
+  });
+  fresh.title = 'Сбросить базу к началу';
+  game.appendChild(fresh);
+
+  const dump = mkTool('<span class="sw sw-scrap"></span><span>Сохранить в файл</span>', () =>
+    worker.postMessage({ type: 'save' }),
+  );
+  dump.title = 'Скачать снимок партии';
+  game.appendChild(dump);
+
+  const picker = document.createElement('input');
+  picker.type = 'file';
+  picker.accept = '.json,application/json';
+  picker.hidden = true;
+  picker.addEventListener('change', async () => {
+    const file = picker.files?.[0];
+    if (!file) return;
+    worker.postMessage({ type: 'load', json: await file.text() });
+    picker.value = ''; // иначе тот же файл второй раз не выберется
+  });
+  const restore = mkTool('<span class="sw sw-scrap"></span><span>Загрузить файл</span>', () =>
+    picker.click(),
+  );
+  restore.title = 'Открыть снимок партии';
+  game.appendChild(restore);
+  game.appendChild(picker);
+
+  const trace = mkTool('<span class="sw sw-hire"></span><span>Скачать трейс</span>', () =>
+    worker.postMessage({ type: 'trace' }),
+  );
+  trace.title = 'Журнал команд: как партия пришла в это состояние';
+  game.appendChild(trace);
 
   // Раскрыт тот раздел, что был открыт до перестройки; на первом кадре это
   // палитра — с неё игра и начинается.

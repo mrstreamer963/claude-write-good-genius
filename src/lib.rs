@@ -52,6 +52,7 @@ mod needs;
 mod path;
 mod research;
 mod ruleset;
+mod save;
 mod schedule;
 mod sim;
 mod skills;

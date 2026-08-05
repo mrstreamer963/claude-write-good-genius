@@ -24,6 +24,7 @@ mod orders;
 mod panel;
 mod paths;
 mod research;
+mod save;
 mod skills;
 mod stats;
 mod study;
@@ -98,6 +99,7 @@ fn sim_from(rows: &[&str]) -> Sim {
     world.insert_resource(TileRules(vec![TileRule::default()]));
     world.insert_resource(AutoTidy(true));
     world.insert_resource(AutoRest(true));
+    world.insert_resource(Trace::default());
     world.insert_resource(SkillRules::default());
     world.insert_resource(NeedRules::default());
     world.insert_resource(FoodRules::default());
@@ -152,6 +154,9 @@ fn sim_from(rows: &[&str]) -> Sim {
         timeline: Vec::new(),
         width,
         height,
+        // Схема собрана мимо YAML, рулсета за ней нет — отпечатывать нечего.
+        // Тесты сохранения работают на боевом `core.yaml`, где он настоящий.
+        ruleset: 0,
     }
 }
 

@@ -37,6 +37,7 @@ use crate::ruleset::{
     EventDef, FactionDef, ItemDef, MissionDef, PerkDef, RecipeDef, RecruitDef, ResearchDef,
     Ruleset, SkillDef, StatDef, TileDef,
 };
+use crate::save::{FORMAT, SaveFile, capture, fingerprint, note, restore};
 use crate::schedule::build_schedule;
 use crate::skills::{
     SKILL_RAID, SKILL_SCIENCE, desk_cap, level_cap_of, level_of, nearest_desk, xp_ceiling,
@@ -65,9 +66,37 @@ pub struct Sim {
     pub(crate) timeline: Vec<EventDef>,
     pub(crate) width: i32,
     pub(crate) height: i32,
+    /// Отпечаток рулсета, на котором собран этот мир (§12.45). Лежит здесь, а
+    /// не в ресурсах, ровно потому, что миру он не нужен: он нужен снимку —
+    /// чтобы тот не загрузился в мир, собранный по другим правилам.
+    pub(crate) ruleset: u64,
 }
 
 impl Sim {
+    /// Собрать мир из снимка — с ошибкой обычной строкой.
+    ///
+    /// Отделено от `load` намеренно: `JsValue` вне wasm не собирается вовсе
+    /// (паника прямо в конструкторе), поэтому отказы, которые нужно уметь
+    /// проверять тестами, обязаны существовать до превращения в него.
+    pub(crate) fn load_from(ruleset_yaml: &str, save_json: &str) -> Result<Sim, String> {
+        let file: SaveFile =
+            serde_json::from_str(save_json).map_err(|e| format!("save parse error: {e}"))?;
+        if file.version != FORMAT {
+            return Err(format!(
+                "сохранение от другой версии игры (формат {}, нужен {FORMAT})",
+                file.version
+            ));
+        }
+        let mut sim = Sim::new(ruleset_yaml).map_err(|_| "рулсет не читается".to_string())?;
+        if file.ruleset != sim.ruleset {
+            return Err("сохранение снято на другом рулсете: правила изменились, \
+                        и старая партия в них уже не та"
+                .to_string());
+        }
+        restore(&mut sim.world, &file);
+        Ok(sim)
+    }
+
     fn in_bounds(&self, x: i32, y: i32) -> bool {
         x >= 0 && y >= 0 && x < self.width && y < self.height
     }
@@ -692,6 +721,7 @@ impl Sim {
         world.insert_resource(UnitRules { carry: rs.carry });
         world.insert_resource(AutoTidy(true));
         world.insert_resource(AutoRest(true));
+        world.insert_resource(Trace::default());
         world.insert_resource(NeedRules {
             max: rs.energy.max,
             tired: rs.energy.tired,
@@ -761,7 +791,38 @@ impl Sim {
             timeline: rs.timeline,
             width: w,
             height: h,
+            ruleset: fingerprint(ruleset_yaml),
         })
+    }
+
+    /// Снять снимок партии (§12.45). Наружу — JSON-текст: главный поток кладёт
+    /// его в `localStorage` или отдаёт файлом, воркеру хранить нечем.
+    pub fn save(&self) -> Result<String, JsValue> {
+        let file = capture(&self.world, self.ruleset);
+        serde_json::to_string(&file)
+            .map_err(|e| JsValue::from_str(&format!("save serialize error: {e}")))
+    }
+
+    /// Собрать мир из снимка. Правила берутся из рулсета — в снимке их нет и
+    /// быть не должно (§12.45), — поэтому текст YAML нужен и здесь.
+    ///
+    /// Два отказа, и оба явные: чужая версия формата и чужой рулсет. Индексы
+    /// палитр лежат в снимке числами, а имена — только в YAML, поэтому загрузка
+    /// снимка от другого контента дала бы не ошибку, а тихо другой мир.
+    pub fn load(ruleset_yaml: &str, save_json: &str) -> Result<Sim, JsValue> {
+        Sim::load_from(ruleset_yaml, save_json).map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// Отладочный журнал команд — «как игрок дошёл до такого состояния»
+    /// (§12.45). Партию он не восстанавливает и источником правды не является.
+    pub fn trace(&self) -> String {
+        self.world
+            .resource::<Trace>()
+            .0
+            .iter()
+            .map(|e| format!("{}\t{}", e.tick, e.cmd))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Размеры и палитра тайлов — отдаём один раз для настройки рендера.
@@ -803,6 +864,7 @@ impl Sim {
     /// `tile = -1` — чертёж сноса: кот придёт на соседнюю клетку и уберёт пол.
     /// Вернёт true, если чертёж добавлен/обновлён.
     pub fn add_blueprint(&mut self, x: i32, y: i32, tile: i32) -> bool {
+        note(&mut self.world, format!("build {x} {y} {tile}"));
         if !self.in_bounds(x, y) {
             return false;
         }
@@ -840,6 +902,10 @@ impl Sim {
     /// Поставить чертежи `tile` на весь прямоугольник — один жест рамкой.
     /// Вернёт true, если хоть одна клетка изменилась.
     pub fn add_blueprint_rect(&mut self, x: i32, y: i32, w: i32, h: i32, tile: i32) -> bool {
+        note(
+            &mut self.world,
+            format!("build_rect {x} {y} {w} {h} {tile}"),
+        );
         let mut changed = false;
         for (cx, cy) in rect_cells(x, y, w, h) {
             changed |= self.add_blueprint(cx, cy, tile);
@@ -855,6 +921,7 @@ impl Sim {
     /// клетку и работает. Повторный ластик по клетке с чертежом сноса отменяет
     /// его. Вернёт true, если что-то изменилось.
     pub fn plan_demolish(&mut self, x: i32, y: i32) -> bool {
+        note(&mut self.world, format!("erase {x} {y}"));
         self.plan_demolish_rect(x, y, 1, 1)
     }
 
@@ -866,6 +933,7 @@ impl Sim {
     /// зависел бы от того, что игрок делал раньше. Порядок «сначала отмена» ещё и
     /// безопаснее — отмена ничего не разрушает.
     pub fn plan_demolish_rect(&mut self, x: i32, y: i32, w: i32, h: i32) -> bool {
+        note(&mut self.world, format!("erase_rect {x} {y} {w} {h}"));
         let cells: Vec<(i32, i32)> = rect_cells(x, y, w, h).collect();
         let mut cancelled = false;
         for &(cx, cy) in &cells {
@@ -888,6 +956,7 @@ impl Sim {
     /// разбирать помеченное. Кот, уже несущий груз, свою ходку доводит до
     /// конца: бросать лом посреди базы хуже, чем донести (§12.16).
     pub fn set_auto_tidy(&mut self, on: bool) {
+        note(&mut self.world, format!("auto_tidy {on}"));
         self.world.resource_mut::<AutoTidy>().0 = on;
         if on {
             return;
@@ -919,6 +988,7 @@ impl Sim {
     /// спящий кот — это состояние, а не пометка игрока, и снимать её значило бы
     /// поднимать котов на нуле бодрости, чтобы они тут же упали снова.
     pub fn set_auto_rest(&mut self, on: bool) {
+        note(&mut self.world, format!("auto_rest {on}"));
         self.world.resource_mut::<AutoRest>().0 = on;
     }
 
@@ -931,6 +1001,7 @@ impl Sim {
     ///
     /// Вернёт true, если что-то изменилось.
     pub fn mark_to_store_rect(&mut self, x: i32, y: i32, w: i32, h: i32) -> bool {
+        note(&mut self.world, format!("store_rect {x} {y} {w} {h}"));
         let cells: Vec<(i32, i32)> = rect_cells(x, y, w, h).collect();
         let mut q = self
             .world
@@ -974,6 +1045,7 @@ impl Sim {
     /// Вернёт false, если миссии нет, одна уже идёт, состав не тот или до
     /// общего шлюза дойдут не все.
     pub fn launch(&mut self, def: usize, units: Vec<String>) -> bool {
+        note(&mut self.world, format!("launch {def} {}", units.join(",")));
         let Some(rule) = self.world.resource::<MissionRules>().0.get(def).cloned() else {
             return false;
         };
@@ -1077,6 +1149,7 @@ impl Sim {
     /// происходит, симуляция не знает, вылазка считается разом по возвращении.
     /// Вернёт false, если миссии нет или отряд уже ушёл.
     pub fn cancel_mission(&mut self) -> bool {
+        note(&mut self.world, "cancel_mission");
         let Some(mission_e) = self.mission() else {
             return false;
         };
@@ -1101,6 +1174,7 @@ impl Sim {
     /// Вернёт false, если кандидата нет, известности не хватает, он уже нанят,
     /// на складе нет цены или на базе нет шлюза.
     pub fn hire(&mut self, def: usize) -> bool {
+        note(&mut self.world, format!("hire {def}"));
         let Some(rule) = self.world.resource::<RecruitRules>().0.get(def).cloned() else {
             return false;
         };
@@ -1160,6 +1234,7 @@ impl Sim {
     /// или идёт, не хватает предыдущих технологий, на базе нет лаборатории,
     /// некому взяться или на складе нечем заплатить.
     pub fn start_research(&mut self, def: usize) -> bool {
+        note(&mut self.world, format!("research {def}"));
         let Some(rule) = self.world.resource::<ResearchRules>().0.get(def).cloned() else {
             return false;
         };
@@ -1199,6 +1274,7 @@ impl Sim {
     /// цена поспешной разметки, что и у отменённого чертежа с завезённым ломом.
     /// Вернёт false, если изучать нечего.
     pub fn cancel_research(&mut self) -> bool {
+        note(&mut self.world, "cancel_research");
         let Some(topic_e) = self.research() else {
             return false;
         };
@@ -1227,6 +1303,7 @@ impl Sim {
     /// счётчик неположителен, заказ уже идёт, не хватает технологий или на базе
     /// нет мастерской.
     pub fn start_craft(&mut self, def: usize, count: i32) -> bool {
+        note(&mut self.world, format!("craft {def} {count}"));
         let Some(rule) = self.world.resource::<CraftRules>().0.get(def).cloned() else {
             return false;
         };
@@ -1257,6 +1334,7 @@ impl Sim {
     /// (§12.26). Неоплаченные штуки не стоили ничего и просто исчезают.
     /// Вернёт false, если заказывать нечего.
     pub fn cancel_craft(&mut self) -> bool {
+        note(&mut self.world, "cancel_craft");
         let Some(order_e) = self.order() else {
             return false;
         };
@@ -1287,6 +1365,10 @@ impl Sim {
     /// Вернёт false, если счётчик неположителен, сделка уже идёт, нет поста или
     /// шлюза, фракция этим не торгует или на покупку не хватает денег.
     pub fn trade(&mut self, faction: usize, item: usize, count: i32, buying: bool) -> bool {
+        note(
+            &mut self.world,
+            format!("trade {faction} {item} {count} {buying}"),
+        );
         if count <= 0 || self.deal().is_some() || !self.has_trade_post() {
             return false;
         }
@@ -1348,6 +1430,7 @@ impl Sim {
     /// как приказ игрока (§12.23). Вернёт false, если кота нет, он в поле,
     /// домену не учат, коту уже нечему учиться за партой или парты нет.
     pub fn teach(&mut self, unit_id: &str, skill_id: &str) -> bool {
+        note(&mut self.world, format!("teach {unit_id} {skill_id}"));
         let rules = self.world.resource::<SkillRules>();
         let Some(skill) = rules.index_of(skill_id) else {
             return false;
@@ -1439,6 +1522,7 @@ impl Sim {
     /// Вернёт true, если приказ принят (цель проходима), false — если цель не тайл-пол
     /// или юнит не найден.
     pub fn set_target(&mut self, unit_id: &str, x: i32, y: i32) -> bool {
+        note(&mut self.world, format!("move {unit_id} {x} {y}"));
         let mut found = None;
         {
             let mut q = self.world.query::<(Entity, &UnitId, &Position)>();
