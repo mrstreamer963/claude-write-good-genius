@@ -547,6 +547,7 @@ impl Sim {
                         .collect(),
                     capacity: t.capacity,
                     rest: t.rest,
+                    wake: t.wake,
                     heal: t.heal,
                     gate: t.gate,
                     teaches: skill_index(&t.teaches),
@@ -726,6 +727,7 @@ impl Sim {
             tired: rs.energy.tired,
             critical: rs.energy.critical,
             floor: rs.energy.floor,
+            floor_wake: rs.energy.floor_wake,
         });
         world.insert_resource(FoodRules {
             max: rs.food.max,
@@ -1761,6 +1763,7 @@ impl Sim {
             )>();
             let map = self.world.resource::<BaseMap>();
             let rules = self.world.resource::<SkillRules>();
+            let tiles = self.world.resource::<TileRules>();
             let needs = self.world.resource::<NeedRules>();
             let food = self.world.resource::<FoodRules>();
             let hurts = self.world.resource::<HealthRules>();
@@ -1797,6 +1800,15 @@ impl Sim {
                     squad,
                     away,
                 ) = tasks;
+                // Место для сна под лапами — то, из чего `Busy::of` соберёт
+                // «дремлет», если задач у кота не нашлось (§12.52). Считается
+                // здесь, потому что карта и правила тайлов в `Busy` не ходят.
+                //
+                // Полную бодрость сюда **не подмешиваем**, хотя `doze` на ней и
+                // останавливается: кот на потолке теряет очко в `tire` и
+                // добирает его обратно следующим тиком, так что подпись мигала
+                // бы «дремлет / без дела» каждый кадр.
+                let bed = tiles.rest_of(map.tile_at(p.x, p.y)) > 0;
                 let busy = Busy::of(
                     order,
                     path,
@@ -1812,6 +1824,7 @@ impl Sim {
                     treating,
                     squad,
                     away,
+                    bed,
                 );
                 entities.push(EntitySnap {
                     id: id.0.clone(),

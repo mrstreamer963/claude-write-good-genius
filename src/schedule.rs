@@ -14,7 +14,7 @@ use crate::health::{assign_heal, assign_treat, heal};
 use crate::jobs::{assign_jobs, work_jobs};
 use crate::missions::{gather_squad, run_missions};
 use crate::movement::{clear_solids, escape_voids, move_units, retry_orders, spread_units};
-use crate::needs::{assign_rest, collapse_exhausted, sleep, tire};
+use crate::needs::{assign_nap, assign_rest, collapse_exhausted, doze, sleep, tire};
 use crate::research::{assign_research, work_research};
 use crate::skills::{study, train_skills};
 use crate::timeline::run_timeline;
@@ -51,8 +51,11 @@ fn advance_time(mut time: ResMut<SimTime>) {
 ///   8. `assign_craft` — производство. Там же и по той же причине: заказ игрок
 ///      разметил явно и поштучно, а чертежей на базе всегда больше (§12.30).
 ///   9. `assign_jobs` — стройка и снос.
-///  10. `assign_tidy` — уборка пола. Последняя: подбирать мусор, пока стоит
-///      настоящая работа, — это ровно то, чего игрок не ждёт.
+///  10. `assign_tidy` — уборка пола. Последняя из работ: подбирать мусор, пока
+///      стоит настоящая работа, — это ровно то, чего игрок не ждёт.
+///  11. `assign_nap` — дремота (§12.52). После всех, потому что раздаёт она не
+///      работу, а её отсутствие: «коту ничего не досталось» — факт только тогда,
+///      когда своё разобрали все остальные.
 ///
 /// Вылазки и учёба в этот порядок не входят: отряд назначает игрок в момент
 /// заявки (§12.23), ученика — в момент команды (§12.18), и раздавать там нечего.
@@ -91,6 +94,12 @@ fn advance_time(mut time: ResMut<SimTime>) {
 /// и `work_eat` там же и потому же: дошедший до кучи одевается и ест тем же
 /// тиком, а «дошёл» значит «`move_units` уже снял пустой маршрут».
 ///
+/// `doze` — сразу за `sleep` и **до** `tire`: дремлющий кот бодрствует, просто
+/// лёжа, и очко за прожитый тик с него берётся наравне со всеми (§12.52).
+/// Прибавка идёт первой, чтобы чистыми выходила ставка места минус это очко, а
+/// не наоборот. Своей задачи у дремоты нет: она видна по тому, что у кота нет
+/// ни одной, а под лапами место для сна.
+///
 /// `heal` — рядом со `sleep` и по той же причине: и сон, и заживление считаются
 /// за прожитый тик, а не за то, что кот в нём делал. С `tire` и `hunger` порядок
 /// не значим: здоровье ни на одну из них не смотрит и само по себе не тикает
@@ -126,6 +135,7 @@ pub(crate) fn build_schedule() -> Schedule {
         assign_jobs,
         mark_loose_scrap,
         assign_tidy,
+        assign_nap,
     )
         .chain();
     // Что из этого вышло: шаги и сама работа.
@@ -152,6 +162,7 @@ pub(crate) fn build_schedule() -> Schedule {
         clear_solids,
         settle_stacks,
         sleep,
+        doze,
         heal,
         tire,
         hunger,

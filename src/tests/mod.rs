@@ -133,6 +133,7 @@ fn sim_from(rows: &[&str]) -> Sim {
             cost: BTreeMap::new(),
             capacity: 0,
             rest: 0,
+            wake: 0,
             heal: 0,
             gate: false,
             teaches: String::new(),
@@ -206,10 +207,12 @@ impl Sim {
             .find(|(id, ..)| id.0 == unit)
             .map(|(_, p, tasks)| {
                 let (o, path, a, h, r, st, re, cr, eq, ea, he, tr, s, away) = tasks;
+                // Дремота на `stuck` не влияет: она только подписывает занятие
+                // и задачей не является (§12.52).
                 is_stuck(
                     map,
                     p,
-                    Busy::of(o, path, a, h, r, st, re, cr, eq, ea, he, tr, s, away),
+                    Busy::of(o, path, a, h, r, st, re, cr, eq, ea, he, tr, s, away, false),
                 )
             })
             .expect("кот не найден")
@@ -220,6 +223,7 @@ impl Sim {
     fn job_of(&mut self, unit: &str) -> (&'static str, bool) {
         let mut q = self.world.query::<(
             &UnitId,
+            &Position,
             (
                 Option<&Order>,
                 Option<&Path>,
@@ -237,11 +241,16 @@ impl Sim {
                 Option<&Away>,
             ),
         )>();
+        let map = self.world.resource::<BaseMap>();
+        let tiles = self.world.resource::<TileRules>();
         q.iter(&self.world)
-            .find(|(id, _)| id.0 == unit)
-            .map(|(_, tasks)| {
+            .find(|(id, ..)| id.0 == unit)
+            .map(|(_, p, tasks)| {
                 let (o, path, a, h, r, st, re, cr, eq, ea, he, tr, s, away) = tasks;
-                let busy = Busy::of(o, path, a, h, r, st, re, cr, eq, ea, he, tr, s, away);
+                // Дремота считается ровно так же, как в снапшоте: место для сна
+                // под лапами (§12.52).
+                let bed = tiles.rest_of(map.tile_at(p.x, p.y)) > 0;
+                let busy = Busy::of(o, path, a, h, r, st, re, cr, eq, ea, he, tr, s, away, bed);
                 (busy.job, busy.moving)
             })
             .expect("кот не найден")
@@ -773,6 +782,9 @@ impl Sim {
             tired,
             critical: 0,
             floor,
+            // Потолков сна тут нет: сон везде до полной, как было до §12.52, —
+            // их включают тесты дремоты через `set_wake` и `set_floor_wake`.
+            floor_wake: 0,
         });
         let mut q = self.world.query_filtered::<Entity, With<UnitId>>();
         for cat in q.iter(&self.world).collect::<Vec<_>>() {
@@ -794,6 +806,37 @@ impl Sim {
     /// Сделать тайл лежанкой: сколько бодрости он возвращает за тик.
     fn set_rest(&mut self, tile: i16, rate: i32) {
         self.tile_rule(tile, |r| r.rest = rate);
+    }
+
+    /// Потолок сна на тайле: докуда здесь высыпаются (§12.52). Ноль — до полной.
+    fn set_wake(&mut self, tile: i16, ceiling: i32) {
+        self.tile_rule(tile, |r| r.wake = ceiling);
+    }
+
+    /// Потолок сна там, где лежанки нет; ноль — до полной (§12.52).
+    fn set_floor_wake(&mut self, ceiling: i32) {
+        self.world.resource_mut::<NeedRules>().floor_wake = ceiling;
+    }
+
+    /// Потолки сна из правил: `(пол, максимум)` — для тестов на боевом рулсете.
+    fn ceilings(&self) -> (i32, i32) {
+        let needs = self.world.resource::<NeedRules>();
+        (needs.floor_wake, needs.max)
+    }
+
+    /// Место для сна как его видит рулсет: `(ставка, потолок)` у тайла (§12.52).
+    fn bed_of(&self, tile: i16) -> (i32, i32) {
+        let rules = self.world.resource::<TileRules>();
+        (rules.rest_of(tile), rules.wake_of(tile))
+    }
+
+    /// Индекс тайла по `id` — для тестов на боевом рулсете, где палитру задаёт
+    /// контент, а не схема.
+    fn tile_index(&self, id: &str) -> Option<i16> {
+        self.palette
+            .iter()
+            .position(|t| t.id == id)
+            .map(|i| i as i16)
     }
 
     fn set_energy(&mut self, unit: &str, value: i32) {

@@ -342,12 +342,137 @@ fn lie_down(commands: &mut Commands, cat_e: Entity, bed: Bed) {
     ));
 }
 
-/// Спящие коты восстанавливают бодрость и просыпаются на полной.
+/// Отправляет кота, которому нечем заняться, на свободную лежанку — дремать
+/// (§12.52).
 ///
-/// Скорость даёт клетка под котом: лежанка — свою, всё остальное — общий
-/// `floor` из рулсета. Ноль не берём никогда: спать можно где угодно, вопрос
-/// только в том, сколько это займёт, — иначе кот, уснувший на голом полу
-/// рулсета без `floor`, не проснулся бы вовсе.
+/// Стоит **последним** из раздатчиков, и это не вкусовщина: «коту ничего не
+/// досталось» становится фактом только после того, как своё разобрали все
+/// остальные. Раздать дремоту раньше значило бы уводить кота от работы, которую
+/// ему через два вызова и предложили бы.
+///
+/// Задачи он тут не получает — только маршрут. Дремота это отсутствие задачи
+/// плюс место для сна под лапами, и заведись у неё компонент, пришлось бы
+/// вписывать его в одиннадцать фильтров занятости ради состояния, из которого
+/// кота обязан выдёргивать кто угодно.
+///
+/// **Занятой считается и клетка под котом, и та, куда он идёт.** Иначе двое
+/// свободных выберут одну лежанку, придут на неё вдвоём, и `spread_units`
+/// отправит второго обратно в поиск — качели на ровном месте (§12.39).
+/// Спящий держит свою `Rest::spot` по той же причине, что и всегда (§12.20).
+pub(crate) fn assign_nap(
+    map: Res<BaseMap>,
+    rules: Res<TileRules>,
+    needs: Res<NeedRules>,
+    mut commands: Commands,
+    everyone: Query<(&Position, Option<&Path>, Option<&Rest>), (With<UnitId>, Without<Away>)>,
+    idle: Query<
+        (Entity, &UnitId, &Position, &Energy),
+        (
+            Without<Assignment>,
+            Without<Haul>,
+            Without<Rest>,
+            Without<Study>,
+            Without<Researching>,
+            Without<Crafting>,
+            Without<Equipping>,
+            Without<Eating>,
+            Without<Healing>,
+            Without<Treating>,
+            Without<Squad>,
+            Without<Away>,
+            Without<Path>,
+            // Приказ игрока — тоже дело, даже когда он невыполним: увести кота
+            // с того места, куда его послали, значит объяснить игроку, что его
+            // решение отменила усталость, которой ещё нет (§12.15).
+            Without<Order>,
+        ),
+    >,
+) {
+    if needs.max <= 0 || idle.is_empty() {
+        return;
+    }
+    let mut taken: Vec<(i32, i32)> = Vec::new();
+    for (pos, path, rest) in &everyone {
+        taken.push((pos.x, pos.y));
+        taken.extend(path.and_then(|p| p.steps.first()).copied());
+        taken.extend(rest.and_then(|r| r.spot));
+    }
+    let mut free: Vec<(i32, i32)> = (0..map.height)
+        .flat_map(|y| (0..map.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| rules.rest_of(map.tile_at(x, y)) > 0)
+        .filter(|cell| !taken.contains(cell))
+        .collect();
+    if free.is_empty() {
+        return;
+    }
+
+    // Порядок обхода — по `id` кота: лежанок может не хватить, и «кому
+    // досталась» обязано быть видно игроку, а обход ECS недетерминирован (§11).
+    let mut cats: Vec<(&str, Entity, (i32, i32))> = idle
+        .iter()
+        // Полному дремать нечего, а стоящий на месте для сна уже дремлет:
+        // послать его на соседнюю лежанку значило бы гонять кота по спальне.
+        .filter(|(_, _, pos, energy)| {
+            energy.0 < needs.max && rules.rest_of(map.tile_at(pos.x, pos.y)) <= 0
+        })
+        .map(|(e, id, pos, _)| (id.0.as_str(), e, (pos.x, pos.y)))
+        .collect();
+    cats.sort_unstable();
+    for (_, cat_e, at) in cats {
+        if free.is_empty() {
+            return;
+        }
+        // Идём к лежанке **по шагу за раз**, а не целым маршрутом, и это не
+        // мелочь. Кот с маршрутом невидим раздатчикам (`Without<Path>`,
+        // инвариант 5), а дорога через полбазы длится десятки тиков: выдай
+        // маршрут целиком — и освободившийся чертёж простоял бы всё это время,
+        // пока бригада бредёт в спальню. Так кот свободен через тик, а идёт с
+        // обычной скоростью: `MoveCooldown(1)` — тот же `MOVE_PERIOD`, который
+        // `move_units` ставит после каждого шага.
+        let Some((_, path)) = claim_bed(&map, &mut free, at) else {
+            continue;
+        };
+        if let Some(&step) = path.last() {
+            commands
+                .entity(cat_e)
+                .insert((Path { steps: vec![step] }, MoveCooldown(1)));
+        }
+    }
+}
+
+/// Скорость и потолок сна на клетке под котом (§12.52).
+///
+/// Скорость: лежанка — свою, всё остальное — общий `floor` из рулсета. Ноль не
+/// берём никогда: спать можно где угодно, вопрос только в том, сколько это
+/// займёт, — иначе кот, уснувший на голом полу рулсета без `floor`, не
+/// проснулся бы вовсе.
+///
+/// Потолок: докуда здесь высыпаются. Ноль — до полной, по общему правилу нулей
+/// в рулсете (цена тайла, ёмкость склада, сложность вылазки), и ровно поэтому
+/// мир без потолков ведёт себя как до §12.52.
+fn sleeping_at(rules: &TileRules, needs: &NeedRules, tile: i16) -> (i32, i32) {
+    let bed = rules.rest_of(tile);
+    let ceiling = match bed > 0 {
+        true => rules.wake_of(tile),
+        false => needs.floor_wake,
+    };
+    let ceiling = match ceiling > 0 {
+        true => ceiling.min(needs.max),
+        false => needs.max,
+    };
+    (bed.max(needs.floor).max(1), ceiling)
+}
+
+/// Спящие коты восстанавливают бодрость и просыпаются на **потолке места**.
+///
+/// До §12.52 потолок был один — полная бодрость, — и кот занимал лежанку до
+/// последнего очка. Теперь докуда высыпаются, решает клетка: лежанка — до
+/// своего `wake`, пол — до общего `floor_wake`. Всё, что выше, — уже не сон, а
+/// дремота (`doze`): она никого не держит и никем не защищена.
+///
+/// Бодрость при этом потолком **не режется**, режется только сон: снятый `Rest`
+/// возвращает кота и раздатчикам, и игроку, а добирать до полной он будет,
+/// пока base не найдёт ему дела.
 pub(crate) fn sleep(
     map: Res<BaseMap>,
     rules: Res<TileRules>,
@@ -359,14 +484,63 @@ pub(crate) fn sleep(
         if path.is_some() {
             continue; // ещё идёт к лежанке
         }
-        let rate = rules
-            .rest_of(map.tile_at(pos.x, pos.y))
-            .max(needs.floor)
-            .max(1);
+        let (rate, ceiling) = sleeping_at(&rules, &needs, map.tile_at(pos.x, pos.y));
         energy.0 = (energy.0 + rate).min(needs.max);
-        if energy.0 >= needs.max {
+        if energy.0 >= ceiling {
             commands.entity(cat_e).remove::<Rest>();
         }
+    }
+}
+
+/// Дремота: кот, которому нечем заняться, добирает бодрость там же, где спал
+/// (§12.52).
+///
+/// Своего компонента у неё нет и не должно быть, и это главное в решении:
+/// дремота — это **отсутствие задачи** плюс место для сна под лапами. Отсюда
+/// само собой следует всё, ради чего она заводилась:
+///   * её видит любой раздатчик (все они фильтруют `Without<Rest>`, а `Rest`
+///     тут нет) — появился чертёж, и кот встал;
+///   * её не защищает §12.51 — приказ и заявка поднимают кота сразу;
+///   * лежанку она не занимает: `assign_rest` считает занятыми места спящих, а
+///     дремлющий не спит. Кто спит по нужде, тот и получит кровать, а
+///     дремлющего сгонит с неё `spread_units`, когда сосед придёт (§12.32).
+///
+/// Работает только там, где спят по-настоящему (`rest > 0`): дремать посреди
+/// коридора значило бы, что зона отдыха нужна лишь для скорости. Прибавка идёт
+/// **сверх** `tire`, который у бодрствующего кота никто не отменял, — то есть
+/// чистыми на лежанке набегает на очко меньше ставки. Второй арифметики для
+/// этого не заводим: кот именно что бодрствует, просто лёжа.
+pub(crate) fn doze(
+    map: Res<BaseMap>,
+    rules: Res<TileRules>,
+    needs: Res<NeedRules>,
+    mut cats: Query<
+        (&Position, &mut Energy),
+        (
+            With<UnitId>,
+            Without<Assignment>,
+            Without<Haul>,
+            Without<Rest>,
+            Without<Study>,
+            Without<Researching>,
+            Without<Crafting>,
+            Without<Equipping>,
+            Without<Eating>,
+            Without<Healing>,
+            Without<Treating>,
+            Without<Squad>,
+            Without<Away>,
+            Without<Path>,
+        ),
+    >,
+) {
+    for (pos, mut energy) in &mut cats {
+        let tile = map.tile_at(pos.x, pos.y);
+        if rules.rest_of(tile) <= 0 || energy.0 >= needs.max {
+            continue;
+        }
+        let (rate, _) = sleeping_at(&rules, &needs, tile);
+        energy.0 = (energy.0 + rate).min(needs.max);
     }
 }
 
