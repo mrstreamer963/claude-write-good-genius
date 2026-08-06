@@ -392,10 +392,16 @@ pub(crate) fn assign_nap(
         return;
     }
     let mut taken: Vec<(i32, i32)> = Vec::new();
+    // Клетки, на которых кот **остановиться** не может: под остановившимся
+    // соседом (§12.32). Идущий сюда не попадает — сквозь него проходят.
+    let mut standing: Vec<(i32, i32)> = Vec::new();
     for (pos, path, rest) in &everyone {
         taken.push((pos.x, pos.y));
         taken.extend(path.and_then(|p| p.steps.first()).copied());
         taken.extend(rest.and_then(|r| r.spot));
+        if path.is_none() {
+            standing.push((pos.x, pos.y));
+        }
     }
     let mut free: Vec<(i32, i32)> = (0..map.height)
         .flat_map(|y| (0..map.width).map(move |x| (x, y)))
@@ -432,10 +438,24 @@ pub(crate) fn assign_nap(
         let Some((_, path)) = claim_bed(&map, &mut free, at) else {
             continue;
         };
-        if let Some(&step) = path.last() {
+        // ...но **останавливаться там, где стоять нельзя, нельзя и на шаг**:
+        // на полке (§12.35) и под остановившимся котом (§12.32). Оба правила
+        // разбираются после факта, и кот, замерший на такой клетке хотя бы на
+        // тик, будет с неё согнан — а следующим тиком раздача пошлёт его туда
+        // же. Это те самые качели, которые ловились на боевой партии между
+        // стеллажами. Поэтому шаг растягивается до ближайшей клетки, на которой
+        // можно замереть: `steps` лежит с конца, значит нужен её хвост.
+        let stop_at = path.iter().rposition(|&cell| {
+            !rules.is_solid(map.tile_at(cell.0, cell.1)) && !standing.contains(&cell)
+        });
+        let steps = match stop_at {
+            Some(i) => path[i..].to_vec(),
+            None => continue, // замереть по дороге негде — идти нет смысла
+        };
+        if !steps.is_empty() {
             commands
                 .entity(cat_e)
-                .insert((Path { steps: vec![step] }, MoveCooldown(1)));
+                .insert((Path { steps }, MoveCooldown(1)));
         }
     }
 }

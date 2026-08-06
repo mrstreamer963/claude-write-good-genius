@@ -757,3 +757,94 @@ fn the_shipped_ruleset_sends_the_crew_to_bed() {
         "лёг именно на лежанку, а не где пришлось",
     );
 }
+
+/// Стеллаж — мебель, а не комната: пройти можно, остаться нельзя (§12.35).
+/// Дорога к лежанке может лежать через него, и кот обязан её пройти, а не
+/// топтаться на границе: шаг на полку — `clear_solids` гонит обратно — шаг на
+/// полку. Ловит качели, найденные на боевой партии (трейс от 6 августа).
+#[test]
+fn a_nap_crosses_a_rack_instead_of_bouncing() {
+    let mut sim = sim_from(&["########", "#a.....#", "########"]);
+    sim.set_rest(1, 10);
+    sim.set_wake(1, 500);
+    sim.force_tile(5, 1, 1); // лежанка за стеллажами
+    sim.set_solid(2, true);
+    sim.force_tile(3, 1, 2);
+    sim.force_tile(4, 1, 2); // два стеллажа подряд на пути
+    sim.set_needs(1000, 300, 1);
+    sim.set_energy("a", 800);
+
+    sim.tick_n(40);
+    assert_eq!(
+        sim.pos_of("a"),
+        (5, 1),
+        "дошёл до лежанки, а не застрял у полок"
+    );
+    assert_eq!(sim.job_of("a"), ("nap", false), "и дремлет на ней");
+}
+
+/// Та же качель, но со вторым котом вместо полки: остановиться в чужой клетке
+/// нельзя (§12.32), и шаг к лежанке обязан её перешагнуть — иначе `spread_units`
+/// разведёт котов, а раздача пошлёт дремлющего обратно.
+#[test]
+fn a_nap_steps_over_a_standing_cat() {
+    let mut sim = sim_from(&["########", "#a.b...#", "########"]);
+    sim.set_rest(1, 10);
+    sim.set_wake(1, 500);
+    sim.force_tile(6, 1, 1); // лежанка за спиной у второго кота
+    sim.set_needs(1000, 300, 1);
+    sim.set_energy("a", 800);
+    sim.set_energy("b", 800);
+    sim.add_blueprint(3, 0, 0); // работа держит `b` на месте
+
+    sim.tick_n(3);
+    assert!(sim.has_assignment("b"), "второй занят делом и стоит");
+
+    sim.tick_n(30);
+    assert_eq!(sim.pos_of("a"), (6, 1), "дремлющий перешагнул и дошёл");
+}
+
+/// Занятую дремлющим лежанку второй кот не занимает и не «примеряет»: шагнув на
+/// неё, он был бы разведён `spread_units` тем же тиком и вернулся обратно — то
+/// самое дёрганье, которое видно на боевой партии. Проверяем **на каждом тике**:
+/// одно конечное состояние такую качель прячет.
+#[test]
+fn a_napper_never_steps_onto_a_taken_bed() {
+    let mut sim = sim_from(&["#######", "#a...b#", "#######"]);
+    sim.set_rest(1, 10);
+    sim.set_wake(1, 500);
+    sim.force_tile(3, 1, 1); // одна лежанка на двоих, ровно посередине
+    sim.set_needs(1000, 300, 1);
+    sim.set_energy("a", 800);
+    sim.set_energy("b", 800);
+
+    // Ждём, пока лежанку займёт кто-нибудь один.
+    let mut napper = None;
+    for _ in 0..20 {
+        sim.tick_n(1);
+        napper = ["a", "b"].into_iter().find(|c| sim.pos_of(c) == (3, 1));
+        if napper.is_some() {
+            break;
+        }
+    }
+    let napper = napper.expect("кто-то дошёл до лежанки");
+    let other = if napper == "a" { "b" } else { "a" };
+
+    let mut seen = Vec::new();
+    for _ in 0..40 {
+        sim.tick_n(1);
+        assert_eq!(sim.job_of(napper), ("nap", false), "первый дремлет на ней");
+        assert_ne!(
+            sim.pos_of(other),
+            (3, 1),
+            "второй на занятую лежанку не встал"
+        );
+        seen.push(sim.pos_of(other));
+    }
+    let last = seen[seen.len() - 1];
+    assert!(
+        seen[20..].iter().all(|&p| p == last),
+        "и не мечется рядом с ней: {:?}",
+        &seen[20..]
+    );
+}
