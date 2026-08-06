@@ -398,21 +398,48 @@ fn a_cat_that_fell_on_a_bed_stays_on_it() {
 
 // --- границы механики ------------------------------------------------------
 
-/// Приказ игрока будит: это осознанное действие, а не автоматика. Но усталость
-/// никуда не делась — выполнив приказ, кот уходит спать снова.
-#[test]
-fn a_players_order_wakes_a_sleeping_cat() {
+/// Спящий кот с приказом: мир, где кот уснул на лежанке под собой и получил
+/// приказ идти в (5, 1). `spare` — включено ли «Беречь себя».
+fn sim_with_an_ordered_sleeper(spare: bool) -> Sim {
     let mut sim = sim_from(&CORRIDOR);
     sim.set_rest(1, 1);
     sim.force_tile(1, 1, 1); // лежанка под котом: уснёт на месте
     sim.set_needs(1000, 500, 1);
+    sim.set_auto_rest(spare);
     sim.set_energy("a", 400);
 
     sim.tick_n(2);
     assert!(sim.is_resting("a"), "кот спит на лежанке");
-
     assert!(sim.set_target("a", 5, 1), "приказ принят");
-    assert!(!sim.is_resting("a"), "и разбудил кота");
+    sim
+}
+
+/// Пока включено «Беречь себя», приказ спящего не поднимает (§12.51): он висит
+/// и ждёт, а маршрут прокладывает `retry_orders` тем же тиком, каким кот
+/// проснулся сам.
+#[test]
+fn a_players_order_waits_for_the_sleeper() {
+    let mut sim = sim_with_an_ordered_sleeper(true);
+
+    sim.tick_n(20);
+    assert!(sim.is_resting("a"), "спит дальше");
+    assert_eq!(sim.pos_of("a"), (1, 1), "и с лежанки не вставал");
+
+    // Выспался — и приказ подхватывается сам, без второго клика игрока.
+    sim.set_energy("a", 999);
+    sim.tick_n(20);
+    assert!(!sim.is_resting("a"), "проснулся");
+    assert_eq!(sim.pos_of("a"), (5, 1), "и дошёл, куда было велено");
+}
+
+/// Выключенное «Беречь себя» — решение игрока не жалеть котов: приказ будит
+/// сразу, как будил всегда. Но усталость никуда не делась — выполнив приказ,
+/// кот уходит спать снова.
+#[test]
+fn a_players_order_wakes_a_sleeping_cat_when_self_care_is_off() {
+    let mut sim = sim_with_an_ordered_sleeper(false);
+
+    assert!(!sim.is_resting("a"), "приказ разбудил кота");
     sim.tick_n(6);
     assert!(sim.pos_of("a").0 > 1, "кот пошёл выполнять приказ");
 

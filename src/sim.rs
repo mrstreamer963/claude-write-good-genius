@@ -1038,7 +1038,11 @@ impl Sim {
     /// троих», а неполная заявка, и молча дополнять её симуляция не станет.
     ///
     /// Заявка снимает с выбранных текущие задачи — как приказ игрока (§12.15):
-    /// решение отправить кота в поле весомее начатой им стройки.
+    /// решение отправить кота в поле весомее начатой им стройки. **Кроме сна**
+    /// (§12.51): пока включено «Беречь себя», спящий боец досыпает своё, а
+    /// отряд его ждёт — ровно так же, как ждёт истощённого (§12.23). Иначе
+    /// выключатель отменял бы только второй порог, а вылазка поднимала бы кота
+    /// с лежанки в обход обоих.
     ///
     /// Миссия одна за раз: на POC с тремя котами вторая осталась бы без людей,
     /// а очередь вылазок — механика, которую не на чем проверить.
@@ -1114,8 +1118,15 @@ impl Sim {
             left: rule.ticks,
         });
         let mission_e = mission_e.id();
+        // Спящих заявка не поднимает, пока игрок велел беречь себя (§12.51).
+        // Проснувшихся подберёт `gather_squad` — он и так умеет ждать спящего
+        // бойца, потому что истощение из отряда не выводит (§12.23).
+        let spare = self.world.resource::<AutoRest>().0;
         for (cat_e, from) in crew {
-            self.release_task(cat_e);
+            let asleep = spare && self.world.get::<Rest>(cat_e).is_some();
+            if !asleep {
+                self.release_task(cat_e);
+            }
             // Ношу кот кладёт под ноги — прямо здесь и сейчас (§12.38). Уехать
             // с ней в поле значит вынуть лом из мира на сотни тиков: сумма
             // сходится, но кучу не видно, её не взять на стройку и не
@@ -1133,12 +1144,18 @@ impl Sim {
                 self.drop_stack(from.0, from.1, item, count);
                 self.world.entity_mut(cat_e).remove::<Carrying>();
             }
-            let path = find_path(self.world.resource::<BaseMap>(), from, gate).unwrap_or_default();
-            self.world.entity_mut(cat_e).insert((
-                Squad(mission_e),
-                Path { steps: path },
-                MoveCooldown(0),
-            ));
+            // Спящему маршрут не выдаём вовсе: `Path` при `Rest` значит «идёт к
+            // лежанке», и сон бы просто не пошёл (`needs::sleep` ждёт конца
+            // маршрута). В отряд он записан, а к шлюзу его поведёт `gather_squad`,
+            // как только сам проснётся.
+            self.world.entity_mut(cat_e).insert(Squad(mission_e));
+            if !asleep {
+                let steps =
+                    find_path(self.world.resource::<BaseMap>(), from, gate).unwrap_or_default();
+                self.world
+                    .entity_mut(cat_e)
+                    .insert((Path { steps }, MoveCooldown(0)));
+            }
         }
         true
     }
@@ -1626,10 +1643,20 @@ impl Sim {
         let map_version = self.world.resource::<BaseMap>().version;
         let path = find_path(self.world.resource::<BaseMap>(), (sx, sy), (x, y));
 
-        // Приказ забирает кота у любой задачи — стройки, переноса, сна (§12.15,
-        // §12.20). Груз он при этом не бросает: донесёт, когда снова возьмётся
-        // за доставку.
-        self.release_task(entity);
+        // Приказ забирает кота у любой задачи — стройки, переноса, учёбы
+        // (§12.15, §12.20). Груз он при этом не бросает: донесёт, когда снова
+        // возьмётся за доставку.
+        //
+        // **Кроме сна, пока включено «Беречь себя»** (§12.51): спящий досыпает
+        // своё, а приказ ждёт его — `Order` остаётся висеть, и маршрут проложит
+        // `retry_orders` тем же тиком, каким кот проснулся. Тот же выключатель,
+        // что и у вылазки, и та же причина: сон — это состояние, а не пометка
+        // игрока (§12.33). Выключенный — будит, как будил всегда.
+        let asleep =
+            self.world.resource::<AutoRest>().0 && self.world.get::<Rest>(entity).is_some();
+        if !asleep {
+            self.release_task(entity);
+        }
 
         // А вылазку приказ **распускает целиком**: состав выбран поимённо,
         // заменить выбывшего некем, и отряд, который никогда не соберётся,
@@ -1651,6 +1678,13 @@ impl Sim {
             y,
             tried_version: path.is_none().then_some(map_version),
         });
+        // Спящему маршрут не трогаем вовсе: `Path` при `Rest` значит «идёт к
+        // лежанке» (§12.20), и выданный к цели он остановил бы сам сон, а
+        // снятый — оставил бы кота стоять на полдороге. Приказ подхватит
+        // `retry_orders`, как только `Rest` снимется.
+        if asleep {
+            return true;
+        }
         match path {
             Some(p) => {
                 self.world
@@ -1882,19 +1916,20 @@ impl Sim {
                 Option<&Away>,
                 Option<&Skills>,
                 Option<&Gear>,
+                Option<&Rest>,
             )>();
             let skill_rules = self.world.resource::<SkillRules>();
             let items = self.world.resource::<ItemRules>();
             // Вклад кота в силу отряда считается ровно как в `run_missions`:
             // сам он стоит единицу, уровень «Вылазки» — сверху, надетое — ещё
             // сверху. Прогноз и результат обязаны быть одним выражением (§12.23).
-            let members: Vec<(Entity, String, bool, i32)> = crew
+            let members: Vec<(Entity, String, bool, i32, bool)> = crew
                 .iter(&self.world)
-                .map(|(id, squad, away, skills, gear)| {
+                .map(|(id, squad, away, skills, gear, rest)| {
                     let force = 1
                         + raid.map_or(0, |s| level_of(skill_rules, skills, s))
                         + items.force_of_gear(gear);
-                    (squad.0, id.0.clone(), away.is_some(), force)
+                    (squad.0, id.0.clone(), away.is_some(), force, rest.is_some())
                 })
                 .collect();
             let mut q = self.world.query::<(Entity, &Mission)>();
@@ -1903,7 +1938,7 @@ impl Sim {
                 let rule = rules.0.get(m.def);
                 let mine = || members.iter().filter(move |&&(owner, ..)| owner == e);
                 let danger = rule.map_or(0, |r| r.danger);
-                let out = outcome(danger, mine().map(|&(.., force)| force).sum());
+                let out = outcome(danger, mine().map(|&(.., force, _)| force).sum());
                 missions.push(MissionSnap {
                     def: m.def,
                     x: m.gate.map_or(-1, |(x, _)| x),
@@ -1912,7 +1947,9 @@ impl Sim {
                     total: rule.map_or(0, |r| r.ticks),
                     squad: mine().map(|(_, id, ..)| id.clone()).collect(),
                     size: rule.map_or(0, |r| r.squad),
-                    away: mine().any(|&(_, _, away, _)| away),
+                    away: mine().any(|&(_, _, away, ..)| away),
+                    // Ждать отряд может только на базе: за шлюзом не спят.
+                    resting: mine().any(|&(.., resting)| resting),
                     strength: out.strength,
                     danger,
                     share: out.share,

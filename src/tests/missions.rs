@@ -366,6 +366,69 @@ fn exhaustion_makes_the_raid_wait() {
     );
 }
 
+/// Мир из `exhaustion_makes_the_raid_wait`, но с лежанкой рядом с `b`: кот
+/// укладывается спать сам, по порогу усталости, а не падает без сил.
+/// Возвращает симуляцию, миссию и клетку лежанки.
+fn sim_with_a_sleeping_cat(spare: bool) -> (Sim, usize, (i32, i32)) {
+    let rows = &[
+        "##########",
+        "#a.......#",
+        "#........#",
+        "#b.......#",
+        "##########",
+    ];
+    let (mut sim, m) = sim_with_gate(rows, (8, 1), 2, 20);
+    let bed = (1, 2);
+    sim.set_rest(2, 1);
+    sim.force_tile(bed.0, bed.1, 2);
+    sim.set_needs(100, 50, 1);
+    sim.set_auto_rest(spare);
+    sim.set_energy("b", 40);
+    sim.tick_n(3);
+    assert!(sim.is_resting("b") && sim.pos_of("b") == bed, "b лёг спать");
+    (sim, m, bed)
+}
+
+/// Спящего заявка на вылазку не поднимает, пока включено «Беречь себя»
+/// (§12.51): боец досыпает своё, а отряд ждёт — ровно как ждёт истощённого.
+#[test]
+fn a_sleeping_cat_joins_the_raid_only_after_waking() {
+    let (mut sim, m, bed) = sim_with_a_sleeping_cat(true);
+    assert!(sim.launch(m, squad(&["a", "b"])));
+    sim.tick_n(10);
+
+    assert!(sim.in_squad("b"), "в отряд записан");
+    assert!(sim.is_resting("b"), "но спит дальше");
+    assert_eq!(sim.pos_of("b"), bed, "и с лежанки не вставал");
+    assert!(!sim.is_away("a"), "вылазка ждёт его у шлюза");
+
+    // Выспался — и дальше всё как обычно: маршрут ему выдаст `gather_squad`.
+    sim.set_energy("b", 99);
+    sim.tick_n(25);
+    assert!(
+        sim.is_away("a") && sim.is_away("b"),
+        "проснулся — и отряд ушёл"
+    );
+}
+
+/// Выключенное «Беречь себя» — это решение игрока не жалеть котов, и вылазка
+/// поднимает спящего сразу: цена та же, что у работы до нуля бодрости (§12.33).
+#[test]
+fn a_raid_wakes_the_sleeper_when_self_care_is_off() {
+    let (mut sim, m, bed) = sim_with_a_sleeping_cat(false);
+    assert!(sim.launch(m, squad(&["a", "b"])));
+
+    assert!(!sim.is_resting("b"), "заявка подняла спящего");
+    sim.tick_n(4);
+    assert_ne!(sim.pos_of("b"), bed, "и он пошёл к шлюзу");
+
+    sim.tick_n(21);
+    assert!(
+        sim.is_away("a") && sim.is_away("b"),
+        "отряд ушёл невыспавшимся"
+    );
+}
+
 /// Вне базы кот не устаёт: считать усталость там нечем, вылазка — авторасчёт,
 /// а не симуляция (§12.22). Плата берётся разом, на возвращении.
 #[test]
