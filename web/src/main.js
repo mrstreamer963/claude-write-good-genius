@@ -34,6 +34,23 @@ const craftEl = document.getElementById('craft');
 const dealEl = document.getElementById('deal');
 const noteEl = document.getElementById('note');
 
+// Кнопки внутри панелей вешаются **делегированием, один раз на контейнер**.
+//
+// Панели перерисовываются каждым снапшотом (~16 мс) целиком, через `innerHTML`:
+// прогресс тикает, и разметка честно меняется. Значит узел кнопки живёт один
+// кадр, и обработчик, повешенный на сам узел, почти никогда не срабатывает —
+// `click` требует, чтобы `mousedown` и `mouseup` пришли в **один и тот же**
+// элемент, а между ними панель успевает перерисоваться. Слушатель на
+// контейнере это переживает: браузер шлёт `click` ближайшему общему предку.
+function onPanelClick(el, selector, send) {
+  el.addEventListener('click', (e) => {
+    if (e.target.closest(selector)) send();
+  });
+}
+onPanelClick(craftEl, '.craft-cancel', () => worker.postMessage({ type: 'cancelCraft' }));
+onPanelClick(researchEl, '.research-cancel', () => worker.postMessage({ type: 'cancelResearch' }));
+onPanelClick(missionEl, '.mission-cancel', () => worker.postMessage({ type: 'cancelMission' }));
+
 const app = new Application();
 await app.init({ background: COLORS.bg, antialias: true, resizeTo: stageEl });
 stageEl.appendChild(app.canvas);
@@ -810,8 +827,6 @@ function renderMissionPanel(list) {
   }
   missionEl.innerHTML = parts.join('');
   missionEl.hidden = false;
-  const cancel = missionEl.querySelector('.mission-cancel');
-  if (cancel) cancel.addEventListener('click', () => worker.postMessage({ type: 'cancelMission' }));
 }
 
 // Панель темы. Исследование идёт молча в дальней комнате, и без панели видно
@@ -838,9 +853,6 @@ function renderResearchPanel(list) {
   ];
   researchEl.innerHTML = parts.join('');
   researchEl.hidden = false;
-  researchEl
-    .querySelector('.research-cancel')
-    .addEventListener('click', () => worker.postMessage({ type: 'cancelResearch' }));
 }
 
 // Панель заказа. Показывает **текущую штуку**, а не весь заказ: работа и оплата
@@ -869,9 +881,6 @@ function renderCraftPanel(list) {
   ];
   craftEl.innerHTML = parts.join('');
   craftEl.hidden = false;
-  craftEl
-    .querySelector('.craft-cancel')
-    .addEventListener('click', () => worker.postMessage({ type: 'cancelCraft' }));
 }
 
 // Сделка (§12.44). Показываем **зафиксированный** курс, а не сегодняшний:
@@ -1482,6 +1491,9 @@ function buildToolbar() {
     if (!confirm('Начать новую партию? Текущая будет потеряна.')) return;
     localStorage.removeItem(SAVE_KEY);
     worker.postMessage({ type: 'newGame' });
+    // Темп сбрасывается вместе с базой: на ×10 первые сутки пролетают, пока
+    // игрок читает записку, а на паузе новая партия выглядит сломанной.
+    setSpeed(1);
   });
   fresh.title = 'Сбросить базу к началу';
   game.appendChild(fresh);
