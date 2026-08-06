@@ -9,7 +9,8 @@ const COLORS = {
   bg: 0x0e0f13,
   empty: 0x14161d, // непостроенная (непроходимая) ячейка
   gridLine: 0x262c3a,
-  select: 0x6cf0a0, // выбор кота / метка цели
+  select: 0x6cf0a0, // выбор кота / метка цели / взведённая клетка
+  cell: 0x9fb0ff, // осмотренная клетка: уголки вокруг того, о чём говорит панель
   erase: 0xff5566,
   stuck: 0xff9a3c, // кот замурован / приказ невыполним
   scrap: 0xc9a227, // материал по умолчанию, если палитра предметов пуста
@@ -27,6 +28,7 @@ const stageEl = document.getElementById('stage');
 const tickEl = document.getElementById('tick');
 const scrapEl = document.getElementById('scrap');
 const catEl = document.getElementById('cat');
+const cellEl = document.getElementById('cell');
 const missionEl = document.getElementById('mission');
 const captiveEl = document.getElementById('captive');
 const researchEl = document.getElementById('research');
@@ -52,17 +54,29 @@ const noteEl = document.getElementById('note');
 // (его цель — живой узел под курсором), `mouseup` спускает, если под курсором
 // **свежий** узел той же кнопки. Семантика клика при этом цела: нажал на
 // кнопке, увёл курсор, отпустил в стороне — ничего не произошло.
+// Кнопок одного вида в панели может быть несколько (заказов теперь столько,
+// сколько мастерских, §12.55), поэтому взводим не «нажали куда-то», а **чем**
+// нажатое отличается от соседей: узлы живут один кадр, и сравнить их напрямую
+// нельзя — сравниваем `data-def`. У панелей с единственной кнопкой он пуст, и
+// поведение остаётся ровно прежним.
 function onPanelClick(el, selector, send) {
-  let armed = false;
+  let armed = null;
+  const keyOf = (node) => node?.dataset.def ?? '';
   el.addEventListener('mousedown', (e) => {
-    armed = !!e.target.closest(selector);
+    const hit = e.target.closest(selector);
+    armed = hit ? keyOf(hit) : null;
   });
   el.addEventListener('mouseup', (e) => {
-    if (armed && e.target.closest(selector)) send();
-    armed = false;
+    const hit = e.target.closest(selector);
+    if (armed !== null && hit && keyOf(hit) === armed) send(hit);
+    armed = null;
   });
 }
-onPanelClick(craftEl, '.craft-cancel', () => worker.postMessage({ type: 'cancelCraft' }));
+// Отмена уходит по рецепту, а не по номеру строки: закрывшийся соседний заказ
+// сдвинул бы номера под курсором игрока (§12.55).
+onPanelClick(craftEl, '.craft-cancel', (node) =>
+  worker.postMessage({ type: 'cancelCraft', recipe: Number(node.dataset.def) }),
+);
 onPanelClick(researchEl, '.research-cancel', () => worker.postMessage({ type: 'cancelResearch' }));
 onPanelClick(missionEl, '.mission-cancel', () => worker.postMessage({ type: 'cancelMission' }));
 
@@ -94,8 +108,12 @@ orderMarker
   .circle(0, 0, TILE * 0.34)
   .stroke({ color: COLORS.select, width: 2, alpha: 0.8 });
 orderMarker.visible = false;
+// Осмотренная клетка (§12.54): уголки, а не заливка, — заливкой рисуется
+// `hoverRect`, и два одинаковых прямоугольника читались бы как один.
+const cellMarker = new Graphics();
 overlay.addChild(hoverRect);
 overlay.addChild(orderMarker);
+overlay.addChild(cellMarker);
 overlay.addChild(selectionRings);
 
 app.stage.eventMode = 'static';
@@ -116,6 +134,9 @@ let autoRest = true; // и сами бросают работу на исход�
 // Выбор множественный: отряд на вылазку игрок набирает поимённо (§12.23), а
 // один выбранный кот — это его частный случай. Панель показывает последнего.
 let selectedUnits = [];
+// Клетка под последним кликом: о ней говорит панель, и она же взводит приказ —
+// повторный клик по ней отправляет туда выбранных котов (§12.54).
+let selectedCell = null; // { x, y } в тайлах
 let dragFrom = null; // якорь рамки (клетка, где нажали), null = не тянем
 let dragTo = null; // текущий угол рамки; переживает выход курсора за карту
 // Кот, стоявший под началом рамки. Запоминается в момент нажатия, а не читается
@@ -128,7 +149,9 @@ let dragUnit = null;
 let cursorBtn = null;
 let missionRunning = false; // миссия на POC одна за раз (§12.22)
 let researchRunning = false; // и тема тоже одна за раз (§12.26)
-let craftRunning = false; // и заказ (§12.30)
+// Мастерских может быть несколько, и заказов идёт столько же (§12.55).
+// Нужен только для объяснения отказа: сами ворота считает ядро (`RecipeSnap.shop`).
+let shops = 0;
 let fame = 0; // известность — только для показа: ворота считает ядро (§12.24)
 // Кто сейчас выбыл по ранению (§12.37). Держим списком id, а не пересчитываем в
 // обработчике клика: ранение приходит из ядра между кликами, и кнопка вылазки
@@ -153,9 +176,12 @@ let prices = [];
 // издевательски, когда нужное лежит кучей в двух шагах, — и тогда подсказка
 // обязана сказать, что делать.
 let stock = [];
-let hasPost = false;
-let dealRunning = false;
-const tradeButtons = []; // кнопки сделок — гасим, пока идёт другая
+// Торговых постов может быть несколько, и сделок идёт столько же (§12.55).
+// `postFree` считает ядро — это ворота, и второй их экземпляр в JS однажды
+// покажет кнопку, которую фасад отклонит (§12.26).
+let posts = 0;
+let postFree = false;
+const tradeButtons = []; // кнопки сделок — гасим, когда все посты заняты (§12.55)
 const missionButtons = []; // кнопки запуска — их гасим, пока миссия идёт
 const recruitButtons = []; // кнопки найма — гасим по известности и складу
 const teachButtons = []; // кнопки обучения — живы, когда выбран ровно один кот
@@ -180,6 +206,10 @@ worker.onmessage = (e) => {
     meta = m.meta;
     paletteColors = meta.palette.map((p) => hex(p.color));
     itemColors = (meta.items ?? []).map((i) => hex(i.color));
+    // Новая партия и поднятый снимок выделения не наследуют: панель клетки
+    // говорила бы о старом мире, а взведённый приказ — о котах, которых нет.
+    selectedCell = null;
+    selectedUnits = [];
     buildToolbar();
     layout();
     drawMap(m.map);
@@ -420,7 +450,9 @@ function renderSnapshot(snap) {
   money = snap.money ?? 0;
   prices = snap.prices ?? [];
   stock = snap.stock ?? [];
-  hasPost = !!snap.post;
+  posts = snap.posts ?? 0;
+  postFree = !!snap.post_free;
+  shops = snap.shops ?? 0;
   scrapEl.innerHTML =
     (meta.items ?? [])
       .map((it, i) => {
@@ -485,6 +517,8 @@ function renderSnapshot(snap) {
 
   updateSelectionOverlay();
   renderCatPanel(snap.entities);
+  // После цикла по сущностям: панель читает `unitTiles`, и он обновлён выше.
+  renderCellPanel(snap);
   renderCaptivePanel();
   renderMissionPanel(snap.missions);
   renderResearchPanel(snap.research);
@@ -598,6 +632,34 @@ function updateSelectionOverlay() {
   } else {
     orderMarker.visible = false;
   }
+
+  drawCellMarker();
+}
+
+// Уголки вокруг осмотренной клетки (§12.54). Взведённая — тем же зелёным, что
+// кольца выбора и метка цели: «сюда пойдут» на карте и в панели обязано быть
+// одной краской, иначе второй шаг приказа приходится угадывать.
+function drawCellMarker() {
+  cellMarker.clear();
+  if (!selectedCell) return;
+  const x = selectedCell.x * TILE;
+  const y = selectedCell.y * TILE;
+  const armed = cellIsArmed();
+  const arm = TILE * 0.3; // длина уголка
+  const p = 1.5; // отступ внутрь, чтобы уголки не сливались с сеткой
+  for (const [cx, cy, dx, dy] of [
+    [x + p, y + p, 1, 1],
+    [x + TILE - p, y + p, -1, 1],
+    [x + p, y + TILE - p, 1, -1],
+    [x + TILE - p, y + TILE - p, -1, -1],
+  ]) {
+    cellMarker.moveTo(cx + dx * arm, cy).lineTo(cx, cy).lineTo(cx, cy + dy * arm);
+  }
+  cellMarker.stroke({
+    color: armed ? COLORS.select : COLORS.cell,
+    width: 2,
+    alpha: armed ? 0.95 : 0.75,
+  });
 }
 
 // Чем кот занят — словами. Ключ считает ядро (`Busy::job`), текст живёт здесь,
@@ -782,6 +844,207 @@ function renderCatPanel(entities) {
   catEl.hidden = false;
 }
 
+// Роль клетки словами: чем она полезна сверх цвета. Свойства тайла — та самая
+// схема «комната значит что-то сверх цвета» (§12.35), и все девять приезжают в
+// `meta.palette` целиком, так что второго списка в ядре заводить не пришлось.
+function tileRoles(def) {
+  if (!def) return [];
+  const roles = [];
+  // Склада в списке нет намеренно: о нём говорит полоска «Занято N / C», и
+  // тайл, который и назван «Склад», не должен трижды повторять это слово.
+  if (def.rest > 0) roles.push('лежанка');
+  if (def.heal > 0) roles.push('койка лазарета');
+  if (def.gate) roles.push('шлюз: отсюда уходят на вылазку');
+  if (def.teaches) roles.push(`парта: учит «${esc(skillLabel(def.teaches))}»`);
+  if (def.lab) roles.push('лаборатория');
+  if (def.shop) roles.push('мастерская');
+  if (def.trade) roles.push('торговый пост');
+  if (def.solid) roles.push('стеллаж: пройти можно, остаться нельзя');
+  return roles;
+}
+
+// Раздел тулбара, к которому относится клетка (§12.55). Клик по мастерской
+// раскрывает «Производство», по посту — рынок: игрок попадает откуда надо куда
+// надо, а **управление остаётся в одном месте**.
+//
+// Кнопки на самой клетке при этом не появляется, и это не осторожность. Ядро не
+// адресует работу месту: `shop_spot` и `lab_spot` берут ближайший **свободный**
+// станок к тому коту, которого выбрала симуляция, а игрок размечает работу и не
+// выбирает исполнителя (§12.16). Кнопка «заказать здесь» обещала бы адресность,
+// которой нет, — и с двумя мастерскими врала бы через раз. Адресация понадобится
+// тогда, когда станки перестанут быть взаимозаменяемыми (тиры по скорости или
+// свои рецепты) — вот тогда и вернуться.
+function cellSection(def) {
+  if (!def) return null;
+  if (def.shop) return 'Производство';
+  if (def.lab) return 'Наука';
+  if (def.teaches) return 'Обучение';
+  if (def.gate) return 'Вылазки';
+  // У рынка раздел на фракцию, и какая из них «эта клетка» — неизвестно: пост
+  // лицензия, а не прилавок (§12.44). Открываем первый — он же обычно и один.
+  if (def.trade) {
+    const fac = (meta.factions ?? [])[0];
+    return fac ? `Рынок: ${fac.label || fac.id}` : null;
+  }
+  return null;
+}
+
+// Панель клетки (§12.54). Клетка была единственным, о чём игрок не мог спросить:
+// кот объясняется карточкой, вылазка и заказ — своими панелями, а «что тут
+// лежит», «сколько ещё влезет» и «почему тут ничего не строится» читалось только
+// по трём чипсам на карте.
+//
+// Ядру она ничего не стоила: и кучи, и площадки, и свойства тайлов уже ехали в
+// снапшоте — панель их только складывает. Считать что-нибудь сверх этого ей
+// нельзя (§12.26): «чем можно платить» и «сколько влезет» — правила, и живут они
+// в одном месте с `plan_spend` и `less_incoming`.
+function renderCellPanel(snap) {
+  if (!selectedCell || !meta || !mapCells) {
+    cellEl.hidden = true;
+    return;
+  }
+  const { x, y } = selectedCell;
+  const tile = mapCells[y * meta.width + x];
+  const def = tile >= 0 ? meta.palette[tile] : null;
+  const name = def ? def.label || def.id : 'Пустота';
+  const parts = [
+    `<div class="cat-name">${esc(name)} <span class="cell-at">${x}, ${y}</span></div>`,
+  ];
+
+  // Что случится по второму клику — до всего остального: приказ двухшаговый, и
+  // невидимый второй шаг читается как «клик не сработал» (§4.4).
+  if (cellIsArmed()) {
+    parts.push(
+      `<div class="cell-armed">ещё клик сюда — пойдут: ${selectedUnits.map(esc).join(' · ')}</div>`,
+    );
+  } else if (cellReleases()) {
+    parts.push('<div class="cell-armed">ещё клик — снять выделение</div>');
+  }
+
+  if (!def) {
+    parts.push('<div class="cat-sub">непроходима: коты её не пересекут</div>');
+  } else {
+    const roles = tileRoles(def);
+    if (roles.length) parts.push(`<div class="cat-sub">${roles.join(' · ')}</div>`);
+  }
+
+  // Кучи на клетке — то, ради чего панель и заводилась. Разных типов на одной
+  // клетке лежит сколько угодно, и сливаться они не должны (§12.21).
+  const piles = (snap.stacks ?? []).filter((s) => s.x === x && s.y === y);
+  const held = piles.reduce((sum, s) => sum + s.count, 0);
+  // Ёмкость считает **штуки** независимо от типа (§12.21), поэтому сумма
+  // законна. Но это «лежит столько», а не «свободно столько»: свободное место
+  // ядро считает с поправкой на груз в пути (`less_incoming`), и обещать его
+  // панель не вправе.
+  if (def?.capacity > 0) {
+    const pct = Math.min(100, Math.round((held / def.capacity) * 100));
+    parts.push(
+      '<div class="cat-skill">' +
+        `<div class="cat-row"><span>Занято</span><b>${held} / ${def.capacity}</b></div>` +
+        `<div class="bar"><i style="width:${pct}%"></i></div>` +
+        '</div>',
+    );
+  }
+  if (piles.length) {
+    const chips = piles
+      .map(
+        (s) =>
+          `<i class="chip" style="background:${(meta.items ?? [])[s.item]?.color ?? '#c9a227'}"></i>` +
+          `${esc(itemLabel(s.item))} ${s.count}`,
+      )
+      .join(' · ');
+    parts.push(`<div class="cat-sub">${chips}</div>`);
+    // Пометка «на склад» объясняет, почему за кучей кто-то придёт, — а при
+    // включённой автоуборке помечено всё, что лежит вне склада.
+    if (piles.some((s) => s.marked)) parts.push('<div class="cat-sub">помечено на склад</div>');
+  } else if (def) {
+    parts.push('<div class="cat-sub">пусто</div>');
+  }
+
+  // Площадка — прямой ответ на «почему тут ничего не строится»: пока материал
+  // не завезли, работа и не начнётся (§12.15).
+  const bp = (snap.blueprints ?? []).find((b) => b.x === x && b.y === y);
+  if (bp) {
+    const what =
+      bp.tile < 0 ? 'Снос' : `Стройка: ${esc(meta.palette[bp.tile]?.label || meta.palette[bp.tile]?.id || '?')}`;
+    const supplied = bp.delivered >= bp.need;
+    const pct = supplied
+      ? bp.total > 0
+        ? Math.min(100, Math.round((bp.progress / bp.total) * 100))
+        : 0
+      : bp.need > 0
+        ? Math.round((bp.delivered / bp.need) * 100)
+        : 100;
+    parts.push(
+      '<div class="cat-skill">' +
+        `<div class="cat-row"><span>${what}</span><b>${pct}%</b></div>` +
+        `<div class="bar"><i style="width:${pct}%"></i></div>` +
+        `<div class="cat-sub">${supplied ? 'материал на месте' : `завезено ${bp.delivered} из ${bp.need}`}</div>` +
+        '</div>',
+    );
+  }
+
+  // Что здесь идёт **сейчас**. Без этого функциональная клетка называла себя
+  // («мастерская») и замолкала, а работа в ней шла молча — та же беда, из-за
+  // которой заводили панели темы и заказа (§12.30, §12.41).
+  for (const line of cellWork(snap, x, y, def)) {
+    parts.push(`<div class="cat-sub">${line}</div>`);
+  }
+
+  // Кто стоит. Клетку коты делят на проходе (§12.32), а на паузе видно только
+  // верхнего — из-за чего и разошлись показания в первом баге про лапы.
+  const here = unitsAt(x, y);
+  if (here.length) parts.push(`<div class="cat-sub">здесь: ${here.map(esc).join(' · ')}</div>`);
+
+  cellEl.innerHTML = parts.join('');
+  cellEl.hidden = false;
+}
+
+// Что происходит в этой клетке прямо сейчас — строками, в порядке её свойств.
+//
+// Станок и лаборатория опознаются **по координатам заказа**, а не по «идёт ли
+// вообще заказ»: мастерских теперь несколько (§12.55), и «здесь делают деталь»
+// на пустом соседнем верстаке было бы враньём ровно того сорта, каким врала
+// шапка до §12.53.
+function cellWork(snap, x, y, def) {
+  if (!def) return [];
+  const out = [];
+  if (def.shop) {
+    const order = (snap.crafting ?? []).find((c) => c.x === x && c.y === y);
+    if (order) {
+      const name = esc(recipeLabel(order.def));
+      const who = order.unit ? `, работает ${esc(order.unit)}` : ', мастер идёт';
+      out.push(`делают: ${name}, осталось ${order.left} шт${who}`);
+    } else {
+      out.push('станок свободен — заказы в разделе «Производство»');
+    }
+  }
+  if (def.lab) {
+    const topic = (snap.research ?? [])[0];
+    out.push(
+      topic
+        ? `тема: ${esc(topicLabel(topic.def))}${topic.unit ? `, работает ${esc(topic.unit)}` : ''}`
+        : 'тем нет — их берут в разделе «Наука»',
+    );
+  }
+  if (def.gate) {
+    const m = (snap.missions ?? []).find((v) => v.x === x && v.y === y);
+    if (m) out.push(m.away ? `отряд в поле, вернётся через ${m.left}` : 'здесь собирается отряд');
+    // Купленное приезжает кучей на шлюз, а проданное коты сносят сюда же
+    // (§12.44) — это и есть ответ на «почему тут растёт куча».
+    const incoming = (snap.deals ?? []).filter((d) => d.buying);
+    if (incoming.length) out.push(`сюда едет купленное: ${incoming.length} партия(и)`);
+  }
+  if (def.trade) {
+    // §12.44: за постом никто не работает. Сказать это прямо надо здесь, иначе
+    // игрок будет ждать у него кота и решит, что механика сломана.
+    const busy = (snap.deals ?? []).length;
+    out.push('лицензия на торговлю: за ней не работают, товар едет к шлюзу');
+    out.push(`сделок идёт ${busy} из ${posts} — по одной на пост`);
+  }
+  return out;
+}
+
 // Панель плена. Кота на карте нет, кликнуть по нему нельзя, и без этой панели
 // он просто пропал бы — а пропажа обязана быть объяснимой (§12.40). Ушедший
 // отряд объясняет себя панелью миссии и вернётся по таймеру; пленный не
@@ -901,30 +1164,39 @@ function renderResearchPanel(list) {
   researchEl.hidden = false;
 }
 
-// Панель заказа. Показывает **текущую штуку**, а не весь заказ: работа и оплата
-// идут поштучно, и «40% от пяти» игрок прочтёт неверно (§12.30).
+// Панель заказов. Полоска у каждого — про **текущую штуку**, а не про весь
+// заказ: работа и оплата идут поштучно, и «40% от пяти» игрок прочтёт неверно
+// (§12.30).
+//
+// Заказов теперь столько, сколько мастерских (§12.55), поэтому это список.
+// Отмена уходит **по рецепту**, а не по номеру строки: список приезжает
+// отсортированным по рецепту, но номер строки поедет, как только соседний заказ
+// закроется, — а игрок к этому моменту уже целился в кнопку.
 function renderCraftPanel(list) {
-  const c = (list ?? [])[0];
-  craftRunning = !!c;
-  if (!c || !meta) {
+  const orders = list ?? [];
+
+  if (!orders.length || !meta) {
     craftEl.hidden = true;
     return;
   }
-  const def = (meta.recipes ?? [])[c.def];
-  const pct = c.total > 0 ? Math.round((c.progress / c.total) * 100) : 0;
-  // Три разных «ничего не происходит», и путать их нельзя: некому взяться,
-  // нечем платить или работа идёт.
-  const state = c.unit ? esc(c.unit) : c.paid ? 'ждёт исполнителя' : 'ждёт материала';
   const parts = [
-    `<div class="cat-name">${esc(def?.label || def?.id || 'Заказ')}</div>`,
-    '<div class="cat-skill">' +
-      `<div class="cat-row"><span>Штука</span><b>${pct}%</b></div>` +
-      `<div class="bar"><i style="width:${pct}%"></i></div>` +
-      `<div class="cat-sub">осталось ${c.left} шт</div>` +
-      '</div>',
-    `<div class="cat-sub">${state}</div>`,
-    '<button class="tool craft-cancel"><span>Отменить</span></button>',
+    `<div class="cat-name">Заказы${orders.length > 1 ? ` · ${orders.length}` : ''}</div>`,
   ];
+  for (const c of orders) {
+    const def = (meta.recipes ?? [])[c.def];
+    const pct = c.total > 0 ? Math.round((c.progress / c.total) * 100) : 0;
+    // Три разных «ничего не происходит», и путать их нельзя: некому взяться,
+    // нечем платить или работа идёт.
+    const state = c.unit ? esc(c.unit) : c.paid ? 'ждёт исполнителя' : 'ждёт материала';
+    parts.push(
+      '<div class="cat-skill">' +
+        `<div class="cat-row"><span>${esc(def?.label || def?.id || 'Заказ')}</span><b>${pct}%</b></div>` +
+        `<div class="bar"><i style="width:${pct}%"></i></div>` +
+        `<div class="cat-sub">осталось ${c.left} шт · ${state}</div>` +
+        `<button class="tool craft-cancel" data-def="${c.def}"><span>Отменить</span></button>` +
+        '</div>',
+    );
+  }
   craftEl.innerHTML = parts.join('');
   craftEl.hidden = false;
 }
@@ -934,38 +1206,36 @@ function renderCraftPanel(list) {
 // весь риск торговли. Кнопки «Отменить» здесь нет намеренно: деньги за покупку
 // уже ушли, и возврат превратил бы сделку в бесплатный опцион.
 function renderDealPanel(list) {
-  const d = (list ?? [])[0];
-  dealRunning = !!d;
+  const deals = list ?? [];
   syncTradeButtons();
-  if (!d || !meta) {
+  if (!deals.length || !meta) {
     dealEl.hidden = true;
     return;
   }
-  const item = (meta.items ?? [])[d.item];
-  const who = (meta.factions ?? [])[d.faction];
-  const name = esc(item?.label || item?.id || 'товар');
-  const parts = [
-    `<div class="cat-name">${d.buying ? 'Покупка' : 'Продажа'}: ${name}</div>`,
-    `<div class="cat-sub">${esc(who?.label || '—')} · ${d.count} шт по ${d.unit} = ${d.unit * d.count}¤</div>`,
-  ];
-  if (d.buying) {
-    parts.push(
-      '<div class="cat-skill">' +
-        `<div class="cat-row"><span>В пути</span><b>${d.left}</b></div>` +
-        '<div class="cat-sub">приедет в гараж</div>' +
-        '</div>',
-    );
-  } else {
-    // У продажи «срок» — это ходки котов, и мерить его тиками нечем: показываем
-    // сделанное, а не оставшееся время.
-    const pct = d.count > 0 ? Math.round((d.delivered / d.count) * 100) : 0;
-    parts.push(
-      '<div class="cat-skill">' +
-        `<div class="cat-row"><span>Отнесли</span><b>${d.delivered} из ${d.count}</b></div>` +
+  // Сколько окон занято из скольких: постов теперь может быть несколько, и
+  // «почему кнопка не жмётся» игрок должен читать здесь, а не гадать (§12.55).
+  const head = posts > 1 ? `Сделки · ${deals.length} из ${posts}` : 'Сделка';
+  const parts = [`<div class="cat-name">${head}</div>`];
+  for (const d of deals) {
+    const item = (meta.items ?? [])[d.item];
+    const who = (meta.factions ?? [])[d.faction];
+    const name = esc(item?.label || item?.id || 'товар');
+    const rows = [
+      `<div class="cat-row"><span>${d.buying ? 'Покупка' : 'Продажа'}: ${name}</span></div>`,
+      `<div class="cat-sub">${esc(who?.label || '—')} · ${d.count} шт по ${d.unit} = ${d.unit * d.count}¤</div>`,
+    ];
+    if (d.buying) {
+      rows.push(`<div class="cat-sub">в пути ${d.left} — приедет в гараж</div>`);
+    } else {
+      // У продажи «срок» — это ходки котов, и мерить его тиками нечем:
+      // показываем сделанное, а не оставшееся время.
+      const pct = d.count > 0 ? Math.round((d.delivered / d.count) * 100) : 0;
+      rows.push(
         `<div class="bar"><i style="width:${pct}%"></i></div>` +
-        `<div class="cat-sub">получено ${d.unit * d.delivered}¤</div>` +
-        '</div>',
-    );
+          `<div class="cat-sub">отнесли ${d.delivered} из ${d.count} · получено ${d.unit * d.delivered}¤</div>`,
+      );
+    }
+    parts.push(`<div class="cat-skill">${rows.join('')}</div>`);
   }
   dealEl.innerHTML = parts.join('');
   dealEl.hidden = false;
@@ -1037,6 +1307,18 @@ function renderNotePanel(list, tick = 0) {
   noteEl.hidden = false;
 }
 
+// Рецепт и тема — по индексу палитры, как предмет: их `def` в снапшоте это
+// номер записи, а не имя (в отличие от технологии).
+function recipeLabel(def) {
+  const d = (meta.recipes ?? [])[def];
+  return d?.label || d?.id || '?';
+}
+
+function topicLabel(def) {
+  const d = (meta.research ?? [])[def];
+  return d?.label || d?.id || '?';
+}
+
 function techLabel(id) {
   const def = (meta.research ?? []).find((r) => r.id === id);
   return def?.label || id;
@@ -1049,6 +1331,13 @@ function itemLabel(item) {
 
 function perkLabel(id) {
   const def = (meta.perks ?? []).find((p) => p.id === id);
+  return def?.label || id;
+}
+
+// Парта хранит `id` навыка, а не его номер (§12.18) — отсюда поиск по имени, а
+// не индексация, как у перков и технологий.
+function skillLabel(id) {
+  const def = (meta.skills ?? []).find((s) => s.id === id);
   return def?.label || id;
 }
 
@@ -1102,6 +1391,16 @@ function unitAt(tx, ty) {
   return null;
 }
 
+// Все коты на клетке — для панели. `unitAt` берёт первого и остаётся как есть:
+// он в горячем пути `updateHover`, на каждом движении мыши. Порядок `unitTiles`
+// идёт из порядка сущностей ECS и для показа недетерминирован, поэтому сортируем
+// по имени: список, который сам себя перетасовывает, читается как мельтешение.
+function unitsAt(tx, ty) {
+  const found = [];
+  for (const [id, ut] of unitTiles) if (ut.x === tx && ut.y === ty) found.push(id);
+  return found.sort();
+}
+
 // режим постройки: игрок тянет рамку, отпускание применяет её целиком
 function rectOf(a, b) {
   return {
@@ -1134,6 +1433,10 @@ function endDrag(apply, global) {
     const rect = rectOf(dragFrom, dragTo);
     if (dragUnit && rect.w === 1 && rect.h === 1) {
       selectCursor(cursorBtn);
+      // Тот же первый шаг, что и у клика курсором (§12.54): клетка показана, мир
+      // не тронут. Клетку выставляем **до** выбора кота — перерисовку оверлея
+      // зовёт `selectUnit`, и она должна увидеть уже обе половины выделения.
+      selectedCell = { x: rect.x, y: rect.y };
       selectUnit(dragUnit);
     } else {
       applyDrag();
@@ -1154,23 +1457,85 @@ function selectUnit(id, add) {
   updateSelectionOverlay();
 }
 
-// режим курсора: выбрать кота (Shift — добавить в отряд) / приказать идти
+// Режим курсора. Приказ здесь **двухшаговый** (§12.54): первый клик по клетке
+// только показывает, что на ней (и выбирает кота, если тот там стоит), а
+// отправляет туда котов повторный клик по **той же** клетке.
+//
+// Так дороже ровно то, чем пользуются редко. Приказ в этой игре — намеренная
+// оговорка к единственному правилу ввода (§12.16: «игрок размечает работу,
+// исполнителя выбирает симуляция»), и в петле игры его нет вовсе: уборка,
+// снаряжение, сон и дремота на котах, остальное — рамки и кнопки. А осмотр
+// клетки нужен постоянно, и он теперь ничего не стоит и ничем не грозит.
+//
+// Таймера двойного клика нет намеренно: «повторный» здесь значит «клетка уже
+// выбрана», и передумать можно сколько угодно долго — как и не спешить.
 function command(global, add) {
   const t = tileAt(global);
   if (!t) return;
+  const same = selectedCell && selectedCell.x === t.tx && selectedCell.y === t.ty;
+  // Панель следует за кликом всегда, даже когда тот же клик отдаёт приказ:
+  // иначе клетку под котом не осмотреть вовсе — клик по ней выбирает кота, и
+  // получается замкнутый круг.
+  selectedCell = { x: t.tx, y: t.ty };
+  revealSection(t.tx, t.ty);
   const hit = unitAt(t.tx, t.ty);
-  if (hit) {
-    selectUnit(hit, add);
+  // Shift — чистый набор отряда, обеими руками: приказа он не даёт никогда, и
+  // клетку под собой не взводит. Иначе шаг «набрал троих» пришлось бы считать
+  // первым кликом, и четвёртый Shift-клик угонял бы отряд.
+  if (add) {
+    if (hit) selectUnit(hit, true);
+    else updateSelectionOverlay();
     return;
   }
-  if (!isWalkable(t.tx, t.ty)) return;
-  // Приказ уходит каждому выбранному: коты друг друга не блокируют, и толпа
-  // на одной клетке — законное состояние (см. `set_target` в ядре).
-  for (const id of selectedUnits) {
-    worker.postMessage({ type: 'move', id, x: t.tx, y: t.ty });
-    orders.set(id, { x: t.tx, y: t.ty });
+  if (!same) {
+    if (hit) selectUnit(hit);
+    else updateSelectionOverlay();
+    return;
+  }
+  if (cellReleases()) {
+    selectedUnits = [];
+  } else if (isWalkable(t.tx, t.ty)) {
+    // Приказ уходит каждому выбранному: коты друг друга не блокируют, и толпа
+    // на одной клетке — законное состояние (см. `set_target` в ядре).
+    for (const id of selectedUnits) {
+      worker.postMessage({ type: 'move', id, x: t.tx, y: t.ty });
+      orders.set(id, { x: t.tx, y: t.ty });
+    }
   }
   updateSelectionOverlay();
+}
+
+// Клик по функциональной клетке раскрывает её раздел тулбара (§12.55). Это
+// **только вид**: ни одной команды отсюда не уходит, и решение по-прежнему
+// принимается в одном месте — просто игрок туда попадает, ткнув в комнату.
+//
+// Открываем на первом клике, а не на втором: осмотр и есть «покажи, что тут», а
+// второй клик занят приказом.
+function revealSection(tx, ty) {
+  if (!mapCells || !meta) return;
+  const tile = mapCells[ty * meta.width + tx];
+  const section = tile >= 0 ? cellSection(meta.palette[tile]) : null;
+  // Раздела нет — раскрывать нечего, и уже открытый не трогаем: захлопывать
+  // палитру на каждый клик по полу значит отбирать у игрока инструмент.
+  if (section && sections.some((s) => s.title === section)) openOnly(section);
+}
+
+// Что сделает повторный клик по выбранной клетке. Обе половины считаются одним
+// местом на троих читателей — сам клик, уголки на карте и строка в панели: то,
+// что игрок видит обещанным, и то, что он получает, обязано быть одним
+// выражением, иначе обещание однажды разойдётся с делом (§4.4).
+//
+// Отпустит — если единственный выбранный кот стоит на этой самой клетке: слать
+// его туда, где он уже есть, нечего.
+function cellReleases() {
+  if (!selectedCell || selectedUnits.length !== 1) return false;
+  return unitAt(selectedCell.x, selectedCell.y) === selectedUnits[0];
+}
+
+// Взведена — если по клетке есть кого отправить и есть куда идти.
+function cellIsArmed() {
+  if (!selectedCell || !selectedUnits.length) return false;
+  return isWalkable(selectedCell.x, selectedCell.y) && !cellReleases();
 }
 
 function updateHover(global) {
@@ -1240,7 +1605,16 @@ const SPEED_KEYS = {
 window.addEventListener('keydown', (e) => {
   if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.code === 'Escape' || e.key === 'Escape') {
-    if (dragFrom) endDrag(false);
+    if (dragFrom) {
+      endDrag(false);
+      return;
+    }
+    // Протяжки нет — снимаем выделение целиком: и клетку, и котов. Клика,
+    // который снимал бы выбор с пустого места, в двухшаговой модели нет
+    // (§12.54): любой клик по карте что-нибудь да выбирает.
+    selectedCell = null;
+    selectedUnits = [];
+    updateSelectionOverlay();
     return;
   }
   if (e.code === 'Space' || e.key === ' ') {
@@ -1598,7 +1972,7 @@ function syncTradeButtons() {
     const unit = buying ? q.buy : q.sell;
     const total = unit * 5;
     const broke = buying && money < total;
-    const ready = hasPost && !dealRunning && !broke;
+    const ready = postFree && !broke;
     b.disabled = !ready;
     b.classList.toggle('on', ready);
     const rate = b.querySelector('.rate');
@@ -1608,10 +1982,10 @@ function syncTradeButtons() {
     const next = buying ? q.next_buy : q.next_sell;
     const ahead =
       q.next_in > 0 && next !== unit ? ` · через ${q.next_in} станет ${next}¤` : '';
-    b.title = !hasPost
+    b.title = !posts
       ? 'Нужен «Торговый пост»'
-      : dealRunning
-        ? 'Сделка уже идёт'
+      : !postFree
+        ? `Посты заняты: сделок идёт ${posts} из ${posts}. Постройте ещё пост`
         : broke
           ? `Нужно ${total}¤ за пять, у вас ${money}¤`
           : `${unit}¤ за штуку · клик — пять (${total}¤), Shift — двадцать пять${ahead}`;
@@ -1704,19 +2078,30 @@ function syncRecipeButtons(list) {
   recipeButtons.forEach((b, i) => {
     const r = (list ?? [])[i];
     if (!r) return;
-    const ready = r.unlocked && r.shop && !craftRunning;
+    // `shop` теперь значит «есть куда поставить»: свободный станок **или** уже
+    // размеченный заказ на этот рецепт — тогда клик добавит штук (§12.55).
+    // Общего «заказ уже в работе» больше нет: заказов столько, сколько
+    // мастерских, и вторая мастерская — это вторая работа, а не декорация.
+    const ready = r.unlocked && r.shop;
     b.disabled = !ready;
     b.classList.toggle('on', ready && r.affordable);
     b.title = !r.unlocked
       ? 'Нужна технология'
       : !r.shop
-        ? 'Нет мастерской'
-        : craftRunning
-          ? 'Заказ уже в работе'
-          : r.affordable
-            ? 'Заказать: клик — штука, Shift — пять'
-            : `На складе нет материала, заказ будет ждать: ${payHint((meta.recipes ?? [])[i]?.cost)}`;
+        ? shopsBusyHint()
+        : r.affordable
+          ? 'Заказать: клик — штука, Shift — пять'
+          : `На складе нет материала, заказ будет ждать: ${payHint((meta.recipes ?? [])[i]?.cost)}`;
   });
+}
+
+// Почему рецепт не заказать. «Мастерской нет» и «все станки заняты» — разные
+// новости: первую чинят стройкой первой мастерской, вторую — второй, и
+// молчащая кнопка не сказала бы ни того, ни другого (§4.4, §12.55).
+function shopsBusyHint() {
+  return shops > 0
+    ? `Все мастерские заняты: заказов ${shops} из ${shops}. Постройте ещё`
+    : 'Нет мастерской';
 }
 
 // Палитра, закрытая технологией: кнопка видна и объясняет, чем открывается.

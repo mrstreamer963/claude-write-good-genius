@@ -27,16 +27,27 @@ use crate::map::BaseMap;
 use crate::path::Reach;
 use crate::skills::{SKILL_CRAFT, level_of};
 
-/// Ближайшая к коту клетка мастерской и её цена в шагах.
+/// Ближайшая к коту **свободная** клетка мастерской и её цена в шагах.
 ///
 /// Работать кот будет **стоя на ней**, как в лаборатории: мастерская — комната,
 /// а не стройплощадка, и правило соседства (§12.12) тут ничего не спасает.
-fn shop_spot(map: &BaseMap, tiles: &TileRules, reach: &Reach) -> Option<((i32, i32), i32)> {
+///
+/// `taken` — станки, за которыми уже сидят другие заказы (§12.55). Мастерская
+/// это слот, и второй заказ на неё не сядет; при равном расстоянии выбираем
+/// клетку по координате, а не по порядку обхода карты — он-то как раз
+/// детерминирован, но ключ должен быть полным (§12.14).
+fn shop_spot(
+    map: &BaseMap,
+    tiles: &TileRules,
+    reach: &Reach,
+    taken: &[(i32, i32)],
+) -> Option<((i32, i32), i32)> {
     (0..map.height)
         .flat_map(|y| (0..map.width).map(move |x| (x, y)))
         .filter(|&(x, y)| tiles.is_shop(map.tile_at(x, y)))
+        .filter(|xy| !taken.contains(xy))
         .filter_map(|(x, y)| reach.dist_at(x, y).map(|d| ((x, y), d)))
-        .min_by_key(|&(_, d)| d)
+        .min_by_key(|&((x, y), d)| (d, y, x))
 }
 
 /// Ставит к заказу ближайшего свободного кота — если есть чем платить.
@@ -79,7 +90,18 @@ pub(crate) fn assign_craft(
 ) {
     // Забронированное под продажу заказу не принадлежит (§12.50).
     let booked = crate::trade::booked(deals.iter(), in_paws.iter());
-    for (order_e, mut order) in &mut orders {
+
+    // Станки, за которыми уже сидят другие заказы (§12.55). Занятость держит сам
+    // `Craft::spot`, ровно как лежанку держит `Rest::spot`: снимается вместе с
+    // задачей, отдельного реестра нет и заводить его не надо.
+    let mut taken: Vec<(i32, i32)> = orders.iter().filter_map(|(_, o)| o.spot).collect();
+
+    // Заказы, которые сейчас можно раздать. Собираем списком, а не раздаём на
+    // ходу, потому что заказов теперь несколько: `commands` отложены до конца
+    // тика, и на втором витке цикла тот же кот и тот же станок выглядели бы
+    // свободными (§12.55).
+    let mut open: Vec<(Entity, usize)> = Vec::new();
+    for (order_e, order) in orders.iter() {
         if order.assignee.is_some() || order.left <= 0 {
             continue;
         }
@@ -98,23 +120,47 @@ pub(crate) fn assign_craft(
                 continue; // склад пуст — заказ ждёт материала, а кот работает
             }
         }
+        open.push((order_e, order.def));
+    }
+    if open.is_empty() {
+        return;
+    }
+    // Порядок обхода ECS зависит от истории вставок (§11), а жадный выбор ниже
+    // при равенстве берёт первый заказ. Сортируем по рецепту: двух заказов на
+    // один рецепт не бывает по построению, значит ключ полный.
+    open.sort_unstable_by_key(|&(_, def)| def);
 
-        // При равном расстоянии — по `id` кота, а не по порядку сущностей:
-        // обход ECS зависит от истории вставок (§11).
-        let chosen = free_cats
+    // Достижимость считаем по разу на кота, коты — по `id` (§12.14, §11).
+    let mut idle: Vec<(&str, Entity, Reach)> = free_cats
+        .iter()
+        .map(|(e, id, p)| (id.0.as_str(), e, Reach::all(&map, (p.x, p.y))))
+        .collect();
+    idle.sort_unstable_by_key(|&(id, ..)| id);
+
+    // Пара выбирается только между котом и станком: **какой именно заказ он
+    // возьмёт, не влияет ни на что** — станки одинаковы, и любой кот делает
+    // любой рецепт с одной скоростью (навык домена общий, §12.17). Поэтому
+    // заказ берём первый по рецепту, а минимизируем расстояние до верстака.
+    while !idle.is_empty() && !open.is_empty() {
+        let chosen = idle
             .iter()
-            .filter_map(|(cat_e, id, pos)| {
-                let reach = Reach::all(&map, (pos.x, pos.y));
-                shop_spot(&map, &tiles, &reach)
-                    .map(|(spot, steps)| (steps, id.0.as_str(), cat_e, spot, reach))
+            .enumerate()
+            .filter_map(|(ci, (_, _, reach))| {
+                shop_spot(&map, &tiles, reach, &taken).map(|(spot, steps)| (steps, ci, spot))
             })
-            .min_by_key(|&(steps, id, ..)| (steps, id));
-        let Some((_, _, cat_e, spot, reach)) = chosen else {
-            continue; // некому взяться или до мастерской не дойти
+            .min_by_key(|&(steps, ci, _)| (steps, ci));
+        // Ни один кот не дошёл до свободного станка — остальные заказы ждут.
+        let Some((_, ci, spot)) = chosen else {
+            break;
         };
 
-        order.assignee = Some(cat_e);
-        order.spot = Some(spot);
+        let (_, cat_e, reach) = idle.remove(ci);
+        let (order_e, _) = open.remove(0);
+        taken.push(spot);
+        if let Ok((_, mut order)) = orders.get_mut(order_e) {
+            order.assignee = Some(cat_e);
+            order.spot = Some(spot);
+        }
         let path = reach.path_to(spot.0, spot.1).unwrap_or_default();
         commands
             .entity(cat_e)

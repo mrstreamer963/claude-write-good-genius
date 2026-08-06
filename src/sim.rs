@@ -431,36 +431,50 @@ impl Sim {
             .any(|skills| level_of(rules, skills, science) >= level)
     }
 
-    /// Заказ, который сейчас в работе (на POC не больше одного).
-    fn order(&mut self) -> Option<Entity> {
-        let mut q = self.world.query_filtered::<Entity, With<Craft>>();
-        q.iter(&self.world).next()
-    }
-
-    /// Сделка, которая сейчас идёт (её, как вылазку и заказ, не больше одной).
-    fn deal(&mut self) -> Option<Entity> {
+    /// Сколько сделок идёт прямо сейчас (§12.55: их столько, сколько постов).
+    fn deals_running(&mut self) -> usize {
         let mut q = self.world.query_filtered::<Entity, With<Deal>>();
-        q.iter(&self.world).next()
+        q.iter(&self.world).count()
     }
 
-    /// Есть ли на базе торговый пост — без него с внешним миром не говорят
-    /// (§12.44). За постом никто не работает: это лицензия, а не рабочее место,
-    /// поэтому от него нужен только сам факт.
-    fn has_trade_post(&mut self) -> bool {
+    /// Сколько на базе торговых постов — **счёт, а не факт** (§12.55).
+    ///
+    /// За постом по-прежнему никто не работает: это лицензия, а не рабочее место
+    /// (§12.44), — но лицензия счётная, и второй пост даёт вторую одновременную
+    /// сделку. Иначе он остаётся декорацией, ровно как бездонный склад до того,
+    /// как `capacity` дал складской комнате смысл (§12.16).
+    fn trade_posts(&mut self) -> usize {
         let map = self.world.resource::<BaseMap>();
         let rules = self.world.resource::<TileRules>();
         (0..map.height)
             .flat_map(|y| (0..map.width).map(move |x| (x, y)))
-            .any(|(x, y)| rules.is_trade_post(map.tile_at(x, y)))
+            .filter(|&(x, y)| rules.is_trade_post(map.tile_at(x, y)))
+            .count()
     }
 
-    /// Есть ли на базе клетка мастерской — без неё работать негде.
-    fn has_shop(&mut self) -> bool {
+    /// Сколько на базе мастерских. Тоже счёт: станок — слот заказа (§12.55).
+    fn shops(&mut self) -> usize {
         let map = self.world.resource::<BaseMap>();
         let rules = self.world.resource::<TileRules>();
         (0..map.height)
             .flat_map(|y| (0..map.width).map(move |x| (x, y)))
-            .any(|(x, y)| rules.is_shop(map.tile_at(x, y)))
+            .filter(|&(x, y)| rules.is_shop(map.tile_at(x, y)))
+            .count()
+    }
+
+    /// Сколько заказов уже размечено: слот занимает сам заказ, а не кот за ним.
+    fn orders_running(&mut self) -> usize {
+        let mut q = self.world.query_filtered::<Entity, With<Craft>>();
+        q.iter(&self.world).count()
+    }
+
+    /// Заказ на этот рецепт, если он уже размечен: второй такой же не заводят —
+    /// повторная заявка добавляет штук к этому (§12.55).
+    fn order_of(&mut self, def: usize) -> Option<Entity> {
+        let mut q = self.world.query::<(Entity, &Craft)>();
+        q.iter(&self.world)
+            .find(|(_, c)| c.def == def)
+            .map(|(e, _)| e)
     }
 
     /// Клетки, занятые учениками: и та, за которой сидят, и та, к которой идут.
@@ -1375,21 +1389,38 @@ impl Sim {
     /// под работу, которая начнётся через полтысячи тиков. Поэтому и пустой склад
     /// заявку не отклоняет — заказ ждёт материала, как чертёж ждёт лом (§12.15).
     ///
-    /// Заказ один за раз, как вылазка и тема. Вернёт false, если рецепта нет,
-    /// счётчик неположителен, заказ уже идёт, не хватает технологий или на базе
-    /// нет мастерской.
+    /// **Заказов столько, сколько мастерских** (§12.55): станок — это слот, и
+    /// вторая мастерская даёт второй одновременный заказ. Слот занимает сам
+    /// заказ, а не кот за ним: иначе разметка зависела бы от того, нашёлся ли
+    /// уже свободный кот, — а разметка в этой игре от исполнителя не зависит
+    /// нигде (§12.16).
+    ///
+    /// **Повторная заявка на тот же рецепт добавляет штук** к уже размеченному
+    /// заказу, а не заводит второй. Двух заказов на одно и то же не бывает:
+    /// счётчик штук у заказа для этого и есть, а два одинаковых заняли бы два
+    /// станка ради работы, которую и один сделает подряд.
+    ///
+    /// Вернёт false, если рецепта нет, счётчик неположителен, свободных станков
+    /// не осталось или не хватает технологий.
     pub fn start_craft(&mut self, def: usize, count: i32) -> bool {
         note(&mut self.world, format!("craft {def} {count}"));
         let Some(rule) = self.world.resource::<CraftRules>().0.get(def).cloned() else {
             return false;
         };
-        if count <= 0 || self.order().is_some() {
+        if count <= 0 {
             return false;
         }
         if !self.world.resource::<Techs>().covers(&rule.requires) {
             return false;
         }
-        if !self.has_shop() {
+        // Такой заказ уже размечен — добавляем штук и станка не занимаем.
+        if let Some(order_e) = self.order_of(def) {
+            if let Some(mut order) = self.world.get_mut::<Craft>(order_e) {
+                order.left += count;
+                return true;
+            }
+        }
+        if self.orders_running() >= self.shops() {
             return false;
         }
         self.world.spawn(Craft {
@@ -1403,15 +1434,20 @@ impl Sim {
         true
     }
 
-    /// Отменить заказ и освободить мастера.
+    /// Отменить заказ на рецепт `def`, освободить мастера и станок.
+    ///
+    /// Отменяют **по рецепту, а не по номеру в списке** (§12.55): заказов теперь
+    /// несколько, а порядок обхода сущностей ECS недетерминирован — по индексу
+    /// игрок отменял бы то один заказ, то другой. Двух заказов на один рецепт не
+    /// бывает по построению, так что рецепт их и различает.
     ///
     /// Материал уже начатой штуки **не возвращается** — та же цена поспешной
     /// разметки, что у брошенной темы и у отменённого чертежа с завезённым ломом
     /// (§12.26). Неоплаченные штуки не стоили ничего и просто исчезают.
-    /// Вернёт false, если заказывать нечего.
-    pub fn cancel_craft(&mut self) -> bool {
-        note(&mut self.world, "cancel_craft");
-        let Some(order_e) = self.order() else {
+    /// Вернёт false, если такого заказа нет.
+    pub fn cancel_craft(&mut self, def: usize) -> bool {
+        note(&mut self.world, format!("cancel_craft {def}"));
+        let Some(order_e) = self.order_of(def) else {
             return false;
         };
         if let Some(cat_e) = self.world.get::<Craft>(order_e).and_then(|o| o.assignee) {
@@ -1447,7 +1483,7 @@ impl Sim {
     /// одинаково годится куча на полу (§12.44). Лапы тоже в счёте — их считает
     /// и счётчик в шапке, а иначе игрок читал бы отказ как поломку.
     ///
-    /// Вернёт false, если счётчик неположителен, сделка уже идёт, нет поста или
+    /// Вернёт false, если счётчик неположителен, свободных постов нет, нет
     /// шлюза, фракция этим не торгует, на покупку не хватает денег или на
     /// продажу не хватает товара.
     pub fn trade(&mut self, faction: usize, item: usize, count: i32, buying: bool) -> bool {
@@ -1455,7 +1491,9 @@ impl Sim {
             &mut self.world,
             format!("trade {faction} {item} {count} {buying}"),
         );
-        if count <= 0 || self.deal().is_some() || !self.has_trade_post() {
+        // Сделок столько, сколько постов (§12.55). Отмены у сделки по-прежнему
+        // нет (§12.44), поэтому занятый слот освобождается только доставкой.
+        if count <= 0 || self.deals_running() >= self.trade_posts() {
             return false;
         }
         // Товар приходит к шлюзу и уходит через него же: гараж — точка контакта
@@ -2096,7 +2134,11 @@ impl Sim {
             }
             out
         };
-        let post = self.has_trade_post();
+        // Постов **сколько есть**, а свободен ли хоть один — считает ядро
+        // (§12.26): «сделок меньше, чем постов» второй раз в JS однажды
+        // разойдётся с `trade`, и игрок увидит кнопку, которую фасад отклонит.
+        let posts = self.trade_posts() as i32;
+        let post_free = self.deals_running() < self.trade_posts();
         let mut recruits = Vec::new();
         {
             let rules = self.world.resource::<RecruitRules>().0.clone();
@@ -2173,6 +2215,12 @@ impl Sim {
                     progress: order.progress,
                     total: rules.0.get(order.def).map_or(0, |r| r.work),
                     paid: order.paid,
+                    // Станок, за которым идёт работа; `-1` — исполнителя ещё
+                    // нет. Едет наружу по той же причине, что и шлюз миссии:
+                    // мастерских теперь несколько, и панель клетки обязана
+                    // отличать занятую от свободной (§12.55).
+                    x: order.spot.map_or(-1, |(x, _)| x),
+                    y: order.spot.map_or(-1, |(_, y)| y),
                     unit: order
                         .assignee
                         .and_then(|e| names.iter().find(|&&(cat, _)| cat == e))
@@ -2181,18 +2229,27 @@ impl Sim {
                 });
             }
         }
+        // Порядок обхода сущностей ECS зависит от истории вставок и
+        // недетерминирован (§11): без сортировки список заказов в панели
+        // перетасовывался бы сам собой, а у мира из снимка порядок был бы свой.
+        crafting.sort_by_key(|c| c.def);
 
-        let has_shop = self.has_shop();
+        let shops = self.shops();
+        let shop_free = self.orders_running() < shops;
         let mut recipes = Vec::new();
         {
             let rules = self.world.resource::<CraftRules>().0.clone();
-            for rule in &rules {
+            let running: Vec<usize> = crafting.iter().map(|c| c.def).collect();
+            for (def, rule) in rules.iter().enumerate() {
                 recipes.push(RecipeSnap {
                     unlocked: self.world.resource::<Techs>().covers(&rule.requires),
                     // Подсказка, а не запрет: заказ без материала ядро примет,
                     // он просто будет ждать склада (§12.30).
                     affordable: self.storage_covers(&rule.cost),
-                    shop: has_shop,
+                    // Есть ли куда поставить заказ: свободный станок **или** уже
+                    // размеченный заказ на этот рецепт — тогда заявка добавит
+                    // штук и станка не займёт (§12.55).
+                    shop: shop_free || running.contains(&def),
                 });
             }
         }
@@ -2243,7 +2300,9 @@ impl Sim {
             money,
             deals,
             prices,
-            post,
+            posts,
+            post_free,
+            shops: shops as i32,
             recruits,
             research,
             topics,

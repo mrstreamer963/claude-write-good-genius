@@ -23,6 +23,13 @@ fn sim_with_shop() -> Sim {
     sim
 }
 
+/// То же, но мастерских две — (3,1) и (4,1), и котов тоже двое (§12.55).
+fn sim_with_two_shops() -> Sim {
+    let mut sim = sim_with_shop();
+    sim.force_tile(4, 1, 2);
+    sim
+}
+
 // --- работа над заказом -----------------------------------------------------
 
 #[test]
@@ -199,14 +206,114 @@ fn crafting_without_a_shop_is_refused() {
     assert!(!sim.start_craft(recipe, 1), "работать негде");
 }
 
+/// Заказов столько, сколько мастерских: станок — это слот (§12.55).
 #[test]
-fn only_one_order_at_a_time() {
+fn orders_are_capped_by_the_number_of_shops() {
+    let mut sim = sim_with_shop();
+    sim.put_item(5, 1, SCRAP, 20);
+    let first = sim.set_recipe(100, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+    let second = sim.set_recipe(100, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+
+    assert!(sim.start_craft(first, 1));
+    assert!(
+        !sim.start_craft(second, 1),
+        "мастерская одна — второму заказу негде встать"
+    );
+}
+
+/// Повторная заявка на тот же рецепт **добавляет штук**, а не заводит второй
+/// заказ: счётчик у заказа для этого и есть, а два одинаковых заняли бы два
+/// станка ради работы, которую один сделает подряд (§12.55).
+#[test]
+fn a_repeat_order_of_the_same_recipe_adds_count() {
     let mut sim = sim_with_shop();
     sim.put_item(5, 1, SCRAP, 20);
     let recipe = sim.set_recipe(100, &[(SCRAP, 2)], &[(PART, 1)], &[]);
 
-    assert!(sim.start_craft(recipe, 1));
-    assert!(!sim.start_craft(recipe, 1), "второй заказ не принимают");
+    assert!(sim.start_craft(recipe, 2));
+    assert!(sim.start_craft(recipe, 3), "тот же рецепт — не отказ");
+    assert_eq!(sim.orders_count(), 1, "заказ по-прежнему один");
+    assert_eq!(
+        sim.craft_left_of(recipe),
+        Some(5),
+        "а штук в нём стало больше"
+    );
+}
+
+/// Вторая мастерская — вторая пара лап у дела: два заказа идут одновременно, и
+/// каждый за своим станком (§12.55). До этого вторая мастерская была
+/// декорацией, как бездонный склад до `capacity` (§12.16).
+#[test]
+fn two_shops_run_two_orders_at_once() {
+    let mut sim = sim_with_two_shops();
+    sim.put_item(5, 1, SCRAP, 40);
+    let bolt = sim.set_recipe(100, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+    let nut = sim.set_recipe(100, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+
+    assert!(sim.start_craft(bolt, 1));
+    assert!(
+        sim.start_craft(nut, 1),
+        "второй станок принимает второй заказ"
+    );
+    sim.tick_n(6);
+
+    assert!(sim.crafter_of(bolt).is_some(), "первый заказ взят");
+    assert!(sim.crafter_of(nut).is_some(), "и второй тоже");
+    assert_ne!(
+        sim.crafter_of(bolt),
+        sim.crafter_of(nut),
+        "и берут их разные коты: `commands` отложены, и без списков один и тот \
+         же кот достался бы обоим"
+    );
+}
+
+/// Два заказа никогда не садятся за один станок: занятость держит `Craft::spot`,
+/// как лежанку держит `Rest::spot` (§12.55, §12.20).
+#[test]
+fn two_orders_never_share_a_shop() {
+    let mut sim = sim_with_two_shops();
+    sim.put_item(5, 1, SCRAP, 40);
+    let bolt = sim.set_recipe(400, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+    let nut = sim.set_recipe(400, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+    sim.start_craft(bolt, 1);
+    sim.start_craft(nut, 1);
+
+    // На каждом тике, а не только в конце: пересечение длится один тик и
+    // конечным состоянием замаскировалось бы (ср. `demolish_job_is_done_...`).
+    for _ in 0..40 {
+        sim.tick_n(1);
+        let (a, b) = (sim.craft_spot_of(bolt), sim.craft_spot_of(nut));
+        if let (Some(a), Some(b)) = (a, b) {
+            assert_ne!(a, b, "два заказа за одним верстаком");
+        }
+    }
+}
+
+/// Освободившийся станок достаётся ждавшему заказу: слот отпускается вместе с
+/// заказом, отдельного реестра занятости нет (§12.55).
+#[test]
+fn a_cancelled_order_frees_its_shop_for_the_next() {
+    let mut sim = sim_with_shop();
+    sim.put_item(5, 1, SCRAP, 20);
+    let bolt = sim.set_recipe(400, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+    let nut = sim.set_recipe(100, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+    sim.start_craft(bolt, 1);
+    sim.tick_n(6);
+    assert!(!sim.start_craft(nut, 1), "станок занят");
+
+    assert!(sim.cancel_craft(bolt));
+    assert!(
+        sim.start_craft(nut, 1),
+        "станок освободился вместе с заказом"
+    );
+    sim.tick_n(30);
+    // По готовой детали, а не по исполнителю: заказ на 100 очков успевает
+    // закрыться и despawn'иться, и «мастера нет» тут значит «всё сделано».
+    assert_eq!(
+        sim.item_total(PART),
+        1,
+        "второй заказ встал за станок и сделал деталь"
+    );
 }
 
 #[test]
@@ -294,7 +401,7 @@ fn cancelling_the_order_frees_the_cat() {
     sim.start_craft(recipe, 1);
     sim.tick_n(6);
 
-    assert!(sim.cancel_craft());
+    assert!(sim.cancel_craft(recipe));
     assert_eq!(sim.craft_left(), None, "заказа нет");
     assert!(!sim.is_crafting("a"), "и кот свободен");
 }

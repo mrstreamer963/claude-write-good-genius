@@ -618,6 +618,37 @@ impl Sim {
         self.world.get::<Crafting>(cat).is_some()
     }
 
+    /// Сколько заказов размечено. Их столько, сколько мастерских (§12.55).
+    fn orders_count(&mut self) -> usize {
+        let mut q = self.world.query::<&Craft>();
+        q.iter(&self.world).count()
+    }
+
+    /// Сколько штук осталось у заказа на этот рецепт; `None` — заказа нет.
+    ///
+    /// По рецепту, а не «первый попавшийся»: заказов теперь несколько, а порядок
+    /// обхода ECS недетерминирован (§11). Двух заказов на один рецепт не бывает,
+    /// поэтому рецепт их и различает.
+    fn craft_left_of(&mut self, def: usize) -> Option<i32> {
+        let mut q = self.world.query::<&Craft>();
+        q.iter(&self.world).find(|o| o.def == def).map(|o| o.left)
+    }
+
+    /// Станок, за которым идёт этот заказ; `None` — исполнителя ещё нет.
+    fn craft_spot_of(&mut self, def: usize) -> Option<(i32, i32)> {
+        let mut q = self.world.query::<&Craft>();
+        q.iter(&self.world)
+            .find(|o| o.def == def)
+            .and_then(|o| o.spot)
+    }
+
+    /// Кто стоит у верстака по этому рецепту; `None` — исполнителя нет.
+    fn crafter_of(&mut self, def: usize) -> Option<String> {
+        let mut q = self.world.query::<&Craft>();
+        let assignee = q.iter(&self.world).find(|o| o.def == def)?.assignee?;
+        self.world.get::<UnitId>(assignee).map(|u| u.0.clone())
+    }
+
     /// Завести тему исследования: допуск по «Науке», объём работы, цена и
     /// нужные технологии. Вернёт её индекс — им же зовётся `start_research`.
     fn set_topic(
