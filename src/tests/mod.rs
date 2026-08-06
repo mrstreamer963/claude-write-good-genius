@@ -42,7 +42,7 @@ use crate::map::BaseMap;
 use crate::movement::{Busy, is_stuck};
 use std::collections::BTreeMap;
 
-use crate::ruleset::TileDef;
+use crate::ruleset::{ItemDef, TileDef};
 use crate::schedule::build_schedule;
 use crate::sim::Sim;
 use crate::timeline::{ready_for, revealed};
@@ -374,6 +374,32 @@ impl Sim {
     }
 
     /// Сколько предмета данного типа лежит по всему миру, во всех кучах.
+    /// Завести в палитре предметов `n` типов. Имущество раскладывается по
+    /// палитре (§12.53), а в схеме `sim_from` она пуста — как пуст и рулсет:
+    /// типы предметов это контент, и тесты чужих механик о них не знают.
+    fn set_items(&mut self, n: usize) {
+        while self.items.len() < n {
+            let i = self.items.len();
+            self.items.push(ItemDef {
+                id: format!("item{i}"),
+                label: String::new(),
+                color: "#000000".to_string(),
+                force: 0,
+                mends: 0,
+                nutrition: 0,
+            });
+        }
+    }
+
+    /// Имущество базы по типу так, как его видит шапка: `(склад, валяется,
+    /// забронировано)` — ровно то, что уходит в снапшот (§12.53).
+    fn stock_of(&mut self, item: usize) -> (i32, i32, i32) {
+        self.set_items(item + 1);
+        let stock = self.stock();
+        let s = &stock[item];
+        (s.stored, s.loose, s.booked)
+    }
+
     fn item_total(&mut self, item: usize) -> i32 {
         let mut q = self.world.query::<&Stack>();
         q.iter(&self.world)

@@ -58,6 +58,22 @@ header {
   border: 1px solid rgba(0, 0, 0, 0.5);
 }
 
+/* Счётчик предмета в шапке (§12.53): жирным — то, чем можно платить (склад
+   минус бронь), приглушённым «+N» — то, что ещё валяется по базе. Одним числом
+   это врало: игрок видел «всё есть», а найм отклонялся, потому что платит
+   склад. */
+.stock {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.stock u {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 11px;
+}
+
 .speeds { display: flex; gap: 6px; }
 
 .speed,

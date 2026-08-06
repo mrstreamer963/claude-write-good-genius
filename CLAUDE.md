@@ -71,6 +71,10 @@ cargo test whole_room_is_erased_completely -- --nocapture
 `{имя: сколько}` (цена, добыча, `needs`) приезжают в JS как `Map`, а не как объект** — идиома
 чтения одна на всех, см. `costChips` и `trustGap` в `main.js`; `Object.entries` на них молча
 вернёт пусто.
+**Имущество базы едет разложенным на три числа** (`stock`, §12.53): `stored` (склад — им и
+платят, §12.24), `loose` (пол и лапы) и `booked` (обещано покупателю, §12.50). Одно общее число
+обманывало: игрок видел «всё есть», а найм отклонялся. Складывать их обратно в JS нельзя —
+считать «чем можно платить» обязано одно место, общее с `plan_spend`.
 
 | Направление | Сообщение | Когда |
 |---|---|---|
@@ -475,7 +479,7 @@ spread_units → clear_solids → settle_stacks → sleep → doze → heal → 
 
 ## Тесты
 
-387 тестов живёт в `src/tests/` по механикам (`paths` · `voids` · `orders` · `jobs` · `demolition` ·
+390 тестов живёт в `src/tests/` по механикам (`paths` · `voids` · `orders` · `jobs` · `demolition` ·
 `hauling` · `tidying` · `skills` · `stats` · `study` · `research` · `needs` · `food` · `health` · `items` · `missions` ·
 `captivity` · `fame` · `factions` · `trade` · `terrain` · `timeline` · `gear` · `crafting` · `crowd` · `panel` ·
 `save`); общие хелперы и сборка мира —
@@ -496,7 +500,8 @@ let mut sim = sim_from(&["#####", "#a..#", "#####"]); // '#' пустота, '.'
   по усталости — `set_needs`, `set_critical`, `thresholds`, `set_rest`, `set_energy`, `energy_of`,
   `is_resting`, `rest_spot_of`; по потолку сна и дремоте (§12.52) — `set_wake`, `set_floor_wake`,
   `ceilings`, `bed_of`, `tile_index`; по типам —
-  `set_cost_items`, `put_item`, `item_at`, `item_total`, `carrying_item_of`, `delivered_item_at`;
+  `set_cost_items`, `put_item`, `item_at`, `item_total`, `carrying_item_of`, `delivered_item_at`,
+  `set_items`, `stock_of` (склад · пол · бронь — то же, что уходит в шапку, §12.53);
   по вылазкам — `set_gate`, `set_mission`, `set_risky_mission`, `in_squad`, `is_away`,
   `mission_left`, `mission_gate`; по плену — `set_rescue_mission`, `is_captive`,
   `rescue_missions`, `unit_count`; по известности и найму — `fame`, `set_fame`, `set_mission_fame`,

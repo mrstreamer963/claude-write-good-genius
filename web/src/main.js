@@ -148,6 +148,11 @@ let standing = [];
 // спишет заказ, — здесь только показываем.
 let money = 0;
 let prices = [];
+// Имущество по типам: чем можно платить, что валяется и что забронировано
+// (§12.53). Нужно не только шапке: отказ «на складе нечем заплатить» звучит
+// издевательски, когда нужное лежит кучей в двух шагах, — и тогда подсказка
+// обязана сказать, что делать.
+let stock = [];
 let hasPost = false;
 let dealRunning = false;
 const tradeButtons = []; // кнопки сделок — гасим, пока идёт другая
@@ -369,15 +374,9 @@ function renderSnapshot(snap) {
   tickEl.parentElement.title = `тик ${snap.tick}`;
   drawScrap(snap.stacks);
   drawBlueprints(snap.blueprints);
-  // Всё добро мира по типам: и лежащее, и уже поднятое — иначе счётчик
-  // проседает, пока кот несёт груз, и это читается как потеря материала.
-  const totals = new Map();
-  const add = (item, n) => totals.set(item, (totals.get(item) ?? 0) + n);
-  for (const s of snap.stacks) add(s.item, s.count);
   const seen = new Set();
   for (const e of snap.entities) {
     seen.add(e.id);
-    if (e.carrying > 0) add(e.carrying_item, e.carrying);
     const c = units.get(e.id) ?? createUnit(e);
     // Ушедшего на вылазку на карте нет: его позиция — это шлюз, с которого он
     // ушёл, и она ничего не говорит о том, где кот на самом деле (§12.22).
@@ -420,14 +419,31 @@ function renderSnapshot(snap) {
   standing = snap.standing ?? [];
   money = snap.money ?? 0;
   prices = snap.prices ?? [];
+  stock = snap.stock ?? [];
   hasPost = !!snap.post;
   scrapEl.innerHTML =
     (meta.items ?? [])
-      .map(
-        (it, i) =>
-          `<i class="chip" style="background:${it.color}" title="${esc(it.label || it.id)}"></i>` +
-          `<b>${totals.get(i) ?? 0}</b>`,
-      )
+      .map((it, i) => {
+        // Главное число — **чем можно платить**: склад минус бронь (§12.53).
+        // Валяющееся приписано отдельно и приглушённо: оно у базы есть, но найм
+        // и наука его не видят, и одно общее число ровно этим и обманывало.
+        const st = (snap.stock ?? [])[i] ?? { stored: 0, loose: 0, booked: 0 };
+        const free = Math.max(0, st.stored - st.booked);
+        const name = esc(it.label || it.id);
+        const hint = [
+          `${name}: на складе ${st.stored}`,
+          st.booked ? `забронировано ${st.booked} под сделку` : '',
+          st.loose ? `валяется ${st.loose} — платить этим нельзя, пока не убрано` : '',
+        ]
+          .filter(Boolean)
+          .join(' · ');
+        return (
+          `<span class="stock" title="${hint}">` +
+          `<i class="chip" style="background:${it.color}"></i><b>${free}</b>` +
+          (st.loose ? `<u>+${st.loose}</u>` : '') +
+          '</span>'
+        );
+      })
       .join(' ') +
     `<span class="fame" title="Известность">★<b>${fame}</b></span>` +
     // Репутация рядом с известностью, но врозь: та отвечает «насколько высоко»
@@ -1602,6 +1618,27 @@ function syncTradeButtons() {
   }
 }
 
+// Чего не хватает складу на этот набор — и что с этим делать (§12.53).
+//
+// «На складе нечем заплатить» звучит издевательски, когда нужное лежит кучей в
+// двух шагах: платит склад (§12.24), а игрок видит базу целиком. Поэтому отказ
+// называет и то, сколько есть, и то, сколько валяется мимо склада. Числа —
+// из снапшота, считает их ядро.
+function payHint(cost) {
+  const entries = cost instanceof Map ? [...cost.entries()] : Object.entries(cost ?? {});
+  const items = meta.items ?? [];
+  const short = [];
+  for (const [id, need] of entries) {
+    const i = items.findIndex((it) => it.id === id);
+    const st = stock[i] ?? { stored: 0, loose: 0, booked: 0 };
+    const free = Math.max(0, st.stored - st.booked);
+    if (free >= need) continue;
+    const tail = st.loose ? `, ещё ${st.loose} валяется — уберите на склад` : '';
+    short.push(`${items[i]?.label || id} ${free} из ${need}${tail}`);
+  }
+  return short.join(' · ');
+}
+
 // Доступность кандидата считает ядро (известность + содержимое склада), здесь
 // только показываем: дублировать правило в JS значит однажды показать кнопку,
 // которую ядро отклонит.
@@ -1622,7 +1659,7 @@ function syncRecruitButtons(list) {
         : distrust
           ? distrust
           : !r.affordable
-            ? 'На складе нечем заплатить'
+            ? `На складе нечем заплатить: ${payHint((meta.recruits ?? [])[i]?.cost)}`
             : 'Нанять';
     // Параметры называем и у закрытого кандидата: к нему идут заранее, и
     // «зачем мне этот кот» игрок спрашивает до того, как накопит.
@@ -1652,7 +1689,7 @@ function syncTopicButtons(list) {
           : !t.staffed
             ? `Нужен кот с «Наукой» ${b.dataset.level} уровня`
             : !t.affordable
-              ? 'На складе нет образцов'
+              ? `На складе нет образцов: ${payHint((meta.research ?? [])[i]?.cost)}`
               : researchRunning
                 ? 'Тема уже изучается'
                 : 'Взяться за тему';
@@ -1678,7 +1715,7 @@ function syncRecipeButtons(list) {
           ? 'Заказ уже в работе'
           : r.affordable
             ? 'Заказать: клик — штука, Shift — пять'
-            : 'На складе нет материала — заказ будет ждать';
+            : `На складе нет материала, заказ будет ждать: ${payHint((meta.recipes ?? [])[i]?.cost)}`;
   });
 }
 

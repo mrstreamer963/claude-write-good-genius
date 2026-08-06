@@ -45,7 +45,7 @@ use crate::skills::{
 use crate::snapshot::{
     BaseMapDto, BlueprintSnap, CraftSnap, DealSnap, EntitySnap, MapMeta, MissionSnap, NoteSnap,
     PriceSnap, RaidGates, RaidSnap, RecipeSnap, RecruitSnap, ResearchSnap, SkillSnap, Snapshot,
-    StackSnap, TopicSnap,
+    StackSnap, StockSnap, TopicSnap,
 };
 use crate::timeline::{ready_for, revealed};
 
@@ -260,10 +260,67 @@ impl Sim {
             .sum()
     }
 
-    /// Хватает ли на складе на весь набор.
+    /// Имущество базы по типам, разложенное на три числа (§12.53).
+    ///
+    /// Одним числом это врало бы: платит **склад** (§12.24), из складского ещё
+    /// вычитается обещанное покупателю (§12.50), а кучи на полу и груз в лапах
+    /// у базы есть, но заплатить ими нельзя, пока их не убрали. Игрок, который
+    /// видит сумму всего, не понимает, почему найм отклонён.
+    ///
+    /// Считается **здесь**, а не в панели: то же правило вторым экземпляром в
+    /// JS однажды разойдётся с `plan_spend` (§12.26).
+    pub(crate) fn stock(&mut self) -> Vec<StockSnap> {
+        let booked = self.booked_for_sale();
+        let mut stored = vec![0; self.items.len()];
+        let mut loose = vec![0; self.items.len()];
+        {
+            let mut q = self.world.query::<(&Position, &Stack)>();
+            let map = self.world.resource::<BaseMap>();
+            let rules = self.world.resource::<TileRules>();
+            for (p, s) in q.iter(&self.world) {
+                let bin = match rules.capacity_of(map.tile_at(p.x, p.y)) > 0 {
+                    true => &mut stored,
+                    false => &mut loose,
+                };
+                if let Some(n) = bin.get_mut(s.item) {
+                    *n += s.count;
+                }
+            }
+            // Груз в лапах — тоже имущество базы, и считать его надо: без него
+            // счётчик проседает, пока кот несёт кучу, а это читается как
+            // потеря материала.
+            let mut paws = self.world.query::<&Carrying>();
+            for load in paws.iter(&self.world) {
+                if let Some(n) = loose.get_mut(load.item) {
+                    *n += load.count;
+                }
+            }
+        }
+        (0..self.items.len())
+            .map(|item| StockSnap {
+                stored: stored[item],
+                loose: loose[item],
+                booked: booked
+                    .iter()
+                    .find(|&&(i, _)| i == item)
+                    .map_or(0, |&(_, n)| n),
+            })
+            .collect()
+    }
+
+    /// Хватает ли на складе на весь набор — **за вычетом брони** (§12.50).
+    ///
+    /// Считает то же, что и `plan_spend` при самой оплате: разойдись они, и
+    /// панель показывала бы живую кнопку, которую фасад отклоняет молча.
     fn storage_covers(&mut self, cost: &[(usize, i32)]) -> bool {
-        cost.iter()
-            .all(|&(item, need)| self.in_storage(item) >= need)
+        let booked = self.booked_for_sale();
+        cost.iter().all(|&(item, need)| {
+            let reserved = booked
+                .iter()
+                .find(|&&(i, _)| i == item)
+                .map_or(0, |&(_, n)| n);
+            self.in_storage(item) - reserved >= need
+        })
     }
 
     /// Списать набор со склада. Либо снимается всё, либо ничего: половинчатая
@@ -1920,6 +1977,12 @@ impl Sim {
             }
         }
 
+        // Имущество базы по типам, разложенное на «чем можно платить» и «что
+        // ещё надо убрать» (§12.53). Одним числом это врало бы: платит склад,
+        // а игрок читал бы сумму всего, что валяется по базе, и не понимал,
+        // почему найм отклонён.
+        let stock = self.stock();
+
         let mut missions = Vec::new();
         {
             let raid = self.world.resource::<SkillRules>().index_of(SKILL_RAID);
@@ -2172,6 +2235,7 @@ impl Sim {
             entities,
             blueprints,
             stacks,
+            stock,
             missions,
             raids,
             fame,

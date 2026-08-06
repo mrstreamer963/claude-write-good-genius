@@ -150,3 +150,68 @@ fn the_shipped_ruleset_builds_from_two_item_kinds() {
         "ушли ровно лом и деталь — цена тайла"
     );
 }
+
+// --- имущество базы по типам (§12.53) ---------------------------------------
+
+/// Шапка считает не всё добро разом, а три вещи порознь: чем можно платить
+/// (склад), что ещё валяется и что обещано покупателю. Одно число обманывало:
+/// игрок видел «всё есть», а найм отклонялся, потому что платит склад (§12.24).
+#[test]
+fn stock_tells_the_shelf_from_the_floor() {
+    let mut sim = sim_from(&["########", "#a....b#", "########"]);
+    sim.set_capacity(1, 20);
+    sim.force_tile(2, 1, 1); // склад
+    sim.put_item(2, 1, 0, 7); // на складе
+    sim.put_item(4, 1, 0, 3); // на полу
+    sim.put_item(4, 1, 1, 2); // и другого типа тоже на полу
+
+    assert_eq!(sim.stock_of(0), (7, 3, 0), "склад и пол считаются порознь");
+    assert_eq!(sim.stock_of(1), (0, 2, 0), "и по каждому типу свои числа");
+}
+
+/// Груз в лапах — имущество базы, и он идёт в «валяется»: счётчик, проседающий,
+/// пока кот несёт кучу, читается как потеря материала.
+#[test]
+fn goods_in_paws_are_counted_as_loose() {
+    let mut sim = sim_from(&["########", "#a....b#", "########"]);
+    sim.set_capacity(1, 20);
+    sim.force_tile(2, 1, 1);
+    sim.put_item(5, 1, 0, 4); // лом на полу, за ним придёт уборка
+
+    let mut in_paws = 0;
+    for _ in 0..200 {
+        sim.tick_n(1);
+        in_paws = sim.carrying_of("a") + sim.carrying_of("b");
+        if in_paws > 0 {
+            break;
+        }
+    }
+    assert!(in_paws > 0, "кот поднял лом");
+    let (stored, loose, _) = sim.stock_of(0);
+    assert_eq!(stored + loose, 4, "сумма не проседает, пока груз в лапах");
+    assert!(
+        loose >= in_paws,
+        "и лапы считаются валяющимся, а не складом"
+    );
+}
+
+/// Забронированное под сделку показывается отдельно: базе оно уже не
+/// принадлежит (§12.50), и платить им нельзя, хотя лежит оно на складе.
+#[test]
+fn booked_goods_are_shown_apart_from_the_shelf() {
+    let mut sim = sim_from(&["########", "#a....b#", "########"]);
+    sim.set_gate(1, true);
+    sim.force_tile(3, 1, 1);
+    sim.set_trade_post(2, true);
+    sim.force_tile(5, 1, 2);
+    sim.set_capacity(3, 20);
+    sim.force_tile(6, 1, 3); // склад в дальнем конце
+    let f = sim.set_faction(100);
+    sim.set_market(f, 100, 40, 25, 0);
+    sim.set_prices(f, 0, &[10]);
+    sim.put_item(6, 1, 0, 5);
+
+    assert_eq!(sim.stock_of(0), (5, 0, 0), "пока всё своё");
+    assert!(sim.trade(f, 0, 2, false), "заявка на продажу двух принята");
+    assert_eq!(sim.stock_of(0), (5, 0, 2), "две обещаны покупателю");
+}
