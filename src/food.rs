@@ -75,6 +75,8 @@ pub(crate) fn assign_eat(
     >,
     going: Query<&Eating>,
     stacks: Query<(Entity, &Position, &Stack)>,
+    deals: Query<&Deal>,
+    in_paws: Query<(&Haul, &Carrying)>,
 ) {
     if food.max <= 0 {
         return; // голода в мире нет
@@ -100,12 +102,19 @@ pub(crate) fn assign_eat(
             None => taken.push((job.pile, 1)),
         }
     }
+    // Проданное коту не еда (§12.50). Проверяем это здесь, а не только при
+    // укусе: иначе кот ходил бы к обещанной куче каждый тик и возвращался ни
+    // с чем — та самая видимая глупость, которой избегает §12.34.
+    let booked = crate::trade::booked(deals.iter(), in_paws.iter());
+    let free = |item: usize| !booked.iter().any(|&(sold, _)| sold == item);
 
     for (_, cat_e, from) in hungry {
         // Обход строим только когда есть за чем идти: база без единого пайка
         // иначе гоняла бы BFS на каждого голодного кота каждый тик.
         let anything = stacks.iter().any(|(pile_e, _, stack)| {
-            items.nutrition_of(stack.item) > 0 && stack.count > claimed(&taken, pile_e)
+            items.nutrition_of(stack.item) > 0
+                && free(stack.item)
+                && stack.count > claimed(&taken, pile_e)
         });
         if !anything {
             return; // еды нет ни для кого — остальным тем более
@@ -115,7 +124,9 @@ pub(crate) fn assign_eat(
         let found = stacks
             .iter()
             .filter(|(pile_e, _, stack)| {
-                items.nutrition_of(stack.item) > 0 && stack.count > claimed(&taken, *pile_e)
+                items.nutrition_of(stack.item) > 0
+                    && free(stack.item)
+                    && stack.count > claimed(&taken, *pile_e)
             })
             .filter_map(|(pile_e, pos, stack)| {
                 Some((
@@ -168,7 +179,13 @@ pub(crate) fn work_eat(
     mut commands: Commands,
     mut cats: Query<(Entity, &Position, &Eating, &mut Fed), Without<Path>>,
     mut stacks: Query<(&Position, &mut Stack)>,
+    deals: Query<&Deal>,
+    in_paws: Query<(&Haul, &Carrying)>,
 ) {
+    // Проданный паёк коту уже не принадлежит (§12.50). Правило то же, что у
+    // стройки и платы складом: с заявки товаром распоряжается сделка. Голод от
+    // этого не убивает — он жжёт бодрость (§12.36), а сделку коты донесут.
+    let booked = crate::trade::booked(deals.iter(), in_paws.iter());
     for (cat_e, pos, job, mut fed) in &mut cats {
         commands.entity(cat_e).remove::<Eating>();
 
@@ -178,6 +195,9 @@ pub(crate) fn work_eat(
         if (pile_pos.x, pile_pos.y) != (pos.x, pos.y) || stack.item != job.item || stack.count <= 0
         {
             continue; // куча уехала или опустела, пока кот шёл
+        }
+        if booked.iter().any(|&(item, _)| item == job.item) {
+            continue; // паёк обещан покупателю
         }
         stack.count -= 1;
         if stack.count <= 0 {

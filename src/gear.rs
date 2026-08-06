@@ -74,6 +74,8 @@ pub(crate) fn assign_equip(
     >,
     going: Query<&Equipping>,
     stacks: Query<(Entity, &Position, &Stack)>,
+    deals: Query<&Deal>,
+    in_paws: Query<(&Haul, &Carrying)>,
 ) {
     if loadout.0.is_empty() {
         return;
@@ -99,6 +101,12 @@ pub(crate) fn assign_equip(
     }
     naked.sort_unstable_by_key(|&(id, ..)| id);
 
+    // Проданный комбинезон коту уже не принадлежит (§12.50): с заявки товаром
+    // распоряжается сделка. Проверяем в раздатчике, а не только при надевании,
+    // иначе кот ходил бы к обещанной куче и возвращался ни с чем.
+    let booked = crate::trade::booked(deals.iter(), in_paws.iter());
+    let free = |item: usize| !booked.iter().any(|&(sold, _)| sold == item);
+
     // Сколько в каждой куче уже обещано тем, кто к ней идёт.
     let mut taken: Vec<(Entity, i32)> = Vec::new();
     for job in &going {
@@ -112,9 +120,10 @@ pub(crate) fn assign_equip(
         // Обход строим только когда есть за чем идти: голая база с непустым
         // шаблоном иначе гоняла бы BFS на каждого кота каждый тик.
         let anything = missing.iter().any(|&item| {
-            stacks.iter().any(|(pile_e, _, stack)| {
-                stack.item == item && stack.count > claimed(&taken, pile_e)
-            })
+            free(item)
+                && stacks.iter().any(|(pile_e, _, stack)| {
+                    stack.item == item && stack.count > claimed(&taken, pile_e)
+                })
         });
         if !anything {
             continue;
@@ -122,19 +131,22 @@ pub(crate) fn assign_equip(
 
         let reach = Reach::all(&map, from);
         // Кучи по шаблону: первая вещь, за которой вообще есть куда идти.
-        let found = missing.iter().find_map(|&item| {
-            stacks
-                .iter()
-                .filter(|(pile_e, _, stack)| {
-                    stack.item == item && stack.count > claimed(&taken, *pile_e)
-                })
-                .filter_map(|(pile_e, pos, _)| {
-                    Some((reach.dist_at(pos.x, pos.y)?, (pos.x, pos.y), pile_e, item))
-                })
-                // При равном расстоянии — по карте, а не по порядку сущностей:
-                // обход ECS зависит от истории вставок (§11).
-                .min_by_key(|&(d, at, ..)| (d, at.1, at.0))
-        });
+        let found = missing
+            .iter()
+            .filter(|&&item| free(item))
+            .find_map(|&item| {
+                stacks
+                    .iter()
+                    .filter(|(pile_e, _, stack)| {
+                        stack.item == item && stack.count > claimed(&taken, *pile_e)
+                    })
+                    .filter_map(|(pile_e, pos, _)| {
+                        Some((reach.dist_at(pos.x, pos.y)?, (pos.x, pos.y), pile_e, item))
+                    })
+                    // При равном расстоянии — по карте, а не по порядку сущностей:
+                    // обход ECS зависит от истории вставок (§11).
+                    .min_by_key(|&(d, at, ..)| (d, at.1, at.0))
+            });
         let Some((_, at, pile_e, item)) = found else {
             continue; // до вещи не дойти — кот идёт как есть, это не ошибка
         };
@@ -169,7 +181,11 @@ pub(crate) fn work_equip(
     mut commands: Commands,
     cats: Query<(Entity, &Position, &Equipping, Option<&Gear>), Without<Path>>,
     mut stacks: Query<(&Position, &mut Stack)>,
+    deals: Query<&Deal>,
+    in_paws: Query<(&Haul, &Carrying)>,
 ) {
+    // Вещь, обещанную покупателю, кот не надевает (§12.50).
+    let booked = crate::trade::booked(deals.iter(), in_paws.iter());
     for (cat_e, pos, job, gear) in &cats {
         commands.entity(cat_e).remove::<Equipping>();
 
@@ -179,6 +195,9 @@ pub(crate) fn work_equip(
         if (pile_pos.x, pile_pos.y) != (pos.x, pos.y) || stack.item != job.item || stack.count <= 0
         {
             continue; // куча уехала или опустела, пока кот шёл
+        }
+        if booked.iter().any(|&(item, _)| item == job.item) {
+            continue; // вещь обещана покупателю
         }
         stack.count -= 1;
         if stack.count <= 0 {

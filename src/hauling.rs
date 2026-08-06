@@ -657,6 +657,19 @@ pub(crate) fn work_hauls(
                     // Чужой груз в пути вычитается: везут его уже без нас.
                     let mut left = miss.clone();
                     less_incoming(&mut left, &brought(bp_e));
+                    // И забронированное под продажу — тоже не наше (§12.50):
+                    // с момента заявки товаром распоряжается сделка, а базе
+                    // остаётся свободный остаток.
+                    for slot in left.iter_mut() {
+                        let free = crate::trade::free_to_spend(
+                            stacks.iter().map(|(_, _, s)| s),
+                            deals.iter(),
+                            cats.iter().filter_map(|(_, _, h, l, ..)| l.map(|l| (h, l))),
+                            slot.0,
+                        );
+                        slot.1 = slot.1.min(free.max(0));
+                    }
+                    left.retain(|&(_, n)| n > 0);
                     let taken =
                         take_needed(&mut commands, &mut stacks, (pos.x, pos.y), &left, carry);
                     let Some((item, taken)) = taken else {
@@ -922,9 +935,25 @@ where
 pub(crate) fn plan_spend(
     piles: &[(Entity, usize, i32)],
     cost: &[(usize, i32)],
+    reserved: &[(usize, i32)],
 ) -> Option<Vec<(Entity, i32)>> {
     let mut takes: Vec<(Entity, i32)> = Vec::new();
     for &(item, need) in cost {
+        // Забронированное под продажу базе уже не принадлежит (§12.50):
+        // проверяем это до раскладки по кучам, потому что правило про сумму,
+        // а не про конкретную кучу.
+        let booked = reserved
+            .iter()
+            .find(|&&(i, _)| i == item)
+            .map_or(0, |&(_, n)| n);
+        let shelved: i32 = piles
+            .iter()
+            .filter(|&&(_, pile_item, _)| pile_item == item)
+            .map(|&(_, _, count)| count)
+            .sum();
+        if shelved - booked < need {
+            return None;
+        }
         let mut left = need;
         for &(pile_e, pile_item, count) in piles {
             if left <= 0 {

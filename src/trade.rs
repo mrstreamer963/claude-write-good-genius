@@ -61,6 +61,71 @@ pub(crate) fn quote(
     })
 }
 
+/// Что и сколько **забронировано под открытую продажу** (§12.50): пары
+/// «предмет, штук». Сделка на POC одна, поэтому пара обычно ровно одна.
+///
+/// Продать можно только то, что на базе есть, — и с момента заявки товаром
+/// распоряжается уже сделка, а не база: слот торговли один и не отменяется,
+/// поэтому лом, съеденный стройкой, превратил бы продажу в вечно открытую и
+/// убил бы торговлю целиком. Бронь нигде не хранится: она считается по самой
+/// сделке, тем же приёмом, что обещания носильщиков (§12.48).
+///
+/// Из брони вычитается то, что уже **в лапах**: эти штуки из куч взяты, и
+/// считать их дважды значило бы запирать базе лишнее.
+pub(crate) fn booked<'a>(
+    deals: impl Iterator<Item = &'a Deal>,
+    in_paws: impl Iterator<Item = (&'a Haul, &'a Carrying)>,
+) -> Vec<(usize, i32)> {
+    let mut out: Vec<(usize, i32)> = Vec::new();
+    for deal in deals {
+        if deal.buying {
+            continue;
+        }
+        let left = deal.count - deal.delivered;
+        if left <= 0 {
+            continue;
+        }
+        match out.iter_mut().find(|(item, _)| *item == deal.item) {
+            Some((_, n)) => *n += left,
+            None => out.push((deal.item, left)),
+        }
+    }
+    if out.is_empty() {
+        return out;
+    }
+    for (haul, load) in in_paws {
+        if !matches!(haul.to, HaulTo::Sale(_)) {
+            continue;
+        }
+        if let Some(slot) = out.iter_mut().find(|(item, _)| *item == load.item) {
+            slot.1 -= load.count;
+        }
+    }
+    out.retain(|&(_, n)| n > 0);
+    out
+}
+
+/// Сколько предмета база вправе потратить: всё, что лежит в кучах, **минус
+/// забронированное под продажу** (§12.50).
+///
+/// Спрашивают это все, кто снимает предметы с базы по воле игрока: подвоз на
+/// площадку, плата складом (найм, наука, заказ, аптечка), снаряжение и еда.
+/// Забыть спросить — значит вернуть ту самую вечно открытую сделку, ради
+/// которой бронь и заводилась.
+pub(crate) fn free_to_spend<'a>(
+    piles: impl Iterator<Item = &'a Stack>,
+    deals: impl Iterator<Item = &'a Deal>,
+    in_paws: impl Iterator<Item = (&'a Haul, &'a Carrying)>,
+    item: usize,
+) -> i32 {
+    let on_floor: i32 = piles.filter(|s| s.item == item).map(|s| s.count).sum();
+    let reserved = booked(deals, in_paws)
+        .iter()
+        .find(|&&(i, _)| i == item)
+        .map_or(0, |&(_, n)| n);
+    on_floor - reserved
+}
+
 /// Сколько тиков осталось до смены фазы; `None` — курс вообще не меняется.
 ///
 /// Уходит в панель: «видно вперёд» — это не только сама цена, но и то, сколько

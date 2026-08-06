@@ -264,19 +264,81 @@ fn a_sale_needs_no_money_up_front() {
     assert_eq!(sim.money(), 10);
 }
 
-/// Нечего продавать — сделка просто ждёт, как чертёж ждёт лом (§12.15).
-/// Отказывать в заявке незачем: лом ещё привезут с вылазки.
+/// Продать можно только то, что на базе есть (§12.50).
+///
+/// Раньше такая сделка просто ждала товара, как чертёж ждёт лом (§12.15). Но
+/// слот торговли один и отмены у него нет: заявка на то, чего нет, занимала его
+/// навсегда — и торговля кончалась на первой же ошибке игрока.
 #[test]
-fn a_sale_without_goods_simply_waits() {
+fn a_sale_needs_the_goods_on_base() {
     let (mut sim, f) = sim_with_market();
 
-    assert!(sim.trade(f, 0, 2, false), "заявку приняли");
-    sim.tick_n(60);
-    assert_eq!(sim.money(), 0, "но платить не за что");
+    assert!(
+        !sim.trade(f, 0, 2, false),
+        "продавать нечего — заявка отклонена"
+    );
+    sim.put_scrap(6, 1, 1);
+    assert!(!sim.trade(f, 0, 2, false), "одной штуки на две мало");
 
-    sim.put_scrap(6, 1, 2);
+    sim.put_scrap(6, 1, 1);
+    assert!(sim.trade(f, 0, 2, false), "две есть — заявку приняли");
     sim.tick_n(60);
-    assert_eq!(sim.money(), 20, "лом появился — и его унесли");
+    assert_eq!(sim.money(), 20, "и их унесли");
+}
+
+/// Товар в лапах кота — тоже товар на базе: его считает и счётчик в шапке, и
+/// донести его коту ничто не мешает (§12.50).
+#[test]
+fn goods_in_paws_count_as_goods_on_base() {
+    let (mut sim, f) = sim_with_market();
+    sim.put_scrap(6, 1, 2);
+    sim.set_capacity(1, 20);
+    sim.force_tile(2, 1, 1); // склад, чтобы кот поднял лом уборкой
+    for _ in 0..200 {
+        if sim.carrying_of("a") > 0 || sim.carrying_of("b") > 0 {
+            break;
+        }
+        sim.tick_n(1);
+    }
+    let paws = sim.carrying_of("a") + sim.carrying_of("b");
+    assert!(paws > 0, "кто-то из котов поднял лом");
+
+    assert_eq!(sim.item_on_base(0), 2, "весь лом цел, часть — в лапах");
+    assert!(sim.trade(f, 0, 2, false), "и продать его можно");
+}
+
+/// Товар под сделкой базе больше не принадлежит: стройка его не заберёт
+/// (§12.50). Иначе продажа осталась бы вечно открытой — слот торговли один и
+/// отмены у него нет.
+#[test]
+fn goods_under_a_sale_are_not_spent_by_building() {
+    let (mut sim, f) = sim_with_market();
+    sim.put_scrap(6, 1, 2);
+    sim.set_cost(0, 2); // тайл стоит ровно те же два лома
+
+    assert!(sim.trade(f, 0, 2, false), "выставили на продажу оба");
+    assert!(sim.add_blueprint(1, 0, 0), "и разметили стройку рядом");
+
+    sim.tick_n(200);
+    assert_eq!(sim.money(), 20, "лом ушёл покупателю");
+    assert_eq!(sim.tile(1, 0), -1, "а стройка его не перехватила");
+    assert_eq!(sim.deal_of(), None, "сделка закрылась сама собой — донесли");
+}
+
+/// Бронь снимается по мере сдачи: донесённое сделке больше не нужно, и остаток
+/// базы освобождается сразу, а не после закрытия сделки.
+#[test]
+fn a_partly_delivered_sale_frees_the_rest() {
+    let (mut sim, f) = sim_with_market();
+    sim.put_scrap(6, 1, 3);
+    sim.set_cost(0, 1);
+
+    assert!(sim.trade(f, 0, 2, false), "продаём два лома из трёх");
+    assert!(sim.add_blueprint(1, 0, 0), "третий — стройке");
+
+    sim.tick_n(200);
+    assert_eq!(sim.money(), 20, "два ушли покупателю");
+    assert_eq!(sim.tile(1, 0), 0, "а третий достался стройке");
 }
 
 // --- боевой рулсет ---------------------------------------------------------

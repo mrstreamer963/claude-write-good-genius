@@ -274,7 +274,8 @@ impl Sim {
     /// порядке обхода куч.
     fn spend_from_storage(&mut self, cost: &[(usize, i32)]) -> bool {
         let piles = self.storage_piles();
-        let Some(takes) = plan_spend(&piles, cost) else {
+        let booked = self.booked_for_sale();
+        let Some(takes) = plan_spend(&piles, cost, &booked) else {
             return false;
         };
         for (pile_e, taken) in takes {
@@ -1361,8 +1362,18 @@ impl Sim {
     ///
     /// Сделка одна за раз, как вылазка, тема и заказ, и **отменить её нельзя** —
     /// команды для этого нет намеренно: иначе это бесплатный опцион.
+    ///
+    /// Отсюда же вторые ворота: **продать можно только то, что на базе есть**
+    /// (§12.50). Слот торговли один и не отменяется, поэтому заявка на пять
+    /// ломов при трёх занимала бы его навсегда — коты донесли бы три, сделка не
+    /// закрылась бы никогда, и торговля кончилась бы на этом. Считается всё
+    /// добро базы, а не только склад: продажу везут обычным подвозом, и коту
+    /// одинаково годится куча на полу (§12.44). Лапы тоже в счёте — их считает
+    /// и счётчик в шапке, а иначе игрок читал бы отказ как поломку.
+    ///
     /// Вернёт false, если счётчик неположителен, сделка уже идёт, нет поста или
-    /// шлюза, фракция этим не торгует или на покупку не хватает денег.
+    /// шлюза, фракция этим не торгует, на покупку не хватает денег или на
+    /// продажу не хватает товара.
     pub fn trade(&mut self, faction: usize, item: usize, count: i32, buying: bool) -> bool {
         note(
             &mut self.world,
@@ -1402,6 +1413,8 @@ impl Sim {
                 return false;
             }
             self.world.resource_mut::<Money>().0 -= total;
+        } else if self.item_on_base(item) < count {
+            return false; // продать нечего — слот занимать нельзя (§12.50)
         }
         self.world.spawn(Deal {
             faction,
@@ -1414,6 +1427,73 @@ impl Sim {
             gate,
         });
         true
+    }
+
+    /// Что забронировано под открытую продажу (§12.50). Один расчёт на всех,
+    /// кто снимает предметы с базы, — здесь он собирается из мира.
+    pub(crate) fn booked_for_sale(&mut self) -> Vec<(usize, i32)> {
+        let mut deals = self.world.query::<&Deal>();
+        let mut paws = self.world.query::<(&Haul, &Carrying)>();
+        let sales: Vec<Deal> = deals
+            .iter(&self.world)
+            .map(|d| Deal {
+                faction: d.faction,
+                item: d.item,
+                count: d.count,
+                unit: d.unit,
+                buying: d.buying,
+                left: d.left,
+                delivered: d.delivered,
+                gate: d.gate,
+            })
+            .collect();
+        let carried: Vec<(HaulTo, usize, i32)> = paws
+            .iter(&self.world)
+            .map(|(h, c)| (h.to, c.item, c.count))
+            .collect();
+        let mut out: Vec<(usize, i32)> = Vec::new();
+        for deal in sales.iter().filter(|d| !d.buying) {
+            let left = deal.count - deal.delivered;
+            if left <= 0 {
+                continue;
+            }
+            match out.iter_mut().find(|(item, _)| *item == deal.item) {
+                Some((_, n)) => *n += left,
+                None => out.push((deal.item, left)),
+            }
+        }
+        for (to, item, count) in carried {
+            if !matches!(to, HaulTo::Sale(_)) {
+                continue;
+            }
+            if let Some(slot) = out.iter_mut().find(|(i, _)| *i == item) {
+                slot.1 -= count;
+            }
+        }
+        out.retain(|&(_, n)| n > 0);
+        out
+    }
+
+    /// Сколько предмета есть на базе: в кучах и в лапах (§12.50).
+    ///
+    /// Не «на складе»: продажу везут обычным подвозом, и коту одинаково годится
+    /// куча на полу (§12.44). Лапы считаются потому, что их считает и счётчик в
+    /// шапке, — иначе отказ читался бы как поломка при непустой шапке (§12.16).
+    /// Ушедших с базы это не касается: заявка на вылазку роняет ношу под ноги
+    /// (§12.38), так что чужого добра за шлюзом не бывает.
+    pub(crate) fn item_on_base(&mut self, item: usize) -> i32 {
+        let mut piles = self.world.query::<&Stack>();
+        let mut loads = self.world.query::<&Carrying>();
+        piles
+            .iter(&self.world)
+            .filter(|s| s.item == item)
+            .map(|s| s.count)
+            .sum::<i32>()
+            + loads
+                .iter(&self.world)
+                .filter(|c| c.item == item)
+                .map(|c| c.count)
+                .sum::<i32>()
     }
 
     /// Отправить кота `unit_id` учиться домену `skill_id`.

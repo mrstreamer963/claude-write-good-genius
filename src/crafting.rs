@@ -54,6 +54,8 @@ pub(crate) fn assign_craft(
     mut commands: Commands,
     mut orders: Query<(Entity, &mut Craft)>,
     stacks: Query<(Entity, &Position, &Stack)>,
+    deals: Query<&Deal>,
+    in_paws: Query<(&Haul, &Carrying)>,
     free_cats: Query<
         (Entity, &UnitId, &Position),
         (
@@ -75,6 +77,8 @@ pub(crate) fn assign_craft(
         ),
     >,
 ) {
+    // Забронированное под продажу заказу не принадлежит (§12.50).
+    let booked = crate::trade::booked(deals.iter(), in_paws.iter());
     for (order_e, mut order) in &mut orders {
         if order.assignee.is_some() || order.left <= 0 {
             continue;
@@ -90,7 +94,7 @@ pub(crate) fn assign_craft(
                     .iter()
                     .map(|(e, p, s)| (e, (p.x, p.y), s.item, s.count)),
             );
-            if plan_spend(&piles, &rule.cost).is_none() {
+            if plan_spend(&piles, &rule.cost, &booked).is_none() {
                 continue; // склад пуст — заказ ждёт материала, а кот работает
             }
         }
@@ -135,8 +139,12 @@ pub(crate) fn work_craft(
     cats: Query<(Entity, &Position, &Crafting, Option<&Path>, Option<&Skills>)>,
     mut orders: Query<&mut Craft>,
     mut stacks: Query<(Entity, &Position, &mut Stack)>,
+    deals: Query<&Deal>,
+    in_paws: Query<(&Haul, &Carrying)>,
 ) {
     let craft = skill_rules.index_of(SKILL_CRAFT);
+    // Забронированное под продажу заказу не принадлежит (§12.50).
+    let booked = crate::trade::booked(deals.iter(), in_paws.iter());
     for (cat_e, pos, task, path, skills) in &cats {
         let Ok(mut order) = orders.get_mut(task.0) else {
             commands.entity(cat_e).remove::<Crafting>();
@@ -166,7 +174,7 @@ pub(crate) fn work_craft(
                     .iter()
                     .map(|(e, p, s)| (e, (p.x, p.y), s.item, s.count)),
             );
-            match plan_spend(&piles, &rule.cost) {
+            match plan_spend(&piles, &rule.cost, &booked) {
                 Some(takes) => {
                     for (pile_e, taken) in takes {
                         if let Ok((_, _, mut stack)) = stacks.get_mut(pile_e) {

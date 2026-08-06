@@ -318,10 +318,11 @@ fn treat_spot(map: &BaseMap, reach: &Reach, at: (i32, i32)) -> Option<((i32, i32
 fn plan_kit(
     piles: &[(Entity, usize, i32)],
     items: &ItemRules,
+    booked: &[(usize, i32)],
 ) -> Option<(i32, Vec<(Entity, i32)>)> {
-    items
-        .medkits()
-        .find_map(|(item, mends)| plan_spend(piles, &[(item, 1)]).map(|takes| (mends, takes)))
+    items.medkits().find_map(|(item, mends)| {
+        plan_spend(piles, &[(item, 1)], booked).map(|takes| (mends, takes))
+    })
 }
 
 /// Лежачие коты заживают; дошедший медик ускоряет, а на полной шкале кот встаёт.
@@ -348,10 +349,14 @@ pub(crate) fn heal(
     mut patients: Query<(Entity, &Position, &mut Health, &mut Healing, Option<&Path>)>,
     medics: Query<(Entity, &Position, &Treating, Option<&Path>, Option<&Skills>)>,
     mut stacks: Query<(Entity, &Position, &mut Stack)>,
+    deals: Query<&Deal>,
+    in_paws: Query<(&Haul, &Carrying)>,
 ) {
     if rules.max <= 0 {
         return;
     }
+    // Аптечка, обещанная покупателю, лечению не принадлежит (§12.50).
+    let booked = crate::trade::booked(deals.iter(), in_paws.iter());
     let medicine = skill_rules.index_of(SKILL_MEDIC);
 
     // Кто из медиков уже стоит у пациента: пришедший лечит, идущий — нет.
@@ -396,7 +401,7 @@ pub(crate) fn heal(
                         .iter()
                         .map(|(e, p, s)| (e, (p.x, p.y), s.item, s.count)),
                 );
-                if let Some((mends, takes)) = plan_kit(&piles, &items) {
+                if let Some((mends, takes)) = plan_kit(&piles, &items, &booked) {
                     for (pile_e, taken) in takes {
                         if let Ok((_, _, mut stack)) = stacks.get_mut(pile_e) {
                             stack.count -= taken;
