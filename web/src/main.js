@@ -747,6 +747,10 @@ function renderCatPanel(entities) {
   for (let i = 0; i < defs.length; i++) {
     const s = e.skills?.[i];
     if (!s) continue;
+    // Нулевой навык, за который ещё не капнуло ни очка опыта, — это не факт о
+    // коте, а пустая строка: доменов будет много, и список из них скрывает те,
+    // что игроку действительно интересны. Появится опыт — появится и полоска.
+    if (s.level === 0 && s.xp === 0) continue;
     const levels = defs[i].levels ?? [];
     const from = s.level > 0 ? levels[s.level - 1] : 0;
     // Врождённый предел — это не потолок навыка: полоска, вставшая на месте,
