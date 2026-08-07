@@ -75,10 +75,10 @@ function onPanelClick(el, selector, send) {
 // Отмена уходит по рецепту, а не по номеру строки: закрывшийся соседний заказ
 // сдвинул бы номера под курсором игрока (§12.55).
 onPanelClick(craftEl, '.craft-cancel', (node) =>
-  worker.postMessage({ type: 'cancelCraft', recipe: Number(node.dataset.def) }),
+  sendAction({ type: 'cancelCraft', recipe: Number(node.dataset.def) }),
 );
-onPanelClick(researchEl, '.research-cancel', () => worker.postMessage({ type: 'cancelResearch' }));
-onPanelClick(missionEl, '.mission-cancel', () => worker.postMessage({ type: 'cancelMission' }));
+onPanelClick(researchEl, '.research-cancel', () => sendAction({ type: 'cancelResearch' }));
+onPanelClick(missionEl, '.mission-cancel', () => sendAction({ type: 'cancelMission' }));
 
 const app = new Application();
 await app.init({ background: COLORS.bg, antialias: true, resizeTo: stageEl });
@@ -1606,6 +1606,32 @@ const SPEED_KEYS = {
   Numpad3: 10,
 };
 
+// Снять выделение целиком: и клетку, и котов.
+function clearSelection() {
+  selectedCell = null;
+  selectedUnits = [];
+  updateSelectionOverlay();
+}
+
+// Команда, отданная мимо карты, — это «я закончил с этой клеткой»: отряд ушёл,
+// сделка заказана, кот нанят — подсветка клетки и её панель уже про прошлое.
+//
+// Снимается **только клетка и только на действии**, меняющем мир. Две границы,
+// и обе намеренные. Переключить раздел тулбара или заглянуть в «Правила» — это
+// осмотр, такой же, как сам выбор клетки, и терять от него выделение обидно;
+// поэтому правило живёт в отправке команды, а не в общем слушателе документа.
+// А выбор котов переживает действие: он дороже клика по карте (Shift-набор
+// отряда) и нужен подряд — поучить, отправить, снарядить. Снимает его целиком
+// только Escape.
+//
+// Приказ котам (`move`) сюда не входит: он уходит с карты, и клетка, в которую
+// пошли, — ровно то, что игрок сейчас и разглядывает.
+function sendAction(msg) {
+  worker.postMessage(msg);
+  selectedCell = null;
+  updateSelectionOverlay();
+}
+
 window.addEventListener('keydown', (e) => {
   if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.code === 'Escape' || e.key === 'Escape') {
@@ -1616,9 +1642,7 @@ window.addEventListener('keydown', (e) => {
     // Протяжки нет — снимаем выделение целиком: и клетку, и котов. Клика,
     // который снимал бы выбор с пустого места, в двухшаговой модели нет
     // (§12.54): любой клик по карте что-нибудь да выбирает.
-    selectedCell = null;
-    selectedUnits = [];
-    updateSelectionOverlay();
+    clearSelection();
     return;
   }
   if (e.code === 'Space' || e.key === ' ') {
@@ -1760,7 +1784,7 @@ function buildToolbar() {
       // валюта. Отряд берётся из выделения: кого послать, решает игрок.
       const b = mkTool(
         `<span class="sw sw-gate"></span><span>${esc(m.label || m.id)}</span>${costChips(m.loot)}`,
-        () => worker.postMessage({ type: 'launch', mission: i, units: [...selectedUnits] }),
+        () => sendAction({ type: 'launch', mission: i, units: [...selectedUnits] }),
       );
       b.classList.add('toggle');
       b.dataset.squad = m.squad;
@@ -1787,7 +1811,7 @@ function buildToolbar() {
     topics.forEach((r, i) => {
       const b = mkTool(
         `<span class="sw sw-lab"></span><span>${esc(r.label || r.id)}</span>${costChips(r.cost)}`,
-        () => worker.postMessage({ type: 'research', topic: i }),
+        () => sendAction({ type: 'research', topic: i }),
       );
       b.classList.add('toggle');
       b.dataset.level = r.level ?? 0;
@@ -1808,7 +1832,7 @@ function buildToolbar() {
       const b = mkTool(
         `<span class="sw sw-shop"></span><span>${esc(r.label || r.id)}</span>` +
           `${costChips(r.gives)}<span class="of">←</span>${costChips(r.cost)}`,
-        (e) => worker.postMessage({ type: 'craft', recipe: i, count: e.shiftKey ? 5 : 1 }),
+        (e) => sendAction({ type: 'craft', recipe: i, count: e.shiftKey ? 5 : 1 }),
       );
       b.classList.add('toggle');
       recipeButtons.push(b);
@@ -1829,7 +1853,7 @@ function buildToolbar() {
         `<span class="sw sw-study"></span><span>Учить: ${esc(s.label || s.id)}</span>`,
         () => {
           if (selectedUnits.length === 1) {
-            worker.postMessage({ type: 'teach', id: selectedUnits[0], skill: s.id });
+            sendAction({ type: 'teach', id: selectedUnits[0], skill: s.id });
           }
         },
       );
@@ -1869,7 +1893,7 @@ function buildToolbar() {
             // Клик — пять штук, Shift — двадцать пять: тот же идиом, что у
             // заказа в мастерской, только товар возят мешками.
             const count = ev.shiftKey ? 25 : 5;
-            worker.postMessage({ type: 'trade', faction: fi, item: ii, count, buying });
+            sendAction({ type: 'trade', faction: fi, item: ii, count, buying });
           },
         );
         b.classList.add('toggle');
@@ -1892,7 +1916,7 @@ function buildToolbar() {
     recruits.forEach((r, i) => {
       const b = mkTool(
         `<span class="sw sw-hire"></span><span>${esc(r.label || r.id)}</span>${costChips(r.cost)}`,
-        () => worker.postMessage({ type: 'hire', recruit: i }),
+        () => sendAction({ type: 'hire', recruit: i }),
       );
       b.classList.add('toggle');
       b.dataset.requires = r.requires ?? 0;
