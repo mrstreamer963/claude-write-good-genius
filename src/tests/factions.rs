@@ -16,6 +16,7 @@ use super::*;
 fn sim_with_gate(ticks: i32) -> (Sim, usize) {
     let mut sim = sim_from(&["########", "#a....b#", "########"]);
     sim.set_gate(1, true);
+    sim.set_relay(1, true);
     sim.force_tile(3, 1, 1);
     let m = sim.set_mission(2, ticks, &[]);
     (sim, m)
@@ -69,6 +70,7 @@ fn a_neutral_raid_touches_nobody() {
 fn a_partial_order_moves_reputation_by_the_same_share() {
     let mut sim = sim_from(&["########", "#a....b#", "########"]);
     sim.set_gate(1, true);
+    sim.set_relay(1, true);
     sim.force_tile(3, 1, 1);
     // Сила отряда — по единице с кота, навыков в схеме нет: двое против
     // сложности 4 берут ровно половину.
@@ -92,6 +94,7 @@ fn a_partial_order_moves_reputation_by_the_same_share() {
 fn a_failed_order_moves_no_reputation() {
     let mut sim = sim_from(&["########", "#a....b#", "########"]);
     sim.set_gate(1, true);
+    sim.set_relay(1, true);
     sim.force_tile(3, 1, 1);
     // Двое против сложности 10: силы вдвое меньше нужного — провал.
     let m = sim.set_risky_mission(2, 10, 10, 0, &[]);
@@ -238,6 +241,7 @@ fn the_way_back_reopens_the_gate() {
 fn a_rescue_raid_is_never_gated_by_a_faction() {
     let mut sim = sim_from(&["########", "#a....b#", "########"]);
     sim.set_gate(1, true);
+    sim.set_relay(1, true);
     sim.force_tile(3, 1, 1);
     let syndicate = sim.set_faction(100);
     let doomed = sim.set_risky_mission(2, 10, 10, 0, &[]);
@@ -257,6 +261,7 @@ fn a_rescue_raid_is_never_gated_by_a_faction() {
 fn a_recruit_can_be_gated_by_reputation() {
     let mut sim = sim_from(&["########", "#a....b#", "########"]);
     sim.set_gate(1, true);
+    sim.set_relay(1, true);
     sim.force_tile(3, 1, 1);
     let syndicate = sim.set_faction(100);
     let nail = sim.set_recruit("nail", 0, &[], &[]);
@@ -278,6 +283,7 @@ fn a_recruit_can_be_gated_by_reputation() {
 fn hiring_does_not_move_reputation() {
     let mut sim = sim_from(&["########", "#a....b#", "########"]);
     sim.set_gate(1, true);
+    sim.set_relay(1, true);
     sim.force_tile(3, 1, 1);
     let syndicate = sim.set_faction(100);
     let nail = sim.set_recruit("nail", 0, &[], &[]);
@@ -297,6 +303,7 @@ fn hiring_does_not_move_reputation() {
 fn a_failed_order_closes_nothing() {
     let mut sim = sim_from(&["########", "#a....b#", "########"]);
     sim.set_gate(1, true);
+    sim.set_relay(1, true);
     sim.force_tile(3, 1, 1);
     let police = sim.set_faction(100);
     let syndicate = sim.set_faction(100);

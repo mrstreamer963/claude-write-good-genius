@@ -370,7 +370,7 @@ main#stage canvas { display: block; }
 #cat[hidden] { display: none; }
 
 /* Панель клетки — сразу под карточкой кота: обе про то, что игрок сейчас
-   выделил, остальные — про то, что происходит на базе само (§12.54). */
+   выделил, остальные — про то, что происходит на базе само (§12.58). */
 #cell {
 
   padding: 10px 12px;
@@ -390,7 +390,7 @@ main#stage canvas { display: block; }
   font-variant-numeric: tabular-nums;
 }
 
-/* Что случится по второму клику. Приказ здесь двухшаговый (§12.54), и обещание
+/* Что случится по второму клику. Приказ здесь двухшаговый (§12.58), и обещание
    обязано быть видно **до** второго клика: невидимый второй шаг читается как
    «клик не сработал» — та же беда, что у молчащей кнопки (§4.4). Цвет — тот же
    зелёный, что у колец выбора, метки цели и взведённых уголков на карте: одно
@@ -542,6 +542,139 @@ main#stage canvas { display: block; }
 #note .good { color: #6cf0a0; }
 #note .row { margin-bottom: 8px; }
 #note .row:last-child { margin-bottom: 0; }
+
+/* Цели партии (§12.58). Панель той же породы, что записка: список, который
+   читают, а не кнопки, которые жмут. */
+#goals {
+  max-height: 42vh;
+  overflow-y: auto;
+  padding: 10px 12px;
+  background: rgba(21, 23, 31, 0.92);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  backdrop-filter: blur(4px);
+  font-size: 13px;
+}
+#goals[hidden] { display: none; }
+/* Взятая цель гаснет, но остаётся: список — он же и журнал сделанного. */
+#goals .past { opacity: 0.45; }
+#goals .row { margin-bottom: 8px; }
+#goals .row:last-child { margin-bottom: 0; }
+#goals .goals-extra {
+  margin: 10px 0 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+/* Счёт в шапке. Кнопка, а не `.speed`: на том классе висит переключение
+   времени, и брать его ради вида нельзя (та же грабля, что у «?»). */
+.goals-toggle {
+  margin-left: 4px;
+  padding: 2px 8px;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.goals-toggle:hover { color: var(--text); }
+.goals-toggle.done { color: var(--accent); border-color: var(--accent); }
+.goals-toggle[hidden] { display: none; }
+
+/* Уведомления о взятых целях (§12.58). Стопкой сверху по центру — не там, где
+   игрок работает (тулбар слева, панели справа), и не там, где карта. */
+#toasts {
+  position: fixed;
+  top: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  z-index: 9;
+  /* Колонка сквозная: иначе её пустая часть съедала бы клики по карте. Ловят
+     клики только сами уведомления. */
+  pointer-events: none;
+}
+.toast {
+  min-width: 220px;
+  padding: 8px 16px;
+  background: rgba(21, 23, 31, 0.96);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  text-align: center;
+  cursor: pointer;
+  pointer-events: auto;
+  /* Появление и уход — один переход на оба: разъехаться им нечем. */
+  opacity: 0;
+  transform: translateY(-8px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+.toast.shown { opacity: 1; transform: translateY(0); }
+.toast.leaving { opacity: 0; transform: translateY(-8px); }
+.toast-kind {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+.toast-label {
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* Финал. Единственный модальный экран, и он закрывается: партия после него
+   продолжается (§12.58, §12.46). */
+#finale {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(14, 15, 19, 0.75);
+  backdrop-filter: blur(3px);
+  z-index: 10;
+}
+#finale[hidden] { display: none; }
+.finale-box {
+  min-width: 320px;
+  max-width: 46ch;
+  padding: 20px 24px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  text-align: center;
+}
+.finale-title {
+  color: var(--accent);
+  font-size: 20px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.finale-list {
+  margin: 14px 0;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  text-align: left;
+}
+.finale-list .cat-row { margin-bottom: 4px; }
+.finale-close {
+  margin-top: 14px;
+  padding: 6px 16px;
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+.finale-close:hover { background: rgba(224, 192, 96, 0.12); }
 
 #hint {
   position: fixed;

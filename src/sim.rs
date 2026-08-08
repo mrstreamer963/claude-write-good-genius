@@ -27,15 +27,16 @@ use bevy_ecs::prelude::*;
 use wasm_bindgen::prelude::*;
 
 use crate::components::*;
-use crate::hauling::plan_spend;
+use crate::goals::{WorldFacts, built_counts, progress_of};
+use crate::hauling::{plan_spend, stored_counts};
 use crate::jobs::BUILD_WORK;
 use crate::map::{BaseMap, rect_cells};
 use crate::missions::{outcome, pick_gate};
 use crate::movement::{Busy, is_stuck};
 use crate::path::find_path;
 use crate::ruleset::{
-    EventDef, FactionDef, ItemDef, MissionDef, PerkDef, RecipeDef, RecruitDef, ResearchDef,
-    Ruleset, SkillDef, StatDef, TileDef,
+    EventDef, FactionDef, GoalDef, ItemDef, MissionDef, PerkDef, RecipeDef, RecruitDef,
+    ResearchDef, Ruleset, SkillDef, StatDef, TileDef,
 };
 use crate::save::{FORMAT, SaveFile, capture, fingerprint, note, restore};
 use crate::schedule::build_schedule;
@@ -43,9 +44,9 @@ use crate::skills::{
     SKILL_RAID, SKILL_SCIENCE, desk_cap, level_cap_of, level_of, nearest_desk, xp_ceiling,
 };
 use crate::snapshot::{
-    BaseMapDto, BlueprintSnap, CraftSnap, DealSnap, EntitySnap, MapMeta, MissionSnap, NoteSnap,
-    PriceSnap, RaidGates, RaidSnap, RecipeSnap, RecruitSnap, ResearchSnap, SkillSnap, Snapshot,
-    StackSnap, StockSnap, TopicSnap,
+    BaseMapDto, BlueprintSnap, CraftSnap, DealSnap, EntitySnap, GoalSnap, MapMeta, MissionSnap,
+    NoteSnap, PriceSnap, RaidGates, RaidSnap, RecipeSnap, RecruitSnap, ResearchSnap, SkillSnap,
+    Snapshot, StackSnap, StockSnap, TopicSnap,
 };
 use crate::timeline::{ready_for, revealed};
 
@@ -64,6 +65,7 @@ pub struct Sim {
     pub(crate) research: Vec<ResearchDef>,
     pub(crate) recipes: Vec<RecipeDef>,
     pub(crate) timeline: Vec<EventDef>,
+    pub(crate) goals: Vec<GoalDef>,
     pub(crate) width: i32,
     pub(crate) height: i32,
     /// Сколько тиков в сутках (§12.46). Лежит рядом с размерами карты и по той
@@ -180,10 +182,22 @@ impl Sim {
         }
     }
 
-    /// Миссия, которая сейчас идёт (её на POC не больше одной).
-    fn mission(&mut self) -> Option<Entity> {
+    /// Сколько вылазок идёт прямо сейчас (§12.59: их столько, сколько узлов
+    /// связи). Близнец `deals_running` и `orders_running`, и намеренно: слот
+    /// занимает сама миссия, а не кто-то за неё.
+    fn raids_running(&mut self) -> usize {
         let mut q = self.world.query_filtered::<Entity, With<Mission>>();
-        q.iter(&self.world).next()
+        q.iter(&self.world).count()
+    }
+
+    /// Вылазка по этому заказу, если она уже идёт: двух одинаковых не бывает
+    /// (§12.59). Близнец `order_of`, и по той же причине — по нему же её и
+    /// отменяют, потому что порядок обхода сущностей ECS недетерминирован (§11).
+    fn mission_of(&mut self, def: usize) -> Option<Entity> {
+        let mut q = self.world.query::<(Entity, &Mission)>();
+        q.iter(&self.world)
+            .find(|(_, m)| m.def == def)
+            .map(|(e, _)| e)
     }
 
     /// Есть ли кого спасать: хоть один кот остался в плену (§12.40).
@@ -271,19 +285,20 @@ impl Sim {
     /// JS однажды разойдётся с `plan_spend` (§12.26).
     pub(crate) fn stock(&mut self) -> Vec<StockSnap> {
         let booked = self.booked_for_sale();
-        let mut stored = vec![0; self.items.len()];
         let mut loose = vec![0; self.items.len()];
+        let stored;
         {
             let mut q = self.world.query::<(&Position, &Stack)>();
             let map = self.world.resource::<BaseMap>();
             let rules = self.world.resource::<TileRules>();
+            // Складское считает `stored_counts` — одно место на фасад и на цели
+            // (§12.53). Пол остаётся здесь: он нужен только панели.
+            stored = stored_counts(q.iter(&self.world), map, rules);
             for (p, s) in q.iter(&self.world) {
-                let bin = match rules.capacity_of(map.tile_at(p.x, p.y)) > 0 {
-                    true => &mut stored,
-                    false => &mut loose,
-                };
-                if let Some(n) = bin.get_mut(s.item) {
-                    *n += s.count;
+                if rules.capacity_of(map.tile_at(p.x, p.y)) == 0 {
+                    if let Some(n) = loose.get_mut(s.item) {
+                        *n += s.count;
+                    }
                 }
             }
             // Груз в лапах — тоже имущество базы, и считать его надо: без него
@@ -298,12 +313,64 @@ impl Sim {
         }
         (0..self.items.len())
             .map(|item| StockSnap {
-                stored: stored[item],
+                // `stored_counts` растёт под встреченные типы и короче палитры,
+                // если чего-то на складе нет вовсе.
+                stored: stored.get(item).copied().unwrap_or(0),
                 loose: loose[item],
                 booked: booked
                     .iter()
                     .find(|&&(i, _)| i == item)
                     .map_or(0, |&(_, n)| n),
+            })
+            .collect()
+    }
+
+    /// Цели партии так, как их видит панель (§12.58).
+    ///
+    /// Считается **здесь**, а не в JS, по той же причине, что и разбивка склада
+    /// (§12.53): счётчик «74 / 100» обязан считаться тем же выражением, каким
+    /// цель засчитывается (`goals::progress_of`). Второй экземпляр правила в
+    /// панели однажды разойдётся с системой, и игрок увидит полную полоску у
+    /// незакрытой цели.
+    pub(crate) fn goals(&mut self) -> Vec<GoalSnap> {
+        let rules = self.world.resource::<GoalRules>().0.clone();
+        let stored = {
+            let mut q = self.world.query::<(&Position, &Stack)>();
+            let map = self.world.resource::<BaseMap>();
+            let tiles = self.world.resource::<TileRules>();
+            stored_counts(q.iter(&self.world), map, tiles)
+        };
+        let built = built_counts(self.world.resource::<BaseMap>());
+        let cats = self.world.query::<&UnitId>().iter(&self.world).count() as i32;
+        let facts = WorldFacts {
+            techs: self.world.resource::<Techs>(),
+            raids: self.world.resource::<Raids>(),
+            crafted: self.world.resource::<Crafted>(),
+            earned: self.world.resource::<Earned>(),
+            cats,
+            stored,
+            built,
+        };
+        let taken = self.world.resource::<Goals>();
+        rules
+            .iter()
+            .enumerate()
+            .filter_map(|(def, rule)| {
+                let done = taken.taken(def);
+                // Скрытая и невзятая наружу не уходит вовсе: прятать её в JS
+                // значит объявить её в devtools (§12.28).
+                if rule.hidden && done.is_none() {
+                    return None;
+                }
+                let (have, need) = progress_of(&rule.test, &facts);
+                Some(GoalSnap {
+                    def,
+                    done: done.is_some(),
+                    at: done.map_or(0, |t| t.at),
+                    have,
+                    need,
+                    hidden: rule.hidden,
+                })
             })
             .collect()
     }
@@ -449,6 +516,21 @@ impl Sim {
         (0..map.height)
             .flat_map(|y| (0..map.width).map(move |x| (x, y)))
             .filter(|&(x, y)| rules.is_trade_post(map.tile_at(x, y)))
+            .count()
+    }
+
+    /// Сколько на базе узлов связи — потолок одновременных вылазок (§12.59).
+    ///
+    /// Третье применение «комната = слот» после мастерской и поста, и **вторая
+    /// лицензия**: за узлом никто не работает, товар к нему не едет, кот на нём
+    /// не стоит. Он только считается — и ровно этим переводит потолок
+    /// параллельных вылазок из числа в коде в строительное решение (§12.55).
+    fn relay_nodes(&mut self) -> usize {
+        let map = self.world.resource::<BaseMap>();
+        let rules = self.world.resource::<TileRules>();
+        (0..map.height)
+            .flat_map(|y| (0..map.width).map(move |x| (x, y)))
+            .filter(|&(x, y)| rules.is_relay_node(map.tile_at(x, y)))
             .count()
     }
 
@@ -626,6 +708,7 @@ impl Sim {
                     shop: t.shop,
                     solid: t.solid,
                     trade: t.trade,
+                    relay: t.relay,
                     tech: t.tech.clone(),
                 })
                 .collect(),
@@ -684,6 +767,51 @@ impl Sim {
                 .collect(),
         ));
         world.insert_resource(Chronicle::default());
+        // Цели партии (§12.58). Индексы палитр — те же, что везде: тайл, миссия
+        // и рецепт адресуются номером записи, технология — именем.
+        let tile_index = |id: &str| rs.tiles.iter().position(|t| t.id == id);
+        let mission_index = |id: &str| rs.missions.iter().position(|m| m.id == id);
+        let recipe_index = |id: &str| rs.recipes.iter().position(|r| r.id == id);
+        world.insert_resource(GoalRules(
+            rs.goals
+                .iter()
+                .filter_map(|g| {
+                    // Условие — ровно одно из полей. Порядок веток здесь и есть
+                    // приоритет при случайно заполненных двух: описан он в
+                    // `GoalDef`, а спорную запись ловит `every_goal_is_reachable`.
+                    let test = if let Some(id) = &g.tile {
+                        GoalTest::Tile(tile_index(id)?, g.count.max(1))
+                    } else if !g.stored.is_empty() {
+                        GoalTest::Stored(
+                            g.stored
+                                .iter()
+                                .filter_map(|(id, &n)| item_index(id).map(|i| (i, n)))
+                                .collect(),
+                        )
+                    } else if let Some(id) = &g.tech {
+                        GoalTest::Tech(id.clone())
+                    } else if g.cats > 0 {
+                        GoalTest::Cats(g.cats)
+                    } else if let Some(id) = &g.raid {
+                        GoalTest::Raid(mission_index(id)?)
+                    } else if let Some(id) = &g.craft {
+                        GoalTest::Craft(recipe_index(id)?)
+                    } else if g.earned > 0 {
+                        GoalTest::Earned(g.earned)
+                    } else {
+                        return None; // цель без условия — не цель
+                    };
+                    Some(GoalRule {
+                        test,
+                        hidden: g.hidden,
+                    })
+                })
+                .collect(),
+        ));
+        world.insert_resource(Goals::default());
+        world.insert_resource(Raids::default());
+        world.insert_resource(Crafted::default());
+        world.insert_resource(Earned::default());
         // Фракции — такая же палитра, как предметы и параметры: в правилах от
         // фракции остаётся индекс записи (§12.43).
         let faction_index = |id: &str| rs.factions.iter().position(|f| f.id == id);
@@ -861,6 +989,7 @@ impl Sim {
             research: rs.research,
             recipes: rs.recipes,
             timeline: rs.timeline,
+            goals: rs.goals,
             width: w,
             height: h,
             day: rs.day,
@@ -914,6 +1043,7 @@ impl Sim {
             recruits: self.recruits.clone(),
             research: self.research.clone(),
             recipes: self.recipes.clone(),
+            goals: self.goals.clone(),
         };
         serde_wasm_bindgen::to_value(&meta).map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -1117,16 +1247,27 @@ impl Sim {
     /// выключатель отменял бы только второй порог, а вылазка поднимала бы кота
     /// с лежанки в обход обоих.
     ///
-    /// Миссия одна за раз: на POC с тремя котами вторая осталась бы без людей,
-    /// а очередь вылазок — механика, которую не на чем проверить.
-    /// Вернёт false, если миссии нет, одна уже идёт, состав не тот или до
-    /// общего шлюза дойдут не все.
+    /// **Вылазок идёт столько, сколько узлов связи** (§12.59): узел — это слот,
+    /// как мастерская для заказа и пост для сделки (§12.55). Ноль узлов — ноль
+    /// вылазок, исключения «одна всегда бесплатна» нет: она сделала бы первый
+    /// узел бесполезным, а правило — правилом с оговоркой.
+    ///
+    /// **Двух вылазок по одному заказу не бывает.** Отменять их пришлось бы по
+    /// номеру в списке, а порядок обхода сущностей ECS недетерминирован (§11) —
+    /// та же причина, по которой заказ отменяется по рецепту (§12.55). Читается
+    /// это и без кода: заказ у фракции уже взят.
+    ///
+    /// Вернёт false, если миссии нет, все узлы заняты, эта вылазка уже идёт,
+    /// состав не тот или до общего шлюза дойдут не все.
     pub fn launch(&mut self, def: usize, units: Vec<String>) -> bool {
         note(&mut self.world, format!("launch {def} {}", units.join(",")));
         let Some(rule) = self.world.resource::<MissionRules>().0.get(def).cloned() else {
             return false;
         };
-        if self.mission().is_some() || units.len() != rule.squad {
+        if units.len() != rule.squad {
+            return false;
+        }
+        if self.raids_running() >= self.relay_nodes() || self.mission_of(def).is_some() {
             return false;
         }
         // Известность — ворота: за дело, о котором ещё не слышали, не берутся,
@@ -1237,10 +1378,15 @@ impl Sim {
     ///
     /// Работает, только пока отряд на базе: ушедших не отзывают — что там
     /// происходит, симуляция не знает, вылазка считается разом по возвращении.
-    /// Вернёт false, если миссии нет или отряд уже ушёл.
-    pub fn cancel_mission(&mut self) -> bool {
-        note(&mut self.world, "cancel_mission");
-        let Some(mission_e) = self.mission() else {
+    /// Адресуется **по заказу**, а не по номеру в списке: вылазок теперь идёт
+    /// столько, сколько узлов связи (§12.59), а порядок обхода сущностей ECS
+    /// недетерминирован — по номеру отзывался бы то один отряд, то другой. Двух
+    /// вылазок по одному заказу не бывает, заказ их и различает (§12.55).
+    ///
+    /// Вернёт false, если такой вылазки нет или отряд уже ушёл.
+    pub fn cancel_mission(&mut self, def: usize) -> bool {
+        note(&mut self.world, format!("cancel_mission {def}"));
+        let Some(mission_e) = self.mission_of(def) else {
             return false;
         };
         if self.crew_of(mission_e).iter().any(|&(_, away)| away) {
@@ -2139,6 +2285,9 @@ impl Sim {
         // разойдётся с `trade`, и игрок увидит кнопку, которую фасад отклонит.
         let posts = self.trade_posts() as i32;
         let post_free = self.deals_running() < self.trade_posts();
+        // То же и с узлами связи (§12.59): счёт — наружу, ворота — здесь.
+        let relays = self.relay_nodes() as i32;
+        let relay_free = self.raids_running() < self.relay_nodes();
         let mut recruits = Vec::new();
         {
             let rules = self.world.resource::<RecruitRules>().0.clone();
@@ -2287,6 +2436,9 @@ impl Sim {
             }
         }
 
+        let goals_required = self.world.resource::<GoalRules>().required();
+        let goals = self.goals();
+
         serde_wasm_bindgen::to_value(&Snapshot {
             tick,
             entities,
@@ -2295,6 +2447,8 @@ impl Sim {
             stock,
             missions,
             raids,
+            relays,
+            relay_free,
             fame,
             standing,
             money,
@@ -2310,6 +2464,8 @@ impl Sim {
             recipes,
             techs,
             notes,
+            goals,
+            goals_required,
         })
         .map_err(|e| JsValue::from_str(&e.to_string()))
     }

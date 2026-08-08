@@ -14,6 +14,7 @@ mod factions;
 mod fame;
 mod food;
 mod gear;
+mod goals;
 mod hauling;
 mod health;
 mod items;
@@ -120,6 +121,15 @@ fn sim_from(rows: &[&str]) -> Sim {
     // Денег у базы нет и торговать не с кем: внешний рынок — тоже контент
     // рулсета (§12.44). Заводят его `set_trade_post` и `set_prices`.
     world.insert_resource(Money::default());
+    // Целей у схемы нет, как нет вылазок и рынка: цель — контент рулсета
+    // (§12.58). Заводят её `set_goal` и `set_hidden_goal`. Три журнала при этом
+    // заводятся пустыми всегда: они не контент, а память мира о совершённом, и
+    // писать в них системы обязаны независимо от того, смотрит ли на них цель.
+    world.insert_resource(GoalRules::default());
+    world.insert_resource(Goals::default());
+    world.insert_resource(Raids::default());
+    world.insert_resource(Crafted::default());
+    world.insert_resource(Earned::default());
     world.insert_resource(ItemRules::default());
     world.insert_resource(LoadoutRules::default());
     world.insert_resource(UnitRules::default());
@@ -141,6 +151,7 @@ fn sim_from(rows: &[&str]) -> Sim {
             shop: false,
             solid: false,
             trade: false,
+            relay: false,
             tech: String::new(),
         }],
         items: Vec::new(),
@@ -153,6 +164,7 @@ fn sim_from(rows: &[&str]) -> Sim {
         research: Vec::new(),
         recipes: Vec::new(),
         timeline: Vec::new(),
+        goals: Vec::new(),
         width,
         height,
         // Календаря в схеме нет: сутки — контент рулсета (§12.46), а тесты
@@ -1025,6 +1037,38 @@ impl Sim {
         self.tile_rule(tile, |r| r.gate = on);
     }
 
+    /// Сделать тайл узлом связи: каждая такая клетка — слот вылазки (§12.59).
+    ///
+    /// В схеме `sim_from` узлов нет, как нет ни шлюза, ни мастерской: ноль узлов
+    /// значит ноль вылазок, и `launch` отклонит заявку. Тесты вылазок вешают
+    /// узел **на ту же клетку, что и шлюз**, — она одна, значит слот один, то
+    /// есть ровно то поведение, которое было до §12.59.
+    fn set_relay(&mut self, tile: i16, on: bool) {
+        self.tile_rule(tile, |r| r.relay = on);
+    }
+
+    /// Сколько узлов связи построено — потолок одновременных вылазок (§12.59).
+    fn relay_count(&mut self) -> usize {
+        let map = self.world.resource::<BaseMap>();
+        let rules = self.world.resource::<TileRules>();
+        (0..map.height)
+            .flat_map(|y| (0..map.width).map(move |x| (x, y)))
+            .filter(|&(x, y)| rules.is_relay_node(map.tile_at(x, y)))
+            .count()
+    }
+
+    /// Сколько вылазок идёт прямо сейчас — занятых слотов (§12.59).
+    fn raid_count(&mut self) -> usize {
+        let mut q = self.world.query_filtered::<Entity, With<Mission>>();
+        q.iter(&self.world).count()
+    }
+
+    /// Идёт ли вылазка по этому заказу и сколько ей осталось.
+    fn raid_left(&mut self, def: usize) -> Option<i32> {
+        let mut q = self.world.query::<&Mission>();
+        q.iter(&self.world).find(|m| m.def == def).map(|m| m.left)
+    }
+
     /// Сделать предмет снаряжением: сколько силы он даёт отряду (§12.29).
     /// В схеме `sim_from` предметы бессильны, как тайл бесплатен: снаряжение —
     /// контент рулсета, и тесты чужих механик о нём не знают.
@@ -1432,6 +1476,84 @@ impl Sim {
     fn mission_gate(&mut self) -> Option<(i32, i32)> {
         let mut q = self.world.query::<&Mission>();
         q.iter(&self.world).next().and_then(|m| m.gate)
+    }
+
+    /// Завести цель партии; вернёт её индекс (§12.58).
+    fn set_goal(&mut self, test: GoalTest) -> usize {
+        let mut rules = self.world.resource_mut::<GoalRules>();
+        rules.0.push(GoalRule {
+            test,
+            hidden: false,
+        });
+        rules.0.len() - 1
+    }
+
+    /// Скрытая цель: в счёт не идёт и наружу не уходит, пока не взята.
+    fn set_hidden_goal(&mut self, test: GoalTest) -> usize {
+        let mut rules = self.world.resource_mut::<GoalRules>();
+        rules.0.push(GoalRule { test, hidden: true });
+        rules.0.len() - 1
+    }
+
+    /// Взята ли цель.
+    fn goal_taken(&self, def: usize) -> bool {
+        self.world.resource::<Goals>().taken(def).is_some()
+    }
+
+    /// Тик, на котором цель взяли; `None` — ещё не взята.
+    fn goal_at(&self, def: usize) -> Option<u64> {
+        self.world.resource::<Goals>().taken(def).map(|t| t.at)
+    }
+
+    /// Сколько целей взято всего, считая скрытые.
+    fn goals_taken(&self) -> usize {
+        self.world.resource::<Goals>().0.len()
+    }
+
+    /// Счётчик цели **так, как его видит панель** — тем же путём, каким он
+    /// уходит в снапшот. Отдельной арифметики в тесте нет намеренно: она бы
+    /// проверяла себя, а не то, что показано игроку (§12.58).
+    fn goal_progress(&mut self, def: usize) -> Option<(i32, i32)> {
+        self.goals()
+            .iter()
+            .find(|g| g.def == def)
+            .map(|g| (g.have, g.need))
+    }
+
+    /// Уходит ли цель наружу вообще: скрытая и невзятая — нет.
+    fn goal_is_visible(&mut self, def: usize) -> bool {
+        self.goals().iter().any(|g| g.def == def)
+    }
+
+    /// Сколько целей идёт в счёт «Цели 3/7».
+    fn goals_required(&self) -> usize {
+        self.world.resource::<GoalRules>().required()
+    }
+
+    /// Правила целей так, как их собрал рулсет: `(скрытая, условие)`.
+    /// Нужны сторожу на боевом контенте (§12.58).
+    fn goal_specs(&self) -> Vec<(bool, GoalTest)> {
+        self.world
+            .resource::<GoalRules>()
+            .0
+            .iter()
+            .map(|g| (g.hidden, g.test.clone()))
+            .collect()
+    }
+
+    /// Сколько заработано продажей за партию — журнал, а не текущие деньги.
+    fn earned(&self) -> i32 {
+        self.world.resource::<Earned>().0
+    }
+
+    /// Журнал успешных вылазок: индексы миссий.
+    fn raids_done(&self) -> Vec<usize> {
+        self.world.resource::<Raids>().0.clone()
+    }
+
+    /// Журнал производства: индексы рецептов, по которым сделана хоть штука.
+    fn crafted_done(&self) -> Vec<usize> {
+        self.world.resource::<Crafted>().0.clone()
     }
 
     /// Сколько клеток пола осталось в прямоугольнике.

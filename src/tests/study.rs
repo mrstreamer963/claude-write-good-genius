@@ -175,6 +175,7 @@ fn a_demolished_desk_moves_the_student_or_ends_the_lesson() {
 fn a_cat_in_the_field_cannot_be_taught() {
     let (mut sim, _) = sim_with_desk();
     sim.set_gate(2, true);
+    sim.set_relay(2, true);
     sim.force_tile(6, 1, 2);
     let m = sim.set_mission(1, 50, &[]);
     sim.launch(m, vec!["b".to_string()]);
@@ -190,6 +191,7 @@ fn a_cat_in_the_field_cannot_be_taught() {
 fn teaching_a_squad_member_disbands_the_raid() {
     let (mut sim, _) = sim_with_desk();
     sim.set_gate(2, true);
+    sim.set_relay(2, true);
     sim.force_tile(6, 1, 2);
     let m = sim.set_mission(2, 50, &[]);
     sim.launch(m, vec!["a".to_string(), "b".to_string()]);

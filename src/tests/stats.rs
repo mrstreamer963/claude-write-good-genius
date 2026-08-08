@@ -167,6 +167,7 @@ fn a_recruit_arrives_with_his_own_ceiling() {
     let build = sim.set_skill("build", &LEVELS);
     sim.set_demands(build, 0, &[3, 5, 7, 9]);
     sim.set_gate(0, true);
+    sim.set_relay(0, true);
     let nail = sim.set_recruit("nail", 0, &[], &[(build, 5)]);
     sim.set_recruit_stats(nail, &[(0, 9)]);
 
@@ -188,6 +189,7 @@ fn a_recruit_keeps_the_experience_he_was_promised() {
     let build = sim.set_skill("build", &LEVELS);
     sim.set_demands(build, 0, &[3, 5, 7, 9]);
     sim.set_gate(0, true);
+    sim.set_relay(0, true);
     let brick = sim.set_recruit("brick", 0, &[], &[(build, 20)]);
     sim.set_recruit_stats(brick, &[(0, 9)]);
 

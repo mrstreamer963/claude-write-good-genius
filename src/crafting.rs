@@ -181,6 +181,7 @@ pub(crate) fn work_craft(
     tiles: Res<TileRules>,
     rules: Res<CraftRules>,
     skill_rules: Res<SkillRules>,
+    mut crafted: ResMut<Crafted>,
     mut commands: Commands,
     cats: Query<(Entity, &Position, &Crafting, Option<&Path>, Option<&Skills>)>,
     mut orders: Query<&mut Craft>,
@@ -257,6 +258,12 @@ pub(crate) fn work_craft(
 
         for &(item, count) in &rule.gives {
             spill(&mut commands, &mut stacks, (pos.x, pos.y), item, count);
+        }
+        // Журнал совершённого (§12.58): здесь и только здесь штука становится
+        // сделанной. Цель на аптечку смотрит сюда, а не на склад, — иначе её
+        // закрыла бы аптечка, купленная на рынке или поднятая на вылазке.
+        if !crafted.0.contains(&order.def) {
+            crafted.0.push(order.def);
         }
         order.left -= 1;
         order.progress = 0;

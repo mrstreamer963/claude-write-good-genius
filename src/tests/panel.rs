@@ -104,6 +104,7 @@ fn a_patient_lies_and_the_medic_treats() {
 fn equipping_wins_over_the_gathering_squad() {
     let mut sim = sim_from(&["########", "#a....b#", "########"]);
     sim.set_gate(1, true);
+    sim.set_relay(1, true);
     sim.force_tile(6, 1, 1);
     sim.set_force(SUIT, 1);
     sim.set_loadout(&[SUIT]);
@@ -125,6 +126,7 @@ fn equipping_wins_over_the_gathering_squad() {
 fn a_captive_is_away_like_the_squad() {
     let mut sim = sim_from(&["########", "#ab...c#", "########"]);
     sim.set_gate(1, true);
+    sim.set_relay(1, true);
     sim.force_tile(6, 1, 1);
     let doomed = sim.set_risky_mission(2, 10, 100, 0, &[]);
     sim.set_rescue_mission(2, 10, 0);

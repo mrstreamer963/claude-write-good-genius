@@ -142,6 +142,7 @@ fn the_bed_is_still_claimed_by_one() {
 fn a_squad_gathers_on_one_gate_cell() {
     let mut sim = sim_from(&["######", "#ab..#", "######"]);
     sim.set_gate(1, true);
+    sim.set_relay(1, true);
     sim.force_tile(4, 1, 1);
     let m = sim.set_mission(2, 40, &[]);
     assert!(sim.launch(m, squad(&["a", "b"])));

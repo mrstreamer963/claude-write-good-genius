@@ -23,6 +23,7 @@
 //!   * `research`   — исследование образцов: тема, лаборатория, технология;
 //!   * `crafting`   — производство: заказ, мастерская, предмет под ноги;
 //!   * `timeline`   — события по расписанию: мир действует сам, записка предупреждает;
+//!   * `goals`      — цели партии: наблюдатель в конце тика, крючков по системам нет;
 //!   * `snapshot`   — DTO наружу (worker → main);
 //!   * `sim`        — `#[wasm_bindgen]`-фасад.
 //!
@@ -42,6 +43,7 @@ mod crafting;
 mod demolition;
 mod food;
 mod gear;
+mod goals;
 mod hauling;
 mod health;
 mod jobs;

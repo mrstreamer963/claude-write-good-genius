@@ -27,6 +27,7 @@ fn sim_with_raid(
 ) -> (Sim, usize) {
     let mut sim = sim_from(rows);
     sim.set_gate(1, true);
+    sim.set_relay(1, true);
     sim.force_tile(gate.0, gate.1, 1);
     let mission = sim.set_risky_mission(squad, 10, danger, 0, &[(0, 5)]);
     sim.set_mission_harm(mission, harm);

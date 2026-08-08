@@ -29,6 +29,7 @@ fn sim_with_store_and_gate() -> Sim {
     sim.set_capacity(1, 100);
     sim.force_tile(5, 1, 1);
     sim.set_gate(2, true);
+    sim.set_relay(2, true);
     sim.force_tile(6, 1, 2);
     sim.set_force(SUIT, 1);
     sim.set_loadout(&[SUIT]);

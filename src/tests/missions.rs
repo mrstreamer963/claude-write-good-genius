@@ -14,6 +14,7 @@ use super::*;
 fn sim_with_gate(rows: &[&str], gate: (i32, i32), squad: usize, ticks: i32) -> (Sim, usize) {
     let mut sim = sim_from(rows);
     sim.set_gate(1, true);
+    sim.set_relay(1, true);
     sim.force_tile(gate.0, gate.1, 1);
     let mission = sim.set_mission(squad, ticks, &[(0, 5)]);
     (sim, mission)
@@ -313,7 +314,7 @@ fn cancelling_frees_the_squad() {
     sim.tick_n(1);
     assert!(sim.in_squad("a"));
 
-    assert!(sim.cancel_mission());
+    assert!(sim.cancel_mission(m));
     assert!(!sim.in_squad("a") && !sim.in_squad("b"), "отряд распущен");
     assert_eq!(sim.mission_left(), None);
 
@@ -331,7 +332,7 @@ fn an_away_squad_cannot_be_recalled() {
     sim.tick_n(11);
     assert!(sim.is_away("a"));
 
-    assert!(!sim.cancel_mission(), "отозвать нельзя");
+    assert!(!sim.cancel_mission(m), "отозвать нельзя");
     assert!(!sim.set_target("a", 1, 1), "и приказать тоже");
     assert!(sim.is_away("a"), "кот всё ещё в поле");
 }
@@ -455,9 +456,10 @@ fn without_a_gate_nobody_leaves() {
     assert_eq!(sim.mission_left(), None);
 }
 
-/// Миссия одна за раз: вторая заявка не принимается, пока первая не закрыта.
+/// Один узел связи — одна вылазка за раз (§12.59): вторая заявка не принимается,
+/// пока первая не закрыта. В этой схеме узел один — он же клетка шлюза.
 #[test]
-fn only_one_mission_runs_at_a_time() {
+fn one_node_holds_one_raid() {
     let (mut sim, m) = sim_with_gate(&["#######", "#a...b#", "#######"], (3, 1), 2, 10);
     assert!(sim.launch(m, squad(&["a", "b"])));
     assert!(
@@ -591,6 +593,115 @@ fn even_a_failed_raid_teaches() {
     assert_eq!(sim.xp_of("a", raid), 10, "но опыт всё равно набран");
 }
 
+// --- узлы связи: сколько вылазок разом (§12.59) -----------------------------
+
+/// Мир с одним шлюзом и `nodes` узлами связи, тремя котами и вылазками на
+/// одного: слотов ровно столько, сколько узлов. Тайл 1 — шлюз, тайл 3 — узел,
+/// узлы лежат в нижнем ряду и ничем, кроме счёта, себя не проявляют.
+fn sim_with_nodes(nodes: i32) -> Sim {
+    let mut sim = sim_from(&["#######", "#a.b.c#", "#.....#", "#######"]);
+    sim.set_gate(1, true);
+    sim.force_tile(2, 1, 1);
+    sim.set_relay(3, true);
+    for i in 0..nodes {
+        sim.force_tile(1 + i, 2, 3);
+    }
+    sim
+}
+
+/// Два узла — два отряда в поле одновременно. Это и есть вся суть §12.59:
+/// потолок параллельных вылазок перестал быть числом в коде.
+#[test]
+fn two_raids_run_at_once_with_two_nodes() {
+    let mut sim = sim_with_nodes(2);
+    let first = sim.set_mission(1, 30, &[(0, 5)]);
+    let second = sim.set_mission(1, 30, &[(0, 5)]);
+
+    assert!(sim.launch(first, squad(&["a"])), "первый узел занят");
+    assert!(sim.launch(second, squad(&["b"])), "второй тоже");
+    assert_eq!(sim.raid_count(), 2);
+
+    sim.tick_n(10);
+    assert!(sim.is_away("a") && sim.is_away("b"), "оба отряда в поле");
+}
+
+/// Третьей заявке при двух узлах отказывают: слот — это построенная клетка, а
+/// не намерение игрока.
+#[test]
+fn a_third_raid_is_refused() {
+    let mut sim = sim_with_nodes(2);
+    let first = sim.set_mission(1, 30, &[(0, 5)]);
+    let second = sim.set_mission(1, 30, &[(0, 5)]);
+    let third = sim.set_mission(1, 30, &[(0, 5)]);
+    sim.launch(first, squad(&["a"]));
+    sim.launch(second, squad(&["b"]));
+
+    assert!(!sim.launch(third, squad(&["c"])), "узлов больше нет");
+    assert_eq!(sim.raid_count(), 2, "и третья миссия не завелась");
+    assert!(!sim.in_squad("c"), "а кот остался при базе");
+}
+
+/// Ноль узлов — ноль вылазок, ровно как ноль мастерских это ноль заказов
+/// (§12.55). Исключения «одна всегда бесплатна» нет: оно сделало бы первый узел
+/// бесполезным, а правило — правилом с оговоркой.
+#[test]
+fn no_node_means_no_raid() {
+    let mut sim = sim_with_nodes(0);
+    let m = sim.set_mission(1, 30, &[(0, 5)]);
+
+    assert!(!sim.launch(m, squad(&["a"])), "связи нет — отряд не выйдет");
+    assert_eq!(sim.raid_count(), 0);
+}
+
+/// Двух вылазок по одному заказу не бывает: отменять их пришлось бы по номеру в
+/// списке, а порядок обхода сущностей ECS недетерминирован (§11, §12.55).
+#[test]
+fn the_same_mission_is_not_taken_twice() {
+    let mut sim = sim_with_nodes(2);
+    let m = sim.set_mission(1, 30, &[(0, 5)]);
+
+    assert!(sim.launch(m, squad(&["a"])), "заказ взят");
+    assert!(!sim.launch(m, squad(&["b"])), "и второй раз не берётся");
+    assert_eq!(sim.raid_count(), 1, "хотя узел свободен");
+}
+
+/// Отмена адресуется заказом и трогает **только свою** вылазку. До §12.59
+/// отменять было нечего выбирать: миссия была одна.
+#[test]
+fn cancelling_one_raid_leaves_the_other() {
+    let mut sim = sim_with_nodes(2);
+    let first = sim.set_mission(1, 50, &[(0, 5)]);
+    let second = sim.set_mission(1, 50, &[(0, 5)]);
+    sim.launch(first, squad(&["a"]));
+    sim.launch(second, squad(&["b"]));
+    assert!(sim.in_squad("a") && sim.in_squad("b"), "оба отряда набраны");
+
+    // Не тикаем: шлюз рядом, и через тик отряд ушёл бы, а ушедших не отзывают.
+    assert!(sim.cancel_mission(first));
+    assert!(!sim.in_squad("a"), "первый отряд распущен");
+    assert!(sim.in_squad("b"), "а второй идёт как шёл");
+    assert!(sim.raid_left(second).is_some(), "и его вылазка жива");
+    assert_eq!(sim.raid_count(), 1, "слот освободился ровно один");
+}
+
+/// Узел остался **лицензией, а не рабочим местом** (§12.59), как и торговый
+/// пост: за ним никто не работает и на нём никто не стоит. Проверка на каждом
+/// тике — иначе однотиковый заход замаскировался бы конечным состоянием.
+#[test]
+fn a_node_never_becomes_a_workplace() {
+    let mut sim = sim_with_nodes(2);
+    let m = sim.set_mission(1, 30, &[(0, 5)]);
+    sim.launch(m, squad(&["a"]));
+
+    for _ in 0..60 {
+        sim.tick_n(1);
+        for id in ["a", "b", "c"] {
+            assert_ne!(sim.pos_of(id), (1, 2), "кот работает за узлом");
+            assert_ne!(sim.pos_of(id), (2, 2), "и за вторым тоже");
+        }
+    }
+}
+
 /// Боевой рулсет: гараж — шлюз, «Свалка» по силам стартовой тройке, а «Логово»
 /// на старте гарантированно проваливается. Ловит рассогласование кода и
 /// контента — гараж без `gate`, навык под другим `id`, лестницу сложности,
@@ -617,6 +728,24 @@ fn the_shipped_ruleset_sends_a_squad_out_and_back() {
         "и навык «Вылазка» вырос: домен работы, а не украшение",
     );
     assert_eq!(sim.mission_left(), None, "миссия закрыта");
+}
+
+/// Стартовая застройка даёт **ровно один** узел связи (§12.59). Один — потому
+/// что первая вылазка обязана быть доступна сразу: без неё не берётся
+/// обязательная цель «Первая вылазка» (§12.58). И ровно один — потому что иначе
+/// второй узел нечего строить, а вместе с ним пропадает единственная причина
+/// его хотеть. Ловит и потерянную в `build:` рацию, и случайно размноженную.
+#[test]
+fn the_shipped_ruleset_starts_with_one_relay_node() {
+    let mut sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
+    let relay = 11; // индекс `relay` в палитре тайлов
+
+    assert_eq!(sim.relay_count(), 1, "рация в гараже одна");
+    assert_eq!(sim.tile_tech(relay), None, "и технологией не закрыта");
+    assert!(
+        sim.launch(0, squad(&["excellent", "sp2"])),
+        "первая вылазка доступна с первого тика",
+    );
 }
 
 #[test]

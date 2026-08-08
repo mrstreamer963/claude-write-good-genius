@@ -5,8 +5,8 @@
 // Постройка теперь через чертежи: игрок тянет рамку, коты строят по тикам.
 // Карту шлём при росте её версии (правки игрока + завершённые постройки).
 
-import init, { Sim } from './wasm/sp_sim.js';
-import wasmUrl from './wasm/sp_sim_bg.wasm?url';
+import init, { Sim } from "./wasm/sp_sim.js";
+import wasmUrl from "./wasm/sp_sim_bg.wasm?url";
 
 const BASE_TPS = 6; // сим-тиков в секунду на ×1
 const SIM_DT_MS = 1000 / BASE_TPS;
@@ -25,7 +25,7 @@ const AUTOSAVE_EVERY = 120; // сим-тиков (20 с на ×1)
 const AUTOSAVE_EVERY_MS = 20000; // и не реже этого по реальным часам
 
 // Команды, которые мир не меняют: после них сохранять нечего.
-const READ_ONLY = new Set(['setSpeed', 'save', 'trace']);
+const READ_ONLY = new Set(["setSpeed", "save", "trace"]);
 
 let sim = null;
 let speed = 1; // 0 (пауза) | 1 | 5 | 10
@@ -46,12 +46,12 @@ function announce() {
   sinceSave = 0;
   lastSaveAt = performance.now();
   dirty = false;
-  postMessage({ type: 'ready', meta: sim.map_meta(), map: sim.base_map() });
+  postMessage({ type: "ready", meta: sim.map_meta(), map: sim.base_map() });
 }
 
 async function boot() {
   await init(wasmUrl);
-  yamlText = await (await fetch('/rulesets/core.yaml')).text();
+  yamlText = await (await fetch("/rulesets/core.yaml")).text();
   sim = new Sim(yamlText);
   announce();
   last = performance.now();
@@ -81,20 +81,24 @@ function loop() {
   // Снимок кладёт в localStorage главный поток: у воркера его нет вовсе.
   // Проверка снаружи ветки скорости — иначе на паузе она не выполнялась бы
   // никогда, а размеченное игроком терялось бы целиком.
-  if (sim && dirty && (sinceSave >= AUTOSAVE_EVERY || now - lastSaveAt >= AUTOSAVE_EVERY_MS)) {
+  if (
+    sim &&
+    dirty &&
+    (sinceSave >= AUTOSAVE_EVERY || now - lastSaveAt >= AUTOSAVE_EVERY_MS)
+  ) {
     sinceSave = 0;
     lastSaveAt = now;
     dirty = false;
-    postMessage({ type: 'saved', json: sim.save(), auto: true });
+    postMessage({ type: "saved", json: sim.save(), auto: true });
   }
 
   if (sim) {
     const v = sim.map_version();
     if (v !== lastMapVersion) {
-      postMessage({ type: 'map', map: sim.base_map() });
+      postMessage({ type: "map", map: sim.base_map() });
       lastMapVersion = v;
     }
-    postMessage({ type: 'snapshot', snap: sim.snapshot() });
+    postMessage({ type: "snapshot", snap: sim.snapshot() });
   }
   setTimeout(loop, 16);
 }
@@ -104,63 +108,66 @@ onmessage = (e) => {
   // Любая команда, кроме читающих, делает мир несохранённым — в том числе на
   // паузе, где тиков нет, а разметка есть.
   if (!READ_ONLY.has(m.type)) dirty = true;
-  if (m.type === 'setSpeed') {
+  if (m.type === "setSpeed") {
     speed = m.speed;
-  } else if (m.type === 'build' && sim) {
+  } else if (m.type === "build" && sim) {
     // Один жест игрока = одна рамка = один вызов. Ластик не сносит мгновенно:
     // сначала снимает чертежи в рамке, и только если снимать было нечего —
     // планирует снос, который выполняют коты (см. `plan_demolish_rect` в ядре).
     if (m.tile >= 0) sim.add_blueprint_rect(m.x, m.y, m.w, m.h, m.tile);
     else sim.plan_demolish_rect(m.x, m.y, m.w, m.h);
-  } else if (m.type === 'store' && sim) {
+  } else if (m.type === "store" && sim) {
     // Разметка уборки: кота не выбираем — как и чертёж, задачу возьмёт любой
     // свободный. Повторный жест по помеченному снимает пометку.
     sim.mark_to_store_rect(m.x, m.y, m.w, m.h);
-  } else if (m.type === 'setAutoTidy' && sim) {
+  } else if (m.type === "setAutoTidy" && sim) {
     sim.set_auto_tidy(m.on);
-  } else if (m.type === 'setAutoRest' && sim) {
+  } else if (m.type === "setAutoRest" && sim) {
     // Второй порог усталости: бросает ли кот работу, когда бодрость на исходе
     // (см. `set_auto_rest` в ядре, §12.33). Выключение никого не будит.
     sim.set_auto_rest(m.on);
-  } else if (m.type === 'move' && sim) {
+  } else if (m.type === "move" && sim) {
     sim.set_target(m.id, m.x, m.y);
-  } else if (m.type === 'launch' && sim) {
+  } else if (m.type === "launch" && sim) {
     // Отряд игрок выбирает поимённо — единственная работа, где исполнителя не
     // раздаёт симуляция: от состава зависит исход (см. `launch` в ядре, §12.23).
     // Неполную заявку ядро отклоняет само.
     sim.launch(m.mission, m.units);
-  } else if (m.type === 'cancelMission' && sim) {
-    sim.cancel_mission();
-  } else if (m.type === 'research' && sim) {
+  } else if (m.type === "cancelMission" && sim) {
+    // По заказу: вылазок теперь идёт столько, сколько узлов связи (§12.59), а
+    // порядок сущностей в ядре недетерминирован — по номеру отзывался бы то
+    // один отряд, то другой. Двух вылазок по одному заказу не бывает.
+    sim.cancel_mission(m.mission);
+  } else if (m.type === "research" && sim) {
     // Тема — разметка работы: кота не выбираем, за неё сядет ближайший, кому
     // хватает «Науки» (см. `start_research` в ядре, §12.26). Платит склад.
     sim.start_research(m.topic);
-  } else if (m.type === 'cancelResearch' && sim) {
+  } else if (m.type === "cancelResearch" && sim) {
     sim.cancel_research();
-  } else if (m.type === 'craft' && sim) {
+  } else if (m.type === "craft" && sim) {
     // Заказ — разметка работы со счётчиком штук: кота не выбираем, к верстаку
     // встанет ближайший свободный (см. `start_craft` в ядре, §12.30). Склад
     // платит за каждую штуку отдельно, поэтому пустой склад заявку не отменяет —
     // заказ ждёт материала.
     sim.start_craft(m.recipe, m.count);
-  } else if (m.type === 'cancelCraft' && sim) {
+  } else if (m.type === "cancelCraft" && sim) {
     // По рецепту: заказов теперь столько, сколько мастерских (§12.55), а порядок
     // сущностей в ядре недетерминирован — по номеру отменялся бы то один, то
     // другой. Двух заказов на один рецепт не бывает, рецепт их и различает.
     sim.cancel_craft(m.recipe);
-  } else if (m.type === 'teach' && sim) {
+  } else if (m.type === "teach" && sim) {
     // Обучение адресно: игрок решает судьбу конкретного кота, а не размечает
     // работу базе (см. `teach` в ядре, §12.18).
     sim.teach(m.id, m.skill);
-  } else if (m.type === 'trade' && sim) {
+  } else if (m.type === "trade" && sim) {
     // Сделка с внешним миром (см. `trade` в ядре, §12.44). Курс фиксируется
     // здесь и сейчас, покупка платится сразу, а товар едет `lead` тиков.
     // Команды отмены нет намеренно: деньги ушли, как уходят образцы за тему.
     sim.trade(m.faction, m.item, m.count, m.buying);
-  } else if (m.type === 'hire' && sim) {
+  } else if (m.type === "hire" && sim) {
     // Известность открывает кандидата, платит склад (см. `hire` в ядре, §12.24).
     sim.hire(m.recruit);
-  } else if (m.type === 'save' && sim) {
+  } else if (m.type === "save" && sim) {
     // Один запрос, два адресата: `toSlot` — это уход со вкладки (пишем в
     // хранилище), без него — кнопка «Сохранить в файл».
     if (m.toSlot) {
@@ -168,8 +175,8 @@ onmessage = (e) => {
       lastSaveAt = performance.now();
       dirty = false;
     }
-    postMessage({ type: 'saved', json: sim.save(), auto: !!m.toSlot });
-  } else if (m.type === 'load' && yamlText) {
+    postMessage({ type: "saved", json: sim.save(), auto: !!m.toSlot });
+  } else if (m.type === "load" && yamlText) {
     // Снимок собирается в мир из **того же** рулсета: правил в нём нет (§12.45).
     // Отказ — это чужая версия формата или чужой рулсет, и он именно отказ:
     // молча загруженная чужая партия была бы тихо другим миром.
@@ -177,14 +184,19 @@ onmessage = (e) => {
       sim = Sim.load(yamlText, m.json);
       announce();
     } catch (err) {
-      postMessage({ type: 'loadFailed', message: String((err && err.message) || err) });
+      postMessage({
+        type: "loadFailed",
+        message: String((err && err.message) || err),
+      });
     }
-  } else if (m.type === 'newGame' && yamlText) {
+  } else if (m.type === "newGame" && yamlText) {
     sim = new Sim(yamlText);
     announce();
-  } else if (m.type === 'trace' && sim) {
-    postMessage({ type: 'traced', text: sim.trace() });
+  } else if (m.type === "trace" && sim) {
+    postMessage({ type: "traced", text: sim.trace() });
   }
 };
 
-boot().catch((err) => postMessage({ type: 'error', message: String((err && err.stack) || err) }));
+boot().catch((err) =>
+  postMessage({ type: "error", message: String((err && err.stack) || err) }),
+);

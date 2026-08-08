@@ -1,7 +1,7 @@
 // Главный поток: PixiJS-рендер + ввод игрока. Логики нет — рисуем данные из воркера
 // и шлём команды (постройка тайлов, приказы движения).
 
-import { Application, Container, Graphics } from 'pixi.js';
+import { Application, Container, Graphics } from "pixi.js";
 
 const TILE = 28;
 
@@ -24,17 +24,21 @@ const COLORS = {
   unitDefault: 0xcccccc,
 };
 
-const stageEl = document.getElementById('stage');
-const tickEl = document.getElementById('tick');
-const scrapEl = document.getElementById('scrap');
-const catEl = document.getElementById('cat');
-const cellEl = document.getElementById('cell');
-const missionEl = document.getElementById('mission');
-const captiveEl = document.getElementById('captive');
-const researchEl = document.getElementById('research');
-const craftEl = document.getElementById('craft');
-const dealEl = document.getElementById('deal');
-const noteEl = document.getElementById('note');
+const stageEl = document.getElementById("stage");
+const tickEl = document.getElementById("tick");
+const scrapEl = document.getElementById("scrap");
+const catEl = document.getElementById("cat");
+const cellEl = document.getElementById("cell");
+const missionEl = document.getElementById("mission");
+const captiveEl = document.getElementById("captive");
+const researchEl = document.getElementById("research");
+const craftEl = document.getElementById("craft");
+const dealEl = document.getElementById("deal");
+const noteEl = document.getElementById("note");
+const goalsEl = document.getElementById("goals");
+const goalsToggleEl = document.getElementById("goals-toggle");
+const finaleEl = document.getElementById("finale");
+const toastsEl = document.getElementById("toasts");
 
 // Кнопки внутри панелей вешаются **делегированием, один раз на контейнер**, и
 // ловятся парой `mousedown`/`mouseup`, а не `click`.
@@ -61,12 +65,12 @@ const noteEl = document.getElementById('note');
 // поведение остаётся ровно прежним.
 function onPanelClick(el, selector, send) {
   let armed = null;
-  const keyOf = (node) => node?.dataset.def ?? '';
-  el.addEventListener('mousedown', (e) => {
+  const keyOf = (node) => node?.dataset.def ?? "";
+  el.addEventListener("mousedown", (e) => {
     const hit = e.target.closest(selector);
     armed = hit ? keyOf(hit) : null;
   });
-  el.addEventListener('mouseup', (e) => {
+  el.addEventListener("mouseup", (e) => {
     const hit = e.target.closest(selector);
     if (armed !== null && hit && keyOf(hit) === armed) send(hit);
     armed = null;
@@ -74,11 +78,15 @@ function onPanelClick(el, selector, send) {
 }
 // Отмена уходит по рецепту, а не по номеру строки: закрывшийся соседний заказ
 // сдвинул бы номера под курсором игрока (§12.55).
-onPanelClick(craftEl, '.craft-cancel', (node) =>
-  sendAction({ type: 'cancelCraft', recipe: Number(node.dataset.def) }),
+onPanelClick(craftEl, ".craft-cancel", (node) =>
+  sendAction({ type: "cancelCraft", recipe: Number(node.dataset.def) }),
 );
-onPanelClick(researchEl, '.research-cancel', () => sendAction({ type: 'cancelResearch' }));
-onPanelClick(missionEl, '.mission-cancel', () => sendAction({ type: 'cancelMission' }));
+onPanelClick(researchEl, ".research-cancel", () =>
+  sendAction({ type: "cancelResearch" }),
+);
+onPanelClick(missionEl, ".mission-cancel", (b) =>
+  sendAction({ type: "cancelMission", mission: Number(b.dataset.def) }),
+);
 
 const app = new Application();
 await app.init({ background: COLORS.bg, antialias: true, resizeTo: stageEl });
@@ -108,7 +116,7 @@ orderMarker
   .circle(0, 0, TILE * 0.34)
   .stroke({ color: COLORS.select, width: 2, alpha: 0.8 });
 orderMarker.visible = false;
-// Осмотренная клетка (§12.54): уголки, а не заливка, — заливкой рисуется
+// Осмотренная клетка (§12.58): уголки, а не заливка, — заливкой рисуется
 // `hoverRect`, и два одинаковых прямоугольника читались бы как один.
 const cellMarker = new Graphics();
 overlay.addChild(hoverRect);
@@ -116,7 +124,7 @@ overlay.addChild(orderMarker);
 overlay.addChild(cellMarker);
 overlay.addChild(selectionRings);
 
-app.stage.eventMode = 'static';
+app.stage.eventMode = "static";
 app.stage.hitArea = app.screen;
 
 const units = new Map(); // id -> Container
@@ -127,7 +135,7 @@ let meta = null; // { width, height, palette, items, skills, perks }
 let paletteColors = []; // number[]
 let itemColors = []; // number[] — цвет предмета по индексу палитры items
 let mapCells = null; // Int-массив состояния карты
-let mode = 'cursor'; // 'cursor' | 'build' | 'store'
+let mode = "cursor"; // 'cursor' | 'build' | 'store'
 let buildTile = 0; // индекс палитры, или -1 = стереть (в режиме build)
 let autoTidy = true; // коты сами свозят лом на склад (см. ядро, §12.16)
 let autoRest = true; // и сами бросают работу на исходе сил (§12.33)
@@ -135,7 +143,7 @@ let autoRest = true; // и сами бросают работу на исход�
 // один выбранный кот — это его частный случай. Панель показывает последнего.
 let selectedUnits = [];
 // Клетка под последним кликом: о ней говорит панель, и она же взводит приказ —
-// повторный клик по ней отправляет туда выбранных котов (§12.54).
+// повторный клик по ней отправляет туда выбранных котов (§12.58).
 let selectedCell = null; // { x, y } в тайлах
 let dragFrom = null; // якорь рамки (клетка, где нажали), null = не тянем
 let dragTo = null; // текущий угол рамки; переживает выход курсора за карту
@@ -147,7 +155,13 @@ let dragUnit = null;
 // коту любым инструментом возвращает игру в режим выбора, и подсветка обязана
 // поехать вместе с режимом.
 let cursorBtn = null;
-let missionRunning = false; // миссия на POC одна за раз (§12.22)
+// Вылазок идёт столько, сколько узлов связи (§12.59). Оба числа считает ядро:
+// `relayFree` — это ворота, и второй их экземпляр в JS однажды разойдётся с
+// `launch`. `running` — заказы, по которым отряд уже вышел: двух вылазок по
+// одному заказу не бывает, и гасить надо именно свою кнопку.
+let relays = 0;
+let relayFree = false;
+let running = new Set();
 let researchRunning = false; // и тема тоже одна за раз (§12.26)
 // Мастерских может быть несколько, и заказов идёт столько же (§12.55).
 // Нужен только для объяснения отказа: сами ворота считает ядро (`RecipeSnap.shop`).
@@ -191,18 +205,20 @@ const tileButtons = []; // кнопки палитры, закрытые тех�
 
 // --- worker ---------------------------------------------------------------
 
-const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+const worker = new Worker(new URL("./worker.js", import.meta.url), {
+  type: "module",
+});
 
 // Сохранение партии (§12.45). Слот один: снимок описывает мир целиком, а
 // выбирать между слотами пока нечем — ни смерти, ни отката в игре нет.
-const SAVE_KEY = 'sp.save.v1';
+const SAVE_KEY = "sp.save.v1";
 // Продолжаем ровно один раз за загрузку страницы: `ready` приходит и после
 // самой загрузки снимка, и повторная попытка была бы бесконечной.
 let triedResume = false;
 
 worker.onmessage = (e) => {
   const m = e.data;
-  if (m.type === 'ready') {
+  if (m.type === "ready") {
     meta = m.meta;
     paletteColors = meta.palette.map((p) => hex(p.color));
     itemColors = (meta.items ?? []).map((i) => hex(i.color));
@@ -216,23 +232,23 @@ worker.onmessage = (e) => {
     if (!triedResume) {
       triedResume = true;
       const saved = localStorage.getItem(SAVE_KEY);
-      if (saved) worker.postMessage({ type: 'load', json: saved });
+      if (saved) worker.postMessage({ type: "load", json: saved });
     }
-  } else if (m.type === 'map') {
+  } else if (m.type === "map") {
     drawMap(m.map);
-  } else if (m.type === 'snapshot') {
+  } else if (m.type === "snapshot") {
     renderSnapshot(m.snap);
-  } else if (m.type === 'saved') {
+  } else if (m.type === "saved") {
     if (m.auto) localStorage.setItem(SAVE_KEY, m.json);
     else download(`sp-save-${stamp()}.json`, m.json);
-  } else if (m.type === 'traced') {
+  } else if (m.type === "traced") {
     download(`sp-trace-${stamp()}.txt`, m.text);
-  } else if (m.type === 'loadFailed') {
+  } else if (m.type === "loadFailed") {
     // Снимок не подошёл к текущим правилам. Держать его дальше незачем: он
     // не подойдёт и завтра, а базовая партия уже идёт.
     localStorage.removeItem(SAVE_KEY);
     showError(`Сохранение не загрузилось: ${m.message}. Партия начата заново.`);
-  } else if (m.type === 'error') {
+  } else if (m.type === "error") {
     showError(m.message);
   }
 };
@@ -240,17 +256,18 @@ worker.onmessage = (e) => {
 // Уход со вкладки — момент, когда партию стоит дописать не дожидаясь таймера.
 // Рефреш этим не покрыть: состояние держит воркер, а ответ асинхронный и до
 // умирающей страницы уже не дойдёт — там работает короткий интервал автосейва.
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden') worker.postMessage({ type: 'save', toSlot: true });
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden")
+    worker.postMessage({ type: "save", toSlot: true });
 });
 
 function stamp() {
-  return new Date().toISOString().slice(0, 19).replaceAll(':', '-');
+  return new Date().toISOString().slice(0, 19).replaceAll(":", "-");
 }
 
 function download(name, text) {
-  const url = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
-  const a = document.createElement('a');
+  const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
+  const a = document.createElement("a");
   a.href = url;
   a.download = name;
   a.click();
@@ -258,7 +275,7 @@ function download(name, text) {
 }
 
 function hex(s) {
-  return parseInt(s.replace('#', ''), 16);
+  return parseInt(s.replace("#", ""), 16);
 }
 
 // --- layout / render ------------------------------------------------------
@@ -266,9 +283,12 @@ function hex(s) {
 function layout() {
   if (!meta) return;
   world.x = Math.max(8, Math.floor((app.screen.width - meta.width * TILE) / 2));
-  world.y = Math.max(8, Math.floor((app.screen.height - meta.height * TILE) / 2));
+  world.y = Math.max(
+    8,
+    Math.floor((app.screen.height - meta.height * TILE) / 2),
+  );
 }
-app.renderer.on('resize', layout);
+app.renderer.on("resize", layout);
 
 function drawMap(map) {
   mapCells = map.cells;
@@ -311,7 +331,10 @@ function drawScrap(list) {
     // Помечена «на склад» — за ней придёт свободный кот. При автоуборке помечено
     // всё, что лежит вне склада, так что метка заодно показывает, что режим включён.
     if (s.marked) {
-      g.circle(x + TILE / 2, y + TILE * 0.3, 2.5).fill({ color: COLORS.select, alpha: 0.9 });
+      g.circle(x + TILE / 2, y + TILE * 0.3, 2.5).fill({
+        color: COLORS.select,
+        alpha: 0.9,
+      });
     }
   }
   scrapLayer.addChild(g);
@@ -325,7 +348,9 @@ function drawBlueprints(list) {
     const x = b.x * TILE;
     const y = b.y * TILE;
     const isDemolish = b.tile < 0;
-    const color = isDemolish ? COLORS.erase : (paletteColors[b.tile] ?? 0x888888);
+    const color = isDemolish
+      ? COLORS.erase
+      : (paletteColors[b.tile] ?? 0x888888);
     const supplied = b.delivered >= b.need;
 
     if (isDemolish) {
@@ -336,7 +361,11 @@ function drawBlueprints(list) {
         .moveTo(x + TILE - 6, y + 6)
         .lineTo(x + 6, y + TILE - 6)
         .stroke({ color, width: 2, alpha: 0.9 });
-      g.rect(x + 1, y + 1, TILE - 2, TILE - 2).stroke({ color, width: 1, alpha: 0.6 });
+      g.rect(x + 1, y + 1, TILE - 2, TILE - 2).stroke({
+        color,
+        width: 1,
+        alpha: 0.6,
+      });
     } else {
       // Постройка: призрачная заливка будущего тайла + рамка. Пока лом не
       // завезли, площадка бледная — работа туда ещё не назначена.
@@ -349,16 +378,25 @@ function drawBlueprints(list) {
       // Полоса подвоза материала — на месте полосы работы: пока она не полна,
       // работа и не начнётся.
       const m = b.need > 0 ? b.delivered / b.need : 1;
-      g.rect(x + 3, y + TILE - 6, TILE - 6, 3).fill({ color: COLORS.scrap, alpha: 0.2 });
+      g.rect(x + 3, y + TILE - 6, TILE - 6, 3).fill({
+        color: COLORS.scrap,
+        alpha: 0.2,
+      });
       if (m > 0) {
-        g.rect(x + 3, y + TILE - 6, (TILE - 6) * m, 3).fill({ color: COLORS.scrap, alpha: 0.95 });
+        g.rect(x + 3, y + TILE - 6, (TILE - 6) * m, 3).fill({
+          color: COLORS.scrap,
+          alpha: 0.95,
+        });
       }
       continue;
     }
     // прогресс-бар работы
     const p = b.total > 0 ? Math.min(1, b.progress / b.total) : 0;
     if (p > 0) {
-      g.rect(x + 3, y + TILE - 6, (TILE - 6) * p, 3).fill({ color: COLORS.select, alpha: 0.95 });
+      g.rect(x + 3, y + TILE - 6, (TILE - 6) * p, 3).fill({
+        color: COLORS.select,
+        alpha: 0.95,
+      });
     }
   }
   bpLayer.addChild(g);
@@ -380,10 +418,10 @@ function dayOf(tick) {
 /// сколько в них тиков, — иначе подпись пришлось бы менять вместе с балансом.
 function clockOf(tick) {
   const len = meta?.day ?? 0;
-  if (len <= 0) return '';
+  if (len <= 0) return "";
   const part = (tick % len) / len;
   const mins = Math.floor(part * 24 * 60);
-  return `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`;
+  return `${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(mins % 60).padStart(2, "0")}`;
 }
 
 /// «2 дня», «5 дней», «21 день» — без этого записка читается как машинный лог.
@@ -424,8 +462,8 @@ function renderSnapshot(snap) {
     if (e.carrying > 0) c.load.tint = itemColor(e.carrying_item);
     // «Дошёл и делает» против «ещё идёт»: маркер вешается только на первое —
     // кот в пути к лежанке не спит, а идёт (§12.41).
-    const asleep = e.job === 'rest' && !e.moving;
-    const lying = e.job === 'heal' && !e.moving;
+    const asleep = e.job === "rest" && !e.moving;
+    const lying = e.job === "heal" && !e.moving;
     // Спящий кот пригашен: игрок должен видеть, почему тот не работает.
     // Лежачий раненый — тоже: причины разные, а следствие для базы одно (§12.37).
     c.alpha = asleep || lying ? 0.55 : 1;
@@ -436,10 +474,10 @@ function renderSnapshot(snap) {
     c.woundMark.visible = lying;
     // Учёба — потраченное котовремя, и это вся её цена (§12.18): не видно её —
     // игрок просто недосчитается рабочих лап.
-    c.studyMark.visible = e.job === 'study' && !e.moving;
+    c.studyMark.visible = e.job === "study" && !e.moving;
     // Медик — только дошедший: лечит он с соседней клетки, и до неё ещё надо
     // добраться. Иначе пустой крест ехал бы через полбазы, обещая лечение.
-    c.medicMark.visible = e.job === 'treat' && !e.moving;
+    c.medicMark.visible = e.job === "treat" && !e.moving;
     unitTiles.set(e.id, { x: e.x, y: e.y });
   }
   // В шапке — только фишка и число: подписи распирают её, а цвет тот же, что
@@ -453,6 +491,8 @@ function renderSnapshot(snap) {
   posts = snap.posts ?? 0;
   postFree = !!snap.post_free;
   shops = snap.shops ?? 0;
+  relays = snap.relays ?? 0;
+  relayFree = !!snap.relay_free;
   scrapEl.innerHTML =
     (meta.items ?? [])
       .map((it, i) => {
@@ -464,19 +504,21 @@ function renderSnapshot(snap) {
         const name = esc(it.label || it.id);
         const hint = [
           `${name}: на складе ${st.stored}`,
-          st.booked ? `забронировано ${st.booked} под сделку` : '',
-          st.loose ? `валяется ${st.loose} — платить этим нельзя, пока не убрано` : '',
+          st.booked ? `забронировано ${st.booked} под сделку` : "",
+          st.loose
+            ? `валяется ${st.loose} — платить этим нельзя, пока не убрано`
+            : "",
         ]
           .filter(Boolean)
-          .join(' · ');
+          .join(" · ");
         return (
           `<span class="stock" title="${hint}">` +
           `<i class="chip" style="background:${it.color}"></i><b>${free}</b>` +
-          (st.loose ? `<u>+${st.loose}</u>` : '') +
-          '</span>'
+          (st.loose ? `<u>+${st.loose}</u>` : "") +
+          "</span>"
         );
       })
-      .join(' ') +
+      .join(" ") +
     `<span class="fame" title="Известность">★<b>${fame}</b></span>` +
     // Репутация рядом с известностью, но врозь: та отвечает «насколько высоко»
     // и только копится, эта — «от кого» и ходит в обе стороны (§12.43). Знак
@@ -486,11 +528,11 @@ function renderSnapshot(snap) {
         const v = standing[i] ?? 0;
         const sign = v > 0 ? `+${v}` : `${v}`;
         return (
-          `<span class="standing${v < 0 ? ' bad' : ''}" title="${esc(f.label || f.id)}">` +
+          `<span class="standing${v < 0 ? " bad" : ""}" title="${esc(f.label || f.id)}">` +
           `<i class="chip" style="background:${f.color}"></i><b>${sign}</b></span>`
         );
       })
-      .join('') +
+      .join("") +
     // Деньги — единственная величина, которая и копится, и тратится: это счёт,
     // а не ворота (§12.44). Потому и стоят отдельно от известности.
     `<span class="money" title="Котоденьги">¤<b>${money}</b></span>`;
@@ -509,7 +551,9 @@ function renderSnapshot(snap) {
   }
 
   wounded = new Set(
-    snap.entities.filter((e) => e.health_max > 0 && e.health <= e.health_hurt).map((e) => e.id),
+    snap.entities
+      .filter((e) => e.health_max > 0 && e.health <= e.health_hurt)
+      .map((e) => e.id),
   );
   captives = snap.entities.filter((e) => e.captive).map((e) => e.id);
   raids = snap.raids ?? [];
@@ -529,6 +573,7 @@ function renderSnapshot(snap) {
   syncRecipeButtons(snap.recipes);
   syncTileButtons(snap.techs);
   renderNotePanel(snap.notes, snap.tick);
+  renderGoalsPanel(snap.goals, snap.goals_required, snap);
 }
 
 function createUnit(e) {
@@ -540,7 +585,9 @@ function createUnit(e) {
     .stroke({ color: 0x000000, width: 2 });
   // Кольцо «кот застрял» — шире кольца выбора, чтобы читались вместе.
   const stuckRing = new Graphics();
-  stuckRing.circle(0, 0, TILE * 0.52).stroke({ color: COLORS.stuck, width: 2, alpha: 0.9 });
+  stuckRing
+    .circle(0, 0, TILE * 0.52)
+    .stroke({ color: COLORS.stuck, width: 2, alpha: 0.9 });
   stuckRing.visible = false;
   // Груз лома — брусок над котом, той же краской, что и кучи на полу.
   const load = new Graphics();
@@ -636,7 +683,7 @@ function updateSelectionOverlay() {
   drawCellMarker();
 }
 
-// Уголки вокруг осмотренной клетки (§12.54). Взведённая — тем же зелёным, что
+// Уголки вокруг осмотренной клетки (§12.58). Взведённая — тем же зелёным, что
 // кольца выбора и метка цели: «сюда пойдут» на карте и в панели обязано быть
 // одной краской, иначе второй шаг приказа приходится угадывать.
 function drawCellMarker() {
@@ -653,7 +700,10 @@ function drawCellMarker() {
     [x + p, y + TILE - p, 1, -1],
     [x + TILE - p, y + TILE - p, -1, -1],
   ]) {
-    cellMarker.moveTo(cx + dx * arm, cy).lineTo(cx, cy).lineTo(cx, cy + dy * arm);
+    cellMarker
+      .moveTo(cx + dx * arm, cy)
+      .lineTo(cx, cy)
+      .lineTo(cx, cy + dy * arm);
   }
   cellMarker.stroke({
     color: armed ? COLORS.select : COLORS.cell,
@@ -673,48 +723,50 @@ function jobLabel(e) {
   switch (e.job) {
     // Ушедшего с базы объясняют отдельные строки: «на вылазке» и «в плену» —
     // разные решения игрока, а не одно состояние (§12.40).
-    case 'away':
-      return '';
-    case 'heal':
-      return going ? 'идёт в лазарет' : 'лежит: раны заживают';
-    case 'eat':
-      return going ? 'идёт есть' : 'ест';
+    case "away":
+      return "";
+    case "heal":
+      return going ? "идёт в лазарет" : "лежит: раны заживают";
+    case "eat":
+      return going ? "идёт есть" : "ест";
     // Приказ спящего не поднимает, пока включено «Беречь себя» (§12.51), — и
     // молчать об этом нельзя: игрок только что кликнул, а кот не двинулся.
     // Знание тут местное, из тех же `orders`, которыми рисуется метка цели:
     // ядру про «кому уже приказали» рассказывать нечего (§12.41).
-    case 'rest':
-      if (going) return 'идёт спать';
-      return orders.has(e.id) ? 'спит: приказ подождёт' : 'спит';
+    case "rest":
+      if (going) return "идёт спать";
+      return orders.has(e.id) ? "спит: приказ подождёт" : "спит";
     // Дремота — не сон: кот выспался до потолка места и добирает бодрость, пока
     // базе нечем его занять (§12.52). Поднимает его что угодно, и сказать это
     // надо прямо: иначе «спит» и «дремлет» игрок прочтёт одинаково и решит, что
     // приказ то работает, то нет.
-    case 'nap':
-      return 'дремлет: поднимется сразу';
-    case 'treat':
-      return going ? 'идёт к раненому' : 'лечит раненого';
-    case 'equip':
-      return going ? 'идёт за снаряжением' : 'снаряжается';
-    case 'squad':
-      return going ? 'идёт к шлюзу' : 'ждёт отряд';
-    case 'haul':
-      return e.carrying > 0 ? `несёт ${itemLabel(e.carrying_item)}` : 'идёт за грузом';
-    case 'research':
-      return going ? 'идёт в лабораторию' : 'исследует';
-    case 'craft':
-      return going ? 'идёт в мастерскую' : 'работает в мастерской';
-    case 'study':
-      return going ? 'идёт к парте' : 'учится';
-    case 'build':
-      return going ? 'идёт на площадку' : 'строит';
-    case 'demolish':
-      return going ? 'идёт на снос' : 'разбирает';
+    case "nap":
+      return "дремлет: поднимется сразу";
+    case "treat":
+      return going ? "идёт к раненому" : "лечит раненого";
+    case "equip":
+      return going ? "идёт за снаряжением" : "снаряжается";
+    case "squad":
+      return going ? "идёт к шлюзу" : "ждёт отряд";
+    case "haul":
+      return e.carrying > 0
+        ? `несёт ${itemLabel(e.carrying_item)}`
+        : "идёт за грузом";
+    case "research":
+      return going ? "идёт в лабораторию" : "исследует";
+    case "craft":
+      return going ? "идёт в мастерскую" : "работает в мастерской";
+    case "study":
+      return going ? "идёт к парте" : "учится";
+    case "build":
+      return going ? "идёт на площадку" : "строит";
+    case "demolish":
+      return going ? "идёт на снос" : "разбирает";
     // Приказ без маршрута — это и есть `stuck`, и он подписан отдельно.
-    case 'order':
-      return going ? 'идёт по приказу' : '';
+    case "order":
+      return going ? "идёт по приказу" : "";
     default:
-      return 'без дела';
+      return "без дела";
   }
 }
 
@@ -730,19 +782,22 @@ function renderCatPanel(entities) {
   const defs = meta.skills ?? [];
   const parts = [`<div class="cat-name">${esc(e.id)}</div>`];
   if (selectedUnits.length > 1) {
-    parts.push(`<div class="cat-sub">выбрано ${selectedUnits.length}: ${selectedUnits.map(esc).join(' · ')}</div>`);
+    parts.push(
+      `<div class="cat-sub">выбрано ${selectedUnits.length}: ${selectedUnits.map(esc).join(" · ")}</div>`,
+    );
   }
   // Занятие — первой строкой и до всех шкал: «чем он вообще занят» игрок
   // спрашивает раньше, чем «сколько у него бодрости». Застрявший объясняется
   // здесь же: `stuck` — состояние легальное, но кот из него сам не выйдет.
-  const job = e.stuck ? 'не может дойти' : jobLabel(e);
-  if (job) parts.push(`<div class="cat-job${e.stuck ? ' stuck' : ''}">${job}</div>`);
+  const job = e.stuck ? "не может дойти" : jobLabel(e);
+  if (job)
+    parts.push(`<div class="cat-job${e.stuck ? " stuck" : ""}">${job}</div>`);
   // Врождённое — до навыков: оно объясняет их пределы, а не наоборот (§12.42).
   // Опыт кот доберёт работой, а эти числа даны ему навсегда, и ровно поэтому
   // коты остаются разными после того, как бригада выработалась.
   const stats = (meta.stats ?? [])
     .map((st, i) => `${esc(st.label || st.id)} ${e.stats?.[i] ?? 0}`)
-    .join(' · ');
+    .join(" · ");
   if (stats) parts.push(`<div class="cat-sub">${stats}</div>`);
   for (let i = 0; i < defs.length; i++) {
     const s = e.skills?.[i];
@@ -758,18 +813,21 @@ function renderCatPanel(entities) {
     const capped = s.cap > 0 && s.level >= s.cap;
     const born = capped && s.cap < levels.length;
     // next = 0 — навык на потолке: полоска полная, порога дальше нет.
-    const pct = capped || s.next <= from ? 100 : Math.round(((s.xp - from) / (s.next - from)) * 100);
+    const pct =
+      capped || s.next <= from
+        ? 100
+        : Math.round(((s.xp - from) / (s.next - from)) * 100);
     const note = born
       ? `предел: ${esc(statLabel(defs[i].stat))} ${e.stats?.[statIndex(defs[i].stat)] ?? 0}`
       : capped || s.next <= 0
-        ? 'потолок'
+        ? "потолок"
         : `${s.xp} / ${s.next}`;
     parts.push(
       '<div class="cat-skill">' +
         `<div class="cat-row"><span>${esc(defs[i].label || defs[i].id)}</span><b>${s.level}</b></div>` +
-        `<div class="bar"><i class="${born ? 'capped' : ''}" style="width:${pct}%"></i></div>` +
+        `<div class="bar"><i class="${born ? "capped" : ""}" style="width:${pct}%"></i></div>` +
         `<div class="cat-sub">${note}</div>` +
-        '</div>',
+        "</div>",
     );
   }
   // У бодрости два порога, и они забирают кота по-разному (§12.33): выше
@@ -780,16 +838,16 @@ function renderCatPanel(entities) {
     const pct = Math.round((e.energy / e.energy_max) * 100);
     const spent = e.energy_critical > 0 && e.energy <= e.energy_critical;
     const note = spent
-      ? 'на исходе сил: бросит работу'
+      ? "на исходе сил: бросит работу"
       : e.energy <= e.energy_tired
-        ? 'устал: доработает и пойдёт спать'
-        : '';
+        ? "устал: доработает и пойдёт спать"
+        : "";
     parts.push(
       '<div class="cat-skill">' +
         `<div class="cat-row"><span>Бодрость</span><b>${pct}%</b></div>` +
-        `<div class="bar"><i class="${spent ? 'spent' : 'rest'}" style="width:${pct}%"></i></div>` +
-        (note ? `<div class="cat-sub">${note}</div>` : '') +
-        '</div>',
+        `<div class="bar"><i class="${spent ? "spent" : "rest"}" style="width:${pct}%"></i></div>` +
+        (note ? `<div class="cat-sub">${note}</div>` : "") +
+        "</div>",
     );
   }
   // Сытость — вторая потребность (§12.36). Цена голода списывается с бодрости,
@@ -798,13 +856,17 @@ function renderCatPanel(entities) {
   if (e.fed_max > 0) {
     const pct = Math.round((e.fed / e.fed_max) * 100);
     const starving = e.fed <= 0;
-    const note = starving ? 'голодает: бодрость горит вдвое' : e.fed <= e.fed_hungry ? 'проголодался' : '';
+    const note = starving
+      ? "голодает: бодрость горит вдвое"
+      : e.fed <= e.fed_hungry
+        ? "проголодался"
+        : "";
     parts.push(
       '<div class="cat-skill">' +
         `<div class="cat-row"><span>Сытость</span><b>${pct}%</b></div>` +
-        `<div class="bar"><i class="${starving ? 'starving' : 'fed'}" style="width:${pct}%"></i></div>` +
-        (note ? `<div class="cat-sub">${note}</div>` : '') +
-        '</div>',
+        `<div class="bar"><i class="${starving ? "starving" : "fed"}" style="width:${pct}%"></i></div>` +
+        (note ? `<div class="cat-sub">${note}</div>` : "") +
+        "</div>",
     );
   }
   // Здоровье — третья шкала (§12.37). Её роняет только провал вылазки, поэтому
@@ -814,37 +876,47 @@ function renderCatPanel(entities) {
   if (e.health_max > 0) {
     const pct = Math.round((e.health / e.health_max) * 100);
     const hurt = e.health <= e.health_hurt;
-    const note = hurt ? 'ранен: не работает и в отряд не идёт' : e.health < e.health_max ? 'царапины' : '';
+    const note = hurt
+      ? "ранен: не работает и в отряд не идёт"
+      : e.health < e.health_max
+        ? "царапины"
+        : "";
     parts.push(
       '<div class="cat-skill">' +
         `<div class="cat-row"><span>Здоровье</span><b>${pct}%</b></div>` +
-        `<div class="bar"><i class="${hurt ? 'hurt' : 'health'}" style="width:${pct}%"></i></div>` +
-        (note ? `<div class="cat-sub">${note}</div>` : '') +
-        '</div>',
+        `<div class="bar"><i class="${hurt ? "hurt" : "health"}" style="width:${pct}%"></i></div>` +
+        (note ? `<div class="cat-sub">${note}</div>` : "") +
+        "</div>",
     );
   }
   // Пленный — тоже «нет на базе», но по таймеру он не вернётся: за ним надо
   // сходить. Разные слова здесь — это разные решения игрока (§12.40).
-  if (e.captive) parts.push('<div class="cat-sub">в плену: нужна вылазка за своим</div>');
+  if (e.captive)
+    parts.push('<div class="cat-sub">в плену: нужна вылазка за своим</div>');
   else if (e.away) parts.push('<div class="cat-sub">на вылазке</div>');
   // Надетое: снаряжение молча прибавляет отряду силы, и без этой строки игрок
   // не свяжет пропавший со склада комбинезон с выросшим прогнозом вылазки
   // (§12.29). Пустой комплект показываем тоже — иначе непонятно, что он бывает.
   const gear = e.gear ?? [];
-  const force = gear.reduce((sum, i) => sum + ((meta.items ?? [])[i]?.force ?? 0), 0);
+  const force = gear.reduce(
+    (sum, i) => sum + ((meta.items ?? [])[i]?.force ?? 0),
+    0,
+  );
   parts.push(
     '<div class="cat-sub">' +
       (gear.length
-        ? `надето: ${gear.map((i) => esc(itemLabel(i))).join(' · ')} (+${force} к силе)`
-        : 'не экипирован') +
-      '</div>',
+        ? `надето: ${gear.map((i) => esc(itemLabel(i))).join(" · ")} (+${force} к силе)`
+        : "не экипирован") +
+      "</div>",
   );
-  const held = e.carrying > 0 ? ` ${esc(itemLabel(e.carrying_item))}` : '';
+  const held = e.carrying > 0 ? ` ${esc(itemLabel(e.carrying_item))}` : "";
   const paws =
-    (e.carry_max > 0 ? `лапы ${e.carrying}/${e.carry_max}` : `в лапах ${e.carrying}`) + held;
+    (e.carry_max > 0
+      ? `лапы ${e.carrying}/${e.carry_max}`
+      : `в лапах ${e.carrying}`) + held;
   const tags = (e.perks ?? []).map((id) => esc(perkLabel(id)));
-  parts.push(`<div class="cat-sub">${[paws, ...tags].join(' · ')}</div>`);
-  catEl.innerHTML = parts.join('');
+  parts.push(`<div class="cat-sub">${[paws, ...tags].join(" · ")}</div>`);
+  catEl.innerHTML = parts.join("");
   catEl.hidden = false;
 }
 
@@ -856,14 +928,15 @@ function tileRoles(def) {
   const roles = [];
   // Склада в списке нет намеренно: о нём говорит полоска «Занято N / C», и
   // тайл, который и назван «Склад», не должен трижды повторять это слово.
-  if (def.rest > 0) roles.push('лежанка');
-  if (def.heal > 0) roles.push('койка лазарета');
-  if (def.gate) roles.push('шлюз: отсюда уходят на вылазку');
+  if (def.rest > 0) roles.push("лежанка");
+  if (def.heal > 0) roles.push("койка лазарета");
+  if (def.gate) roles.push("шлюз: отсюда уходят на вылазку");
   if (def.teaches) roles.push(`парта: учит «${esc(skillLabel(def.teaches))}»`);
-  if (def.lab) roles.push('лаборатория');
-  if (def.shop) roles.push('мастерская');
-  if (def.trade) roles.push('торговый пост');
-  if (def.solid) roles.push('стеллаж: пройти можно, остаться нельзя');
+  if (def.lab) roles.push("лаборатория");
+  if (def.shop) roles.push("мастерская");
+  if (def.trade) roles.push("торговый пост");
+  if (def.relay) roles.push("узел связи: держит одну вылазку");
+  if (def.solid) roles.push("стеллаж: пройти можно, остаться нельзя");
   return roles;
 }
 
@@ -880,10 +953,10 @@ function tileRoles(def) {
 // свои рецепты) — вот тогда и вернуться.
 function cellSection(def) {
   if (!def) return null;
-  if (def.shop) return 'Производство';
-  if (def.lab) return 'Наука';
-  if (def.teaches) return 'Обучение';
-  if (def.gate) return 'Вылазки';
+  if (def.shop) return "Производство";
+  if (def.lab) return "Наука";
+  if (def.teaches) return "Обучение";
+  if (def.gate || def.relay) return "Вылазки";
   // У рынка раздел на фракцию, и какая из них «эта клетка» — неизвестно: пост
   // лицензия, а не прилавок (§12.44). Открываем первый — он же обычно и один.
   if (def.trade) {
@@ -893,7 +966,7 @@ function cellSection(def) {
   return null;
 }
 
-// Панель клетки (§12.54). Клетка была единственным, о чём игрок не мог спросить:
+// Панель клетки (§12.58). Клетка была единственным, о чём игрок не мог спросить:
 // кот объясняется карточкой, вылазка и заказ — своими панелями, а «что тут
 // лежит», «сколько ещё влезет» и «почему тут ничего не строится» читалось только
 // по трём чипсам на карте.
@@ -910,7 +983,7 @@ function renderCellPanel(snap) {
   const { x, y } = selectedCell;
   const tile = mapCells[y * meta.width + x];
   const def = tile >= 0 ? meta.palette[tile] : null;
-  const name = def ? def.label || def.id : 'Пустота';
+  const name = def ? def.label || def.id : "Пустота";
   const parts = [
     `<div class="cat-name">${esc(name)} <span class="cell-at">${x}, ${y}</span></div>`,
   ];
@@ -919,7 +992,7 @@ function renderCellPanel(snap) {
   // невидимый второй шаг читается как «клик не сработал» (§4.4).
   if (cellIsArmed()) {
     parts.push(
-      `<div class="cell-armed">ещё клик сюда — пойдут: ${selectedUnits.map(esc).join(' · ')}</div>`,
+      `<div class="cell-armed">ещё клик сюда — пойдут: ${selectedUnits.map(esc).join(" · ")}</div>`,
     );
   } else if (cellReleases()) {
     parts.push('<div class="cell-armed">ещё клик — снять выделение</div>');
@@ -929,7 +1002,8 @@ function renderCellPanel(snap) {
     parts.push('<div class="cat-sub">непроходима: коты её не пересекут</div>');
   } else {
     const roles = tileRoles(def);
-    if (roles.length) parts.push(`<div class="cat-sub">${roles.join(' · ')}</div>`);
+    if (roles.length)
+      parts.push(`<div class="cat-sub">${roles.join(" · ")}</div>`);
   }
 
   // Кучи на клетке — то, ради чего панель и заводилась. Разных типов на одной
@@ -946,21 +1020,22 @@ function renderCellPanel(snap) {
       '<div class="cat-skill">' +
         `<div class="cat-row"><span>Занято</span><b>${held} / ${def.capacity}</b></div>` +
         `<div class="bar"><i style="width:${pct}%"></i></div>` +
-        '</div>',
+        "</div>",
     );
   }
   if (piles.length) {
     const chips = piles
       .map(
         (s) =>
-          `<i class="chip" style="background:${(meta.items ?? [])[s.item]?.color ?? '#c9a227'}"></i>` +
+          `<i class="chip" style="background:${(meta.items ?? [])[s.item]?.color ?? "#c9a227"}"></i>` +
           `${esc(itemLabel(s.item))} ${s.count}`,
       )
-      .join(' · ');
+      .join(" · ");
     parts.push(`<div class="cat-sub">${chips}</div>`);
     // Пометка «на склад» объясняет, почему за кучей кто-то придёт, — а при
     // включённой автоуборке помечено всё, что лежит вне склада.
-    if (piles.some((s) => s.marked)) parts.push('<div class="cat-sub">помечено на склад</div>');
+    if (piles.some((s) => s.marked))
+      parts.push('<div class="cat-sub">помечено на склад</div>');
   } else if (def) {
     parts.push('<div class="cat-sub">пусто</div>');
   }
@@ -970,7 +1045,9 @@ function renderCellPanel(snap) {
   const bp = (snap.blueprints ?? []).find((b) => b.x === x && b.y === y);
   if (bp) {
     const what =
-      bp.tile < 0 ? 'Снос' : `Стройка: ${esc(meta.palette[bp.tile]?.label || meta.palette[bp.tile]?.id || '?')}`;
+      bp.tile < 0
+        ? "Снос"
+        : `Стройка: ${esc(meta.palette[bp.tile]?.label || meta.palette[bp.tile]?.id || "?")}`;
     const supplied = bp.delivered >= bp.need;
     const pct = supplied
       ? bp.total > 0
@@ -983,8 +1060,8 @@ function renderCellPanel(snap) {
       '<div class="cat-skill">' +
         `<div class="cat-row"><span>${what}</span><b>${pct}%</b></div>` +
         `<div class="bar"><i style="width:${pct}%"></i></div>` +
-        `<div class="cat-sub">${supplied ? 'материал на месте' : `завезено ${bp.delivered} из ${bp.need}`}</div>` +
-        '</div>',
+        `<div class="cat-sub">${supplied ? "материал на месте" : `завезено ${bp.delivered} из ${bp.need}`}</div>` +
+        "</div>",
     );
   }
 
@@ -998,9 +1075,12 @@ function renderCellPanel(snap) {
   // Кто стоит. Клетку коты делят на проходе (§12.32), а на паузе видно только
   // верхнего — из-за чего и разошлись показания в первом баге про лапы.
   const here = unitsAt(x, y);
-  if (here.length) parts.push(`<div class="cat-sub">здесь: ${here.map(esc).join(' · ')}</div>`);
+  if (here.length)
+    parts.push(
+      `<div class="cat-sub">здесь: ${here.map(esc).join(" · ")}</div>`,
+    );
 
-  cellEl.innerHTML = parts.join('');
+  cellEl.innerHTML = parts.join("");
   cellEl.hidden = false;
 }
 
@@ -1017,34 +1097,52 @@ function cellWork(snap, x, y, def) {
     const order = (snap.crafting ?? []).find((c) => c.x === x && c.y === y);
     if (order) {
       const name = esc(recipeLabel(order.def));
-      const who = order.unit ? `, работает ${esc(order.unit)}` : ', мастер идёт';
+      const who = order.unit
+        ? `, работает ${esc(order.unit)}`
+        : ", мастер идёт";
       out.push(`делают: ${name}, осталось ${order.left} шт${who}`);
     } else {
-      out.push('станок свободен — заказы в разделе «Производство»');
+      out.push("станок свободен — заказы в разделе «Производство»");
     }
   }
   if (def.lab) {
     const topic = (snap.research ?? [])[0];
     out.push(
       topic
-        ? `тема: ${esc(topicLabel(topic.def))}${topic.unit ? `, работает ${esc(topic.unit)}` : ''}`
-        : 'тем нет — их берут в разделе «Наука»',
+        ? `тема: ${esc(topicLabel(topic.def))}${topic.unit ? `, работает ${esc(topic.unit)}` : ""}`
+        : "тем нет — их берут в разделе «Наука»",
     );
   }
   if (def.gate) {
     const m = (snap.missions ?? []).find((v) => v.x === x && v.y === y);
-    if (m) out.push(m.away ? `отряд в поле, вернётся через ${m.left}` : 'здесь собирается отряд');
+    if (m)
+      out.push(
+        m.away
+          ? `отряд в поле, вернётся через ${m.left}`
+          : "здесь собирается отряд",
+      );
     // Купленное приезжает кучей на шлюз, а проданное коты сносят сюда же
     // (§12.44) — это и есть ответ на «почему тут растёт куча».
     const incoming = (snap.deals ?? []).filter((d) => d.buying);
-    if (incoming.length) out.push(`сюда едет купленное: ${incoming.length} партия(и)`);
+    if (incoming.length)
+      out.push(`сюда едет купленное: ${incoming.length} партия(и)`);
   }
   if (def.trade) {
     // §12.44: за постом никто не работает. Сказать это прямо надо здесь, иначе
     // игрок будет ждать у него кота и решит, что механика сломана.
     const busy = (snap.deals ?? []).length;
-    out.push('лицензия на торговлю: за ней не работают, товар едет к шлюзу');
+    out.push("лицензия на торговлю: за ней не работают, товар едет к шлюзу");
     out.push(`сделок идёт ${busy} из ${posts} — по одной на пост`);
+  }
+  if (def.relay) {
+    // §12.59: узел — вторая лицензия после поста, и за ним тоже никто не
+    // работает. Сказать это прямо надо здесь, иначе игрок будет ждать у него
+    // связиста и решит, что механика сломана.
+    const busy = (snap.missions ?? []).length;
+    out.push(
+      "лицензия на вылазку: за ней не работают, отряд уходит через шлюз",
+    );
+    out.push(`вылазок идёт ${busy} из ${relays} — по одной на узел`);
   }
   return out;
 }
@@ -1060,7 +1158,7 @@ function renderCaptivePanel() {
   }
   captiveEl.innerHTML =
     '<div class="cat-name">В плену</div>' +
-    `<div class="cat-sub">${captives.map(esc).join(' · ')}</div>` +
+    `<div class="cat-sub">${captives.map(esc).join(" · ")}</div>` +
     '<div class="cat-sub">Сам не вернётся — нужна вылазка за своим</div>';
   captiveEl.hidden = false;
 }
@@ -1069,31 +1167,58 @@ function renderCaptivePanel() {
 // кого послать (§12.22), — значит должен хотя бы видеть, кого выбрала за него
 // симуляция и почему база вдруг перестала строить.
 function renderMissionPanel(list) {
-  const m = (list ?? [])[0];
-  missionRunning = !!m;
+  const raidsOut = list ?? [];
+  // Идущие вылазки — по заказу, а не по счёту: кнопка гасится именно у своей
+  // (§12.59), двух вылазок по одному заказу не бывает.
+  running = new Set(raidsOut.map((m) => m.def));
   syncMissionButtons();
-  if (!m || !meta) {
+  if (!raidsOut.length || !meta) {
     missionEl.hidden = true;
     return;
   }
+  const parts = [];
+  // Сколько слотов занято — там же, где видно сами вылазки. Число узлов считает
+  // ядро (§12.59): «вылазок меньше, чем узлов» вторым экземпляром в JS однажды
+  // разойдётся с `launch`.
+  if (relays > 1) {
+    parts.push(
+      `<div class="cat-name">Вылазки · ${raidsOut.length} из ${relays}</div>`,
+    );
+  }
+  for (const m of raidsOut) parts.push(missionCard(m));
+  missionEl.innerHTML = parts.join("");
+  missionEl.hidden = false;
+}
+
+// Одна карточка вылазки. Их столько, сколько узлов связи (§12.59), поэтому у
+// кнопки отмены обязателен `data-def`: `onPanelClick` различает одинаковые
+// кнопки только по нему, а без него все отмены поделят один пустой ключ.
+function missionCard(m) {
   const def = (meta.missions ?? [])[m.def];
-  const parts = [`<div class="cat-name">${esc(def?.label || def?.id || 'Вылазка')}</div>`];
+  const parts = [
+    `<div class="cat-name">${esc(def?.label || def?.id || "Вылазка")}</div>`,
+  ];
   if (m.away) {
-    const pct = m.total > 0 ? Math.round(((m.total - m.left) / m.total) * 100) : 0;
+    const pct =
+      m.total > 0 ? Math.round(((m.total - m.left) / m.total) * 100) : 0;
     parts.push(
       '<div class="cat-skill">' +
         `<div class="cat-row"><span>В пути</span><b>${pct}%</b></div>` +
         `<div class="bar"><i style="width:${pct}%"></i></div>` +
-        '</div>',
+        "</div>",
     );
   } else {
     // Спящего бойца заявка не поднимает, пока включено «Беречь себя» (§12.51),
     // а сбор ничем не ограничен по времени: «собираются у шлюза» под отрядом,
     // который никуда не идёт, читается как поломка.
-    const gathering = m.resting ? 'Ждут, пока выспится боец' : 'Собираются у шлюза';
+    const gathering = m.resting
+      ? "Ждут, пока выспится боец"
+      : "Собираются у шлюза";
     parts.push(`<div class="cat-sub">${gathering}</div>`);
   }
-  parts.push(`<div class="cat-sub">${m.squad.map(esc).join(' · ') || '—'}</div>`);
+  parts.push(
+    `<div class="cat-sub">${m.squad.map(esc).join(" · ") || "—"}</div>`,
+  );
   // Прогноз исхода: его считает ядро тем же выражением, которым исход
   // посчитается на возвращении (§12.23). Пока отряд на базе — это ещё и
   // предупреждение: увидел «провал», успел отозвать.
@@ -1101,7 +1226,7 @@ function renderMissionPanel(list) {
     // Раны считаются той же долей, что и добыча (§12.37), поэтому цену провала
     // можно назвать здесь же — из того самого числа, которым ядро её посчитает.
     const harm = Math.round(((def?.harm ?? 0) * (100 - m.share)) / 100);
-    const wounds = harm > 0 ? `, раны ${harm}` : '';
+    const wounds = harm > 0 ? `, раны ${harm}` : "";
     // У вылазки за своим доля тоже считается, но говорить о ней процентами
     // значило бы обещать половину кота: её исход — «вынесут или нет» (§12.40).
     const verdict = m.failed
@@ -1112,9 +1237,9 @@ function renderMissionPanel(list) {
     parts.push(
       '<div class="cat-skill">' +
         `<div class="cat-row"><span>Сила / сложность</span><b>${m.strength} / ${m.danger}</b></div>` +
-        `<div class="bar"><i class="${m.failed ? 'fail' : ''}" style="width:${m.failed ? 100 : m.share}%"></i></div>` +
+        `<div class="bar"><i class="${m.failed ? "fail" : ""}" style="width:${m.failed ? 100 : m.share}%"></i></div>` +
         `<div class="cat-sub">${verdict}</div>` +
-        '</div>',
+        "</div>",
     );
   }
   // Цена решения — рядом с прогнозом добычи и тем же числом, которым ядро её
@@ -1122,24 +1247,25 @@ function renderMissionPanel(list) {
   // до клика: закрывшиеся ворота честны ровно постольку, поскольку игрок видел,
   // чем платит. У провала здесь ноль — и это тоже новость.
   if (m.patron >= 0 || m.against >= 0) {
-    const name = (f) => esc((meta.factions ?? [])[f]?.label || '—');
+    const name = (f) => esc((meta.factions ?? [])[f]?.label || "—");
     const moves = [];
     if (m.patron >= 0) moves.push(`${name(m.patron)} +${m.standing}`);
     if (m.against >= 0) moves.push(`${name(m.against)} −${m.standing}`);
     parts.push(
       '<div class="cat-skill">' +
         '<div class="cat-row"><span>Репутация</span></div>' +
-        `<div class="cat-sub">${moves.join(' · ')}</div>` +
-        '</div>',
+        `<div class="cat-sub">${moves.join(" · ")}</div>` +
+        "</div>",
     );
   }
   // Отозвать можно только тех, кто ещё на базе: ушедший отряд симуляции уже
   // не подчиняется — вылазка считается разом по возвращении.
   if (!m.away) {
-    parts.push('<button class="tool mission-cancel"><span>Отозвать</span></button>');
+    parts.push(
+      `<button class="tool mission-cancel" data-def="${m.def}"><span>Отозвать</span></button>`,
+    );
   }
-  missionEl.innerHTML = parts.join('');
-  missionEl.hidden = false;
+  return `<div class="cat-skill">${parts.join("")}</div>`;
 }
 
 // Панель темы. Исследование идёт молча в дальней комнате, и без панели видно
@@ -1154,17 +1280,17 @@ function renderResearchPanel(list) {
   const def = (meta.research ?? [])[r.def];
   const pct = r.total > 0 ? Math.round((r.progress / r.total) * 100) : 0;
   const parts = [
-    `<div class="cat-name">${esc(def?.label || def?.id || 'Тема')}</div>`,
+    `<div class="cat-name">${esc(def?.label || def?.id || "Тема")}</div>`,
     '<div class="cat-skill">' +
       `<div class="cat-row"><span>Изучено</span><b>${pct}%</b></div>` +
       `<div class="bar"><i style="width:${pct}%"></i></div>` +
-      '</div>',
+      "</div>",
     // Пусто — исполнитель ещё не нашёлся: тема ждёт, а не идёт. Разница
     // важная, и в полоске её не видно.
-    `<div class="cat-sub">${r.unit ? esc(r.unit) : 'ждёт исполнителя'}</div>`,
+    `<div class="cat-sub">${r.unit ? esc(r.unit) : "ждёт исполнителя"}</div>`,
     '<button class="tool research-cancel"><span>Бросить</span></button>',
   ];
-  researchEl.innerHTML = parts.join('');
+  researchEl.innerHTML = parts.join("");
   researchEl.hidden = false;
 }
 
@@ -1184,24 +1310,28 @@ function renderCraftPanel(list) {
     return;
   }
   const parts = [
-    `<div class="cat-name">Заказы${orders.length > 1 ? ` · ${orders.length}` : ''}</div>`,
+    `<div class="cat-name">Заказы${orders.length > 1 ? ` · ${orders.length}` : ""}</div>`,
   ];
   for (const c of orders) {
     const def = (meta.recipes ?? [])[c.def];
     const pct = c.total > 0 ? Math.round((c.progress / c.total) * 100) : 0;
     // Три разных «ничего не происходит», и путать их нельзя: некому взяться,
     // нечем платить или работа идёт.
-    const state = c.unit ? esc(c.unit) : c.paid ? 'ждёт исполнителя' : 'ждёт материала';
+    const state = c.unit
+      ? esc(c.unit)
+      : c.paid
+        ? "ждёт исполнителя"
+        : "ждёт материала";
     parts.push(
       '<div class="cat-skill">' +
-        `<div class="cat-row"><span>${esc(def?.label || def?.id || 'Заказ')}</span><b>${pct}%</b></div>` +
+        `<div class="cat-row"><span>${esc(def?.label || def?.id || "Заказ")}</span><b>${pct}%</b></div>` +
         `<div class="bar"><i style="width:${pct}%"></i></div>` +
         `<div class="cat-sub">осталось ${c.left} шт · ${state}</div>` +
         `<button class="tool craft-cancel" data-def="${c.def}"><span>Отменить</span></button>` +
-        '</div>',
+        "</div>",
     );
   }
-  craftEl.innerHTML = parts.join('');
+  craftEl.innerHTML = parts.join("");
   craftEl.hidden = false;
 }
 
@@ -1218,18 +1348,20 @@ function renderDealPanel(list) {
   }
   // Сколько окон занято из скольких: постов теперь может быть несколько, и
   // «почему кнопка не жмётся» игрок должен читать здесь, а не гадать (§12.55).
-  const head = posts > 1 ? `Сделки · ${deals.length} из ${posts}` : 'Сделка';
+  const head = posts > 1 ? `Сделки · ${deals.length} из ${posts}` : "Сделка";
   const parts = [`<div class="cat-name">${head}</div>`];
   for (const d of deals) {
     const item = (meta.items ?? [])[d.item];
     const who = (meta.factions ?? [])[d.faction];
-    const name = esc(item?.label || item?.id || 'товар');
+    const name = esc(item?.label || item?.id || "товар");
     const rows = [
-      `<div class="cat-row"><span>${d.buying ? 'Покупка' : 'Продажа'}: ${name}</span></div>`,
-      `<div class="cat-sub">${esc(who?.label || '—')} · ${d.count} шт по ${d.unit} = ${d.unit * d.count}¤</div>`,
+      `<div class="cat-row"><span>${d.buying ? "Покупка" : "Продажа"}: ${name}</span></div>`,
+      `<div class="cat-sub">${esc(who?.label || "—")} · ${d.count} шт по ${d.unit} = ${d.unit * d.count}¤</div>`,
     ];
     if (d.buying) {
-      rows.push(`<div class="cat-sub">в пути ${d.left} — приедет в гараж</div>`);
+      rows.push(
+        `<div class="cat-sub">в пути ${d.left} — приедет в гараж</div>`,
+      );
     } else {
       // У продажи «срок» — это ходки котов, и мерить его тиками нечем:
       // показываем сделанное, а не оставшееся время.
@@ -1239,9 +1371,9 @@ function renderDealPanel(list) {
           `<div class="cat-sub">отнесли ${d.delivered} из ${d.count} · получено ${d.unit * d.delivered}¤</div>`,
       );
     }
-    parts.push(`<div class="cat-skill">${rows.join('')}</div>`);
+    parts.push(`<div class="cat-skill">${rows.join("")}</div>`);
   }
-  dealEl.innerHTML = parts.join('');
+  dealEl.innerHTML = parts.join("");
   dealEl.hidden = false;
 }
 
@@ -1268,11 +1400,11 @@ function renderNotePanel(list, tick = 0) {
       : !today
         ? `через ${n.left}`
         : until <= 0
-          ? 'сегодня'
+          ? "сегодня"
           : until === 1
-            ? 'завтра'
+            ? "завтра"
             : `через ${days(until)}`;
-    const stamp = today ? `день ${dayOf(n.at)} — ` : '';
+    const stamp = today ? `день ${dayOf(n.at)} — ` : "";
     const parts = [
       `<div class="cat-row"><span>${esc(n.label)}</span><b>${when}</b></div>`,
       `<div class="cat-sub">${stamp}${esc(n.detail || n.hint)}</div>`,
@@ -1280,14 +1412,14 @@ function renderNotePanel(list, tick = 0) {
     // Требование показываем, только пока событие впереди: после срока важно уже
     // не «чего не хватало», а чем всё кончилось.
     if (!n.done && n.revealed && n.requires.length) {
-      const needs = n.requires.map(techLabel).join(' · ');
+      const needs = n.requires.map(techLabel).join(" · ");
       parts.push(
         n.ready
           ? `<div class="cat-sub good">готовы: ${esc(needs)}</div>`
           : `<div class="cat-sub warn">нужно: ${esc(needs)}</div>`,
       );
     }
-    return `<div class="row${n.done ? ' past' : ''}">${parts.join('')}</div>`;
+    return `<div class="row${n.done ? " past" : ""}">${parts.join("")}</div>`;
   });
 
   // Записка кончилась — но кончился не мир, а предзнание (§4.6, §12.46).
@@ -1301,26 +1433,203 @@ function renderNotePanel(list, tick = 0) {
         `<div class="cat-row"><span>Записка кончилась</span>` +
         `<b>${kept} из ${notes.length}</b></div>` +
         `<div class="cat-sub">` +
-        (today ? `день ${dayOf(last)} — ` : '') +
+        (today ? `день ${dayOf(last)} — ` : "") +
         `дальше дат нет: база живёт вслепую</div>` +
         `</div>`,
     );
   }
 
-  noteEl.innerHTML = `<div class="cat-name">Записка</div>${rows.join('')}`;
+  noteEl.innerHTML = `<div class="cat-name">Записка</div>${rows.join("")}`;
   noteEl.hidden = false;
 }
+
+// --- цели партии (§12.58) ---------------------------------------------------
+//
+// Панель открыта с начала: цель партии — это первое, что игрок должен увидеть,
+// иначе он опять в песочнице без запроса. Прячется кнопкой в шапке, счёт на
+// которой виден всегда.
+//
+// Ни ярлыков, ни подписей в снапшоте нет — только индексы: тексты приезжают
+// один раз в `meta.goals`, как рецепты и темы. Скрытой невзятой цели в снапшоте
+// нет вовсе, и это решает **ядро**: прятать её здесь значило бы объявить её в
+// devtools (§12.28).
+let goalsOpen = true;
+// Что было закрыто в прошлом кадре — множеством, а не счётчиком: по нему
+// ловятся **оба** перехода, и полнота набора (финал), и каждая отдельная цель
+// (уведомление). Два разных «что было в прошлом кадре» однажды разъехались бы.
+//
+// `null` — кадра ещё не было. Отсюда же и то, что своего флага «уже показано» ни
+// у финала, ни у уведомлений нет: после перезагрузки первый же снапшот приезжает
+// из снимка сразу с закрытыми целями, перехода не случается, и не всплывает
+// ничего. Игрока не поздравляют повторно с тем, что он сделал вчера.
+let goalsDoneSeen = null;
+
+goalsToggleEl.addEventListener("click", () => {
+  goalsOpen = !goalsOpen;
+  goalsEl.hidden = !goalsOpen;
+});
+
+function goalDef(def) {
+  return (meta.goals ?? [])[def] ?? {};
+}
+
+function renderGoalsPanel(goals, required, snap) {
+  if (!goals?.length) {
+    goalsToggleEl.hidden = true;
+    goalsEl.hidden = true;
+    return;
+  }
+  goalsToggleEl.hidden = false;
+
+  // В счёт идут только обязательные: взятая скрытая раздула бы знаменатель, и
+  // «8 / 7» игрок прочтёт как поломку.
+  const done = goals.filter((g) => g.done && !g.hidden).length;
+  goalsToggleEl.textContent = `цели ${done}/${required}`;
+  goalsToggleEl.classList.toggle("done", done >= required);
+
+  const row = (g) => {
+    const def = goalDef(g.def);
+    const label = esc(def.label || def.id || "?");
+    if (g.done) {
+      const when = dayOf(g.at) ? `день ${dayOf(g.at)}` : "✓";
+      return `<div class="row past"><div class="cat-row"><span>${label}</span><b>${when}</b></div></div>`;
+    }
+    // Счётчик показываем только там, где есть что мерить: у двоичной цели
+    // «0 / 1» — это шум, а не сведения.
+    const meter = g.need > 1 ? `<b>${g.have} / ${g.need}</b>` : "";
+    return (
+      `<div class="row"><div class="cat-row"><span>${label}</span>${meter}</div>` +
+      `<div class="cat-sub">${esc(def.hint || "")}</div></div>`
+    );
+  };
+
+  const open = goals.filter((g) => !g.hidden);
+  const extra = goals.filter((g) => g.hidden); // сюда попадают только взятые
+  const rows = open.map(row);
+  if (extra.length) {
+    rows.push(
+      '<div class="cat-sub goals-extra">сверх того</div>',
+      ...extra.map(row),
+    );
+  }
+  goalsEl.innerHTML = `<div class="cat-name">Цели</div>${rows.join("")}`;
+  goalsEl.hidden = !goalsOpen;
+
+  // Оба перехода считаются по одному множеству — тому, что было в прошлом кадре.
+  const doneNow = new Set(goals.filter((g) => g.done).map((g) => g.def));
+  const first = goalsDoneSeen === null;
+  const fresh = first
+    ? []
+    : goals.filter((g) => g.done && !goalsDoneSeen.has(g.def));
+  // Финал — по **переходу** к полноте, а не по факту полноты: иначе он всплывал
+  // бы каждым кадром после закрытия.
+  const finale = !first && goalsDoneSeen.size < required && done >= required;
+
+  if (finale) showFinale(goals, snap);
+  // Уведомления **и о скрытых тоже**: взятая скрытая цель — это ровно тот момент,
+  // ради которого её прятали, и промолчать о нём значит спрятать её насовсем.
+  // А вот вместе с финалом их не показываем: модал уже перечисляет всё разом, и
+  // семь всплывающих поверх него — это шум, а не сведения.
+  if (!finale) fresh.forEach((g) => showGoalToast(g));
+
+  goalsDoneSeen = doneNow;
+}
+
+// --- уведомление о взятой цели ----------------------------------------------
+//
+// Живёт **в реальных секундах, а не в тиках**, и это главное в нём: на ×10 тик
+// длится 16 мс, и отмеренное тиками уведомление мигнуло бы и пропало. Ядру
+// wall-clock запрещён (§11: любой недетерминизм ломает и тесты, и модель
+// времени), но здесь вид — ему часы мира не указ, и на паузе уведомление точно
+// так же честно досчитает своё и уйдёт.
+const TOAST_MS = 7000;
+
+function showGoalToast(goal) {
+  const def = goalDef(goal.def);
+  const node = document.createElement("div");
+  node.className = "toast";
+  node.innerHTML =
+    `<div class="toast-kind">${goal.hidden ? "скрытая цель" : "цель закрыта"}</div>` +
+    `<div class="toast-label">${esc(def.label || def.id || "?")}</div>`;
+
+  // Уходит либо само, либо по клику — но убирается **одним** путём: иначе клик
+  // по уже угасающему уведомлению снимал бы его дважды.
+  let done = false;
+  const close = () => {
+    if (done) return;
+    done = true;
+    clearTimeout(timer);
+    node.classList.add("leaving");
+    // Ждём конца перехода, а не таймером на ту же длительность: второй таймер
+    // разъехался бы с CSS при первой же правке анимации.
+    node.addEventListener("transitionend", () => node.remove(), { once: true });
+  };
+  const timer = setTimeout(close, TOAST_MS);
+  node.addEventListener("click", close);
+
+  toastsEl.appendChild(node);
+  // Класс появления вешаем следующим кадром: навешанный сразу, он совпал бы с
+  // вставкой узла, и браузер не увидел бы перехода — уведомление возникало бы
+  // рывком.
+  requestAnimationFrame(() => node.classList.add("shown"));
+}
+
+/// Единственный модальный экран в игре — и он **не кончает партию**.
+///
+/// Закрыл и играешь дальше: §10 отказывает MVP в финальном акте Воланда, а тут
+/// кончилось обучение, как у записки кончилось предзнание, а не мир (§12.46).
+function showFinale(goals, snap) {
+  const cats = snap.entities.filter((e) => e.unit).length;
+  const scrap = snap.stock?.[0];
+  const stored = scrap ? scrap.stored + scrap.loose : 0;
+  const day = dayOf(snap.tick);
+  const lines = goals
+    .filter((g) => !g.hidden)
+    .map((g) => {
+      const def = goalDef(g.def);
+      const when = dayOf(g.at) ? `день ${dayOf(g.at)}` : "✓";
+      return `<div class="cat-row"><span>${esc(def.label || def.id)}</span><b>${when}</b></div>`;
+    })
+    .join("");
+  finaleEl.innerHTML =
+    `<div class="finale-box"><div class="finale-title">База состоялась</div>` +
+    `<div class="cat-sub">всё, что было задумано, база умеет</div>` +
+    `<div class="finale-list">${lines}</div>` +
+    `<div class="cat-sub">` +
+    (day ? `день ${day} · ` : "") +
+    `${cats} кот(ов) · ${stored} лома</div>` +
+    `<div class="cat-sub">дальше целей нет — база живёт как хочет</div>` +
+    `<button class="finale-close">Играть дальше</button></div>`;
+  finaleEl.hidden = false;
+  // Модал ставит время на паузу: итог читают, а не догоняют глазами на ×10.
+  // Своего «запомненного темпа» не заводим — `lastSpeed` уже значит ровно это
+  // («тот темп, к которому возвращает пробел»), и `setSpeed(0)` его не затирает.
+  // Второй такой памяти хватило бы, чтобы однажды разойтись с пробелом.
+  //
+  // Игрок, поставивший паузу сам, сюда не попадёт: цели отмечает `check_goals`,
+  // а он тикает вместе с миром — на паузе закрыться нечему.
+  setSpeed(0);
+}
+
+// Модал живёт вне потока панелей и не перерисовывается каждым кадром, поэтому
+// обычный `click` тут уместен — узел под курсором не сменится (ср. §12.55).
+finaleEl.addEventListener("click", (e) => {
+  if (!e.target.closest(".finale-close") && e.target !== finaleEl) return;
+  finaleEl.hidden = true;
+  // Возвращаем тот темп, на котором игрока застал финал, — как это делает пробел.
+  setSpeed(lastSpeed);
+});
 
 // Рецепт и тема — по индексу палитры, как предмет: их `def` в снапшоте это
 // номер записи, а не имя (в отличие от технологии).
 function recipeLabel(def) {
   const d = (meta.recipes ?? [])[def];
-  return d?.label || d?.id || '?';
+  return d?.label || d?.id || "?";
 }
 
 function topicLabel(def) {
   const d = (meta.research ?? [])[def];
-  return d?.label || d?.id || '?';
+  return d?.label || d?.id || "?";
 }
 
 function techLabel(id) {
@@ -1330,7 +1639,7 @@ function techLabel(id) {
 
 function itemLabel(item) {
   const def = (meta.items ?? [])[item];
-  return def?.label || def?.id || '?';
+  return def?.label || def?.id || "?";
 }
 
 function perkLabel(id) {
@@ -1348,15 +1657,16 @@ function skillLabel(id) {
 // Врождённые параметры кандидата словами: «Ум 4 · Реакция 9 · Выносливость 6».
 // serde-wasm-bindgen отдаёт отображение из YAML настоящим `Map`, как и цену.
 function statsHint(stats) {
-  const entries = stats instanceof Map ? [...stats.entries()] : Object.entries(stats ?? {});
-  if (!entries.length) return '';
+  const entries =
+    stats instanceof Map ? [...stats.entries()] : Object.entries(stats ?? {});
+  if (!entries.length) return "";
   return (meta.stats ?? [])
     .map((st) => {
       const found = entries.find(([id]) => id === st.id);
-      return found ? `${st.label || st.id} ${found[1]}` : '';
+      return found ? `${st.label || st.id} ${found[1]}` : "";
     })
     .filter(Boolean)
-    .join(' · ');
+    .join(" · ");
 }
 
 function statIndex(id) {
@@ -1371,7 +1681,7 @@ function statLabel(id) {
 function esc(s) {
   return String(s).replace(
     /[&<>"]/g,
-    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c],
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c],
   );
 }
 
@@ -1401,7 +1711,8 @@ function unitAt(tx, ty) {
 // по имени: список, который сам себя перетасовывает, читается как мельтешение.
 function unitsAt(tx, ty) {
   const found = [];
-  for (const [id, ut] of unitTiles) if (ut.x === tx && ut.y === ty) found.push(id);
+  for (const [id, ut] of unitTiles)
+    if (ut.x === tx && ut.y === ty) found.push(id);
   return found.sort();
 }
 
@@ -1421,8 +1732,8 @@ function rectOf(a, b) {
 function applyDrag() {
   if (!dragFrom || !dragTo) return;
   const rect = rectOf(dragFrom, dragTo);
-  if (mode === 'store') worker.postMessage({ type: 'store', ...rect });
-  else worker.postMessage({ type: 'build', ...rect, tile: buildTile });
+  if (mode === "store") worker.postMessage({ type: "store", ...rect });
+  else worker.postMessage({ type: "build", ...rect, tile: buildTile });
 }
 
 // `global` — где отпустили кнопку: подсветка сразу возвращается к одной клетке
@@ -1437,7 +1748,7 @@ function endDrag(apply, global) {
     const rect = rectOf(dragFrom, dragTo);
     if (dragUnit && rect.w === 1 && rect.h === 1) {
       selectCursor(cursorBtn);
-      // Тот же первый шаг, что и у клика курсором (§12.54): клетка показана, мир
+      // Тот же первый шаг, что и у клика курсором (§12.58): клетка показана, мир
       // не тронут. Клетку выставляем **до** выбора кота — перерисовку оверлея
       // зовёт `selectUnit`, и она должна увидеть уже обе половины выделения.
       selectedCell = { x: rect.x, y: rect.y };
@@ -1456,12 +1767,13 @@ function endDrag(apply, global) {
 // Выбрать кота; `add` (Shift) — добавить в отряд или убрать из него.
 function selectUnit(id, add) {
   if (!add) selectedUnits = [id];
-  else if (selectedUnits.includes(id)) selectedUnits = selectedUnits.filter((u) => u !== id);
+  else if (selectedUnits.includes(id))
+    selectedUnits = selectedUnits.filter((u) => u !== id);
   else selectedUnits.push(id);
   updateSelectionOverlay();
 }
 
-// Режим курсора. Приказ здесь **двухшаговый** (§12.54): первый клик по клетке
+// Режим курсора. Приказ здесь **двухшаговый** (§12.58): первый клик по клетке
 // только показывает, что на ней (и выбирает кота, если тот там стоит), а
 // отправляет туда котов повторный клик по **той же** клетке.
 //
@@ -1476,7 +1788,8 @@ function selectUnit(id, add) {
 function command(global, add) {
   const t = tileAt(global);
   if (!t) return;
-  const same = selectedCell && selectedCell.x === t.tx && selectedCell.y === t.ty;
+  const same =
+    selectedCell && selectedCell.x === t.tx && selectedCell.y === t.ty;
   // Панель следует за кликом всегда, даже когда тот же клик отдаёт приказ:
   // иначе клетку под котом не осмотреть вовсе — клик по ней выбирает кота, и
   // получается замкнутый круг.
@@ -1502,7 +1815,7 @@ function command(global, add) {
     // Приказ уходит каждому выбранному: коты друг друга не блокируют, и толпа
     // на одной клетке — законное состояние (см. `set_target` в ядре).
     for (const id of selectedUnits) {
-      worker.postMessage({ type: 'move', id, x: t.tx, y: t.ty });
+      worker.postMessage({ type: "move", id, x: t.tx, y: t.ty });
       orders.set(id, { x: t.tx, y: t.ty });
     }
   }
@@ -1546,16 +1859,19 @@ function updateHover(global) {
   const t = tileAt(global);
   hoverRect.clear();
   // Во время протяжки показываем всю рамку — даже если курсор ушёл за карту.
-  const r = dragFrom ? rectOf(dragFrom, dragTo) : t && { x: t.tx, y: t.ty, w: 1, h: 1 };
+  const r = dragFrom
+    ? rectOf(dragFrom, dragTo)
+    : t && { x: t.tx, y: t.ty, w: 1, h: 1 };
   if (!r) return;
   // Одна клетка с котом под ней подсвечивается как выбор, а не как разметка:
   // отпустив кнопку здесь, игрок выберет кота, и цвет обязан сказать это до
   // клика, а не после.
-  const overUnit = r.w === 1 && r.h === 1 && (dragFrom ? dragUnit : t && unitAt(t.tx, t.ty));
+  const overUnit =
+    r.w === 1 && r.h === 1 && (dragFrom ? dragUnit : t && unitAt(t.tx, t.ty));
   const col =
-    overUnit || mode === 'cursor'
+    overUnit || mode === "cursor"
       ? COLORS.select
-      : mode === 'store'
+      : mode === "store"
         ? COLORS.scrap
         : buildTile >= 0
           ? paletteColors[buildTile]
@@ -1566,8 +1882,8 @@ function updateHover(global) {
     .stroke({ color: col, width: 2, alpha: 0.9 });
 }
 
-app.stage.on('pointerdown', (e) => {
-  if (mode === 'cursor') {
+app.stage.on("pointerdown", (e) => {
+  if (mode === "cursor") {
     command(e.global, e.shiftKey);
     return;
   }
@@ -1578,15 +1894,15 @@ app.stage.on('pointerdown', (e) => {
   dragUnit = unitAt(t.tx, t.ty);
   updateHover(e.global);
 });
-app.stage.on('pointermove', (e) => {
+app.stage.on("pointermove", (e) => {
   const t = tileAt(e.global);
   if (dragFrom && t) dragTo = t;
   updateHover(e.global);
 });
-app.stage.on('pointerup', (e) => endDrag(true, e.global));
+app.stage.on("pointerup", (e) => endDrag(true, e.global));
 // Курсор ушёл со сцены — применяем последнюю рамку в пределах карты: бросать
 // уже нарисованное выделение обиднее, чем применить его на клетку меньше.
-app.stage.on('pointerupoutside', (e) => endDrag(true, e.global));
+app.stage.on("pointerupoutside", (e) => endDrag(true, e.global));
 
 // Клавиши. Escape — отмена начатой протяжки: единственный способ передумать, не
 // отпуская кнопку (уже применённую рамку отменяет ластик).
@@ -1632,27 +1948,27 @@ function sendAction(msg) {
   updateSelectionOverlay();
 }
 
-window.addEventListener('keydown', (e) => {
+window.addEventListener("keydown", (e) => {
   if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
-  if (e.code === 'Escape' || e.key === 'Escape') {
+  if (e.code === "Escape" || e.key === "Escape") {
     if (dragFrom) {
       endDrag(false);
       return;
     }
     // Протяжки нет — снимаем выделение целиком: и клетку, и котов. Клика,
     // который снимал бы выбор с пустого места, в двухшаговой модели нет
-    // (§12.54): любой клик по карте что-нибудь да выбирает.
+    // (§12.58): любой клик по карте что-нибудь да выбирает.
     clearSelection();
     return;
   }
-  if (e.code === 'Space' || e.key === ' ') {
+  if (e.code === "Space" || e.key === " ") {
     // Иначе пробел «нажимает» кнопку в фокусе — а это может оказаться вылазка
     // или найм: клавиша одна, а цена ошибки разная.
     e.preventDefault();
     setSpeed(speed > 0 ? 0 : lastSpeed);
     return;
   }
-  const speedKey = SPEED_KEYS[e.code] ?? SPEED_KEYS['Digit' + e.key];
+  const speedKey = SPEED_KEYS[e.code] ?? SPEED_KEYS["Digit" + e.key];
   if (speedKey) setSpeed(speedKey);
 });
 
@@ -1664,15 +1980,18 @@ window.addEventListener('keydown', (e) => {
 function costChips(cost) {
   // serde-wasm-bindgen отдаёт YAML-отображение настоящим `Map`, а не объектом:
   // цена приходит как `Map { "scrap" => 1 }`.
-  const entries = cost instanceof Map ? [...cost.entries()] : Object.entries(cost ?? {});
-  if (!entries.length) return '';
+  const entries =
+    cost instanceof Map ? [...cost.entries()] : Object.entries(cost ?? {});
+  if (!entries.length) return "";
   const chips = (meta.items ?? [])
     .map((it) => {
       const found = entries.find(([id]) => id === it.id);
-      return found ? `<i class="chip" style="background:${it.color}"></i>${found[1]}` : '';
+      return found
+        ? `<i class="chip" style="background:${it.color}"></i>${found[1]}`
+        : "";
     })
     .filter(Boolean)
-    .join(' ');
+    .join(" ");
   return `<span class="cost">${chips}</span>`;
 }
 
@@ -1682,16 +2001,16 @@ function costChips(cost) {
 const sections = [];
 // Какой раздел открыт, помним между перестройками: иначе после каждого
 // возвращения к палитре её пришлось бы раскрывать заново.
-let openSection = 'Постройка';
+let openSection = "Постройка";
 
 function mkSection(el, title) {
-  const sec = document.createElement('div');
-  const head = document.createElement('button');
-  head.className = 'sec-head';
+  const sec = document.createElement("div");
+  const head = document.createElement("button");
+  head.className = "sec-head";
   head.innerHTML = `<span>${esc(title)}</span><span class="chev">›</span>`;
-  head.addEventListener('click', () => openOnly(title));
-  const body = document.createElement('div');
-  body.className = 'sec-body';
+  head.addEventListener("click", () => openOnly(title));
+  const body = document.createElement("div");
+  body.className = "sec-body";
   sec.appendChild(head);
   sec.appendChild(body);
   el.appendChild(sec);
@@ -1703,24 +2022,25 @@ function openOnly(title) {
   openSection = title;
   for (const s of sections) {
     const on = s.title === title;
-    s.head.classList.toggle('active', on);
+    s.head.classList.toggle("active", on);
     s.body.hidden = !on;
   }
 }
 
 function buildToolbar() {
-  const el = document.getElementById('toolbar');
-  el.innerHTML = '';
+  const el = document.getElementById("toolbar");
+  el.innerHTML = "";
   sections.length = 0;
 
   // Курсор — вне разделов: это не инструмент в ряду прочих, а состояние «ничего
   // не размечаю», и оно нужно из любого раздела.
-  cursorBtn = mkTool('<span class="sw sw-cursor"></span><span>Курсор</span>', () =>
-    selectCursor(cursorBtn),
+  cursorBtn = mkTool(
+    '<span class="sw sw-cursor"></span><span>Курсор</span>',
+    () => selectCursor(cursorBtn),
   );
   el.appendChild(cursorBtn);
 
-  const build = mkSection(el, 'Постройка');
+  const build = mkSection(el, "Постройка");
 
   tileButtons.length = 0;
   meta.palette.forEach((p, i) => {
@@ -1736,47 +2056,57 @@ function buildToolbar() {
     build.appendChild(b);
   });
 
-  const er = mkTool('<span class="sw sw-erase"></span><span>Стереть</span>', () =>
-    selectBuild(-1, er),
+  const er = mkTool(
+    '<span class="sw sw-erase"></span><span>Стереть</span>',
+    () => selectBuild(-1, er),
   );
   build.appendChild(er);
 
-  const scrap = mkSection(el, 'Лом');
+  const scrap = mkSection(el, "Лом");
 
   // Разметка уборки рамкой: повторный жест по помеченному снимает пометку.
   // Кот не выбирается — задачу возьмёт любой свободный.
-  const st = mkTool('<span class="sw sw-scrap"></span><span>На склад</span>', () => selectStore(st));
+  const st = mkTool(
+    '<span class="sw sw-scrap"></span><span>На склад</span>',
+    () => selectStore(st),
+  );
   scrap.appendChild(st);
 
   // Правила симуляции — не режимы ввода, а тумблеры поведения котов, поэтому
   // они живут отдельно от инструментов и своей подсветкой их не сбивают.
-  const rules = mkSection(el, 'Правила');
+  const rules = mkSection(el, "Правила");
 
-  const auto = mkTool('<span class="sw sw-scrap"></span><span>Убирать сам</span>', () => {
-    autoTidy = !autoTidy;
-    auto.classList.toggle('on', autoTidy);
-    worker.postMessage({ type: 'setAutoTidy', on: autoTidy });
-  });
-  auto.classList.add('toggle', 'on');
-  auto.title = 'Коты свозят лом на склад без разметки';
+  const auto = mkTool(
+    '<span class="sw sw-scrap"></span><span>Убирать сам</span>',
+    () => {
+      autoTidy = !autoTidy;
+      auto.classList.toggle("on", autoTidy);
+      worker.postMessage({ type: "setAutoTidy", on: autoTidy });
+    },
+  );
+  auto.classList.add("toggle", "on");
+  auto.title = "Коты свозят лом на склад без разметки";
   rules.appendChild(auto);
 
   // Второй порог усталости (§12.33). Выключено — коты доработают до нуля и
   // свалятся где стоят: это осознанный выбор игрока гнать базу до упора.
-  const care = mkTool('<span class="sw sw-rest"></span><span>Беречь себя</span>', () => {
-    autoRest = !autoRest;
-    care.classList.toggle('on', autoRest);
-    worker.postMessage({ type: 'setAutoRest', on: autoRest });
-  });
-  care.classList.add('toggle', 'on');
-  care.title = 'На исходе сил кот бросает работу и уходит спать';
+  const care = mkTool(
+    '<span class="sw sw-rest"></span><span>Беречь себя</span>',
+    () => {
+      autoRest = !autoRest;
+      care.classList.toggle("on", autoRest);
+      worker.postMessage({ type: "setAutoRest", on: autoRest });
+    },
+  );
+  care.classList.add("toggle", "on");
+  care.title = "На исходе сил кот бросает работу и уходит спать";
   rules.appendChild(care);
 
   // Вылазки. Не режим ввода: клик — это сразу заявка, отряд наберётся сам
   // (§12.22). Поэтому кнопки не входят в общую подсветку инструментов.
   const missions = meta.missions ?? [];
   if (missions.length) {
-    const raids = mkSection(el, 'Вылазки');
+    const raids = mkSection(el, "Вылазки");
 
     missionButtons.length = 0;
     missions.forEach((m, i) => {
@@ -1784,17 +2114,18 @@ function buildToolbar() {
       // валюта. Отряд берётся из выделения: кого послать, решает игрок.
       const b = mkTool(
         `<span class="sw sw-gate"></span><span>${esc(m.label || m.id)}</span>${costChips(m.loot)}`,
-        () => sendAction({ type: 'launch', mission: i, units: [...selectedUnits] }),
+        () =>
+          sendAction({ type: "launch", mission: i, units: [...selectedUnits] }),
       );
-      b.classList.add('toggle');
+      b.classList.add("toggle");
       b.dataset.squad = m.squad;
       b.dataset.requires = m.requires ?? 0;
       // Вылазка за своим доступна, только пока есть кого спасать: это решает
       // ядро, а кнопка обязана показывать то же самое (§12.40).
-      b.dataset.rescue = m.rescue ? '1' : '';
+      b.dataset.rescue = m.rescue ? "1" : "";
       b.dataset.hint =
         `${m.squad} кота · ${m.ticks} тиков · сложность ${m.danger ?? 0}` +
-        (m.harm ? ` · раны при провале ${m.harm}` : '');
+        (m.harm ? ` · раны при провале ${m.harm}` : "");
       missionButtons.push(b);
       raids.appendChild(b);
     });
@@ -1805,15 +2136,15 @@ function buildToolbar() {
   // Цена теми же фишками, что у тайлов и найма: образцы — обычный предмет.
   const topics = meta.research ?? [];
   if (topics.length) {
-    const science = mkSection(el, 'Наука');
+    const science = mkSection(el, "Наука");
 
     topicButtons.length = 0;
     topics.forEach((r, i) => {
       const b = mkTool(
         `<span class="sw sw-lab"></span><span>${esc(r.label || r.id)}</span>${costChips(r.cost)}`,
-        () => sendAction({ type: 'research', topic: i }),
+        () => sendAction({ type: "research", topic: i }),
       );
-      b.classList.add('toggle');
+      b.classList.add("toggle");
       b.dataset.level = r.level ?? 0;
       topicButtons.push(b);
       science.appendChild(b);
@@ -1824,7 +2155,7 @@ function buildToolbar() {
   // клик заказывает одну, Shift — пять (§12.30). Кота не выбираем.
   const recipes = meta.recipes ?? [];
   if (recipes.length) {
-    const shop = mkSection(el, 'Производство');
+    const shop = mkSection(el, "Производство");
 
     recipeButtons.length = 0;
     recipes.forEach((r, i) => {
@@ -1832,9 +2163,10 @@ function buildToolbar() {
       const b = mkTool(
         `<span class="sw sw-shop"></span><span>${esc(r.label || r.id)}</span>` +
           `${costChips(r.gives)}<span class="of">←</span>${costChips(r.cost)}`,
-        (e) => sendAction({ type: 'craft', recipe: i, count: e.shiftKey ? 5 : 1 }),
+        (e) =>
+          sendAction({ type: "craft", recipe: i, count: e.shiftKey ? 5 : 1 }),
       );
-      b.classList.add('toggle');
+      b.classList.add("toggle");
       recipeButtons.push(b);
       shop.appendChild(b);
     });
@@ -1845,7 +2177,7 @@ function buildToolbar() {
   // сюда не попадают — «Стройке» парта не нужна.
   const taught = (meta.skills ?? []).filter((s) => (s.taught ?? 0) > 0);
   if (taught.length) {
-    const school = mkSection(el, 'Обучение');
+    const school = mkSection(el, "Обучение");
 
     teachButtons.length = 0;
     for (const s of taught) {
@@ -1853,11 +2185,11 @@ function buildToolbar() {
         `<span class="sw sw-study"></span><span>Учить: ${esc(s.label || s.id)}</span>`,
         () => {
           if (selectedUnits.length === 1) {
-            sendAction({ type: 'teach', id: selectedUnits[0], skill: s.id });
+            sendAction({ type: "teach", id: selectedUnits[0], skill: s.id });
           }
         },
       );
-      b.classList.add('toggle');
+      b.classList.add("toggle");
       b.dataset.skill = s.id;
       b.dataset.hint = `до ${s.taught}-го уровня, дальше только практика`;
       teachButtons.push(b);
@@ -1875,7 +2207,10 @@ function buildToolbar() {
     // Чем фракция торгует, видно из палитры, а не из снапшота: тулбар строится
     // один раз по `ready`, когда курсов ещё нет. `prices` приезжает `Map`, а не
     // объектом, — та же идиома, что у цены и добычи (см. `costChips`).
-    const list = fac.prices instanceof Map ? [...fac.prices.keys()] : Object.keys(fac.prices ?? {});
+    const list =
+      fac.prices instanceof Map
+        ? [...fac.prices.keys()]
+        : Object.keys(fac.prices ?? {});
     const traded = (meta.items ?? [])
       .map((it, ii) => ({ it, ii }))
       .filter(({ it }) => list.includes(it.id));
@@ -1887,19 +2222,19 @@ function buildToolbar() {
       for (const buying of [true, false]) {
         const b = mkTool(
           `<span class="sw" style="background:${it.color}"></span>` +
-            `<span>${buying ? 'Купить' : 'Продать'} ${esc(it.label || it.id)}</span>` +
+            `<span>${buying ? "Купить" : "Продать"} ${esc(it.label || it.id)}</span>` +
             '<b class="rate">—</b>',
           (ev) => {
             // Клик — пять штук, Shift — двадцать пять: тот же идиом, что у
             // заказа в мастерской, только товар возят мешками.
             const count = ev.shiftKey ? 25 : 5;
-            sendAction({ type: 'trade', faction: fi, item: ii, count, buying });
+            sendAction({ type: "trade", faction: fi, item: ii, count, buying });
           },
         );
-        b.classList.add('toggle');
+        b.classList.add("toggle");
         b.dataset.faction = fi;
         b.dataset.item = ii;
-        b.dataset.buying = buying ? '1' : '';
+        b.dataset.buying = buying ? "1" : "";
         tradeButtons.push(b);
         sec.appendChild(b);
       }
@@ -1910,15 +2245,15 @@ function buildToolbar() {
   // открывает, а платит склад — цена теми же фишками, что и у тайлов (§12.24).
   const recruits = meta.recruits ?? [];
   if (recruits.length) {
-    const hire = mkSection(el, 'Найм');
+    const hire = mkSection(el, "Найм");
 
     recruitButtons.length = 0;
     recruits.forEach((r, i) => {
       const b = mkTool(
         `<span class="sw sw-hire"></span><span>${esc(r.label || r.id)}</span>${costChips(r.cost)}`,
-        () => sendAction({ type: 'hire', recruit: i }),
+        () => sendAction({ type: "hire", recruit: i }),
       );
-      b.classList.add('toggle');
+      b.classList.add("toggle");
       b.dataset.requires = r.requires ?? 0;
       // Врождённое кандидата — это и есть то, ради чего на него смотрят
       // (§12.42): опыт база доберёт работой, а предел даётся раз и навсегда.
@@ -1931,53 +2266,61 @@ function buildToolbar() {
   // Партия (§12.45). Автосохранение идёт само и молча, поэтому здесь только
   // то, что игрок решает сам: начать заново, унести партию файлом, принести
   // обратно и снять трейс.
-  const game = mkSection(el, 'Партия');
+  const game = mkSection(el, "Партия");
 
-  const fresh = mkTool('<span class="sw sw-cursor"></span><span>Новая партия</span>', () => {
-    // Спрашиваем: действие разрушительное и необратимое — автосохранение
-    // затрёт старую партию через десяток секунд.
-    if (!confirm('Начать новую партию? Текущая будет потеряна.')) return;
-    localStorage.removeItem(SAVE_KEY);
-    worker.postMessage({ type: 'newGame' });
-    // Темп сбрасывается вместе с базой: на ×10 первые сутки пролетают, пока
-    // игрок читает записку, а на паузе новая партия выглядит сломанной.
-    setSpeed(1);
-  });
-  fresh.title = 'Сбросить базу к началу';
+  const fresh = mkTool(
+    '<span class="sw sw-cursor"></span><span>Новая партия</span>',
+    () => {
+      // Спрашиваем: действие разрушительное и необратимое — автосохранение
+      // затрёт старую партию через десяток секунд.
+      if (!confirm("Начать новую партию? Текущая будет потеряна.")) return;
+      localStorage.removeItem(SAVE_KEY);
+      worker.postMessage({ type: "newGame" });
+      // Темп сбрасывается вместе с базой: на ×10 первые сутки пролетают, пока
+      // игрок читает записку, а на паузе новая партия выглядит сломанной.
+      setSpeed(1);
+    },
+  );
+  fresh.title = "Сбросить базу к началу";
   game.appendChild(fresh);
 
-  const dump = mkTool('<span class="sw sw-scrap"></span><span>Сохранить в файл</span>', () =>
-    worker.postMessage({ type: 'save' }),
+  const dump = mkTool(
+    '<span class="sw sw-scrap"></span><span>Сохранить в файл</span>',
+    () => worker.postMessage({ type: "save" }),
   );
-  dump.title = 'Скачать снимок партии';
+  dump.title = "Скачать снимок партии";
   game.appendChild(dump);
 
-  const picker = document.createElement('input');
-  picker.type = 'file';
-  picker.accept = '.json,application/json';
+  const picker = document.createElement("input");
+  picker.type = "file";
+  picker.accept = ".json,application/json";
   picker.hidden = true;
-  picker.addEventListener('change', async () => {
+  picker.addEventListener("change", async () => {
     const file = picker.files?.[0];
     if (!file) return;
-    worker.postMessage({ type: 'load', json: await file.text() });
-    picker.value = ''; // иначе тот же файл второй раз не выберется
+    worker.postMessage({ type: "load", json: await file.text() });
+    picker.value = ""; // иначе тот же файл второй раз не выберется
   });
-  const restore = mkTool('<span class="sw sw-scrap"></span><span>Загрузить файл</span>', () =>
-    picker.click(),
+  const restore = mkTool(
+    '<span class="sw sw-scrap"></span><span>Загрузить файл</span>',
+    () => picker.click(),
   );
-  restore.title = 'Открыть снимок партии';
+  restore.title = "Открыть снимок партии";
   game.appendChild(restore);
   game.appendChild(picker);
 
-  const trace = mkTool('<span class="sw sw-hire"></span><span>Скачать трейс</span>', () =>
-    worker.postMessage({ type: 'trace' }),
+  const trace = mkTool(
+    '<span class="sw sw-hire"></span><span>Скачать трейс</span>',
+    () => worker.postMessage({ type: "trace" }),
   );
-  trace.title = 'Журнал команд: как партия пришла в это состояние';
+  trace.title = "Журнал команд: как партия пришла в это состояние";
   game.appendChild(trace);
 
   // Раскрыт тот раздел, что был открыт до перестройки; на первом кадре это
   // палитра — с неё игра и начинается.
-  openOnly(sections.some((s) => s.title === openSection) ? openSection : 'Постройка');
+  openOnly(
+    sections.some((s) => s.title === openSection) ? openSection : "Постройка",
+  );
   selectCursor(cursorBtn); // режим по умолчанию
 }
 
@@ -2002,16 +2345,18 @@ function syncTradeButtons() {
     const broke = buying && money < total;
     const ready = postFree && !broke;
     b.disabled = !ready;
-    b.classList.toggle('on', ready);
-    const rate = b.querySelector('.rate');
+    b.classList.toggle("on", ready);
+    const rate = b.querySelector(".rate");
     if (rate) rate.textContent = `${unit}¤`;
     // Расписание видно вперёд — это и есть разница между планированием и
     // караулом с секундомером (§12.40).
     const next = buying ? q.next_buy : q.next_sell;
     const ahead =
-      q.next_in > 0 && next !== unit ? ` · через ${q.next_in} станет ${next}¤` : '';
+      q.next_in > 0 && next !== unit
+        ? ` · через ${q.next_in} станет ${next}¤`
+        : "";
     b.title = !posts
-      ? 'Нужен «Торговый пост»'
+      ? "Нужен «Торговый пост»"
       : !postFree
         ? `Посты заняты: сделок идёт ${posts} из ${posts}. Постройте ещё пост`
         : broke
@@ -2027,7 +2372,8 @@ function syncTradeButtons() {
 // называет и то, сколько есть, и то, сколько валяется мимо склада. Числа —
 // из снапшота, считает их ядро.
 function payHint(cost) {
-  const entries = cost instanceof Map ? [...cost.entries()] : Object.entries(cost ?? {});
+  const entries =
+    cost instanceof Map ? [...cost.entries()] : Object.entries(cost ?? {});
   const items = meta.items ?? [];
   const short = [];
   for (const [id, need] of entries) {
@@ -2035,10 +2381,12 @@ function payHint(cost) {
     const st = stock[i] ?? { stored: 0, loose: 0, booked: 0 };
     const free = Math.max(0, st.stored - st.booked);
     if (free >= need) continue;
-    const tail = st.loose ? `, ещё ${st.loose} валяется — уберите на склад` : '';
+    const tail = st.loose
+      ? `, ещё ${st.loose} валяется — уберите на склад`
+      : "";
     short.push(`${items[i]?.label || id} ${free} из ${need}${tail}`);
   }
-  return short.join(' · ');
+  return short.join(" · ");
 }
 
 // Доступность кандидата считает ядро (известность + содержимое склада), здесь
@@ -2050,22 +2398,24 @@ function syncRecruitButtons(list) {
     if (!r) return;
     const ready = !r.hired && r.unlocked && r.welcome && r.affordable;
     b.disabled = !ready;
-    b.classList.toggle('on', ready);
+    b.classList.toggle("on", ready);
     // Своего присылают тем, кому доверяют (§12.43), и репутацией за него не
     // платят — платит склад. Поэтому причин отказа три и они разные.
-    const distrust = r.welcome ? null : trustGap((meta.recruits ?? [])[i]?.needs);
+    const distrust = r.welcome
+      ? null
+      : trustGap((meta.recruits ?? [])[i]?.needs);
     const why = r.hired
-      ? 'Уже на базе'
+      ? "Уже на базе"
       : !r.unlocked
         ? `Откликнется при известности ${b.dataset.requires}`
         : distrust
           ? distrust
           : !r.affordable
             ? `На складе нечем заплатить: ${payHint((meta.recruits ?? [])[i]?.cost)}`
-            : 'Нанять';
+            : "Нанять";
     // Параметры называем и у закрытого кандидата: к нему идут заранее, и
     // «зачем мне этот кот» игрок спрашивает до того, как накопит.
-    b.title = [b.dataset.hint, why].filter(Boolean).join(' · ');
+    b.title = [b.dataset.hint, why].filter(Boolean).join(" · ");
   });
 }
 
@@ -2079,22 +2429,28 @@ function syncTopicButtons(list) {
   topicButtons.forEach((b, i) => {
     const t = (list ?? [])[i];
     if (!t) return;
-    const ready = !t.known && t.unlocked && t.affordable && t.staffed && t.lab && !researchRunning;
+    const ready =
+      !t.known &&
+      t.unlocked &&
+      t.affordable &&
+      t.staffed &&
+      t.lab &&
+      !researchRunning;
     b.disabled = !ready;
-    b.classList.toggle('on', ready);
+    b.classList.toggle("on", ready);
     b.title = t.known
-      ? 'Уже изучено'
+      ? "Уже изучено"
       : !t.unlocked
-        ? 'Нужны предыдущие технологии'
+        ? "Нужны предыдущие технологии"
         : !t.lab
-          ? 'Нет лаборатории'
+          ? "Нет лаборатории"
           : !t.staffed
             ? `Нужен кот с «Наукой» ${b.dataset.level} уровня`
             : !t.affordable
               ? `На складе нет образцов: ${payHint((meta.research ?? [])[i]?.cost)}`
               : researchRunning
-                ? 'Тема уже изучается'
-                : 'Взяться за тему';
+                ? "Тема уже изучается"
+                : "Взяться за тему";
   });
 }
 
@@ -2112,13 +2468,13 @@ function syncRecipeButtons(list) {
     // мастерских, и вторая мастерская — это вторая работа, а не декорация.
     const ready = r.unlocked && r.shop;
     b.disabled = !ready;
-    b.classList.toggle('on', ready && r.affordable);
+    b.classList.toggle("on", ready && r.affordable);
     b.title = !r.unlocked
-      ? 'Нужна технология'
+      ? "Нужна технология"
       : !r.shop
         ? shopsBusyHint()
         : r.affordable
-          ? 'Заказать: клик — штука, Shift — пять'
+          ? "Заказать: клик — штука, Shift — пять"
           : `На складе нет материала, заказ будет ждать: ${payHint((meta.recipes ?? [])[i]?.cost)}`;
   });
 }
@@ -2129,7 +2485,7 @@ function syncRecipeButtons(list) {
 function shopsBusyHint() {
   return shops > 0
     ? `Все мастерские заняты: заказов ${shops} из ${shops}. Постройте ещё`
-    : 'Нет мастерской';
+    : "Нет мастерской";
 }
 
 // Палитра, закрытая технологией: кнопка видна и объясняет, чем открывается.
@@ -2140,7 +2496,7 @@ function syncTileButtons(techs) {
     const open = known.includes(tech);
     btn.disabled = !open;
     const def = (meta.research ?? []).find((r) => r.id === tech);
-    btn.title = open ? '' : `Откроет тема «${def?.label || tech}»`;
+    btn.title = open ? "" : `Откроет тема «${def?.label || tech}»`;
   }
 }
 
@@ -2150,8 +2506,10 @@ function syncTeachButtons() {
   const ready = selectedUnits.length === 1;
   for (const b of teachButtons) {
     b.disabled = !ready;
-    b.classList.toggle('on', ready);
-    b.title = ready ? `${selectedUnits[0]} — ${b.dataset.hint}` : 'Выберите одного кота';
+    b.classList.toggle("on", ready);
+    b.title = ready
+      ? `${selectedUnits[0]} — ${b.dataset.hint}`
+      : "Выберите одного кота";
   }
 }
 
@@ -2163,7 +2521,8 @@ function trustGap(needs) {
   // `BTreeMap` из рулсета приезжает сюда как `Map`, а не как объект — тот же
   // случай, что у цены и добычи (см. `costChips`). `Object.entries` на нём молча
   // вернул бы пусто, и отказ остался бы без причины.
-  const entries = needs instanceof Map ? [...needs.entries()] : Object.entries(needs ?? {});
+  const entries =
+    needs instanceof Map ? [...needs.entries()] : Object.entries(needs ?? {});
   for (const [id, want] of entries) {
     const i = factions.findIndex((f) => f.id === id);
     if (i < 0) continue;
@@ -2198,8 +2557,13 @@ function syncMissionButtons() {
     // нечем. Ядро такую заявку отклонит (его нет на базе), а молчащая кнопка
     // читается как поломка — причину называем словом, как и ранение.
     const gone = selectedUnits.filter((id) => captives.includes(id));
+    // Свободен ли узел — считает ядро (§12.59). Отдельно от него «эта вылазка
+    // уже идёт»: двух отрядов по одному заказу не бывает, и это другая новость,
+    // чем «все узлы заняты».
+    const taken = running.has(i);
     const ready =
-      !missionRunning &&
+      relayFree &&
+      !taken &&
       known &&
       welcome &&
       !hurt.length &&
@@ -2207,70 +2571,72 @@ function syncMissionButtons() {
       !nobody &&
       selectedUnits.length === need;
     b.disabled = !ready;
-    b.classList.toggle('on', ready);
+    b.classList.toggle("on", ready);
     // Закрытые вылазки видны, а не спрятаны: лестница ответственности — это то,
     // к чему игрок идёт, и невидимая цель не тянет (§4.4).
-    b.title = missionRunning
-      ? 'Вылазка уже идёт'
-      : !known
-        ? `${b.dataset.hint} · нужна известность ${requires}`
-        : distrust
-          ? `${b.dataset.hint} · ${distrust}`
-          : nobody
-            ? `${b.dataset.hint} · все дома, спасать некого`
-            : gone.length
-              ? `${b.dataset.hint} · в плену: ${gone.join(', ')}`
-              : hurt.length
-                ? `${b.dataset.hint} · ранен: ${hurt.join(', ')}`
-                : `${b.dataset.hint} · выбрано ${selectedUnits.length} из ${need}`;
+    b.title = taken
+      ? "Эта вылазка уже идёт"
+      : !relayFree
+        ? `Все узлы связи заняты (${relays}) — постройте ещё один`
+        : !known
+          ? `${b.dataset.hint} · нужна известность ${requires}`
+          : distrust
+            ? `${b.dataset.hint} · ${distrust}`
+            : nobody
+              ? `${b.dataset.hint} · все дома, спасать некого`
+              : gone.length
+                ? `${b.dataset.hint} · в плену: ${gone.join(", ")}`
+                : hurt.length
+                  ? `${b.dataset.hint} · ранен: ${hurt.join(", ")}`
+                  : `${b.dataset.hint} · выбрано ${selectedUnits.length} из ${need}`;
   });
 }
 
 function mkTool(html, onClick) {
-  const b = document.createElement('button');
-  b.className = 'tool';
+  const b = document.createElement("button");
+  b.className = "tool";
   b.innerHTML = html;
-  b.addEventListener('click', onClick);
+  b.addEventListener("click", onClick);
   return b;
 }
 
 function activate(btn) {
-  for (const b of document.querySelectorAll('#toolbar .tool:not(.toggle)')) {
-    b.classList.remove('active');
+  for (const b of document.querySelectorAll("#toolbar .tool:not(.toggle)")) {
+    b.classList.remove("active");
   }
-  if (btn) btn.classList.add('active');
+  if (btn) btn.classList.add("active");
 }
 
 function selectCursor(btn) {
-  mode = 'cursor';
+  mode = "cursor";
   activate(btn);
 }
 function selectBuild(i, btn) {
-  mode = 'build';
+  mode = "build";
   buildTile = i;
   activate(btn);
 }
 function selectStore(btn) {
-  mode = 'store';
+  mode = "store";
   activate(btn);
 }
 
 function showError(message) {
-  const el = document.getElementById('error');
+  const el = document.getElementById("error");
   el.hidden = false;
-  el.textContent = 'Ошибка воркера: ' + message;
+  el.textContent = "Ошибка воркера: " + message;
   console.error(message);
 }
 
 // Подсказка: длинная и закрывает карту, поэтому её можно убрать одной кнопкой.
 // Состояние нигде не хранится — на POC лишняя persistent-настройка дороже, чем
 // один клик после перезагрузки.
-const hintEl = document.getElementById('hint');
-const hintToggle = document.getElementById('hint-toggle');
-hintToggle.classList.add('active');
-hintToggle.addEventListener('click', () => {
+const hintEl = document.getElementById("hint");
+const hintToggle = document.getElementById("hint-toggle");
+hintToggle.classList.add("active");
+hintToggle.addEventListener("click", () => {
   hintEl.hidden = !hintEl.hidden;
-  hintToggle.classList.toggle('active', !hintEl.hidden);
+  hintToggle.classList.toggle("active", !hintEl.hidden);
 });
 
 // --- скорость времени -----------------------------------------------------
@@ -2287,14 +2653,14 @@ function setSpeed(s) {
   if (!Number.isFinite(s) || s < 0) return;
   if (s > 0) lastSpeed = s;
   speed = s;
-  worker.postMessage({ type: 'setSpeed', speed: s });
-  for (const b of document.querySelectorAll('.speed')) {
-    b.classList.toggle('active', Number(b.dataset.speed) === s);
+  worker.postMessage({ type: "setSpeed", speed: s });
+  for (const b of document.querySelectorAll(".speed")) {
+    b.classList.toggle("active", Number(b.dataset.speed) === s);
   }
 }
 // Только кнопки с самой скоростью: без фильтра сюда попадала соседняя «?», и
 // клик по ней слал в воркер `Number(undefined)` — то есть останавливал время.
-for (const b of document.querySelectorAll('.speed[data-speed]')) {
-  b.addEventListener('click', () => setSpeed(Number(b.dataset.speed)));
+for (const b of document.querySelectorAll(".speed[data-speed]")) {
+  b.addEventListener("click", () => setSpeed(Number(b.dataset.speed)));
 }
 setSpeed(1);

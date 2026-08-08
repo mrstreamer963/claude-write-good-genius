@@ -9,6 +9,7 @@ use crate::components::SimTime;
 use crate::crafting::{assign_craft, work_craft};
 use crate::food::{assign_eat, hunger, work_eat};
 use crate::gear::{assign_equip, work_equip};
+use crate::goals::check_goals;
 use crate::hauling::{assign_hauls, assign_tidy, mark_loose_scrap, settle_stacks, work_hauls};
 use crate::health::{assign_heal, assign_treat, heal};
 use crate::jobs::{assign_jobs, work_jobs};
@@ -110,9 +111,15 @@ fn advance_time(mut time: ResMut<SimTime>) {
 /// `tire` смотрит на сытость (§12.36), поэтому голод, наступивший в этом тике,
 /// начинает жечь бодрость со следующего, а не задним числом.
 ///
-/// `train_skills` замыкает цепочку: он превращает в опыт маркеры `Worked`,
-/// которые за тик оставили системы работы, — и потому должен идти после любой
-/// из них, включая будущие (§12.17).
+/// `train_skills` идёт после любой системы работы, включая будущие: он
+/// превращает в опыт маркеры `Worked`, которые те за тик оставили (§12.17).
+///
+/// `check_goals` замыкает цепочку и **ничего в мире не меняет** (§12.58): цель —
+/// наблюдатель, а не актор. Она смотрит на уже сложившийся тик и отмечает, что
+/// случилось, поэтому обязана стоять после всех, кто ещё может что-то сделать, —
+/// иначе «100 лома на складе» засчитается тиком позже, чем игрок это увидел.
+/// Крючков по системам работы у целей нет ни одного и заводить их нельзя: это
+/// десять мест вместо одного.
 ///
 /// Цепочка разбита на три группы **только из-за предела арности** у кортежа
 /// систем: порядок ровно тот же, что и одним списком, — сперва кто за что
@@ -167,6 +174,7 @@ pub(crate) fn build_schedule() -> Schedule {
         tire,
         hunger,
         train_skills,
+        check_goals,
     )
         .chain();
     schedule.add_systems((assign, act, settle).chain());

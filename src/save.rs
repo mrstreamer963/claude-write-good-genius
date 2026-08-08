@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 4;
+pub(crate) const FORMAT: u32 = 5;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -113,6 +113,10 @@ pub(crate) const SAVED: &[&str] = &[
     "Standing",
     "Techs",
     "Chronicle",
+    "Goals",
+    "Raids",
+    "Crafted",
+    "Earned",
     "Trace",
 ];
 
@@ -153,6 +157,7 @@ pub(crate) const SKIPPED: &[(&str, &str)] = &[
         "TimelineRules",
         "правила: пересобирает `Sim::new` из рулсета",
     ),
+    ("GoalRules", "правила: пересобирает `Sim::new` из рулсета"),
     (
         "RecruitRules",
         "правила: пересобирает `Sim::new` из рулсета",
@@ -206,6 +211,18 @@ pub(crate) struct StateDto {
     pub(crate) techs: Vec<String>,
     /// Журнал сработавших событий: `(индекс события, была ли база готова)`.
     pub(crate) chronicle: Vec<(usize, bool)>,
+    /// Взятые цели: `(индекс цели, тик взятия)` (§12.58).
+    #[serde(default)]
+    pub(crate) goals: Vec<(usize, u64)>,
+    /// Три журнала совершённого. Без них цель, уже взятая игроком, после
+    /// загрузки открылась бы заново — а `Goals` их и так переживёт, так что
+    /// расхождение было бы тихим: панель права, а условие «ещё не было».
+    #[serde(default)]
+    pub(crate) raids: Vec<usize>,
+    #[serde(default)]
+    pub(crate) crafted: Vec<usize>,
+    #[serde(default)]
+    pub(crate) earned: i32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -518,6 +535,15 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
             standing: world.resource::<Standing>().0.clone(),
             techs: world.resource::<Techs>().0.clone(),
             chronicle: chronicle.0.iter().map(|h| (h.def, h.ready)).collect(),
+            goals: world
+                .resource::<Goals>()
+                .0
+                .iter()
+                .map(|t| (t.def, t.at))
+                .collect(),
+            raids: world.resource::<Raids>().0.clone(),
+            crafted: world.resource::<Crafted>().0.clone(),
+            earned: world.resource::<Earned>().0,
         },
         entities,
         trace: world
@@ -578,6 +604,10 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
         .iter()
         .map(|&(def, ready)| Happened { def, ready })
         .collect();
+    world.resource_mut::<Goals>().0 = s.goals.iter().map(|&(def, at)| Taken { def, at }).collect();
+    world.resource_mut::<Raids>().0 = s.raids.clone();
+    world.resource_mut::<Crafted>().0 = s.crafted.clone();
+    world.resource_mut::<Earned>().0 = s.earned;
     world.resource_mut::<Trace>().0 = file
         .trace
         .iter()

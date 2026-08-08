@@ -201,6 +201,7 @@ fn goods_in_paws_are_counted_as_loose() {
 fn booked_goods_are_shown_apart_from_the_shelf() {
     let mut sim = sim_from(&["########", "#a....b#", "########"]);
     sim.set_gate(1, true);
+    sim.set_relay(1, true);
     sim.force_tile(3, 1, 1);
     sim.set_trade_post(2, true);
     sim.force_tile(5, 1, 2);

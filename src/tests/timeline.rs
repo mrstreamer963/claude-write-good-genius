@@ -14,6 +14,7 @@ use super::*;
 fn sim_with_gate() -> Sim {
     let mut sim = sim_from(&["########", "#a....b#", "########"]);
     sim.set_gate(1, true);
+    sim.set_relay(1, true);
     sim.force_tile(3, 1, 1);
     sim.set_needs(1000, 100, 1);
     sim

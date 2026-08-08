@@ -470,3 +470,33 @@ fn every_skip_has_a_reason() {
         assert!(!reason.trim().is_empty(), "пропуск без причины: {name}");
     }
 }
+
+/// Взятые цели и три журнала переживают загрузку (§12.58).
+///
+/// Промах здесь **ничего не роняет**, и в этом вся опасность: цель, уже взятая
+/// игроком, после загрузки просто открылась бы заново — а с ней и модальный
+/// финал. Журналы отдельно от `Goals`: без них «Первая аптечка» после загрузки
+/// ждала бы второй аптечки, хотя галочка на месте.
+#[test]
+fn goals_and_their_logs_survive_a_save() {
+    let mut live = Sim::new(CORE).expect("рулсет");
+    // Ставим то, что цели читают: взятую цель, успешную вылазку, сделанный
+    // рецепт и заработок. Через мир их сюда не догнать за разумное время —
+    // а проверяем мы перенос снимка, а не путь к состоянию.
+    live.world
+        .resource_mut::<Goals>()
+        .0
+        .push(Taken { def: 1, at: 42 });
+    live.world.resource_mut::<Raids>().0.push(0);
+    live.world.resource_mut::<Crafted>().0.push(3);
+    live.world.resource_mut::<Earned>().0 = 137;
+
+    let json = live.save().expect("снимок");
+    let loaded = Sim::load_from(CORE, &json).expect("загрузка");
+
+    assert!(loaded.goal_taken(1), "взятая цель осталась взятой");
+    assert_eq!(loaded.goal_at(1), Some(42), "и помнит свой тик");
+    assert_eq!(loaded.raids_done(), vec![0], "журнал вылазок");
+    assert_eq!(loaded.crafted_done(), vec![3], "журнал производства");
+    assert_eq!(loaded.earned(), 137, "журнал заработка");
+}

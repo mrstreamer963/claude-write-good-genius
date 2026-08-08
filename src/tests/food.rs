@@ -265,6 +265,7 @@ fn eating_stops_the_double_burn() {
 fn a_cat_away_on_a_mission_does_not_starve() {
     let mut sim = sim_from(&["######", "#a.b.#", "######"]);
     sim.set_gate(1, true);
+    sim.set_relay(1, true);
     sim.force_tile(4, 1, 1);
     sim.set_nutrition(RATION, 100);
     sim.set_food(100, 40, 2);
