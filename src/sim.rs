@@ -34,6 +34,7 @@ use crate::map::{BaseMap, rect_cells};
 use crate::missions::{outcome, pick_gate};
 use crate::movement::{Busy, is_stuck};
 use crate::path::find_path;
+use crate::relay::relay_force;
 use crate::ruleset::{
     EventDef, FactionDef, GoalDef, ItemDef, MissionDef, PerkDef, RecipeDef, RecruitDef,
     ResearchDef, Ruleset, SkillDef, StatDef, TileDef,
@@ -447,6 +448,11 @@ impl Sim {
         // А вот **лечение приказом не отменяется**: раненый не «занят делом»,
         // которое можно бросить, он не может работать. Игрок волен увести его
         // куда угодно — лечиться кот будет и там, просто без койки (§12.37).
+        // `OnDuty` снимается приказом наравне со всеми: «иди туда» уводит кота
+        // и от рации. **Приписку (`Posted`) приказ не снимает** (§12.60) — она
+        // конфигурация, и кот вернётся на узел, как только освободится, ровно
+        // как тема исследования переживает уход учёного спать. Без отдельной
+        // команды отмены это дало бы кота-йо-йо, поэтому она и есть (`unpost`).
         self.world.entity_mut(cat).remove::<(
             Assignment,
             Haul,
@@ -457,6 +463,7 @@ impl Sim {
             Equipping,
             Eating,
             Treating,
+            OnDuty,
             Path,
             MoveCooldown,
         )>();
@@ -526,12 +533,31 @@ impl Sim {
     /// не стоит. Он только считается — и ровно этим переводит потолок
     /// параллельных вылазок из числа в коде в строительное решение (§12.55).
     fn relay_nodes(&mut self) -> usize {
+        self.relay_cells().len()
+    }
+
+    /// Клетки узлов связи в порядке обхода карты — он фиксирован, значит выбор
+    /// узла детерминирован (§11), как и выбор шлюза в `pick_gate`.
+    fn relay_cells(&mut self) -> Vec<(i32, i32)> {
         let map = self.world.resource::<BaseMap>();
         let rules = self.world.resource::<TileRules>();
         (0..map.height)
             .flat_map(|y| (0..map.width).map(move |x| (x, y)))
             .filter(|&(x, y)| rules.is_relay_node(map.tile_at(x, y)))
-            .count()
+            .collect()
+    }
+
+    /// Узел, за которым сейчас нет вылазки. Занятость держит сама `Mission`
+    /// (`Mission::node`), отдельного реестра нет — ровно как станок держит
+    /// `Craft::spot`, а лежанку `Rest::spot` (§12.55, §12.60).
+    fn free_relay_node(&mut self) -> Option<(i32, i32)> {
+        let taken: Vec<(i32, i32)> = {
+            let mut q = self.world.query::<&Mission>();
+            q.iter(&self.world).map(|m| m.node).collect()
+        };
+        self.relay_cells()
+            .into_iter()
+            .find(|cell| !taken.contains(cell))
     }
 
     /// Сколько на базе мастерских. Тоже счёт: станок — слот заказа (§12.55).
@@ -709,6 +735,7 @@ impl Sim {
                     solid: t.solid,
                     trade: t.trade,
                     relay: t.relay,
+                    comms: t.comms,
                     tech: t.tech.clone(),
                 })
                 .collect(),
@@ -1326,10 +1353,19 @@ impl Sim {
             return false; // шлюза нет или до общего не добраться всем разом
         };
 
+        // Узел, который держит этот слот. Свободный берётся в порядке обхода
+        // карты, то есть детерминированно (§11). С §12.60 лицензия стала
+        // **именной**: дежурному надо знать, чьей вылазке он помогает, а
+        // «какой-то из узлов» на этот вопрос не отвечает.
+        let Some(node) = self.free_relay_node() else {
+            return false;
+        };
         let mission_e = self.world.spawn(Mission {
             def,
             gate: Some(gate),
             left: rule.ticks,
+            node,
+            covered: 0,
         });
         let mission_e = mission_e.id();
         // Спящих заявка не поднимает, пока игрок велел беречь себя (§12.51).
@@ -1842,6 +1878,85 @@ impl Sim {
         true
     }
 
+    /// Приписать кота к узлу связи (§12.60): пока идёт вылазка этого узла, он
+    /// садится к рации и держит связь.
+    ///
+    /// **Приписка — конфигурация, а не задача.** Приписанный работает как все;
+    /// на узел его сажает раздатчик, и только когда там нужна связь. Голод и сон
+    /// снимают дежурство, но не приписку — кот вернётся сам. Разовая посадка
+    /// повторила бы дыру парты: игрок кликнул, кот поел и больше не вернулся, а
+    /// пропажу связи видно только просевшим бонусом на возвращении.
+    ///
+    /// Приписанный **вытесняет** самосевшего: узел держит одного, как парта и
+    /// лежанка. Иначе кнопка молчала бы при занятом узле, а молчащая кнопка
+    /// читается как сломанная (§12.53).
+    ///
+    /// Вернёт false, если кота нет, он не на базе или в клетке не узел связи.
+    pub fn post_relay(&mut self, unit_id: &str, x: i32, y: i32) -> bool {
+        note(&mut self.world, format!("post_relay {unit_id} {x} {y}"));
+        let is_node = {
+            let map = self.world.resource::<BaseMap>();
+            let rules = self.world.resource::<TileRules>();
+            rules.is_relay_node(map.tile_at(x, y))
+        };
+        if !is_node {
+            return false;
+        }
+        let Some(cat_e) = self.unit_on_base(unit_id) else {
+            return false;
+        };
+        // Кто сидел здесь сам по себе — уступает: решение игрока весомее раздачи.
+        let squatters: Vec<Entity> = {
+            let mut q = self.world.query::<(Entity, &OnDuty)>();
+            q.iter(&self.world)
+                .filter(|(e, d)| d.spot == (x, y) && *e != cat_e)
+                .map(|(e, _)| e)
+                .collect()
+        };
+        for e in squatters {
+            self.world.entity_mut(e).remove::<OnDuty>();
+        }
+        self.world.entity_mut(cat_e).insert(Posted { spot: (x, y) });
+        true
+    }
+
+    /// Снять приписку к узлу — и вместе с ней текущее дежурство (§12.60).
+    ///
+    /// Снимать дежурство обязательно: иначе связист досидит до конца вылазки, и
+    /// игрок решит, что кнопка не сработала. Это единственное место, где отмена
+    /// трогает мир, а не только конфигурацию.
+    ///
+    /// Во время вылазки отменять **можно**: связь считается за тик, накопленное
+    /// уже накоплено, и бесплатного опциона тут нет — в отличие от сделки
+    /// (§12.44) и отзыва ушедшего отряда.
+    pub fn unpost_relay(&mut self, unit_id: &str) -> bool {
+        note(&mut self.world, format!("unpost_relay {unit_id}"));
+        let found = {
+            let mut q = self.world.query::<(Entity, &UnitId)>();
+            q.iter(&self.world)
+                .find(|(_, id)| id.0 == unit_id)
+                .map(|(e, _)| e)
+        };
+        let Some(cat_e) = found else {
+            return false;
+        };
+        if self.world.get::<Posted>(cat_e).is_none() {
+            return false;
+        }
+        self.world
+            .entity_mut(cat_e)
+            .remove::<(Posted, OnDuty, Path, MoveCooldown)>();
+        true
+    }
+
+    /// Кот на базе по `id`: ушедших и пленных не берём — их тут нет (§12.40).
+    fn unit_on_base(&mut self, unit_id: &str) -> Option<Entity> {
+        let mut q = self.world.query::<(Entity, &UnitId, Option<&Away>)>();
+        q.iter(&self.world)
+            .find(|(_, id, away)| id.0 == unit_id && away.is_none())
+            .map(|(e, ..)| e)
+    }
+
     /// Мгновенно снести тайл вместе с чертежом, без участия котов.
     ///
     /// Ластик игрока ходит через `plan_demolish`; этот путь оставлен для тестов
@@ -1985,6 +2100,7 @@ impl Sim {
                 Option<&Gear>,
                 Option<&Health>,
                 Option<&Captive>,
+                Option<&Posted>,
                 (
                     Option<&Order>,
                     Option<&Path>,
@@ -1999,6 +2115,7 @@ impl Sim {
                     Option<&Healing>,
                     Option<&Treating>,
                     Option<&Squad>,
+                    Option<&OnDuty>,
                     Option<&Away>,
                 ),
             )>();
@@ -2022,6 +2139,7 @@ impl Sim {
                 gear,
                 health,
                 captive,
+                post,
                 tasks,
             ) in q.iter(&self.world)
             {
@@ -2039,6 +2157,7 @@ impl Sim {
                     healing,
                     treating,
                     squad,
+                    duty,
                     away,
                 ) = tasks;
                 // Место для сна под лапами — то, из чего `Busy::of` соберёт
@@ -2064,6 +2183,7 @@ impl Sim {
                     healing,
                     treating,
                     squad,
+                    duty,
                     away,
                     bed,
                 );
@@ -2078,6 +2198,8 @@ impl Sim {
                     // обязан быть объясним: «ушёл на вылазку» видно в панели
                     // миссии, а «остался там» — только здесь (§12.40).
                     captive: captive.is_some(),
+                    post_x: post.map_or(-1, |p| p.spot.0),
+                    post_y: post.map_or(-1, |p| p.spot.1),
                     energy: energy.map_or(0, |e| e.0),
                     energy_max: needs.max,
                     energy_tired: needs.tired,
@@ -2192,13 +2314,25 @@ impl Sim {
                     (squad.0, id.0.clone(), away.is_some(), force, rest.is_some())
                 })
                 .collect();
+            // Кто прямо сейчас держит связь: дошедший дежурный, без маршрута
+            // (§12.60). Ровно тот же признак, по которому копит `run_missions`.
+            let manned: Vec<(i32, i32)> = {
+                let mut q = self.world.query_filtered::<&OnDuty, Without<Path>>();
+                q.iter(&self.world).map(|d| d.spot).collect()
+            };
             let mut q = self.world.query::<(Entity, &Mission)>();
             let rules = self.world.resource::<MissionRules>();
             for (e, m) in q.iter(&self.world) {
                 let rule = rules.0.get(m.def);
                 let mine = || members.iter().filter(move |&&(owner, ..)| owner == e);
                 let danger = rule.map_or(0, |r| r.danger);
-                let out = outcome(danger, mine().map(|&(.., force, _)| force).sum());
+                // Связь входит в **ту же** силу, что и отряд, и считается тем же
+                // выражением, что на возвращении (§12.60, инвариант 14). Число
+                // это «что будет, если связь оборвётся прямо сейчас»: она копится
+                // за тик, поэтому прогноз честно растёт вместе с ней.
+                let comms = relay_force(m.covered, rule.map_or(0, |r| r.ticks));
+                let force: i32 = mine().map(|&(.., force, _)| force).sum::<i32>() + comms;
+                let out = outcome(danger, force);
                 missions.push(MissionSnap {
                     def: m.def,
                     x: m.gate.map_or(-1, |(x, _)| x),
@@ -2223,6 +2357,10 @@ impl Sim {
                     // обязана говорить об этом иначе: «добыча 50 %» под именем
                     // спасательной вылазки читается как «половина кота» (§12.40).
                     rescue: rule.is_some_and(|r| r.rescue),
+                    comms,
+                    manned: manned.contains(&m.node),
+                    node_x: m.node.0,
+                    node_y: m.node.1,
                 });
             }
         }

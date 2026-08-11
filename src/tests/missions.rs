@@ -751,6 +751,9 @@ fn the_shipped_ruleset_starts_with_one_relay_node() {
 #[test]
 fn the_shipped_ruleset_has_a_mission_that_is_out_of_reach() {
     let mut sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
+    // Связь глушим: тест про лестницу сложности, а дежурный у рации прибавляет
+    // отряду силы и делает «заведомо провальную» вылазку спорной (§12.60).
+    sim.without_comms();
     let before = sim.scrap_total();
 
     // Известность и доверие Полиции выдаём напрямую: здесь проверяется потолок

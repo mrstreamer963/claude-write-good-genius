@@ -118,6 +118,7 @@ pub(crate) fn retry_orders(
             Without<Eating>,
             Without<Healing>,
             Without<Treating>,
+            Without<OnDuty>,
             Without<Squad>,
             // Пленного нет на базе, и отряда за ним больше нет (§12.40):
             // фильтр по `Squad` его бы не поймал, а работа поймала бы.
@@ -226,6 +227,7 @@ pub(crate) fn spread_units(
             Option<&Eating>,
             Option<&Healing>,
             Option<&Treating>,
+            Option<&OnDuty>,
         ),
         (With<UnitId>, Without<Path>, Without<Away>, Without<Squad>),
     >,
@@ -243,7 +245,22 @@ pub(crate) fn spread_units(
     let mut standing: Vec<(bool, &str, Entity, (i32, i32))> = stopped
         .iter()
         .map(
-            |(e, id, pos, job, haul, rest, study, research, craft, equip, eat, hurt, medic)| {
+            |(
+                e,
+                id,
+                pos,
+                job,
+                haul,
+                rest,
+                study,
+                research,
+                craft,
+                equip,
+                eat,
+                hurt,
+                medic,
+                duty,
+            )| {
                 let at_work = job.is_some()
                     || haul.is_some()
                     || rest.is_some()
@@ -253,7 +270,8 @@ pub(crate) fn spread_units(
                     || equip.is_some()
                     || eat.is_some()
                     || hurt.is_some()
-                    || medic.is_some();
+                    || medic.is_some()
+                    || duty.is_some();
                 (at_work, id.0.as_str(), e, (pos.x, pos.y))
             },
         )
@@ -332,6 +350,7 @@ pub(crate) fn clear_solids(
             // работает, — и это ровно та картинка, ради которой правило писалось
             // (§12.35, §12.37). Медик, наоборот, при деле и остаётся.
             Without<Treating>,
+            Without<OnDuty>,
         ),
     >,
 ) {
@@ -434,6 +453,7 @@ impl Busy {
         healing: Option<&Healing>,
         treating: Option<&Treating>,
         squad: Option<&Squad>,
+        duty: Option<&OnDuty>,
         away: Option<&Away>,
         // Место для сна под лапами и бодрость не полная — всё, что нужно знать
         // о дремоте снаружи (§12.52). Компонента у неё нет и не должно быть,
@@ -468,6 +488,10 @@ impl Busy {
             "craft"
         } else if study.is_some() {
             "study"
+        } else if duty.is_some() {
+            // Ниже работ и выше приказа: дежурство раздаётся предпоследним, и
+            // порядок разбора повторяет порядок раздатчиков (§12.60).
+            "relay"
         } else if assignment.is_some() {
             // Снос от стройки здесь не отличить: `Busy` знает, какая задача, а
             // не во что она обернулась, — чертёж читает снапшот (§12.41).
@@ -495,7 +519,8 @@ impl Busy {
                 && eating.is_none()
                 && healing.is_none()
                 && treating.is_none()
-                && squad.is_none(),
+                && squad.is_none()
+                && duty.is_none(),
             away: away.is_some(),
             job,
             moving: path.is_some(),

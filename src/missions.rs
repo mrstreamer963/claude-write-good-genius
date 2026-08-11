@@ -30,7 +30,8 @@ use crate::components::*;
 use crate::hauling::spill;
 use crate::map::BaseMap;
 use crate::path::{Reach, find_path};
-use crate::skills::{SKILL_RAID, level_of};
+use crate::relay::{duty_gain, relay_force};
+use crate::skills::{SKILL_RAID, SKILL_RELAY, level_of};
 
 /// Все клетки-шлюзы карты, в порядке обхода: он фиксирован, значит выбор
 /// шлюза детерминирован (§11).
@@ -243,9 +244,17 @@ pub(crate) fn run_missions(
     // им ставит `Commands`, иначе этот запрос конфликтовал бы с `crew` за
     // `Position` и bevy уронил бы систему на старте.
     captives: Query<Entity, With<Captive>>,
+    // Дежурные на узлах связи (§12.60). Только те, кто **дошёл**: идущий к рации
+    // ещё не держит связь, и засчитывать ему дорогу значило бы платить за
+    // намерение. Позиция сюда не нужна — `assign_relay` ведёт кота маршрутом, и
+    // «дошёл» это снятый `Path`.
+    duty: Query<(Entity, &OnDuty, Option<&Skills>), Without<Path>>,
+    map: Res<BaseMap>,
+    tiles: Res<TileRules>,
     mut stacks: Query<(Entity, &Position, &mut Stack)>,
 ) {
     let raid = skill_rules.index_of(SKILL_RAID);
+    let comms = skill_rules.index_of(SKILL_RELAY);
     // Пленные, взятые **в этом же тике**: `Captive` вешает `Commands`, то есть
     // запрос `captives` увидит их только следующим тиком, а вернуться разом
     // может не один отряд (§12.59). Без этого счётчика два провала подряд
@@ -285,14 +294,33 @@ pub(crate) fn run_missions(
                     commands.entity(cat_e).insert(Worked(skill));
                 }
             }
+            // Связь копится **за каждый тик**, пока на узле сидит дежурный
+            // (§12.60). Одним замером её мерить нельзя: на уходе хватило бы
+            // посадить кота на тик, а на возвращении бонус повис бы на том, кто
+            // случайно оказался у рации в последний тик, — это уже не решение
+            // игрока, а расписание. Дежурному тоже капает опыт: домен «Связь»
+            // растёт от работы, как и все остальные (§12.17).
+            for (cat_e, on_duty, skills) in &duty {
+                if on_duty.spot != mission.node {
+                    continue;
+                }
+                mission.covered += duty_gain(&tiles, &map, &skill_rules, skills, on_duty.spot);
+                if let Some(skill) = comms {
+                    commands.entity(cat_e).insert(Worked(skill));
+                }
+            }
+
             mission.left -= 1;
             if mission.left > 0 {
                 continue;
             }
 
             // Исход считаем по силе **на возвращении**: за вылазку навык вырос,
-            // и отнимать этот рост у самой вылазки было бы странно.
-            let force = squad.iter().map(|&(.., f)| f).sum();
+            // и отнимать этот рост у самой вылазки было бы странно. Связь входит
+            // сюда же, в **ту же** силу, а не пятым слагаемым исхода: инвариант
+            // 14 держит `outcome` одним выражением на прогноз и на результат.
+            let force: i32 = squad.iter().map(|&(.., f)| f).sum::<i32>()
+                + relay_force(mission.covered, rule.ticks);
             let out = outcome(rule.danger, force);
 
             // Кто из отряда остался там (§12.40). Выбор — **первый по `id`**, и

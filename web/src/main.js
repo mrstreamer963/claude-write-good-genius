@@ -87,6 +87,20 @@ onPanelClick(researchEl, ".research-cancel", () =>
 onPanelClick(missionEl, ".mission-cancel", (b) =>
   sendAction({ type: "cancelMission", mission: Number(b.dataset.def) }),
 );
+// Приписка связиста (§12.60). Обе кнопки живут в панели клетки и различаются
+// `data-id`, как отмены заказов различаются `data-def`: панель перерисовывается
+// каждым кадром, и без ключа они поделили бы один взвод.
+onPanelClick(cellEl, ".relay-post", (b) =>
+  sendAction({
+    type: "postRelay",
+    id: b.dataset.id,
+    x: Number(b.dataset.x),
+    y: Number(b.dataset.y),
+  }),
+);
+onPanelClick(cellEl, ".relay-unpost", (b) =>
+  sendAction({ type: "unpostRelay", id: b.dataset.id }),
+);
 
 const app = new Application();
 await app.init({ background: COLORS.bg, antialias: true, resizeTo: stageEl });
@@ -758,6 +772,8 @@ function jobLabel(e) {
       return going ? "идёт в мастерскую" : "работает в мастерской";
     case "study":
       return going ? "идёт к парте" : "учится";
+    case "relay":
+      return going ? "идёт к рации" : "держит связь с отрядом";
     case "build":
       return going ? "идёт на площадку" : "строит";
     case "demolish":
@@ -1080,6 +1096,20 @@ function renderCellPanel(snap) {
       `<div class="cat-sub">здесь: ${here.map(esc).join(" · ")}</div>`,
     );
 
+  // Связиста игрок сажает сам (§12.60) — адресно, как ученика за парту: это
+  // решение о судьбе конкретного кота. Кнопка живёт здесь, у самой рации,
+  // потому что и адресат у неё — эта клетка, а не «какой-нибудь узел».
+  if (def?.relay && selectedUnits.length === 1) {
+    const who = selectedUnits[0];
+    const e = (snap.entities ?? []).find((u) => u.id === who);
+    const here = e?.post_x === x && e?.post_y === y;
+    parts.push(
+      here
+        ? `<button class="tool relay-unpost" data-id="${esc(who)}"><span>Снять со связи: ${esc(who)}</span></button>`
+        : `<button class="tool relay-post" data-id="${esc(who)}" data-x="${x}" data-y="${y}"><span>На связь: ${esc(who)}</span></button>`,
+    );
+  }
+
   cellEl.innerHTML = parts.join("");
   cellEl.hidden = false;
 }
@@ -1135,14 +1165,34 @@ function cellWork(snap, x, y, def) {
     out.push(`сделок идёт ${busy} из ${posts} — по одной на пост`);
   }
   if (def.relay) {
-    // §12.59: узел — вторая лицензия после поста, и за ним тоже никто не
-    // работает. Сказать это прямо надо здесь, иначе игрок будет ждать у него
-    // связиста и решит, что механика сломана.
+    // §12.59 дал узлу слот, §12.60 — смысл сидеть за ним. Говорим и то, и
+    // другое: сколько вылазок держат узлы вообще и что происходит на **этой**
+    // рации сейчас, — иначе игрок ждёт у неё кота и решает, что всё сломалось.
     const busy = (snap.missions ?? []).length;
-    out.push(
-      "лицензия на вылазку: за ней не работают, отряд уходит через шлюз",
-    );
     out.push(`вылазок идёт ${busy} из ${relays} — по одной на узел`);
+    const raid = (snap.missions ?? []).find(
+      (v) => v.node_x === x && v.node_y === y,
+    );
+    if (!raid) {
+      out.push("свободен: отряд отсюда не выходил");
+    } else {
+      const label = missionLabel(raid.def);
+      out.push(
+        raid.away
+          ? `ведёт «${esc(label)}» · вернутся через ${raid.left}`
+          : `закреплён за «${esc(label)}» — отряд ещё собирается`,
+      );
+      if (raid.away) {
+        const on = (snap.entities ?? []).find(
+          (e) => e.job === "relay" && !e.moving && e.x === x && e.y === y,
+        );
+        out.push(
+          on
+            ? `на связи ${esc(on.id)} · +${raid.comms} к силе отряда`
+            : "связи нет: за рацией никто не сидит",
+        );
+      }
+    }
   }
   return out;
 }
@@ -1219,6 +1269,19 @@ function missionCard(m) {
   parts.push(
     `<div class="cat-sub">${m.squad.map(esc).join(" · ") || "—"}</div>`,
   );
+  // Связь (§12.60). Число — **накопленное**, то есть что будет, если связь
+  // оборвётся прямо сейчас: она копится за тик, а не меряется одним замером,
+  // и прогноз честно растёт вместе с ней. Говорим и то, держат ли её сейчас, —
+  // иначе просевший на возвращении бонус выглядел бы необъяснимым.
+  if (m.away) {
+    const link = m.manned
+      ? "связь держат"
+      : m.comms > 0
+        ? "связь оборвалась"
+        : "связи нет";
+    const gain = m.comms > 0 ? ` · +${m.comms} к силе` : "";
+    parts.push(`<div class="cat-sub">${link}${gain}</div>`);
+  }
   // Прогноз исхода: его считает ядро тем же выражением, которым исход
   // посчитается на возвращении (§12.23). Пока отряд на базе — это ещё и
   // предупреждение: увидел «провал», успел отозвать.
@@ -1627,6 +1690,13 @@ function recipeLabel(def) {
   return d?.label || d?.id || "?";
 }
 
+// Название вылазки по индексу палитры — панели узла и миссии говорят о ней
+// одним и тем же словом.
+function missionLabel(def) {
+  const d = (meta.missions ?? [])[def];
+  return d?.label || d?.id || "вылазка";
+}
+
 function topicLabel(def) {
   const d = (meta.research ?? [])[def];
   return d?.label || d?.id || "?";
@@ -1942,8 +2012,15 @@ function clearSelection() {
 //
 // Приказ котам (`move`) сюда не входит: он уходит с карты, и клетка, в которую
 // пошли, — ровно то, что игрок сейчас и разглядывает.
+// Приписка связиста (§12.60) — тоже исключение, и по той же причине, что
+// приказ: команда **про эту самую клетку**, и её результат игрок разглядывает
+// здесь же. Спрятать панель под кнопкой, которую только что нажали, — это
+// «кнопка не сработала» в чистом виде: подтверждения не видно.
+const KEEPS_CELL = new Set(["move", "postRelay", "unpostRelay"]);
+
 function sendAction(msg) {
   worker.postMessage(msg);
+  if (KEEPS_CELL.has(msg.type)) return;
   selectedCell = null;
   updateSelectionOverlay();
 }

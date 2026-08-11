@@ -232,6 +232,7 @@ pub(crate) fn assign_treat(
             Without<Eating>,
             Without<Healing>,
             Without<Treating>,
+            Without<OnDuty>,
             Without<Squad>,
             // Пленного нет на базе, и отряда за ним больше нет (§12.40):
             // фильтр по `Squad` его бы не поймал, а работа поймала бы.

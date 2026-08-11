@@ -52,6 +52,7 @@ mod missions;
 mod movement;
 mod needs;
 mod path;
+mod relay;
 mod research;
 mod ruleset;
 mod save;

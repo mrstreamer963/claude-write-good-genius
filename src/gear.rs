@@ -69,6 +69,7 @@ pub(crate) fn assign_equip(
             Without<Eating>,
             Without<Healing>,
             Without<Treating>,
+            Without<OnDuty>,
             Without<Away>,
         ),
     >,

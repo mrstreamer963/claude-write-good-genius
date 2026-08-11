@@ -129,6 +129,11 @@ pub(crate) fn release_work(
     // Пациента освобождать не нужно: `Healing::medic` — claim, который чинит
     // сам `assign_treat`, заметив, что `Treating` у медика больше нет (§12.37).
     // Одно место починки вместо освобождения в каждом, кто снимает работу.
+    // `OnDuty` снимается вместе со всеми: голод и усталость уводят дежурного от
+    // рации, как увели бы от чертежа. Связь на этом просто перестаёт копиться —
+    // накопленное не отнимается (§12.60). Приписку (`Posted`) не трогаем: она
+    // конфигурация, а не задача, и раздатчик вернёт кота на узел сам — иначе
+    // повторилась бы дыра парты, где поевший ученик не возвращается никогда.
     commands.entity(cat_e).remove::<(
         Assignment,
         Haul,
@@ -138,6 +143,7 @@ pub(crate) fn release_work(
         Equipping,
         Eating,
         Treating,
+        OnDuty,
         Path,
         MoveCooldown,
     )>();
@@ -191,6 +197,7 @@ pub(crate) fn assign_rest(
             Without<Eating>,
             Without<Healing>,
             Without<Treating>,
+            Without<OnDuty>,
             Without<Squad>,
             // Пленного нет на базе, и отряда за ним больше нет (§12.40):
             // фильтр по `Squad` его бы не поймал, а работа поймала бы.
@@ -378,6 +385,7 @@ pub(crate) fn assign_nap(
             Without<Eating>,
             Without<Healing>,
             Without<Treating>,
+            Without<OnDuty>,
             Without<Squad>,
             Without<Away>,
             Without<Path>,
@@ -548,6 +556,7 @@ pub(crate) fn doze(
             Without<Eating>,
             Without<Healing>,
             Without<Treating>,
+            Without<OnDuty>,
             Without<Squad>,
             Without<Away>,
             Without<Path>,

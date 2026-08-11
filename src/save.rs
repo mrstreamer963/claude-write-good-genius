@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 5;
+pub(crate) const FORMAT: u32 = 6;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -79,7 +79,7 @@ pub(crate) const SAVED: &[&str] = &[
     "Perks",
     "Gear",
     "Carrying",
-    // Одиннадцать задач общего слоя плюс приказ игрока.
+    // Двенадцать задач общего слоя плюс приказ игрока и приписка к узлу.
     "Order",
     "Assignment",
     "Haul",
@@ -92,6 +92,10 @@ pub(crate) const SAVED: &[&str] = &[
     "Healing",
     "Treating",
     "Squad",
+    "OnDuty",
+    // Приписка к узлу — конфигурация, а не задача (§12.60), но состояние мира:
+    // без неё загруженная партия забыла бы, кого игрок посадил на связь.
+    "Posted",
     // Состояния кота, которые не задачи.
     "Away",
     "Captive",
@@ -292,6 +296,13 @@ pub(crate) struct EntityDto {
     pub(crate) treating: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) squad: Option<u32>,
+    /// Дежурство на узле связи и приписка к нему (§12.60). Обе — клетки, а не
+    /// ссылки на сущности: узел это тайл карты, и раскладывать вторым проходом
+    /// тут нечего.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) on_duty: Option<(i32, i32)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) posted: Option<(i32, i32)>,
 
     // Состояния кота, которые не задачи.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -396,6 +407,13 @@ pub(crate) struct MissionDto {
     pub(crate) def: usize,
     pub(crate) gate: Option<(i32, i32)>,
     pub(crate) left: i32,
+    /// Узел связи, который держит слот, и набежавшая связь (§12.60). Оба —
+    /// состояние вылазки, а не правило: без них загруженная партия теряла бы
+    /// накопленный бонус и занятость узла.
+    #[serde(default)]
+    pub(crate) node: (i32, i32),
+    #[serde(default)]
+    pub(crate) covered: i32,
 }
 
 // ── Снять снимок ──────────────────────────────────────────────────────────
@@ -470,6 +488,8 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                 }),
                 treating: e.get::<Treating>().and_then(|t| at(t.0)),
                 squad: e.get::<Squad>().and_then(|s| at(s.0)),
+                on_duty: e.get::<OnDuty>().map(|d| d.spot),
+                posted: e.get::<Posted>().map(|p| p.spot),
 
                 away: e.contains::<Away>(),
                 captive: e.contains::<Captive>(),
@@ -512,6 +532,8 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                     def: m.def,
                     gate: m.gate,
                     left: m.left,
+                    node: m.node,
+                    covered: m.covered,
                 }),
             }
         })
@@ -731,6 +753,12 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
         if let Some(n) = dto.squad.and_then(at) {
             e.insert(Squad(n));
         }
+        if let Some(spot) = dto.on_duty {
+            e.insert(OnDuty { spot });
+        }
+        if let Some(spot) = dto.posted {
+            e.insert(Posted { spot });
+        }
 
         if dto.away {
             e.insert(Away);
@@ -787,6 +815,8 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
         }
         if let Some(m) = &dto.mission {
             e.insert(Mission {
+                node: m.node,
+                covered: m.covered,
                 def: m.def,
                 gate: m.gate,
                 left: m.left,

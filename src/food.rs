@@ -68,6 +68,7 @@ pub(crate) fn assign_eat(
             Without<Eating>,
             Without<Healing>,
             Without<Treating>,
+            Without<OnDuty>,
             Without<Squad>,
             Without<Path>,
             Without<Away>,

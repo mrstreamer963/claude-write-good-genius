@@ -24,6 +24,7 @@ mod needs;
 mod orders;
 mod panel;
 mod paths;
+mod relay;
 mod research;
 mod save;
 mod skills;
@@ -152,6 +153,7 @@ fn sim_from(rows: &[&str]) -> Sim {
             solid: false,
             trade: false,
             relay: false,
+            comms: 0,
             tech: String::new(),
         }],
         items: Vec::new(),
@@ -211,6 +213,7 @@ impl Sim {
                 Option<&Healing>,
                 Option<&Treating>,
                 Option<&Squad>,
+                Option<&OnDuty>,
                 Option<&Away>,
             ),
         )>();
@@ -218,13 +221,15 @@ impl Sim {
         q.iter(&self.world)
             .find(|(id, ..)| id.0 == unit)
             .map(|(_, p, tasks)| {
-                let (o, path, a, h, r, st, re, cr, eq, ea, he, tr, s, away) = tasks;
+                let (o, path, a, h, r, st, re, cr, eq, ea, he, tr, s, du, away) = tasks;
                 // Дремота на `stuck` не влияет: она только подписывает занятие
                 // и задачей не является (§12.52).
                 is_stuck(
                     map,
                     p,
-                    Busy::of(o, path, a, h, r, st, re, cr, eq, ea, he, tr, s, away, false),
+                    Busy::of(
+                        o, path, a, h, r, st, re, cr, eq, ea, he, tr, s, du, away, false,
+                    ),
                 )
             })
             .expect("кот не найден")
@@ -250,6 +255,7 @@ impl Sim {
                 Option<&Healing>,
                 Option<&Treating>,
                 Option<&Squad>,
+                Option<&OnDuty>,
                 Option<&Away>,
             ),
         )>();
@@ -258,11 +264,13 @@ impl Sim {
         q.iter(&self.world)
             .find(|(id, ..)| id.0 == unit)
             .map(|(_, p, tasks)| {
-                let (o, path, a, h, r, st, re, cr, eq, ea, he, tr, s, away) = tasks;
+                let (o, path, a, h, r, st, re, cr, eq, ea, he, tr, s, du, away) = tasks;
                 // Дремота считается ровно так же, как в снапшоте: место для сна
                 // под лапами (§12.52).
                 let bed = tiles.rest_of(map.tile_at(p.x, p.y)) > 0;
-                let busy = Busy::of(o, path, a, h, r, st, re, cr, eq, ea, he, tr, s, away, bed);
+                let busy = Busy::of(
+                    o, path, a, h, r, st, re, cr, eq, ea, he, tr, s, du, away, bed,
+                );
                 (busy.job, busy.moving)
             })
             .expect("кот не найден")
@@ -1045,6 +1053,54 @@ impl Sim {
     /// есть ровно то поведение, которое было до §12.59.
     fn set_relay(&mut self, tile: i16, on: bool) {
         self.tile_rule(tile, |r| r.relay = on);
+    }
+
+    /// Сила связи у тайла — то же число, которое читает `duty_gain`.
+    fn comms_of_tile(&self, tile: i16) -> i32 {
+        self.world.resource::<TileRules>().comms_of(tile)
+    }
+
+    /// Сколько силы даёт полное дежурство на этом тайле (§12.60). В схеме
+    /// `sim_from` это ноль, как ноль у навыков и рынка: узел даёт слот, но
+    /// дежурить на нём незачем, и раздатчик к нему никого не зовёт.
+    fn set_comms(&mut self, tile: i16, power: i32) {
+        self.tile_rule(tile, |r| r.comms = power);
+    }
+
+    /// Выключить связь на боевом рулсете: механика в этом тесте — шум.
+    ///
+    /// Тот же приём, что `without_timeline` (§12.28): мир по расписанию и
+    /// дежурный у рации мешают мерить чужую механику, и глушить их надо явно, а
+    /// не подгонять под них контент.
+    fn without_comms(&mut self) {
+        let mut rules = self.world.resource_mut::<TileRules>();
+        for rule in rules.0.iter_mut() {
+            rule.comms = 0;
+        }
+    }
+
+    /// На каком узле дежурит кот, если дежурит.
+    fn duty_of(&mut self, unit: &str) -> Option<(i32, i32)> {
+        let mut q = self.world.query::<(&UnitId, &OnDuty)>();
+        q.iter(&self.world)
+            .find(|(id, _)| id.0 == unit)
+            .map(|(_, d)| d.spot)
+    }
+
+    /// К какому узлу кот приписан игроком (§12.60).
+    fn post_of(&mut self, unit: &str) -> Option<(i32, i32)> {
+        let mut q = self.world.query::<(&UnitId, &Posted)>();
+        q.iter(&self.world)
+            .find(|(id, _)| id.0 == unit)
+            .map(|(_, p)| p.spot)
+    }
+
+    /// Набежавшая связь у вылазки по этому заказу (§12.60).
+    fn covered_of(&mut self, def: usize) -> Option<i32> {
+        let mut q = self.world.query::<&Mission>();
+        q.iter(&self.world)
+            .find(|m| m.def == def)
+            .map(|m| m.covered)
     }
 
     /// Сколько узлов связи построено — потолок одновременных вылазок (§12.59).
