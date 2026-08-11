@@ -281,6 +281,147 @@ fn a_posting_needs_a_node() {
     assert_eq!(sim.post_of("c"), None);
 }
 
+// --- постоянный состав отряда на узле (§12.61) -------------------------------
+
+/// Мир с двумя узлами: рации в (1,2) и (2,2), шлюз в (2,1), коты `a`, `b`, `c`.
+///
+/// Дежурство здесь выключено (`comms` = 0): состав отряда к нему отношения не
+/// имеет, а сидящий у рации кот — лишний шум в проверке того, кто ушёл.
+fn sim_with_two_nodes() -> (Sim, usize) {
+    let mut sim = sim_from(&["#######", "#a.b.c#", "#.....#", "#######"]);
+    sim.set_gate(1, true);
+    sim.force_tile(2, 1, 1);
+    sim.set_relay(3, true);
+    sim.force_tile(1, 2, 3);
+    sim.force_tile(2, 2, 3);
+    let mission = sim.set_mission(1, 40, &[(0, 5)]);
+    (sim, mission)
+}
+
+/// Узел заменяет выбор отряда: кнопка вылазки берёт состав с клетки, а не из
+/// того, кого игрок выделил перед уходом.
+#[test]
+fn a_node_sends_its_own_crew() {
+    let (mut sim, m) = sim_with_two_nodes();
+    assert!(sim.enlist("b", 1, 2), "зачислили в отряд первого узла");
+
+    assert!(sim.launch_node(m, 1, 2), "отряд узла ушёл");
+    sim.tick_n(20);
+
+    assert!(sim.is_away("b"), "ушёл тот, кто числится");
+    assert!(!sim.is_away("a"), "остальные остались дома");
+    assert!(!sim.is_away("c"));
+}
+
+/// Состав **переживает вылазку**: вернувшийся отряд остаётся отрядом, и второй
+/// раз его собирать не надо — в этом вся разница с `Squad`.
+#[test]
+fn a_crew_outlives_its_raid() {
+    let (mut sim, m) = sim_with_two_nodes();
+    sim.enlist("b", 1, 2);
+    sim.launch_node(m, 1, 2);
+    sim.tick_n(80);
+
+    assert!(!sim.is_away("b"), "вылазка кончилась");
+    assert_eq!(
+        sim.roster_at(1, 2),
+        vec!["b".to_string()],
+        "состав на месте"
+    );
+    assert!(sim.launch_node(m, 1, 2), "и уходит снова без пересбора");
+}
+
+/// Пустой узел никого не отправляет: заказу нужен ровно `squad` котов, и
+/// состав, который ему не подходит, — это отказ, а не «возьмём кого-нибудь».
+#[test]
+fn an_empty_node_launches_nobody() {
+    let (mut sim, m) = sim_with_two_nodes();
+    assert!(!sim.launch_node(m, 1, 2), "отряда на узле нет");
+
+    sim.enlist("a", 1, 2);
+    sim.enlist("b", 1, 2);
+    assert!(!sim.launch_node(m, 1, 2), "а теперь их слишком много");
+}
+
+/// Кот числится не более чем в одном отряде: зачисление ко второму узлу
+/// снимает первое. Два узла, зовущих одного кота, — это вылазка, состав которой
+/// зависит от того, какую кнопку нажали раньше.
+#[test]
+fn a_cat_belongs_to_one_crew_only() {
+    let (mut sim, _) = sim_with_two_nodes();
+    sim.enlist("b", 1, 2);
+    sim.enlist("b", 2, 2);
+
+    assert_eq!(sim.enlisted_at("b"), Some((2, 2)));
+    assert!(sim.roster_at(1, 2).is_empty(), "с первого узла вычеркнули");
+}
+
+/// Каждый узел отправляет свой отряд, и слот занимает **именно он**: дежурный
+/// иначе сядет не к той рации, а игрок этого не поймёт.
+#[test]
+fn each_node_sends_its_own_squad() {
+    let (mut sim, first) = sim_with_two_nodes();
+    let second = sim.set_mission(1, 40, &[(0, 5)]);
+    sim.enlist("a", 1, 2);
+    sim.enlist("c", 2, 2);
+
+    assert!(sim.launch_node(first, 1, 2));
+    assert!(sim.launch_node(second, 2, 2));
+    sim.tick_n(20);
+
+    assert!(sim.is_away("a") && sim.is_away("c"), "оба отряда в поле");
+    assert_eq!(sim.mission_node(first), Some((1, 2)), "слот первого узла");
+    assert_eq!(sim.mission_node(second), Some((2, 2)), "слот второго");
+}
+
+/// Занятый узел второй вылазки не отправляет: узел — слот (§12.59), и то, что
+/// состав теперь его собственный, этого не отменяет.
+#[test]
+fn a_busy_node_launches_nothing() {
+    let (mut sim, first) = sim_with_two_nodes();
+    let second = sim.set_mission(1, 40, &[(0, 5)]);
+    sim.enlist("a", 1, 2);
+    assert!(sim.launch_node(first, 1, 2));
+
+    assert!(!sim.launch_node(second, 1, 2), "узел уже ведёт вылазку");
+}
+
+/// Зачисляют только в клетку с рацией — как приписывают только к ней (§12.60).
+#[test]
+fn enlisting_needs_a_node() {
+    let (mut sim, _) = sim_with_two_nodes();
+    assert!(!sim.enlist("a", 5, 1), "в коридоре рации нет");
+    assert_eq!(sim.enlisted_at("a"), None);
+}
+
+/// Состав вышедшего отряда не переигрывают: для этого есть отзыв. Иначе игрок
+/// вычеркнул бы кота, который уже идёт к шлюзу, и не понял, почему тот всё
+/// равно ушёл.
+#[test]
+fn a_departed_cat_cannot_be_enlisted_elsewhere() {
+    let (mut sim, m) = sim_with_two_nodes();
+    sim.enlist("a", 1, 2);
+    sim.launch_node(m, 1, 2);
+
+    assert!(!sim.enlist("a", 2, 2), "заявка уже подана");
+    assert_eq!(sim.enlisted_at("a"), Some((1, 2)));
+}
+
+/// Вычеркнуть можно и того, кто в поле: `Enlisted` — конфигурация, мира она не
+/// трогает, и ушедшего отряда это не касается.
+#[test]
+fn dismissing_touches_config_only() {
+    let (mut sim, m) = sim_with_two_nodes();
+    sim.enlist("a", 1, 2);
+    sim.launch_node(m, 1, 2);
+    sim.tick_n(20);
+
+    assert!(sim.dismiss("a"), "вычеркнули");
+    assert!(sim.is_away("a"), "но вылазку это не отменило");
+    assert!(sim.roster_at(1, 2).is_empty());
+    assert!(!sim.dismiss("a"), "второй раз вычёркивать некого");
+}
+
 // --- боевой рулсет ----------------------------------------------------------
 
 /// В `core.yaml` рация не только считается, но и работает: за ней сидят и она

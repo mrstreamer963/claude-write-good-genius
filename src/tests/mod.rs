@@ -1095,6 +1095,27 @@ impl Sim {
             .map(|(_, p)| p.spot)
     }
 
+    /// В отряде какого узла кот числится (§12.61).
+    fn enlisted_at(&mut self, unit: &str) -> Option<(i32, i32)> {
+        let mut q = self.world.query::<(&UnitId, &Enlisted)>();
+        q.iter(&self.world)
+            .find(|(id, _)| id.0 == unit)
+            .map(|(_, c)| c.spot)
+    }
+
+    /// Постоянный состав отряда этого узла — ровно то, что возьмёт
+    /// `launch_node` и что увидит в панели игрок (§12.61).
+    fn roster_at(&mut self, x: i32, y: i32) -> Vec<String> {
+        let mut q = self.world.query::<(&UnitId, &Enlisted)>();
+        let mut crew: Vec<String> = q
+            .iter(&self.world)
+            .filter(|(_, c)| c.spot == (x, y))
+            .map(|(id, _)| id.0.clone())
+            .collect();
+        crew.sort_unstable();
+        crew
+    }
+
     /// Набежавшая связь у вылазки по этому заказу (§12.60).
     fn covered_of(&mut self, def: usize) -> Option<i32> {
         let mut q = self.world.query::<&Mission>();
@@ -1532,6 +1553,13 @@ impl Sim {
     fn mission_gate(&mut self) -> Option<(i32, i32)> {
         let mut q = self.world.query::<&Mission>();
         q.iter(&self.world).next().and_then(|m| m.gate)
+    }
+
+    /// Узел, который держит слот вылазки по этому заказу (§12.59, §12.61).
+    /// Адресуется по заказу, а не по номеру: порядок обхода ECS недетерминирован.
+    fn mission_node(&mut self, def: usize) -> Option<(i32, i32)> {
+        let mut q = self.world.query::<&Mission>();
+        q.iter(&self.world).find(|m| m.def == def).map(|m| m.node)
     }
 
     /// Завести цель партии; вернёт её индекс (§12.58).

@@ -43,7 +43,7 @@ cargo test whole_room_is_erased_completely -- --nocapture
   `food` (голод: сытость, поход за пайком, вдвое горящая бодрость) ·
   `health` (здоровье: ранение на вылазке, лазарет, работа медика и аптечка-расходник) ·
   `research` (наука: тема, лаборатория, технология) · `timeline` (события по расписанию) ·
-  `relay` (дежурство на узле связи: бонус отряду за время связи, приписка связиста игроком) ·
+  `relay` (дежурство на узле связи: бонус отряду за время связи, приписка связиста и **постоянный состав отряда на узле**) ·
   `missions` (вылазки: набор отряда, уход через шлюз, возвращение с добычей, плен и вылазка
   за своим; там же репутация заказчика и пострадавшего — §12.43) ·
   `gear` (снаряжение: комплект по шаблону, за которым кот идёт сам) ·
@@ -93,7 +93,7 @@ cargo test whole_room_is_erased_completely -- --nocapture
 | main → worker | `setAutoTidy {on}` | кнопка «Убирать сам» |
 | main → worker | `setAutoRest {on}` | кнопка «Беречь себя»: бросает ли кот работу на исходе сил (§12.33) |
 | main → worker | `move {id, x, y}` | приказ выбранному коту |
-| main → worker | `launch {mission, units}` | кнопка вылазки: `launch(def, units)`, отряд выбран игроком |
+| main → worker | `launch {mission, x, y}` | кнопка вылазки: `launch_node(def, x, y)`, отряд берётся **с узла** (§12.61) |
 | main → worker | `cancelMission {mission}` | «Отозвать» в панели миссии (только пока отряд на базе); **по заказу**, а не по номеру строки (§12.59) |
 | main → worker | `hire {recruit}` | кнопка найма: `hire(def)`, известность открывает, склад платит |
 | main → worker | `save {toSlot}` | `toSlot` — уход со вкладки (в хранилище), без него — кнопка «Сохранить в файл» |
@@ -102,6 +102,7 @@ cargo test whole_room_is_erased_completely -- --nocapture
 | worker → main | `loadFailed {message}` | снимок не подошёл: чужой формат или чужой рулсет; главный поток чистит слот |
 | main → worker | `newGame` | «Новая партия»: `Sim::new` заново, дальше обычный `ready` |
 | main → worker | `trace` → `traced {text}` | «Скачать трейс»: отладочный журнал команд (§12.45) |
+| main → worker | `enlist {id, x, y}` · `dismiss {id}` | зачислить кота в отряд узла и вычеркнуть (§12.61); обе **не гасят выделенную клетку** |
 | main → worker | `postRelay {id, x, y}` · `unpostRelay {id}` | приписать кота к узлу связи и снять приписку (§12.60); обе **не гасят выделенную клетку** — команда про неё же |
 | main → worker | `teach {id, skill}` | кнопка обучения: `teach(unit, skill)`, кота выбирает игрок |
 | main → worker | `craft {recipe, count}` | кнопка рецепта: `start_craft(def, count)`, клик — штука, Shift — пять |
@@ -321,7 +322,11 @@ check_goals`.
    поэтому **по `def`** (`cancel_mission(def)`), а не по номеру строки: порядок обхода сущностей
    ECS недетерминирован — ровно тот же довод, что у `cancel_craft`. Считают слоты `relay_nodes`
    и `raids_running` в фасаде, наружу едут числами (`relays`, `relay_free`); второго экземпляра
-   этого правила в JS быть не должно. **С §12.60 узел не только считается: на нём дежурят.**
+   этого правила в JS быть не должно. **С §12.61 узел заменяет и выбор отряда**: состав приписан к клетке (`Enlisted`),
+   переживает вылазку, и кнопка адресуется узлом (`launch_node`), а не списком котов, — иначе с
+   двумя узлами не сказать, чей отряд идёт. Форма та же, что у `Posted`: конфигурация, не задача,
+   в фильтрах занятости её нет. Путать с `Squad` нельзя: тот живёт от заявки до возвращения.
+   **С §12.60 узел не только считается: на нём дежурят.**
    Слот у вылазки именной (`Mission::node`, занимается в момент заявки), а `comms` у тайла —
    второе число той же клетки, как `wake` при `rest`: сколько силы даёт полное дежурство. Ноль
    значит «дежурить незачем», и раздатчик к узлу никого не зовёт — этим же нулём механика
@@ -531,7 +536,7 @@ check_goals`.
 
 ## Тесты
 
-442 теста живёт в `src/tests/` по механикам (`paths` · `voids` · `orders` · `jobs` · `demolition` ·
+452 теста живёт в `src/tests/` по механикам (`paths` · `voids` · `orders` · `jobs` · `demolition` ·
 `hauling` · `tidying` · `skills` · `stats` · `study` · `research` · `needs` · `food` · `health` · `items` · `missions` ·
 `captivity` · `fame` · `factions` · `trade` · `terrain` · `timeline` · `gear` · `crafting` · `crowd` · `panel` ·
 `goals` · `relay` · `save`); общие хелперы и сборка мира —
@@ -556,7 +561,7 @@ let mut sim = sim_from(&["#####", "#a..#", "#####"]); // '#' пустота, '.'
   `set_items`, `stock_of` (склад · пол · бронь — то же, что уходит в шапку, §12.53);
   по вылазкам — `set_gate`, `set_relay` (узел = слот, §12.59), `relay_count`, `raid_count`,
   `raid_left`, `set_comms` (сила связи), `without_comms` (заглушить связь на боевом рулсете,
-  как `without_timeline` глушит расписание), `duty_of`, `post_of`, `covered_of`, `set_mission`, `set_risky_mission`, `in_squad`, `is_away`,
+  как `without_timeline` глушит расписание), `duty_of`, `post_of`, `covered_of`, по составу отряда на узле (§12.61) — `enlisted_at`, `roster_at`, `mission_node`, `set_mission`, `set_risky_mission`, `in_squad`, `is_away`,
   `mission_left`, `mission_gate`; по плену — `set_rescue_mission`, `is_captive`,
   `rescue_missions`, `unit_count`; по известности и найму — `fame`, `set_fame`, `set_mission_fame`,
   `set_recruit`, `has_unit`; по обучению — `set_teaches`, `set_taught`, `is_studying`, `desk_of`;

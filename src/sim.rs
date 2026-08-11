@@ -46,8 +46,8 @@ use crate::skills::{
 };
 use crate::snapshot::{
     BaseMapDto, BlueprintSnap, CraftSnap, DealSnap, EntitySnap, GoalSnap, MapMeta, MissionSnap,
-    NoteSnap, PriceSnap, RaidGates, RaidSnap, RecipeSnap, RecruitSnap, ResearchSnap, SkillSnap,
-    Snapshot, StackSnap, StockSnap, TopicSnap,
+    NodeSnap, NoteSnap, PriceSnap, RaidGates, RaidSnap, RecipeSnap, RecruitSnap, ResearchSnap,
+    SkillSnap, Snapshot, StackSnap, StockSnap, TopicSnap,
 };
 use crate::timeline::{ready_for, revealed};
 
@@ -538,7 +538,7 @@ impl Sim {
 
     /// Клетки узлов связи в порядке обхода карты — он фиксирован, значит выбор
     /// узла детерминирован (§11), как и выбор шлюза в `pick_gate`.
-    fn relay_cells(&mut self) -> Vec<(i32, i32)> {
+    pub(crate) fn relay_cells(&mut self) -> Vec<(i32, i32)> {
         let map = self.world.resource::<BaseMap>();
         let rules = self.world.resource::<TileRules>();
         (0..map.height)
@@ -558,6 +558,35 @@ impl Sim {
         self.relay_cells()
             .into_iter()
             .find(|cell| !taken.contains(cell))
+    }
+
+    /// Узел ли в этой клетке.
+    fn is_relay_at(&mut self, x: i32, y: i32) -> bool {
+        let map = self.world.resource::<BaseMap>();
+        let rules = self.world.resource::<TileRules>();
+        rules.is_relay_node(map.tile_at(x, y))
+    }
+
+    /// Свободен ли **этот** узел: вылазки за ним сейчас нет.
+    fn node_is_free(&mut self, x: i32, y: i32) -> bool {
+        let mut q = self.world.query::<&Mission>();
+        !q.iter(&self.world).any(|m| m.node == (x, y))
+    }
+
+    /// Постоянный состав отряда этого узла, по `id` (§12.61).
+    ///
+    /// Порядок — по `id` кота, а не по обходу сущностей: тот зависит от истории
+    /// вставок и недетерминирован (§11, инвариант 9), а состав едет и в панель,
+    /// и в `launch`, где длина списка сверяется с заказом.
+    fn roster_of(&mut self, x: i32, y: i32) -> Vec<String> {
+        let mut q = self.world.query::<(&UnitId, &Enlisted)>();
+        let mut crew: Vec<String> = q
+            .iter(&self.world)
+            .filter(|(_, e)| e.spot == (x, y))
+            .map(|(id, _)| id.0.clone())
+            .collect();
+        crew.sort_unstable();
+        crew
     }
 
     /// Сколько на базе мастерских. Тоже счёт: станок — слот заказа (§12.55).
@@ -1286,8 +1315,41 @@ impl Sim {
     ///
     /// Вернёт false, если миссии нет, все узлы заняты, эта вылазка уже идёт,
     /// состав не тот или до общего шлюза дойдут не все.
-    pub fn launch(&mut self, def: usize, units: Vec<String>) -> bool {
+    ///
+    /// **Наружу эта форма не ходит** (§12.61): в интерфейсе состав живёт на узле,
+    /// и `launch_node` — единственная кнопка. Здесь она осталась примитивом, на
+    /// котором стоят тесты механики: «этот отряд, любой свободный узел».
+    #[cfg(test)]
+    pub(crate) fn launch(&mut self, def: usize, units: Vec<String>) -> bool {
         note(&mut self.world, format!("launch {def} {}", units.join(",")));
+        self.launch_at(def, units, None)
+    }
+
+    /// Отправить в вылазку отряд, приписанный к узлу `(x, y)` (§12.61).
+    ///
+    /// **Узел заменяет выбор отряда**, и это вся суть этапа: состав хранится на
+    /// клетке (`Enlisted`), а не собирается кликами перед каждым уходом. Отсюда и
+    /// адресация по узлу, а не по отряду: узлов может быть несколько, и кнопка
+    /// вылазки обязана знать, чей отряд идёт. Отвергнуто «оба способа разом»
+    /// (выделенные коты перекрывают приписку): два источника правды о том, кто
+    /// идёт, — и игрок не знает, какой сработает.
+    ///
+    /// Слот берётся **именно этот**, а не первый свободный: узел, который игрок
+    /// нажал, и узел, который поведёт вылазку, обязаны совпадать — иначе
+    /// дежурный сядет не к той рации, а игрок этого не поймёт.
+    ///
+    /// Вернёт false, если в клетке не узел связи, узел уже занят вылазкой или
+    /// его отряд не подходит заказу — всё то же, что и у `launch`.
+    pub fn launch_node(&mut self, def: usize, x: i32, y: i32) -> bool {
+        note(&mut self.world, format!("launch_node {def} {x} {y}"));
+        if !self.is_relay_at(x, y) || !self.node_is_free(x, y) {
+            return false;
+        }
+        let units = self.roster_of(x, y);
+        self.launch_at(def, units, Some((x, y)))
+    }
+
+    fn launch_at(&mut self, def: usize, units: Vec<String>, node: Option<(i32, i32)>) -> bool {
         let Some(rule) = self.world.resource::<MissionRules>().0.get(def).cloned() else {
             return false;
         };
@@ -1357,8 +1419,12 @@ impl Sim {
         // карты, то есть детерминированно (§11). С §12.60 лицензия стала
         // **именной**: дежурному надо знать, чьей вылазке он помогает, а
         // «какой-то из узлов» на этот вопрос не отвечает.
-        let Some(node) = self.free_relay_node() else {
-            return false;
+        let node = match node {
+            Some(spot) => spot,
+            None => match self.free_relay_node() {
+                Some(spot) => spot,
+                None => return false,
+            },
         };
         let mission_e = self.world.spawn(Mission {
             def,
@@ -1949,6 +2015,63 @@ impl Sim {
         true
     }
 
+    /// Зачислить кота в отряд узла связи (§12.61).
+    ///
+    /// Состав хранится на клетке и **переживает вылазку**: вернувшийся отряд
+    /// остаётся отрядом, и второй раз его собирать не надо. Это конфигурация, а
+    /// не задача, — как приписка связиста (§12.60): зачисленный работает как все,
+    /// пока не подана заявка.
+    ///
+    /// Кот числится **не более чем в одном отряде**: зачисление ко второму узлу
+    /// снимает первое молча. Отказывать было бы хуже — игрок не видит, где кот
+    /// числился раньше, и кнопка молчала бы без объяснения (§12.53).
+    ///
+    /// Вернёт false, если в клетке не узел, кота нет на базе или он уже подан в
+    /// заявку (`Squad`): состав вышедшего отряда не переигрывают — для этого
+    /// есть отзыв (`cancel_mission`).
+    pub fn enlist(&mut self, unit_id: &str, x: i32, y: i32) -> bool {
+        note(&mut self.world, format!("enlist {unit_id} {x} {y}"));
+        if !self.is_relay_at(x, y) {
+            return false;
+        }
+        let Some(cat_e) = self.unit_on_base(unit_id) else {
+            return false;
+        };
+        if self.world.get::<Squad>(cat_e).is_some() {
+            return false;
+        }
+        self.world
+            .entity_mut(cat_e)
+            .insert(Enlisted { spot: (x, y) });
+        true
+    }
+
+    /// Вычеркнуть кота из отряда узла (§12.61).
+    ///
+    /// Мир это не трогает: `Enlisted` — конфигурация, задачи за ней нет, и
+    /// вычёркивать посреди вылазки нечего (ушедшего держит `Squad`). Тем
+    /// `dismiss` и отличается от `unpost_relay`, который обязан снять ещё и
+    /// дежурство.
+    ///
+    /// Вернёт false, если кота нет или он ни в каком отряде не числился.
+    pub fn dismiss(&mut self, unit_id: &str) -> bool {
+        note(&mut self.world, format!("dismiss {unit_id}"));
+        let found = {
+            let mut q = self.world.query::<(Entity, &UnitId)>();
+            q.iter(&self.world)
+                .find(|(_, id)| id.0 == unit_id)
+                .map(|(e, _)| e)
+        };
+        let Some(cat_e) = found else {
+            return false;
+        };
+        if self.world.get::<Enlisted>(cat_e).is_none() {
+            return false;
+        }
+        self.world.entity_mut(cat_e).remove::<Enlisted>();
+        true
+    }
+
     /// Кот на базе по `id`: ушедших и пленных не берём — их тут нет (§12.40).
     fn unit_on_base(&mut self, unit_id: &str) -> Option<Entity> {
         let mut q = self.world.query::<(Entity, &UnitId, Option<&Away>)>();
@@ -2119,6 +2242,15 @@ impl Sim {
                     Option<&Away>,
                 ),
             )>();
+            // Зачисление в отряд узла спрашивается отдельным запросом, а не
+            // шестнадцатым полем в кортеже: тот уже упёрся в предел арности
+            // `QueryData` и потому собран вложенным.
+            let crews: Vec<(String, (i32, i32))> = {
+                let mut q = self.world.query::<(&UnitId, &Enlisted)>();
+                q.iter(&self.world)
+                    .map(|(id, e)| (id.0.clone(), e.spot))
+                    .collect()
+            };
             let map = self.world.resource::<BaseMap>();
             let rules = self.world.resource::<SkillRules>();
             let tiles = self.world.resource::<TileRules>();
@@ -2200,6 +2332,17 @@ impl Sim {
                     captive: captive.is_some(),
                     post_x: post.map_or(-1, |p| p.spot.0),
                     post_y: post.map_or(-1, |p| p.spot.1),
+                    // В каком отряде числится (§12.61). Отдельно от дежурства:
+                    // это разные решения игрока об одном и том же узле — «идёт
+                    // отсюда» и «сидит здесь».
+                    crew_x: crews
+                        .iter()
+                        .find(|(who, _)| *who == id.0)
+                        .map_or(-1, |(_, s)| s.0),
+                    crew_y: crews
+                        .iter()
+                        .find(|(who, _)| *who == id.0)
+                        .map_or(-1, |(_, s)| s.1),
                     energy: energy.map_or(0, |e| e.0),
                     energy_max: needs.max,
                     energy_tired: needs.tired,
@@ -2426,6 +2569,25 @@ impl Sim {
         // То же и с узлами связи (§12.59): счёт — наружу, ворота — здесь.
         let relays = self.relay_nodes() as i32;
         let relay_free = self.raids_running() < self.relay_nodes();
+        // Узлы поимённо: с §12.61 у каждого свой состав, и панель обязана
+        // называть его словом — иначе кнопка вылазки берёт отряд ниоткуда.
+        let nodes: Vec<NodeSnap> = {
+            let cells = self.relay_cells();
+            cells
+                .into_iter()
+                .map(|(x, y)| NodeSnap {
+                    x,
+                    y,
+                    crew: self.roster_of(x, y),
+                    busy: !self.node_is_free(x, y),
+                    comms: {
+                        let map = self.world.resource::<BaseMap>();
+                        let tiles = self.world.resource::<TileRules>();
+                        tiles.comms_of(map.tile_at(x, y))
+                    },
+                })
+                .collect()
+        };
         let mut recruits = Vec::new();
         {
             let rules = self.world.resource::<RecruitRules>().0.clone();
@@ -2587,6 +2749,7 @@ impl Sim {
             raids,
             relays,
             relay_free,
+            nodes,
             fame,
             standing,
             money,

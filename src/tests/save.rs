@@ -53,6 +53,9 @@ fn state_of(sim: &Sim) -> String {
         if let Some(c) = e.get::<Fed>() {
             p.push(format!("fed={}", c.0));
         }
+        if let Some(c) = e.get::<Enlisted>() {
+            p.push(format!("crew={:?}", c.spot));
+        }
         if let Some(c) = e.get::<Health>() {
             p.push(format!("health={}", c.0));
         }
@@ -150,6 +153,11 @@ fn state_of(sim: &Sim) -> String {
 fn every_component_is_either_saved_or_skipped() {
     let mut sim = Sim::new(CORE).expect("рулсет");
     sim.tick_n(2);
+    // Состав отряда на узле не запрашивает ни одна система: это конфигурация,
+    // которую читает только фасад (§12.61). Реестр наполняют системы при
+    // инициализации расписания, поэтому такой тип приходится назвать здесь
+    // руками — иначе сторож объявит живой компонент мёртвой записью.
+    sim.world.register_component::<Enlisted>();
 
     let listed: BTreeSet<&str> = SAVED
         .iter()
@@ -253,6 +261,30 @@ fn a_saved_game_continues_identically() {
             "миры разошлись на {step}-м тике после загрузки"
         );
     }
+}
+
+/// Состав отряда на узле переживает загрузку (§12.61).
+///
+/// Он не задача и не ссылка на сущность — просто клетка на коте, — и именно
+/// поэтому его легко забыть: без него загруженная партия распустила бы все
+/// отряды молча, а игрок увидел бы пустые узлы и решил, что промахнулся мимо
+/// кнопки.
+#[test]
+fn a_crew_survives_a_save() {
+    let mut live = Sim::new(CORE).expect("рулсет");
+    let node = *live
+        .relay_cells()
+        .first()
+        .expect("рация в стартовой застройке");
+    assert!(live.enlist("excellent", node.0, node.1));
+
+    let json = live.save().expect("снимок");
+    let mut loaded = Sim::load_from(CORE, &json).expect("загрузка");
+    assert_eq!(
+        loaded.roster_at(node.0, node.1),
+        vec!["excellent".to_string()],
+        "загруженная партия забыла отряд",
+    );
 }
 
 /// Ссылки на сущности переживают загрузку: claim остаётся за тем же котом.

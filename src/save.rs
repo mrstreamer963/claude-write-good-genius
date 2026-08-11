@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 6;
+pub(crate) const FORMAT: u32 = 7;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -96,6 +96,9 @@ pub(crate) const SAVED: &[&str] = &[
     // Приписка к узлу — конфигурация, а не задача (§12.60), но состояние мира:
     // без неё загруженная партия забыла бы, кого игрок посадил на связь.
     "Posted",
+    // Состав отряда на узле (§12.61) — той же природы: конфигурация, но
+    // состояние мира. Без неё загруженная партия распустила бы все отряды.
+    "Enlisted",
     // Состояния кота, которые не задачи.
     "Away",
     "Captive",
@@ -303,6 +306,9 @@ pub(crate) struct EntityDto {
     pub(crate) on_duty: Option<(i32, i32)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) posted: Option<(i32, i32)>,
+    /// В отряде какого узла кот числится (§12.61) — тоже клетка, а не ссылка.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) enlisted: Option<(i32, i32)>,
 
     // Состояния кота, которые не задачи.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -490,6 +496,7 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                 squad: e.get::<Squad>().and_then(|s| at(s.0)),
                 on_duty: e.get::<OnDuty>().map(|d| d.spot),
                 posted: e.get::<Posted>().map(|p| p.spot),
+                enlisted: e.get::<Enlisted>().map(|c| c.spot),
 
                 away: e.contains::<Away>(),
                 captive: e.contains::<Captive>(),
@@ -758,6 +765,9 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
         }
         if let Some(spot) = dto.posted {
             e.insert(Posted { spot });
+        }
+        if let Some(spot) = dto.enlisted {
+            e.insert(Enlisted { spot });
         }
 
         if dto.away {
