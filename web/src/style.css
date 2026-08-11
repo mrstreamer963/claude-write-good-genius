@@ -10,14 +10,21 @@
   --bad: #d4788c;
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 
-html, body {
+html,
+body {
   margin: 0;
   height: 100%;
   background: var(--bg);
   color: var(--text);
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
 }
 
 body {
@@ -35,9 +42,18 @@ header {
   user-select: none;
 }
 
-.title { font-weight: 600; letter-spacing: 0.3px; }
-.title em { color: var(--muted); font-style: normal; font-weight: 400; }
-.spacer { flex: 1; }
+.title {
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+.title em {
+  color: var(--muted);
+  font-style: normal;
+  font-weight: 400;
+}
+.spacer {
+  flex: 1;
+}
 
 .clock {
   display: flex;
@@ -47,7 +63,9 @@ header {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.clock b { color: var(--text); }
+.clock b {
+  color: var(--text);
+}
 
 /* Фишка предмета: одна краска на кучу, на цену в палитре и на счётчик в шапке. */
 .chip {
@@ -74,7 +92,10 @@ header {
   font-size: 11px;
 }
 
-.speeds { display: flex; gap: 6px; }
+.speeds {
+  display: flex;
+  gap: 6px;
+}
 
 .speed,
 .hint-toggle {
@@ -88,7 +109,9 @@ header {
   font: inherit;
 }
 .speed:hover,
-.hint-toggle:hover { border-color: #3b4560; }
+.hint-toggle:hover {
+  border-color: #3b4560;
+}
 .speed.active,
 .hint-toggle.active {
   background: var(--accent);
@@ -102,7 +125,9 @@ main#stage {
   min-height: 0;
   position: relative;
 }
-main#stage canvas { display: block; }
+main#stage canvas {
+  display: block;
+}
 
 #error {
   position: fixed;
@@ -182,14 +207,20 @@ main#stage canvas { display: block; }
   text-transform: uppercase;
   cursor: pointer;
 }
-.sec-head:hover { color: var(--text); }
+.sec-head:hover {
+  color: var(--text);
+}
 .sec-head.active {
   color: var(--text);
   border-color: var(--line);
   background: rgba(255, 255, 255, 0.04);
 }
-.sec-head .chev { transition: transform 0.12s ease; }
-.sec-head.active .chev { transform: rotate(90deg); }
+.sec-head .chev {
+  transition: transform 0.12s ease;
+}
+.sec-head.active .chev {
+  transform: rotate(90deg);
+}
 .sec-body {
   display: flex;
   flex-direction: column;
@@ -199,7 +230,9 @@ main#stage canvas { display: block; }
 /* Атрибут `hidden` — это всего лишь `display: none` из браузерных стилей, и
    любой авторский `display` его перебивает. Без этой строки свёрнутый раздел
    остаётся на экране, а `hidden` в разметке молча ничего не значит. */
-.sec-body[hidden] { display: none; }
+.sec-body[hidden] {
+  display: none;
+}
 
 #toolbar .tt {
   font-size: 11px;
@@ -223,8 +256,13 @@ main#stage canvas { display: block; }
   font-size: 13px;
   text-align: left;
 }
-.tool:hover { border-color: #3b4560; }
-.tool.active { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.tool:hover {
+  border-color: #3b4560;
+}
+.tool.active {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
 
 .sw {
   width: 14px;
@@ -244,7 +282,10 @@ main#stage canvas { display: block; }
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
-.cost .chip { width: 7px; height: 7px; }
+.cost .chip {
+  width: 7px;
+  height: 7px;
+}
 .sw-erase {
   background: repeating-linear-gradient(45deg, #7a2b3a 0 3px, #40151d 3px 6px);
 }
@@ -261,7 +302,11 @@ main#stage canvas { display: block; }
 }
 /* Наука: колба — той же краской, что и лаборатория в палитре. */
 .sw-lab {
-  background: radial-gradient(circle at 50% 65%, #a86fd6 0 40%, #5a3a6e 45% 100%);
+  background: radial-gradient(
+    circle at 50% 65%,
+    #a86fd6 0 40%,
+    #5a3a6e 45% 100%
+  );
 }
 /* Обучение: книжка — той же краской, что и метка над сидящим за партой. */
 .sw-study {
@@ -337,7 +382,9 @@ main#stage canvas { display: block; }
   cursor: default;
   opacity: 0.4;
 }
-.tool:disabled:hover { border-color: var(--line); }
+.tool:disabled:hover {
+  border-color: var(--line);
+}
 
 /* Переключатель правила симуляции, а не режим ввода: не участвует в общей
    подсветке инструментов, поэтому и вид у него другой. */
@@ -359,7 +406,6 @@ main#stage canvas { display: block; }
 /* Панель выбранного кота: рост навыка не виден в поле, поэтому у него есть
    единственное место, где он заметен (§12.17). */
 #cat {
-
   padding: 10px 12px;
   background: rgba(21, 23, 31, 0.92);
   border: 1px solid var(--line);
@@ -367,12 +413,13 @@ main#stage canvas { display: block; }
   backdrop-filter: blur(4px);
   font-size: 13px;
 }
-#cat[hidden] { display: none; }
+#cat[hidden] {
+  display: none;
+}
 
 /* Панель клетки — сразу под карточкой кота: обе про то, что игрок сейчас
    выделил, остальные — про то, что происходит на базе само (§12.58). */
 #cell {
-
   padding: 10px 12px;
   background: rgba(21, 23, 31, 0.92);
   border: 1px solid var(--line);
@@ -380,7 +427,9 @@ main#stage canvas { display: block; }
   backdrop-filter: blur(4px);
   font-size: 13px;
 }
-#cell[hidden] { display: none; }
+#cell[hidden] {
+  display: none;
+}
 
 /* Координаты клетки — в заголовке, но приглушённо: они опознают клетку, когда
    маркер на карте уехал за край экрана, и не спорят с названием тайла. */
@@ -405,10 +454,66 @@ main#stage canvas { display: block; }
   font-size: 12px;
 }
 
+/* Список котов у узла связи (§12.61): состав отряда и дежурство собираются
+   строками прямо в панели рации, а не выделением котов на карте. Строка — тот
+   же `.tool`-переключатель, что чертёж в тулбаре: «числится» подсвечено, как
+   включённое правило. Занятие кота приписано справа и приглушённо — оно
+   помогает выбрать, но не спорит с именем. */
+.crew-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0 8px;
+}
+.crew-row {
+  display: flex;
+  gap: 4px;
+}
+/* Имя и занятие — в две строки, а не в одну: панель узкая (200px), и в строку
+   они сжимали друг друга до многоточия оба сразу. Имя важнее — оно и первое. */
+.crew-row .crew-pick {
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+.crew-id {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.crew-row .crew-pick.on {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.crew-note {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  font-style: normal;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.crew-duty {
+  flex: 0 0 auto;
+  padding: 5px 7px;
+  filter: grayscale(1);
+  opacity: 0.55;
+}
+.crew-duty.on {
+  filter: none;
+  opacity: 1;
+  border-color: var(--accent);
+}
+
 /* Панель миссии — под панелью кота, той же колонкой: отряд набирает симуляция,
    и это единственное место, где видно кого и надолго ли она забрала (§12.22). */
 #mission {
-
   padding: 10px 12px;
   background: rgba(21, 23, 31, 0.92);
   border: 1px solid var(--line);
@@ -416,13 +521,18 @@ main#stage canvas { display: block; }
   backdrop-filter: blur(4px);
   font-size: 13px;
 }
-#mission[hidden] { display: none; }
-#mission .mission-cancel { width: 100%; margin-top: 8px; justify-content: center; }
+#mission[hidden] {
+  display: none;
+}
+#mission .mission-cancel {
+  width: 100%;
+  margin-top: 8px;
+  justify-content: center;
+}
 
 /* Панель темы — той же колонкой, ниже миссии: работа идёт молча в комнате, и
    без панели видно только кота, который «зачем-то стоит в лаборатории». */
 #research {
-
   padding: 10px 12px;
   background: rgba(21, 23, 31, 0.92);
   border: 1px solid var(--line);
@@ -430,13 +540,18 @@ main#stage canvas { display: block; }
   backdrop-filter: blur(4px);
   font-size: 13px;
 }
-#research[hidden] { display: none; }
-#research .research-cancel { width: 100%; margin-top: 8px; justify-content: center; }
+#research[hidden] {
+  display: none;
+}
+#research .research-cancel {
+  width: 100%;
+  margin-top: 8px;
+  justify-content: center;
+}
 
 /* Панель заказа — той же колонкой, ниже темы: производство идёт так же молча,
    и та же беда — видно только кота, зачем-то стоящего у верстака (§12.30). */
 #craft {
-
   padding: 10px 12px;
   background: rgba(21, 23, 31, 0.92);
   border: 1px solid var(--line);
@@ -444,8 +559,14 @@ main#stage canvas { display: block; }
   backdrop-filter: blur(4px);
   font-size: 13px;
 }
-#craft[hidden] { display: none; }
-#craft .craft-cancel { width: 100%; margin-top: 8px; justify-content: center; }
+#craft[hidden] {
+  display: none;
+}
+#craft .craft-cancel {
+  width: 100%;
+  margin-top: 8px;
+  justify-content: center;
+}
 
 .cat-name {
   font-weight: 600;
@@ -470,7 +591,9 @@ main#stage canvas { display: block; }
   border-color: #ff9a3c;
 }
 
-.cat-skill { margin-bottom: 8px; }
+.cat-skill {
+  margin-bottom: 8px;
+}
 
 .cat-row {
   display: flex;
@@ -495,26 +618,42 @@ main#stage canvas { display: block; }
   height: 100%;
   background: var(--accent);
 }
-.bar i.rest { background: #7fd6b5; }
+.bar i.rest {
+  background: #7fd6b5;
+}
 /* Второй порог бодрости (§12.33): ниже него кот бросает начатое. Это не «скоро
    устанет», а «сейчас уйдёт с площадки», и цвет должен предупредить заранее. */
-.bar i.spent { background: #ff9a3c; }
-.bar i.fed { background: #c96f4a; }
+.bar i.spent {
+  background: #ff9a3c;
+}
+.bar i.fed {
+  background: #c96f4a;
+}
 /* Пустой желудок жжёт бодрость вдвое (§12.36) — цена невидима в цифрах, поэтому
    видна в цвете: полоска на нуле не «почти пустая», а тревожная. */
-.bar i.starving { background: #ff5566; }
+.bar i.starving {
+  background: #ff5566;
+}
 /* Здоровье (§12.37): целый кот — спокойный зелёный, раненый — тот же тревожный
    красный, что и голодающий. Порог виден цветом, а не только числом: ниже него
    кот выбывает из работы и из отряда. */
-.bar i.health { background: #8ed6a0; }
-.bar i.hurt { background: #ff5566; }
+.bar i.health {
+  background: #8ed6a0;
+}
+.bar i.hurt {
+  background: #ff5566;
+}
 /* Прогноз провала: полоса красная и полная — «пойдут и не вернутся с добычей»,
    а не «немного не хватает». */
-.bar i.fail { background: #ff5566; }
+.bar i.fail {
+  background: #ff5566;
+}
 /* Врождённый предел (§12.42): полоска полная, но это не потолок навыка, а
    потолок кота — дальше он не вырастет никогда, сколько ни работай. Приглушённый
    цвет отличает «дорос до конца» от «дорос, докуда дано». */
-.bar i.capped { background: #6b7180; }
+.bar i.capped {
+  background: #6b7180;
+}
 
 .cat-sub {
   color: var(--muted);
@@ -525,7 +664,6 @@ main#stage canvas { display: block; }
 /* Записка — отдельным углом, а не в колонке панелей: она про мир и про время,
    а не про то, что игрок сейчас выделил (§4.6, §12.28). */
 #note {
-
   max-height: 40vh;
   overflow-y: auto;
   padding: 10px 12px;
@@ -535,13 +673,25 @@ main#stage canvas { display: block; }
   backdrop-filter: blur(4px);
   font-size: 13px;
 }
-#note[hidden] { display: none; }
+#note[hidden] {
+  display: none;
+}
 /* Прошедшее событие гаснет, но не исчезает: записка — это и журнал тоже. */
-#note .past { opacity: 0.45; }
-#note .warn { color: #ff9a3c; }
-#note .good { color: #6cf0a0; }
-#note .row { margin-bottom: 8px; }
-#note .row:last-child { margin-bottom: 0; }
+#note .past {
+  opacity: 0.45;
+}
+#note .warn {
+  color: #ff9a3c;
+}
+#note .good {
+  color: #6cf0a0;
+}
+#note .row {
+  margin-bottom: 8px;
+}
+#note .row:last-child {
+  margin-bottom: 0;
+}
 
 /* Цели партии (§12.58). Панель той же породы, что записка: список, который
    читают, а не кнопки, которые жмут. */
@@ -555,11 +705,19 @@ main#stage canvas { display: block; }
   backdrop-filter: blur(4px);
   font-size: 13px;
 }
-#goals[hidden] { display: none; }
+#goals[hidden] {
+  display: none;
+}
 /* Взятая цель гаснет, но остаётся: список — он же и журнал сделанного. */
-#goals .past { opacity: 0.45; }
-#goals .row { margin-bottom: 8px; }
-#goals .row:last-child { margin-bottom: 0; }
+#goals .past {
+  opacity: 0.45;
+}
+#goals .row {
+  margin-bottom: 8px;
+}
+#goals .row:last-child {
+  margin-bottom: 0;
+}
 #goals .goals-extra {
   margin: 10px 0 6px;
   padding-top: 8px;
@@ -579,9 +737,16 @@ main#stage canvas { display: block; }
   font-size: 12px;
   cursor: pointer;
 }
-.goals-toggle:hover { color: var(--text); }
-.goals-toggle.done { color: var(--accent); border-color: var(--accent); }
-.goals-toggle[hidden] { display: none; }
+.goals-toggle:hover {
+  color: var(--text);
+}
+.goals-toggle.done {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.goals-toggle[hidden] {
+  display: none;
+}
 
 /* Уведомления о взятых целях (§12.58). Стопкой сверху по центру — не там, где
    игрок работает (тулбар слева, панели справа), и не там, где карта. */
@@ -611,10 +776,18 @@ main#stage canvas { display: block; }
   /* Появление и уход — один переход на оба: разъехаться им нечем. */
   opacity: 0;
   transform: translateY(-8px);
-  transition: opacity 0.25s ease, transform 0.25s ease;
+  transition:
+    opacity 0.25s ease,
+    transform 0.25s ease;
 }
-.toast.shown { opacity: 1; transform: translateY(0); }
-.toast.leaving { opacity: 0; transform: translateY(-8px); }
+.toast.shown {
+  opacity: 1;
+  transform: translateY(0);
+}
+.toast.leaving {
+  opacity: 0;
+  transform: translateY(-8px);
+}
 .toast-kind {
   color: var(--muted);
   font-size: 10px;
@@ -639,7 +812,9 @@ main#stage canvas { display: block; }
   backdrop-filter: blur(3px);
   z-index: 10;
 }
-#finale[hidden] { display: none; }
+#finale[hidden] {
+  display: none;
+}
 .finale-box {
   min-width: 320px;
   max-width: 46ch;
@@ -663,7 +838,9 @@ main#stage canvas { display: block; }
   font-size: 13px;
   text-align: left;
 }
-.finale-list .cat-row { margin-bottom: 4px; }
+.finale-list .cat-row {
+  margin-bottom: 4px;
+}
 .finale-close {
   margin-top: 14px;
   padding: 6px 16px;
@@ -674,7 +851,9 @@ main#stage canvas { display: block; }
   font: inherit;
   cursor: pointer;
 }
-.finale-close:hover { background: rgba(224, 192, 96, 0.12); }
+.finale-close:hover {
+  background: rgba(224, 192, 96, 0.12);
+}
 
 #hint {
   position: fixed;
@@ -692,7 +871,9 @@ main#stage canvas { display: block; }
      ложится в десять строк поверх базы. */
   max-width: min(52ch, calc(100vw - 460px));
 }
-#hint[hidden] { display: none; }
+#hint[hidden] {
+  display: none;
+}
 
 /* Кнопка «?» — та же форма, что у скоростей, но **не** их класс: на `.speed`
    висит обработчик переключения времени, и «?» с этим классом отправлял в

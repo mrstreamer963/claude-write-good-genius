@@ -65,7 +65,11 @@ const toastsEl = document.getElementById("toasts");
 // поведение остаётся ровно прежним.
 function onPanelClick(el, selector, send) {
   let armed = null;
-  const keyOf = (node) => node?.dataset.def ?? "";
+  // Ключ строки: у отмен это заказ (`data-def`), у списка котов — сам кот
+  // (`data-id`). Без него «нажал на одном, отпустил на другом» отдало бы
+  // команду не тому: панель перерисовывается каждым кадром, и строки под
+  // курсором успевают переехать.
+  const keyOf = (node) => node?.dataset.def ?? node?.dataset.id ?? "";
   el.addEventListener("mousedown", (e) => {
     const hit = e.target.closest(selector);
     armed = hit ? keyOf(hit) : null;
@@ -87,32 +91,26 @@ onPanelClick(researchEl, ".research-cancel", () =>
 onPanelClick(missionEl, ".mission-cancel", (b) =>
   sendAction({ type: "cancelMission", mission: Number(b.dataset.def) }),
 );
-// Приписка связиста (§12.60). Обе кнопки живут в панели клетки и различаются
-// `data-id`, как отмены заказов различаются `data-def`: панель перерисовывается
-// каждым кадром, и без ключа они поделили бы один взвод.
-onPanelClick(cellEl, ".relay-post", (b) =>
+// Состав отряда узла (§12.61) и дежурство на связи (§12.60) — строки списка в
+// панели клетки, и различаются они `data-id`, как отмены заказов различаются
+// `data-def`: панель перерисовывается каждым кадром, и без ключа они поделили
+// бы один взвод. `data-in` — «числится ли здесь»: одна кнопка на два состояния,
+// потому что и вопрос один — про этого кота и этот узел.
+onPanelClick(cellEl, ".crew-pick", (b) =>
   sendAction({
-    type: "postRelay",
+    type: b.dataset.in ? "dismiss" : "enlist",
     id: b.dataset.id,
     x: Number(b.dataset.x),
     y: Number(b.dataset.y),
   }),
 );
-onPanelClick(cellEl, ".relay-unpost", (b) =>
-  sendAction({ type: "unpostRelay", id: b.dataset.id }),
-);
-// Состав отряда узла (§12.61) — те же две кнопки в той же панели и с тем же
-// ключом `data-id`: узел заменил выбор отряда, и собирается он у рации.
-onPanelClick(cellEl, ".crew-add", (b) =>
+onPanelClick(cellEl, ".crew-duty", (b) =>
   sendAction({
-    type: "enlist",
+    type: b.dataset.in ? "unpostRelay" : "postRelay",
     id: b.dataset.id,
     x: Number(b.dataset.x),
     y: Number(b.dataset.y),
   }),
-);
-onPanelClick(cellEl, ".crew-drop", (b) =>
-  sendAction({ type: "dismiss", id: b.dataset.id }),
 );
 
 const app = new Application();
@@ -1123,32 +1121,77 @@ function renderCellPanel(snap) {
       `<div class="cat-sub">здесь: ${here.map(esc).join(" · ")}</div>`,
     );
 
-  // Связиста игрок сажает сам (§12.60) — адресно, как ученика за парту: это
-  // решение о судьбе конкретного кота. Кнопка живёт здесь, у самой рации,
-  // потому что и адресат у неё — эта клетка, а не «какой-нибудь узел».
-  if (def?.relay && selectedUnits.length === 1) {
-    const who = selectedUnits[0];
-    const e = (snap.entities ?? []).find((u) => u.id === who);
-    const here = e?.post_x === x && e?.post_y === y;
-    parts.push(
-      here
-        ? `<button class="tool relay-unpost" data-id="${esc(who)}"><span>Снять со связи: ${esc(who)}</span></button>`
-        : `<button class="tool relay-post" data-id="${esc(who)}" data-x="${x}" data-y="${y}"><span>На связь: ${esc(who)}</span></button>`,
-    );
-    // И состав отряда — там же и по тому же поводу: узел заменил выбор отряда
-    // (§12.61), значит собирают его здесь, у самой рации, а не кликами по карте
-    // перед уходом. Кнопка одна на два состояния, как у приписки: «числится» и
-    // «не числится» — это про одного кота и один узел.
-    const mine = e?.crew_x === x && e?.crew_y === y;
-    parts.push(
-      mine
-        ? `<button class="tool crew-drop" data-id="${esc(who)}"><span>Из отряда: ${esc(who)}</span></button>`
-        : `<button class="tool crew-add" data-id="${esc(who)}" data-x="${x}" data-y="${y}"><span>В отряд: ${esc(who)}</span></button>`,
-    );
-  }
+  // Состав отряда и дежурство — списком всех котов базы, прямо здесь, у рации
+  // (§12.60, §12.61). Раньше и то и другое собиралось «выдели кота на карте →
+  // кликни узел → нажми кнопку»: три клика на кота, два разных выделения и
+  // никакого способа перекинуть кота с узла на узел, не бегая по карте. Игрок
+  // читал это как «вылазки сломались» — кнопка молчит, а как набрать состав, из
+  // панели не видно. Список отвечает на «кого послать» там же, где спрашивают.
+  //
+  // Выделение котов на карте в наборе больше не участвует: осмотр остался
+  // осмотром. Второго пути к тому же действию нет намеренно — два источника
+  // правды в UI, и игрок не знает, какой сработал (тот же довод, по которому
+  // §12.61 отверг «оба способа разом» в ядре).
+  if (def?.relay) parts.push(...crewList(snap, x, y));
 
   cellEl.innerHTML = parts.join("");
   cellEl.hidden = false;
+}
+
+// Список котов узла связи: кто в его отряде, кто свободен, кто числится на
+// другом узле (§12.61). Строка — переключатель, как чертёж в тулбаре: клик по
+// своему вычёркивает, клик по чужому или свободному зачисляет сюда.
+//
+// Перенос с чужого узла — это тот же `enlist`, а не пара «вычеркни там →
+// зачисли здесь»: ядро снимает прежнюю приписку молча, и «переназначить
+// туда-сюда» стоит один клик. Отказывать было бы хуже — игрок не видит, где кот
+// числился раньше, и кнопка молчала бы без объяснения.
+//
+// Порядок — три группы, внутри каждой по `id`: свои, свободные, чужие. По `id`,
+// а не по обходу снапшота, ровно по той же причине, по какой сортирует
+// `roster_of`, — список игрок читает глазами, и он не должен переставляться сам
+// собой от кадра к кадру.
+function crewList(snap, x, y) {
+  const node = nodeAt(x, y);
+  const here = (e) => e.crew_x === x && e.crew_y === y;
+  // Ушедших нет на базе (§12.40): в отряд их не зачислить, а пленных объясняет
+  // своя панель. Показывать их строкой значило бы предлагать невозможное.
+  const cats = (snap.entities ?? []).filter((e) => !e.away);
+  const rank = (e) => (here(e) ? 0 : e.crew_x < 0 ? 1 : 2);
+  cats.sort((a, b) => rank(a) - rank(b) || (a.id < b.id ? -1 : 1));
+
+  const rows = cats.map((e) => {
+    const mine = here(e);
+    // Раненого ядро в отряд не пустит (§12.37), и молчащая строка читалась бы
+    // как поломка: причину называем словом, как её называет кнопка вылазки.
+    const hurt = wounded.has(e.id);
+    // Пока узел ведёт вылазку, состав уже в поле и не переигрывается: для этого
+    // есть отзыв (`cancel_mission`), а не правка списка.
+    const off = hurt || !!node?.busy;
+    const where = mine || e.crew_x < 0 ? "" : ` · узел ${e.crew_x},${e.crew_y}`;
+    const note = hurt ? "ранен" : jobLabel(e) || "";
+    const pick =
+      `<button class="tool crew-pick${mine ? " on" : ""}" data-id="${esc(e.id)}"` +
+      ` data-x="${x}" data-y="${y}"${mine ? ' data-in="1"' : ""}${off ? " disabled" : ""}>` +
+      `<span class="crew-id">${esc(e.id)}${where}</span>` +
+      (note ? `<i class="crew-note">${esc(note)}</i>` : "") +
+      "</button>";
+    // Дежурство — вторая кнопка той же строки: бонус отряду даёт та же клетка,
+    // и разводить эти два решения по разным местам панели незачем. На узле без
+    // `comms` дежурить незачем, и кнопки там нет вовсе (§12.60).
+    if (!node?.comms) return `<div class="crew-row">${pick}</div>`;
+    const on = e.post_x === x && e.post_y === y;
+    const duty =
+      `<button class="tool crew-duty${on ? " on" : ""}" data-id="${esc(e.id)}"` +
+      ` data-x="${x}" data-y="${y}"${on ? ' data-in="1"' : ""}` +
+      ` title="${on ? "Снять приписку к рации" : "Приписать к рации: сядет на связь, как освободится"}">📻</button>`;
+    return `<div class="crew-row">${pick}${duty}</div>`;
+  });
+
+  return [
+    `<div class="cat-sub">Отряд узла · ${node?.crew.length ?? 0}</div>`,
+    `<div class="crew-list">${rows.join("")}</div>`,
+  ];
 }
 
 // Что происходит в этой клетке прямо сейчас — строками, в порядке её свойств.
@@ -1213,7 +1256,7 @@ function cellWork(snap, x, y, def) {
     out.push(
       node?.crew.length
         ? `отряд: ${node.crew.map(esc).join(" · ")}`
-        : "отряд не набран: выберите кота и нажмите «В отряд»",
+        : "отряд не набран: отметьте котов в списке ниже",
     );
     if (activeNode && activeNode.x === x && activeNode.y === y && relays > 1) {
       out.push("этот узел выбран: отсюда уйдёт вылазка");
@@ -2758,7 +2801,7 @@ function syncMissionButtons() {
                     ? `${b.dataset.hint} · в плену: ${gone.join(", ")}`
                     : hurt.length
                       ? `${b.dataset.hint} · ранен: ${hurt.join(", ")}`
-                      : `${b.dataset.hint} · в отряде узла ${crew.length} из ${need}`;
+                      : `${b.dataset.hint} · в отряде узла ${crew.length} из ${need} — состав набирается в панели узла`;
   });
 }
 
