@@ -96,7 +96,7 @@ fn reputation_bends_the_price_both_ways() {
 
 /// Платят разом и вперёд, а товар едет: в этом зазоре и живёт решение (§12.44).
 #[test]
-fn a_purchase_is_paid_at_once_and_arrives_at_the_gate() {
+fn a_purchase_is_paid_at_once_and_arrives_in_the_post_cell() {
     let (mut sim, f) = sim_with_market();
     sim.set_money(100);
 
@@ -112,12 +112,67 @@ fn a_purchase_is_paid_at_once_and_arrives_at_the_gate() {
     assert_eq!(sim.scrap_total(), 0, "и до срока не появится");
 
     sim.tick_n(1);
-    assert_eq!(sim.scrap_at(3, 1), 3, "приехало кучей на шлюз");
+    assert_eq!(sim.scrap_at(5, 1), 3, "приехало кучей в ячейку поста");
+    assert_eq!(
+        sim.scrap_at(3, 1),
+        0,
+        "и не на шлюз — пост это место (§12.68)"
+    );
     assert_eq!(sim.deal_of(), None, "сделка закрыта");
 }
 
-/// Купленное ложится на шлюз, а не на склад, — как добыча вылазки (§12.22).
-/// Дальше его разносит обычная уборка, и отдельного пути у товара нет.
+/// **Товар в ячейке базе ещё не принадлежит как склад** (§12.68): им нельзя
+/// платить, пока его не вывезли.
+///
+/// Держит это нулевая `capacity` у поста, а не отдельная проверка: каждый вызов
+/// `plan_spend` заранее фильтрует кучи по ёмкости клетки (§12.24). Дай ячейке
+/// ёмкость — и она станет казной, а вывоз перестанет быть механикой.
+#[test]
+fn goods_in_the_post_cell_cannot_pay_for_a_hire() {
+    let (mut sim, f) = sim_with_market();
+    sim.set_money(100);
+    sim.set_capacity(3, 50);
+    sim.force_tile(6, 1, 3); // склад в дальнем конце коридора
+    let r = sim.set_recruit("newcomer", 0, &[(0, 2)], &[]);
+
+    assert!(sim.trade(f, 0, 2, true));
+    sim.tick_n(100);
+    assert_eq!(sim.scrap_at(5, 1), 2, "товар приехал в ячейку");
+    assert_eq!(
+        sim.stock_of(0),
+        (0, 2, 0),
+        "и числится на полу, а не на складе",
+    );
+    assert!(!sim.hire(r), "платить лежащим в ячейке нельзя");
+
+    sim.tick_n(400);
+    assert!(sim.scrap_is_in_storage(), "коты вывезли его на склад");
+    assert!(sim.hire(r), "и вот теперь им платят");
+}
+
+/// **Ячейка занята, пока её не разгребут** (§12.68) — то самое давление на
+/// логистику, ради которого пост стал местом. Затор обратим своими силами, и
+/// этим он отличается от невидимого счётчика, который оставалось только ждать.
+#[test]
+fn a_cell_stays_taken_until_the_goods_are_carried_off() {
+    let (mut sim, f) = sim_with_market();
+    sim.set_money(1000);
+    sim.set_capacity(3, 50);
+    sim.force_tile(6, 1, 3); // склад в дальнем конце коридора
+
+    assert!(sim.trade(f, 0, 2, true));
+    sim.tick_n(100);
+    assert_eq!(sim.scrap_at(5, 1), 2, "куча лежит в ячейке");
+    assert_eq!(sim.deal_of(), None, "сама сделка давно закрыта");
+    assert!(!sim.trade(f, 0, 1, true), "но ячейка ещё занята кучей");
+
+    sim.tick_n(400);
+    assert!(sim.scrap_is_in_storage(), "куча уехала");
+    assert!(sim.trade(f, 0, 1, true), "и пост снова свободен");
+}
+
+/// Купленное ложится в ячейку, а не на склад. Дальше его разносит обычная
+/// уборка, и отдельного пути у товара нет.
 #[test]
 fn a_purchase_is_tidied_away_like_any_loot() {
     let (mut sim, f) = sim_with_market();
@@ -177,20 +232,29 @@ fn a_second_post_opens_a_second_deal() {
     assert!(!sim.trade(f, 0, 1, true), "а третьей вставать некуда");
 }
 
-/// Пост остался **лицензией, а не рабочим местом** (§12.44): сделка идёт, и ни
-/// один кот к посту не идёт и на нём не стоит. Иначе счётность постов
-/// незаметно превратила бы их в верстаки.
+/// Пост стал **местом, но не рабочим местом** (§12.68): за ним никто не
+/// работает, к нему только возят, — а возить не значит работать.
+///
+/// Проверяется это на продаже, потому что она к посту как раз зовёт: кот
+/// приходит с грузом и уходит, но задачи у него всё время подвоз (`haul`), а не
+/// работа за станком. Иначе счётность постов незаметно превратила бы их в
+/// верстаки.
 #[test]
 fn a_post_never_becomes_a_workplace() {
     let (mut sim, f) = sim_with_market();
-    sim.set_money(1000);
-    sim.trade(f, 0, 4, true);
+    sim.put_scrap(6, 1, 4);
+    assert!(sim.trade(f, 0, 4, false), "продаём — за грузом придут");
 
-    for _ in 0..40 {
+    for _ in 0..300 {
         sim.tick_n(1);
-        assert_ne!(sim.pos_of("a"), (5, 1), "кот не работает за постом");
-        assert_ne!(sim.pos_of("b"), (5, 1), "и второй тоже");
+        for cat in ["a", "b"] {
+            assert!(
+                !sim.has_assignment(cat),
+                "у поста нет работы, только подвоз",
+            );
+        }
     }
+    assert_eq!(sim.money(), 40, "но товар к посту всё-таки привезли");
 }
 
 /// Чем фракция не торгует, того у неё не купишь — и деньги при этом целы.
@@ -229,8 +293,13 @@ fn the_price_is_locked_when_the_deal_is_struck() {
 
 /// Проданное **несут коты**, и это не украшение: продажа стоит котовремени, и
 /// потому торговля не бесплатный оптимизатор (§12.44).
+///
+/// Платят при этом **разом и по отгрузке** (§12.68), а не поштучно по мере
+/// сдачи: контейнер набирается, потом уезжает. Это делает продажу зеркалом
+/// покупки — отдал сейчас, получил потом, — и оставляет один-единственный
+/// момент, где считаются деньги.
 #[test]
-fn a_sale_is_carried_to_the_gate_and_paid_per_unit() {
+fn a_sale_is_carried_to_the_post_and_paid_on_shipment() {
     let (mut sim, f) = sim_with_market();
     sim.put_scrap(6, 1, 4);
 
@@ -238,28 +307,67 @@ fn a_sale_is_carried_to_the_gate_and_paid_per_unit() {
     assert_eq!(sim.money(), 0, "пока не донесли — не платят");
 
     sim.tick_n(60);
+    assert_eq!(
+        sim.deal_of().map(|(_, _, _, _, done)| done),
+        Some(4),
+        "контейнер набит целиком",
+    );
+    assert_eq!(sim.scrap_total(), 0, "товар ушёл с базы в контейнер");
+    assert_eq!(sim.money(), 0, "но денег ещё нет — груз не уехал");
 
-    assert_eq!(sim.money(), 40, "донесли всё и получили по курсу продажи");
-    assert_eq!(sim.scrap_total(), 0, "товар ушёл с базы");
+    sim.tick_n(100); // срок отгрузки, тот же `lead`, что и у поставки
+    assert_eq!(sim.money(), 40, "отгрузили и получили по курсу продажи");
     assert_eq!(sim.deal_of(), None, "сделка закрыта");
 }
 
-/// **Проданное исчезает в момент сдачи и кучей на шлюзе не становится.**
+/// **Таймер продажи ждёт полного контейнера** (§12.68) — ровно как таймер
+/// вылазки идёт с ухода отряда, а не с заявки (§12.22).
+///
+/// Отсюда и то, что состояния «срок вышел, а донесли половину» не существует, —
+/// а значит, не нужно решать, платить ли за недовезённое.
+#[test]
+fn the_sale_timer_waits_for_a_full_container() {
+    let (mut sim, f) = sim_with_market();
+    sim.put_scrap(6, 1, 4);
+
+    assert!(sim.trade(f, 0, 4, false));
+    // Пока набирают — таймер стоит на нуле, сколько бы ни прошло тиков.
+    let mut partial = false;
+    for _ in 0..60 {
+        sim.tick();
+        let Some((_, count, _, left, done)) = sim.deal_of() else {
+            break;
+        };
+        if done < count {
+            partial = true;
+            assert_eq!(left, 0, "контейнер неполон — отгрузка не начиналась");
+        }
+    }
+    assert!(partial, "набирали контейнер не мгновенно");
+
+    let (_, count, _, left, done) = sim.deal_of().expect("сделка ещё идёт");
+    assert_eq!(done, count, "контейнер полон");
+    assert!(left > 0, "и вот теперь пошёл срок отгрузки");
+}
+
+/// **Проданное исчезает в момент сдачи и кучей не становится ни на тик.**
 ///
 /// Иначе уборка увезла бы его обратно на склад: `mark_loose_scrap` метит всё,
-/// что лежит на клетке без ёмкости, а шлюз ёмкости не имеет. Это не «повезло»,
-/// а свойство ветки `HaulTo::Sale`, и его надо держать (§12.44).
+/// что лежит на клетке без ёмкости, а ячейка поста ёмкости не имеет — и не
+/// должна (§12.68). Содержимое контейнера живёт **счётчиком на сделке**, а не
+/// кучами; это свойство ветки `HaulTo::Sale`, и его надо держать.
 #[test]
-fn sold_goods_never_pile_up_at_the_gate() {
+fn sold_goods_never_pile_up_in_the_cell() {
     let (mut sim, f) = sim_with_market();
     sim.set_capacity(3, 50);
     sim.force_tile(6, 1, 3); // склад рядом с ломом
     sim.put_scrap(6, 1, 2);
 
     assert!(sim.trade(f, 0, 2, false));
-    for _ in 0..80 {
+    for _ in 0..200 {
         sim.tick();
-        assert_eq!(sim.scrap_at(3, 1), 0, "на шлюзе не задерживается ни тика");
+        assert_eq!(sim.scrap_at(5, 1), 0, "в ячейке не задерживается ни тика");
+        assert_eq!(sim.scrap_at(3, 1), 0, "и на шлюзе тоже");
     }
     assert_eq!(sim.money(), 20, "а деньги пришли");
 }
@@ -273,7 +381,7 @@ fn a_sale_pays_the_agreed_price_even_if_the_schedule_moves() {
     sim.put_scrap(6, 1, 2);
 
     assert!(sim.trade(f, 0, 2, false), "продаём по дорогой фазе");
-    sim.tick_n(60); // расписание успело уйти, пока коты несли
+    sim.tick_n(200); // расписание успело уйти, пока коты несли
 
     assert_eq!(
         sim.money(),
@@ -290,7 +398,7 @@ fn a_sale_needs_no_money_up_front() {
 
     assert!(sim.trade(f, 0, 1, false), "продавать можно и без гроша");
     assert_eq!(sim.money(), 0);
-    sim.tick_n(60);
+    sim.tick_n(200);
     assert_eq!(sim.money(), 10);
 }
 
@@ -312,7 +420,7 @@ fn a_sale_needs_the_goods_on_base() {
 
     sim.put_scrap(6, 1, 1);
     assert!(sim.trade(f, 0, 2, false), "две есть — заявку приняли");
-    sim.tick_n(60);
+    sim.tick_n(200);
     assert_eq!(sim.money(), 20, "и их унесли");
 }
 

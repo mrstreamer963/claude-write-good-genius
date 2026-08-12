@@ -1,7 +1,7 @@
 // Главный поток: PixiJS-рендер + ввод игрока. Логики нет — рисуем данные из воркера
 // и шлём команды (постройка тайлов, приказы движения).
 
-import { Application, Container, Graphics } from "pixi.js";
+import { Application, Container, Graphics, Text } from "pixi.js";
 
 const TILE = 28;
 
@@ -135,11 +135,13 @@ const world = new Container();
 const tileLayer = new Container();
 const scrapLayer = new Container(); // кучи лома на полу
 const bpLayer = new Container(); // чертежи (призраки будущих тайлов)
+const dealLayer = new Container(); // контейнеры сделок в ячейках постов (§12.68)
 const unitLayer = new Container();
 const overlay = new Container();
 world.addChild(tileLayer);
 world.addChild(scrapLayer);
 world.addChild(bpLayer);
+world.addChild(dealLayer);
 world.addChild(unitLayer);
 world.addChild(overlay);
 app.stage.addChild(world);
@@ -401,6 +403,53 @@ function drawScrap(list) {
   scrapLayer.addChild(g);
 }
 
+// Сделка в ячейке торгового поста (§12.68). Словарь **один на обе стороны**:
+// контур — «ячейка занята сделкой», заливка — «сколько уже здесь», цифра —
+// «сколько тиков». Иначе покупка и продажа требовали бы двух значков, а игрок
+// читал бы карту, только открыв панель.
+//
+// Покупка контейнер не наполняет: её заливка пустая до самого прибытия, а потом
+// товар ложится обычной кучей и рисует его уже `drawScrap`. Продажа, наоборот,
+// наполняется на глазах и уезжает целиком.
+function drawDeals(list) {
+  dealLayer.removeChildren();
+  if (!list || !list.length) return;
+  const g = new Graphics();
+  for (const d of list) {
+    const x = d.x * TILE;
+    const y = d.y * TILE;
+    const pad = TILE * 0.18;
+    const side = TILE - pad * 2;
+    const filled = d.buying ? 0 : d.count > 0 ? d.delivered / d.count : 0;
+    if (filled > 0) {
+      const h = side * Math.min(1, filled);
+      g.rect(x + pad, y + pad + (side - h), side, h).fill({
+        color: itemColor(d.item),
+        alpha: 0.55,
+      });
+    }
+    g.rect(x + pad, y + pad, side, side).stroke({
+      width: 1.5,
+      color: COLORS.select,
+      alpha: 0.9,
+    });
+  }
+  dealLayer.addChild(g);
+  // Цифра — только когда срок реально идёт. У неполной продажи его нет вовсе
+  // (§12.68), и ноль на карте читался бы как «вот-вот уедет».
+  for (const d of list) {
+    if (d.left <= 0) continue;
+    const label = new Text({
+      text: String(d.left),
+      style: { fontFamily: "monospace", fontSize: 10, fill: COLORS.select },
+    });
+    label.anchor.set(0.5);
+    label.x = d.x * TILE + TILE / 2;
+    label.y = d.y * TILE + TILE / 2;
+    dealLayer.addChild(label);
+  }
+}
+
 function drawBlueprints(list) {
   bpLayer.removeChildren();
   if (!list || !list.length) return;
@@ -503,6 +552,7 @@ function renderSnapshot(snap) {
   tickEl.parentElement.title = `тик ${snap.tick}`;
   drawScrap(snap.stacks);
   drawBlueprints(snap.blueprints);
+  drawDeals(snap.deals);
   const seen = new Set();
   for (const e of snap.entities) {
     seen.add(e.id);
@@ -1258,18 +1308,31 @@ function cellWork(snap, x, y, def) {
           ? `отряд в поле, вернётся через ${m.left}`
           : "здесь собирается отряд",
       );
-    // Купленное приезжает кучей на шлюз, а проданное коты сносят сюда же
-    // (§12.44) — это и есть ответ на «почему тут растёт куча».
-    const incoming = (snap.deals ?? []).filter((d) => d.buying);
-    if (incoming.length)
-      out.push(`сюда едет купленное: ${incoming.length} партия(и)`);
   }
   if (def.trade) {
-    // §12.44: за постом никто не работает. Сказать это прямо надо здесь, иначе
-    // игрок будет ждать у него кота и решит, что механика сломана.
+    // §12.68: пост — **место**, а не лицензия, и за ним по-прежнему никто не
+    // работает. Сказать надо и то, и другое: иначе игрок либо ждёт у поста
+    // кота, либо не понимает, почему ячейка занята.
     const busy = (snap.deals ?? []).length;
-    out.push("лицензия на торговлю: за ней не работают, товар едет к шлюзу");
-    out.push(`сделок идёт ${busy} из ${posts} — по одной на пост`);
+    out.push("торговая ячейка: за ней не работают, к ней возят");
+    out.push(`сделок идёт ${busy} из ${posts} — по одной на ячейку`);
+    // Что лежит в контейнере — ровно то, ради чего клик по ячейке и нужен.
+    // Сделать с этим ничего нельзя: товар уже продан и ждёт отгрузки.
+    const here = (snap.deals ?? []).find((d) => d.x === x && d.y === y);
+    if (here) {
+      const item = (meta.items ?? [])[here.item];
+      const name = esc(item?.label || item?.id || "товар");
+      out.push(
+        here.buying
+          ? `ждёт поставку: ${name} ${here.count} шт, ${here.left} тиков`
+          : `в контейнере: ${name} ${here.delivered} из ${here.count}` +
+              (here.left > 0 ? ` · уедет через ${here.left}` : " · набирают"),
+      );
+    } else if ((snap.stacks ?? []).some((s) => s.x === x && s.y === y)) {
+      // Привезённое занимает ячейку, пока его не увезут (§12.68). Без этой
+      // строки затор выглядит поломкой, а не работой, которую надо доделать.
+      out.push("ячейку занимает привезённое — пока не вывезут, пост занят");
+    }
   }
   if (def.relay) {
     // §12.59 дал узлу слот, §12.60 — смысл сидеть за ним. Говорим и то, и
@@ -1543,15 +1606,21 @@ function renderDealPanel(list) {
     ];
     if (d.buying) {
       rows.push(
-        `<div class="cat-sub">в пути ${d.left} — приедет в гараж</div>`,
+        `<div class="cat-sub">в пути ${d.left} — приедет в ячейку ${d.x},${d.y}</div>`,
+      );
+    } else if (d.left > 0) {
+      // Контейнер набит и уехал: срок пошёл, деньги придут разом по отгрузке
+      // (§12.68). До этого момента не заплачено ничего.
+      rows.push(
+        `<div class="cat-sub">отгружено · расчёт через ${d.left}</div>`,
       );
     } else {
-      // У продажи «срок» — это ходки котов, и мерить его тиками нечем:
-      // показываем сделанное, а не оставшееся время.
+      // Пока набирают, срока нет вовсе: его меряют ходки котов, а не тики.
+      // Показываем сделанное — и **не** показываем денег: их ещё нет.
       const pct = d.count > 0 ? Math.round((d.delivered / d.count) * 100) : 0;
       rows.push(
         `<div class="bar"><i style="width:${pct}%"></i></div>` +
-          `<div class="cat-sub">отнесли ${d.delivered} из ${d.count} · получено ${d.unit * d.delivered}¤</div>`,
+          `<div class="cat-sub">в контейнере ${d.delivered} из ${d.count} · ячейка ${d.x},${d.y}</div>`,
       );
     }
     parts.push(`<div class="cat-skill">${rows.join("")}</div>`);
@@ -2666,7 +2735,9 @@ function syncTradeButtons() {
     b.title = !posts
       ? "Нужен «Торговый пост»"
       : !postFree
-        ? `Посты заняты: сделок идёт ${posts} из ${posts}. Постройте ещё пост`
+        ? // Ячейка занята либо сделкой, либо непойманным привозом (§12.68):
+          // второй случай игрок чинит сам, и сказать об этом надо здесь.
+          `Свободных ячеек нет: разгрузите пост или постройте ещё один`
         : broke
           ? `Нужно ${total}¤ за пять, у вас ${money}¤`
           : `${unit}¤ за штуку · клик — пять (${total}¤), Shift — двадцать пять${ahead}`;

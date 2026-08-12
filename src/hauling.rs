@@ -213,7 +213,8 @@ pub(crate) fn assign_hauls(
     // ровно как площадка: игрок разметил, куда деть товар, а несёт его любой
     // свободный кот (§12.16). Отдельного механизма для продажи не заводится —
     // разница только в том, что на месте товар не укладывается в тайл, а
-    // превращается в деньги.
+    // превращается в счётчик контейнера, а деньги за него платит `run_trade`
+    // по отгрузке (§12.68).
     needy.extend(
         deals
             .iter()
@@ -223,8 +224,8 @@ pub(crate) fn assign_hauls(
                 less_incoming(&mut miss, &brought(e));
                 (!miss.is_empty()).then(|| Needy {
                     target: e,
-                    at: d.gate,
-                    tile: map.tile_at(d.gate.0, d.gate.1),
+                    at: d.cell,
+                    tile: map.tile_at(d.cell.0, d.cell.1),
                     miss,
                     sale: true,
                     budget: 0,
@@ -614,8 +615,6 @@ pub(crate) fn work_hauls(
     )>,
     mut blueprints: Query<&mut Blueprint>,
     mut deals: Query<&mut Deal>,
-    mut money: ResMut<Money>,
-    mut earned: ResMut<Earned>,
     mut stacks: Query<(Entity, &Position, &mut Stack)>,
 ) {
     // Что уже везут к каждому адресату. Носильщиков у него теперь несколько
@@ -743,8 +742,8 @@ pub(crate) fn work_hauls(
                         continue;
                     };
                     let reach = Reach::all(&map, (pos.x, pos.y));
-                    let tile = map.tile_at(deal.gate.0, deal.gate.1);
-                    match build_spot(&map, &reach, deal.gate, tile, None) {
+                    let tile = map.tile_at(deal.cell.0, deal.cell.1);
+                    match build_spot(&map, &reach, deal.cell, tile, None) {
                         Some((spot, _)) => {
                             let path = reach.path_to(spot.0, spot.1).unwrap_or_default();
                             commands.entity(cat_e).insert((
@@ -767,28 +766,24 @@ pub(crate) fn work_hauls(
                     continue;
                 };
 
-                // Донёс до шлюза — товар уходит, деньги приходят. **Поштучно и
-                // по факту сдачи**: у кота может не хватить лап (§12.17), и
-                // «донёс половину, а денег нет» читалось бы как потеря.
-                if (pos.x - deal.gate.0).abs() + (pos.y - deal.gate.1).abs() <= 1 {
+                // Донёс до ячейки — товар ложится в контейнер (§12.68). **Он не
+                // становится кучей ни на тик**: ячейка ёмкости не имеет, и
+                // `mark_loose_scrap` тут же повёз бы проданное обратно на склад.
+                // Содержимое живёт счётчиком на самой сделке.
+                //
+                // Денег здесь нет: за отгруженный контейнер платит `run_trade`
+                // разом, там же, где списывается покупка (§12.68). Второго
+                // места, где считаются деньги, быть не должно.
+                if (pos.x - deal.cell.0).abs() + (pos.y - deal.cell.1).abs() <= 1 {
                     let given = load.count.min(left).max(0);
                     if load.item == deal.item {
                         deal.delivered += given;
-                        money.0 += deal.unit * given;
-                        // Журнал совершённого (§12.58) — рядом со счётом и той
-                        // же строкой, потому что момент один. `Money` для цели
-                        // «заработать продажей» не годится: он расходуем, и
-                        // заработавший сотню да потративший её игрок никогда бы
-                        // цели не закрыл.
-                        earned.0 += deal.unit * given;
                         keep_rest(&mut commands, cat_e, load.item, load.count - given);
                     }
                 }
-                let done = deal.delivered >= deal.count;
+                // Сделка здесь **не закрывается**: набитый контейнер ещё должен
+                // уехать, и срок ему отсчитывает `run_trade`.
                 commands.entity(cat_e).remove::<Haul>();
-                if done {
-                    commands.entity(deal_e).despawn();
-                }
             }
 
             HaulTo::Store(pile_e) => {

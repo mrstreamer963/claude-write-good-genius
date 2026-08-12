@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 9;
+pub(crate) const FORMAT: u32 = 10;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -421,7 +421,7 @@ pub(crate) struct DealDto {
     pub(crate) buying: bool,
     pub(crate) left: i32,
     pub(crate) delivered: i32,
-    pub(crate) gate: (i32, i32),
+    pub(crate) cell: (i32, i32),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -550,7 +550,7 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                     buying: d.buying,
                     left: d.left,
                     delivered: d.delivered,
-                    gate: d.gate,
+                    cell: d.cell,
                 }),
                 mission: e.get::<Mission>().map(|m| MissionDto {
                     def: m.def,
@@ -842,7 +842,7 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
                 buying: d.buying,
                 left: d.left,
                 delivered: d.delivered,
-                gate: d.gate,
+                cell: d.cell,
             });
         }
         if let Some(m) = &dto.mission {
