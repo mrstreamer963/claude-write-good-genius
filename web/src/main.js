@@ -12,6 +12,10 @@ const COLORS = {
   select: 0x6cf0a0, // выбор кота / метка цели / взведённая клетка
   cell: 0x9fb0ff, // осмотренная клетка: уголки вокруг того, о чём говорит панель
   erase: 0xff5566,
+  // Хром режима стройки. Цвет самого тайла для этого не годится: тайлы тёмные
+  // (пол — почти фон), и плашка с рамкой вокруг карты в нём не читались бы —
+  // то есть режим снова стал бы тихим. Тайл показывается свотчем внутри плашки.
+  build: 0x7fa6ff,
   stuck: 0xff9a3c, // кот замурован / приказ невыполним
   scrap: 0xc9a227, // материал по умолчанию, если палитра предметов пуста
   rest: 0x7fd6b5, // сон: бодрость в панели и «зззз» над спящим котом
@@ -258,6 +262,9 @@ worker.onmessage = (e) => {
     // говорила бы о старом мире, а взведённый приказ — о котах, которых нет.
     selectedCell = null;
     selectedUnits = [];
+    // ...и цели тоже: у нового мира своя история взятого, и старая сделала бы
+    // всё уже закрытое «только что закрытым» (см. `goalsDoneSeen`).
+    goalsDoneSeen = null;
     buildToolbar();
     layout();
     drawMap(m.map);
@@ -1612,10 +1619,16 @@ let goalsOpen = true;
 // ловятся **оба** перехода, и полнота набора (финал), и каждая отдельная цель
 // (уведомление). Два разных «что было в прошлом кадре» однажды разъехались бы.
 //
-// `null` — кадра ещё не было. Отсюда же и то, что своего флага «уже показано» ни
-// у финала, ни у уведомлений нет: после перезагрузки первый же снапшот приезжает
-// из снимка сразу с закрытыми целями, перехода не случается, и не всплывает
-// ничего. Игрока не поздравляют повторно с тем, что он сделал вчера.
+// `null` — кадра **этого мира** ещё не было. Отсюда же и то, что своего флага
+// «уже показано» ни у финала, ни у уведомлений нет: первый снапшот мира только
+// засевает множество, перехода на нём не случается, и не всплывает ничего.
+// Игрока не поздравляют повторно с тем, что он сделал вчера.
+//
+// Считать «первым кадром» первый кадр **страницы** оказалось мало: воркер
+// поднимает новую партию сразу, а снимок приезжает следом (см. `ready`), и её
+// пустыми целями засевался счёт — на фоне которого всё взятое в снимке
+// выглядело только что сделанным. Поэтому сброс висит на `ready`: мир сменился —
+// прошлого кадра нет.
 let goalsDoneSeen = null;
 
 goalsToggleEl.addEventListener("click", () => {
@@ -2035,6 +2048,65 @@ function cellIsArmed() {
   return isWalkable(selectedCell.x, selectedCell.y) && !cellReleases();
 }
 
+function cssColor(n) {
+  return `#${n.toString(16).padStart(6, "0")}`;
+}
+
+// Как выглядит текущий режим ввода: подпись, цвет хрома (плашка и рамка вокруг
+// карты) и `tint` — цвет самого размечаемого тайла. Единственное место, где это
+// решается: хром, курсор и подсветка клетки обязаны говорить одно и то же,
+// иначе игрок сверяет два разных сигнала.
+//
+// Хром и `tint` разведены намеренно: на карте рамка обязана быть цветом того,
+// что игрок ставит (это ответ на «что именно»), а плашка — заметной (ответ на
+// «я в режиме»), и тёмный пол в этой роли не работает.
+function modeChrome() {
+  if (mode === "store") {
+    return { key: "store", label: "НА СКЛАД", color: COLORS.scrap, tint: null };
+  }
+  if (mode === "build") {
+    if (buildTile < 0) {
+      return { key: "erase", label: "СНОС", color: COLORS.erase, tint: null };
+    }
+    const p = meta?.palette?.[buildTile];
+    return {
+      key: "build",
+      label: `СТРОЙКА: ${p ? p.label || p.id : buildTile}`,
+      color: COLORS.build,
+      tint: paletteColors[buildTile] ?? COLORS.build,
+    };
+  }
+  return { key: "cursor", label: "", color: COLORS.select, tint: null };
+}
+
+// Красит окно под режим: плашка над картой, обводка самого поля и курсор. Режим
+// липкий (после мазка не сбрасывается), поэтому «я всё ещё в стройке» обязано
+// читаться до клика — периферийным зрением и там, куда игрок смотрит.
+function applyModeChrome() {
+  const m = modeChrome();
+  stageEl.classList.remove(
+    "mode-cursor",
+    "mode-build",
+    "mode-erase",
+    "mode-store",
+  );
+  stageEl.classList.add(`mode-${m.key}`);
+  stageEl.style.setProperty("--mode-color", cssColor(m.color));
+  // Разметка модальна: пока она идёт, «управлять» нечем. Признак висит на
+  // `body`, а не на тулбаре, потому что правые панели ему не родня, а гасить их
+  // надо тем же переключателем. Панели перерисовываются каждым снапшотом
+  // целиком, поэтому запрет обязан жить в CSS: любой список «что отключить»
+  // пришлось бы восстанавливать каждый кадр.
+  document.body.classList.toggle("marking", m.key !== "cursor");
+  const banner = document.getElementById("mode-banner");
+  if (!banner) return;
+  // Свотч тайла — тем же приёмом, что и в кнопках тулбара: подпись говорит, что
+  // ставим, а квадратик — каким это будет на карте.
+  banner.innerHTML = m.tint
+    ? `<span class="sw" style="background:${cssColor(m.tint)}"></span>${m.label}`
+    : m.label;
+}
+
 function updateHover(global) {
   const t = tileAt(global);
   hoverRect.clear();
@@ -2048,18 +2120,12 @@ function updateHover(global) {
   // клика, а не после.
   const overUnit =
     r.w === 1 && r.h === 1 && (dragFrom ? dragUnit : t && unitAt(t.tx, t.ty));
-  const col =
-    overUnit || mode === "cursor"
-      ? COLORS.select
-      : mode === "store"
-        ? COLORS.scrap
-        : buildTile >= 0
-          ? paletteColors[buildTile]
-          : COLORS.erase;
+  const m = modeChrome();
+  const col = overUnit ? COLORS.select : (m.tint ?? m.color);
   hoverRect
     .rect(r.x * TILE, r.y * TILE, r.w * TILE, r.h * TILE)
-    .fill({ color: col, alpha: 0.16 })
-    .stroke({ color: col, width: 2, alpha: 0.9 });
+    .fill({ color: col, alpha: 0.28 })
+    .stroke({ color: col, width: 3, alpha: 0.9 });
 }
 
 app.stage.on("pointerdown", (e) => {
@@ -2148,7 +2214,14 @@ window.addEventListener("keydown", (e) => {
       endDrag(false);
       return;
     }
-    // Протяжки нет — снимаем выделение целиком: и клетку, и котов. Клика,
+    // Дальше Escape отменяет ровно одно — и начинает с самого навязчивого.
+    // Режим разметки липкий (§12.62) и держит на прицеле каждый клик по карте,
+    // поэтому выходит первым; выделение подождёт второго нажатия.
+    if (mode !== "cursor") {
+      selectCursor(cursorBtn);
+      return;
+    }
+    // Режима нет — снимаем выделение целиком: и клетку, и котов. Клика,
     // который снимал бы выбор с пустого места, в двухшаговой модели нет
     // (§12.58): любой клик по карте что-нибудь да выбирает.
     clearSelection();
@@ -2196,8 +2269,18 @@ const sections = [];
 // возвращения к палитре её пришлось бы раскрывать заново.
 let openSection = "Постройка";
 
+// Разделы-инструменты: они переключают режим разметки, поэтому в самом режиме
+// остаются живыми (§12.62). Всё остальное в тулбаре и в правых панелях — это
+// «управлять», а не «размечать», и на время разметки глушится: рука уже на
+// карте, и клик мимо инструмента почти всегда промах, а не намерение.
+// «Лом» здесь вместе с «Постройкой» намеренно: рамка на склад — та же разметка,
+// и гонять игрока через курсор между двумя рамками было бы налогом на ровном
+// месте.
+const TOOL_SECTIONS = new Set(["Постройка", "Лом"]);
+
 function mkSection(el, title) {
   const sec = document.createElement("div");
+  if (!TOOL_SECTIONS.has(title)) sec.classList.add("gated");
   const head = document.createElement("button");
   head.className = "sec-head";
   head.innerHTML = `<span>${esc(title)}</span><span class="chev">›</span>`;
@@ -2823,15 +2906,18 @@ function activate(btn) {
 function selectCursor(btn) {
   mode = "cursor";
   activate(btn);
+  applyModeChrome();
 }
 function selectBuild(i, btn) {
   mode = "build";
   buildTile = i;
   activate(btn);
+  applyModeChrome();
 }
 function selectStore(btn) {
   mode = "store";
   activate(btn);
+  applyModeChrome();
 }
 
 function showError(message) {
@@ -2841,12 +2927,15 @@ function showError(message) {
   console.error(message);
 }
 
-// Подсказка: длинная и закрывает карту, поэтому её можно убрать одной кнопкой.
-// Состояние нигде не хранится — на POC лишняя persistent-настройка дороже, чем
-// один клик после перезагрузки.
+// Подсказка: длинная и закрывает карту, поэтому по умолчанию свёрнута и
+// разворачивается кнопкой. Раскрытой она была, пока была единственным местом,
+// где написано управление, — но выросла вместе с механиками и стала закрывать
+// то, что объясняет; а перезагрузка (единственный способ продолжить партию)
+// возвращала её каждый раз поверх карты. Состояние нигде не хранится: на POC
+// лишняя persistent-настройка дороже, чем один клик.
 const hintEl = document.getElementById("hint");
 const hintToggle = document.getElementById("hint-toggle");
-hintToggle.classList.add("active");
+hintEl.hidden = true;
 hintToggle.addEventListener("click", () => {
   hintEl.hidden = !hintEl.hidden;
   hintToggle.classList.toggle("active", !hintEl.hidden);

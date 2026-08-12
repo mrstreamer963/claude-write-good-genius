@@ -129,6 +129,71 @@ main#stage canvas {
   display: block;
 }
 
+/* Активный режим разметки. Цвет режима приезжает из JS одной переменной
+   `--mode-color` — считает его `modeChrome()`, и второго места, где режим
+   превращается в цвет, быть не должно. */
+main#stage.mode-build,
+main#stage.mode-erase,
+main#stage.mode-store {
+  cursor: crosshair;
+}
+/* Обводка поля — отдельным слоем поверх канваса, а не `box-shadow: inset` на
+   самом `#stage`: канвас — его ребёнок, Pixi заливает его целиком, и тень
+   оказалась бы под заливкой, то есть невидимой.
+   Не волосяная линия, а свечение внутрь: `#stage` растянут во всё окно под
+   боковыми панелями, и линия по самому краю экрана теряется — а размытое пятно
+   по периметру ловится боковым зрением, чего от этого сигнала и надо. */
+main#stage.mode-build::after,
+main#stage.mode-erase::after,
+main#stage.mode-store::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border: 3px solid var(--mode-color);
+  box-shadow: inset 0 0 50px -6px var(--mode-color);
+  opacity: 0.75;
+  pointer-events: none;
+}
+main#stage.mode-cursor {
+  cursor: default;
+}
+
+/* Пока идёт разметка, доступны только инструменты разметки и «Курсор» (§12.62).
+   Остальные разделы тулбара и все кнопки правых панелей приглушены на месте:
+   спрятать их значило бы менять высоту тулбара на каждом переключении режима, а
+   бледное и неподатливое читается как «не сейчас», а не «пропало». */
+body.marking #toolbar .gated,
+body.marking #side button {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+/* Плашка режима: у самой карты, а не в тулбаре сбоку. Кликов у неё нет —
+   `pointer-events: none`, иначе она съедала бы разметку верхнего ряда клеток. */
+#mode-banner {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 14px;
+  border-radius: 6px;
+  background: var(--mode-color);
+  color: #1a1608;
+  font: 700 13px/1 monospace;
+  letter-spacing: 0.08em;
+  pointer-events: none;
+}
+/* В режиме курсора плашки нет вовсе: пустая, но занимающая место, читалась бы
+   как «режим есть, просто без названия». */
+main#stage.mode-cursor #mode-banner {
+  display: none;
+}
+
 #error {
   position: fixed;
   left: 12px;
