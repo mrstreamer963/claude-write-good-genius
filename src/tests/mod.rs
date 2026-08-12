@@ -110,6 +110,9 @@ fn sim_from(rows: &[&str]) -> Sim {
     world.insert_resource(RecruitRules::default());
     world.insert_resource(ResearchRules::default());
     world.insert_resource(CraftRules::default());
+    // Порогов автопроизводства в схеме нет: правило — решение игрока, и в чужих
+    // тестах `plan_craft` не заводит ничего (§12.65). Включает `set_stock`.
+    world.insert_resource(Stocking::default());
     world.insert_resource(Techs::default());
     world.insert_resource(TimelineRules::default());
     world.insert_resource(Chronicle::default());
@@ -652,6 +655,18 @@ impl Sim {
     fn craft_left_of(&mut self, def: usize) -> Option<i32> {
         let mut q = self.world.query::<&Craft>();
         q.iter(&self.world).find(|o| o.def == def).map(|o| o.left)
+    }
+
+    /// Порог автопроизводства по рецепту: сколько штук база держит (§12.65).
+    fn stock_min(&self, def: usize) -> i32 {
+        self.world.resource::<Stocking>().min_of(def)
+    }
+
+    /// Ведёт ли этот заказ правило-порог, а не игрок (§12.65); `None` — заказа
+    /// нет вовсе.
+    fn craft_is_auto(&mut self, def: usize) -> Option<bool> {
+        let mut q = self.world.query::<&Craft>();
+        q.iter(&self.world).find(|o| o.def == def).map(|o| o.auto)
     }
 
     /// Станок, за которым идёт этот заказ; `None` — исполнителя ещё нет.

@@ -47,7 +47,7 @@ cargo test whole_room_is_erased_completely -- --nocapture
   `missions` (вылазки: набор отряда, уход через шлюз, возвращение с добычей, плен и вылазка
   за своим; там же репутация заказчика и пострадавшего — §12.43) ·
   `gear` (снаряжение: комплект по шаблону, за которым кот идёт сам) ·
-  `crafting` (производство: заказ, мастерская, предмет под ноги) ·
+  `crafting` (производство: заказ, мастерская, предмет под ноги, **порог автопроизводства** — §12.65) ·
   `trade` (внешний рынок: курс по расписанию, покупка с доставкой, продажа через подвоз).
   `goals` (цели партии: наблюдатель в конце тика, два вида условий — состояние и журнал) ·
   `save` (сохранение партии: снимок мира, отпечаток рулсета, отладочный журнал команд).
@@ -106,14 +106,15 @@ cargo test whole_room_is_erased_completely -- --nocapture
 | main → worker | `postRelay {id, x, y}` · `unpostRelay {id}` | приписать кота к узлу связи и снять приписку (§12.60); обе **не гасят выделенную клетку** — команда про неё же |
 | main → worker | `teach {id, skill}` | кнопка обучения: `teach(unit, skill)`, кота выбирает игрок |
 | main → worker | `craft {recipe, count}` | кнопка рецепта: `start_craft(def, count)`, клик — штука, Shift — пять |
-| main → worker | `cancelCraft {recipe}` | «Отменить» в панели заказа; **по рецепту**, а не по номеру строки (§12.55) |
+| main → worker | `setStock {recipe, min}` | «держать N» под рецептом: `set_stock(def, min)` — **правило, а не заказ** (§12.64, §12.65); ноль и есть отмена |
+| main → worker | `cancelCraft {recipe}` | «Отменить» в панели заказа; **по рецепту**, а не по номеру строки (§12.55). У заказа по порогу этой кнопки нет — там «Снять порог» |
 | main → worker | `trade {faction, item, count, buying}` | кнопка сделки: `trade(...)`, клик — пять штук, Shift — двадцать пять; отмены нет (§12.44) |
 | main → worker | `research {topic}` | кнопка темы: `start_research(def)`, склад платит образцами |
 | main → worker | `cancelResearch` | «Бросить» в панели темы (образцы не возвращаются) |
 
 **Цепочка систем одного тика** (`schedule.rs::build_schedule()`, `.chain()` — порядок значим):
 `advance_time → collapse_exhausted → assign_heal → assign_eat → assign_rest → assign_treat →
-assign_equip → gather_squad → assign_hauls → assign_research → assign_craft → assign_jobs →
+assign_equip → gather_squad → assign_hauls → assign_research → plan_craft → assign_craft → assign_jobs →
 mark_loose_scrap → assign_tidy → assign_relay → assign_nap → move_units → work_hauls → work_equip → work_eat → work_jobs →
 work_research → work_craft → study → run_missions → run_timeline → run_trade → retry_orders → escape_voids →
 spread_units → clear_solids → settle_stacks → sleep → doze → heal → tire → hunger → train_skills →
@@ -127,6 +128,9 @@ check_goals`.
 купленное ложится кучей на шлюз, а тот мог стать ямой, — съехать на пол оно обязано тем же
 тиком. **Продажи в `run_trade` нет вовсе**: её везут коты обычным подвозом, а деньги начисляет
 `work_hauls` по мере сдачи; второго места, где считаются деньги, быть не должно.
+**`plan_craft` в порядок раздатчиков не входит и котов не трогает** (§12.64): это **правило**, а
+не раздача, — оно держит на базе запас, заводя обычный заказ, когда тот просел (§12.65). Стоит
+вплотную перед `assign_craft`, чтобы заведённый заказ получил мастера тем же тиком.
 Тесты гоняют ровно эту функцию, поэтому новую систему добавлять только сюда, а не в тестовую копию.
 **`check_goals` замыкает цепочку и мир не меняет** (§12.58): цель — наблюдатель, она читает уже
 сложившийся тик. Крючков по системам работы у целей нет ни одного и заводить их нельзя.

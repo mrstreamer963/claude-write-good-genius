@@ -6,7 +6,7 @@
 use bevy_ecs::prelude::*;
 
 use crate::components::SimTime;
-use crate::crafting::{assign_craft, work_craft};
+use crate::crafting::{assign_craft, plan_craft, work_craft};
 use crate::food::{assign_eat, hunger, work_eat};
 use crate::gear::{assign_equip, work_equip};
 use crate::goals::check_goals;
@@ -63,6 +63,12 @@ fn advance_time(mut time: ResMut<SimTime>) {
 ///      работу, а её отсутствие: «коту ничего не досталось» — факт только тогда,
 ///      когда своё разобрали все остальные. Дежурство идёт раньше: рация — это
 ///      всё-таки дело, а дремота — его отсутствие.
+///
+/// `plan_craft` в этот порядок не входит и котов не трогает вовсе: он не
+/// раздатчик, а **правило** (§12.64) — держит на базе запас, заводя обычный
+/// заказ, когда тот просел (§12.65). Стоит вплотную перед `assign_craft`, чтобы
+/// заведённый заказ получил мастера тем же тиком, а не следующим: между
+/// системами цепочки `bevy_ecs` разводит отложенные команды сам.
 ///
 /// Вылазки и учёба в этот порядок не входят: отряд назначает игрок в момент
 /// заявки (§12.23), ученика — в момент команды (§12.18), и раздавать там нечего.
@@ -144,6 +150,7 @@ pub(crate) fn build_schedule() -> Schedule {
         gather_squad,
         assign_hauls,
         assign_research,
+        plan_craft,
         assign_craft,
         assign_jobs,
         mark_loose_scrap,

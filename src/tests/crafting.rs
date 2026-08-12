@@ -422,6 +422,245 @@ fn a_demolished_shop_releases_the_order() {
     assert!(sim.craft_left().is_some(), "но не потерян");
 }
 
+// --- правило-порог (§12.65) -------------------------------------------------
+
+/// Порог — это **правило**, а не заказ (§12.64): игрок задал число один раз, а
+/// заказ заводит система, когда запас просел.
+#[test]
+fn a_threshold_orders_what_the_base_is_missing() {
+    let mut sim = sim_with_shop();
+    sim.set_auto_tidy(false);
+    sim.put_item(5, 1, SCRAP, 20);
+    let recipe = sim.set_recipe(100, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+
+    assert!(sim.set_stock(recipe, 2));
+    sim.tick_n(1);
+    assert_eq!(sim.craft_left_of(recipe), Some(2), "заказ на всю недостачу");
+    assert_eq!(sim.craft_is_auto(recipe), Some(true), "и ведёт его правило");
+
+    sim.tick_n(60);
+    assert_eq!(
+        sim.item_total(PART),
+        2,
+        "деталей ровно столько, сколько велено"
+    );
+    assert_eq!(sim.craft_left_of(recipe), None, "и заказ закрылся сам");
+}
+
+/// Порог держится, а не срабатывает один раз: потратил запас — правило завело
+/// заказ снова, без второго клика.
+#[test]
+fn a_threshold_reorders_after_the_stock_is_spent() {
+    let mut sim = sim_with_shop();
+    sim.set_auto_tidy(false);
+    sim.put_item(5, 1, SCRAP, 20);
+    let recipe = sim.set_recipe(100, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+    sim.set_stock(recipe, 1);
+    sim.tick_n(40);
+    assert_eq!(sim.item_total(PART), 1);
+
+    sim.take_item(3, 1, PART); // деталь ушла в дело
+    sim.tick_n(1);
+    assert_eq!(
+        sim.craft_left_of(recipe),
+        Some(1),
+        "просело — правило заказало снова"
+    );
+}
+
+/// **Считается всё добро базы, а не склад** (§12.65): готовое лежит под ногами
+/// мастера, и склад узнаёт о нём только после уборки. По складу правило
+/// штамповало бы лишнее всё время, пока носильщик идёт.
+#[test]
+fn a_threshold_counts_goods_on_the_floor() {
+    let mut sim = sim_with_shop();
+    sim.set_auto_tidy(false);
+    sim.put_item(5, 1, SCRAP, 20);
+    sim.put_item(1, 1, PART, 3); // лежат на полу, а не в складе
+    let recipe = sim.set_recipe(100, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+
+    sim.set_stock(recipe, 3);
+    sim.tick_n(5);
+    assert_eq!(sim.craft_left_of(recipe), None, "порог уже закрыт полом");
+}
+
+/// Обещанное покупателю базе больше не принадлежит (§12.50), поэтому порога не
+/// закрывает: иначе бронь под продажу тихо съедала бы запас.
+#[test]
+fn goods_promised_to_a_buyer_do_not_count() {
+    let mut sim = sim_with_shop();
+    sim.set_auto_tidy(false);
+    sim.set_gate(3, true);
+    sim.force_tile(1, 1, 3); // шлюз, через который поедет продажа
+    sim.set_trade_post(4, true);
+    sim.force_tile(6, 1, 4);
+    let faction = sim.set_faction(100);
+    sim.set_market(faction, 1, 0, 0, 0);
+    sim.set_prices(faction, PART, &[10]);
+    sim.put_item(5, 1, SCRAP, 20);
+    sim.put_item(5, 1, PART, 2);
+    let recipe = sim.set_recipe(100, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+
+    assert!(sim.trade(faction, PART, 2, false), "обе детали проданы");
+    sim.set_stock(recipe, 2);
+    sim.tick_n(1);
+    assert_eq!(
+        sim.craft_left_of(recipe),
+        Some(2),
+        "проданное не в счёт — правило заказало новые"
+    );
+}
+
+/// Станок — слот заказа (§12.55), и правилу он тоже не бесплатен: занят —
+/// правило молчит и ждёт, как ждёт кнопка у игрока.
+#[test]
+fn a_threshold_waits_for_a_free_shop() {
+    let mut sim = sim_with_shop();
+    sim.set_auto_tidy(false);
+    sim.put_item(5, 1, SCRAP, 20);
+    let bolt = sim.set_recipe(2000, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+    let nut = sim.set_recipe(100, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+    sim.start_craft(bolt, 1); // единственный станок занят вручную
+
+    sim.set_stock(nut, 2);
+    sim.tick_n(5);
+    assert_eq!(sim.craft_left_of(nut), None, "второму заказу негде встать");
+
+    assert!(sim.cancel_craft(bolt));
+    sim.tick_n(1);
+    assert_eq!(
+        sim.craft_left_of(nut),
+        Some(2),
+        "станок освободился — заказ"
+    );
+}
+
+/// **На одну разметку — один источник** (§12.64): заказ, которого коснулся
+/// игрок, становится ручным, и правило его больше не ведёт. Иначе добавленные
+/// штуки срезались бы тем же тиком, и объяснить это было бы нечем.
+#[test]
+fn a_manual_order_takes_the_recipe_over_from_the_rule() {
+    let mut sim = sim_with_shop();
+    sim.set_auto_tidy(false);
+    sim.put_item(5, 1, SCRAP, 40);
+    let recipe = sim.set_recipe(100, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+    sim.set_stock(recipe, 1);
+    sim.tick_n(1);
+    assert_eq!(sim.craft_is_auto(recipe), Some(true));
+
+    assert!(sim.start_craft(recipe, 4));
+    sim.tick_n(1);
+    assert_eq!(sim.craft_is_auto(recipe), Some(false), "заказ стал ручным");
+    assert_eq!(sim.craft_left_of(recipe), Some(5), "и штуки на месте");
+}
+
+/// Заказ правила отменяют **снятием порога**, а не кнопкой «Отменить»: правило
+/// завело бы его обратно тем же тиком, и отмена оказалась бы командой, которая
+/// ничего не делает (§12.65).
+#[test]
+fn an_auto_order_is_not_cancelled_by_hand() {
+    let mut sim = sim_with_shop();
+    sim.put_item(5, 1, SCRAP, 20);
+    let recipe = sim.set_recipe(100, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+    sim.set_stock(recipe, 2);
+    sim.tick_n(1);
+
+    assert!(!sim.cancel_craft(recipe), "отмена не про заказ правила");
+    assert!(sim.craft_left_of(recipe).is_some(), "заказ на месте");
+}
+
+/// Снятый порог убирает свой заказ **сам** — правило пересчитывается каждым
+/// тиком, и руками мир не трогает никто (§12.64).
+#[test]
+fn clearing_the_threshold_ends_its_order() {
+    let mut sim = sim_with_shop();
+    let recipe = sim.set_recipe(100, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+    sim.set_stock(recipe, 2); // материала нет: заказ ждёт и не оплачен
+    sim.tick_n(2);
+    assert!(sim.craft_left_of(recipe).is_some());
+
+    assert!(sim.set_stock(recipe, 0));
+    sim.tick_n(1);
+    assert_eq!(
+        sim.craft_left_of(recipe),
+        None,
+        "заказ ушёл вместе с порогом"
+    );
+}
+
+/// Но **начатую штуку правило не отбирает**: материал за неё уже списан, и
+/// отменить её значило бы сжечь его молча (§12.26).
+#[test]
+fn a_paid_piece_survives_the_threshold_being_dropped() {
+    let mut sim = sim_with_shop();
+    sim.set_auto_tidy(false);
+    sim.put_item(5, 1, SCRAP, 4);
+    let recipe = sim.set_recipe(400, &[(SCRAP, 4)], &[(PART, 1)], &[]);
+    sim.set_stock(recipe, 1);
+    sim.tick_n(6);
+    assert_eq!(sim.item_at(5, 1, SCRAP), 0, "материал списан");
+
+    sim.set_stock(recipe, 0);
+    sim.tick_n(1);
+    assert_eq!(sim.craft_left_of(recipe), Some(1), "штука доделывается");
+    sim.tick_n(60);
+    assert_eq!(sim.item_total(PART), 1, "и материал не сгорел зря");
+    assert_eq!(sim.craft_left_of(recipe), None, "а дальше заказ закрылся");
+}
+
+/// Поднятый порог дотягивает свой заказ, а не заводит второй: двух заказов на
+/// один рецепт не бывает (§12.55).
+#[test]
+fn a_raised_threshold_grows_its_own_order() {
+    let mut sim = sim_with_shop();
+    let recipe = sim.set_recipe(100, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+    sim.set_stock(recipe, 1);
+    sim.tick_n(1);
+    assert_eq!(sim.craft_left_of(recipe), Some(1));
+
+    sim.set_stock(recipe, 4);
+    sim.tick_n(1);
+    assert_eq!(sim.craft_left_of(recipe), Some(4), "заказ подрос");
+    assert_eq!(sim.orders_count(), 1, "и остался одним");
+}
+
+/// Рецепт, закрытый технологией, не существует (§12.27) — порог на нём ждёт
+/// науки, как ждал бы кнопки.
+#[test]
+fn a_locked_recipe_ignores_its_threshold() {
+    let mut sim = sim_with_shop();
+    sim.put_item(5, 1, SCRAP, 20);
+    let recipe = sim.set_recipe(100, &[(SCRAP, 2)], &[(PART, 1)], &["materials"]);
+
+    sim.set_stock(recipe, 2);
+    sim.tick_n(5);
+    assert_eq!(
+        sim.craft_left_of(recipe),
+        None,
+        "технологии нет — заказа нет"
+    );
+
+    sim.set_tech("materials");
+    sim.tick_n(1);
+    assert_eq!(
+        sim.craft_left_of(recipe),
+        Some(2),
+        "а с ней правило работает"
+    );
+}
+
+/// Порог выдаёт **штуки заказа**, а не штуки предмета: рецепт, дающий по три за
+/// раз, закрывает недостачу в пять двумя заходами, а не пятью.
+#[test]
+fn a_threshold_counts_pieces_not_items() {
+    let mut sim = sim_with_shop();
+    let recipe = sim.set_recipe(100, &[(SCRAP, 2)], &[(PART, 3)], &[]);
+
+    sim.set_stock(recipe, 5);
+    sim.tick_n(1);
+    assert_eq!(sim.craft_left_of(recipe), Some(2), "два захода по три");
+}
+
 // --- боевой рулсет ----------------------------------------------------------
 
 /// На настоящем `core.yaml`: мастерская и первый рецепт открываются одной

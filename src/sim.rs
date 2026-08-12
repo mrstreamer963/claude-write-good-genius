@@ -976,6 +976,9 @@ impl Sim {
         world.insert_resource(UnitRules { carry: rs.carry });
         world.insert_resource(AutoTidy(true));
         world.insert_resource(AutoRest(true));
+        // Порогов автопроизводства в новой партии нет ни одного: правило — это
+        // решение игрока, а не стартовая настройка (§12.65).
+        world.insert_resource(Stocking::default());
         world.insert_resource(Trace::default());
         world.insert_resource(NeedRules {
             max: rs.energy.max,
@@ -1665,6 +1668,11 @@ impl Sim {
         if let Some(order_e) = self.order_of(def) {
             if let Some(mut order) = self.world.get_mut::<Craft>(order_e) {
                 order.left += count;
+                // Заказ, которого коснулся игрок, становится ручным (§12.65):
+                // иначе правило тем же тиком срезало бы добавленные штуки
+                // обратно к недостаче, и объяснить это было бы нечем. Порог
+                // никуда не делся — он заведёт свой заказ, когда ручной выйдет.
+                order.auto = false;
                 return true;
             }
         }
@@ -1678,7 +1686,32 @@ impl Sim {
             paid: false,
             assignee: None,
             spot: None,
+            auto: false,
         });
+        true
+    }
+
+    /// Держать на базе не меньше `min` штук того, что даёт рецепт `def`
+    /// (§12.65). Ноль снимает порог.
+    ///
+    /// **Это правило, а не заказ** (§12.64): команда только пишет число, а мир
+    /// приводит в соответствие `plan_craft` — каждым тиком, а не один раз.
+    /// Отсюда и то, что снятие порога ничего здесь не отменяет: заказ, который
+    /// правило вело, оно же и уберёт, доделав оплаченную штуку.
+    ///
+    /// Порог живёт на **рецепте**, а не на предмете: два рецепта могут давать
+    /// одно и то же, и выбор между ними — решение игрока, а не «первый по
+    /// палитре».
+    ///
+    /// Вернёт false, если такого рецепта нет или число отрицательное. Пустой
+    /// склад, занятый станок и неоткрытая технология отказом **не** являются:
+    /// правило ждёт, как ждёт заказ без материала (§12.30).
+    pub fn set_stock(&mut self, def: usize, min: i32) -> bool {
+        note(&mut self.world, format!("stock {def} {min}"));
+        if min < 0 || self.world.resource::<CraftRules>().0.len() <= def {
+            return false;
+        }
+        self.world.resource_mut::<Stocking>().set(def, min);
         true
     }
 
@@ -1692,12 +1725,21 @@ impl Sim {
     /// Материал уже начатой штуки **не возвращается** — та же цена поспешной
     /// разметки, что у брошенной темы и у отменённого чертежа с завезённым ломом
     /// (§12.26). Неоплаченные штуки не стоили ничего и просто исчезают.
-    /// Вернёт false, если такого заказа нет.
+    ///
+    /// **Заказ, который ведёт правило, этой командой не отменяется** (§12.65):
+    /// правило завело бы его обратно тем же тиком, и отмена оказалась бы
+    /// командой, которая ничего не делает. Отменяют такой заказ снятием порога
+    /// (`set_stock(def, 0)`) — источник у разметки один, и отменять надо его.
+    ///
+    /// Вернёт false, если такого заказа нет или он не ручной.
     pub fn cancel_craft(&mut self, def: usize) -> bool {
         note(&mut self.world, format!("cancel_craft {def}"));
         let Some(order_e) = self.order_of(def) else {
             return false;
         };
+        if self.world.get::<Craft>(order_e).is_some_and(|o| o.auto) {
+            return false;
+        }
         if let Some(cat_e) = self.world.get::<Craft>(order_e).and_then(|o| o.assignee) {
             self.world
                 .entity_mut(cat_e)
@@ -1843,19 +1885,14 @@ impl Sim {
     /// шапке, — иначе отказ читался бы как поломка при непустой шапке (§12.16).
     /// Ушедших с базы это не касается: заявка на вылазку роняет ношу под ноги
     /// (§12.38), так что чужого добра за шлюзом не бывает.
+    /// Считается одним местом с порогом автопроизводства (`on_base_counts`,
+    /// §12.65): оба спрашивают «сколько у базы этого есть», и разойтись им
+    /// нельзя — иначе правило штампует под ворота, которые считают иначе.
     pub(crate) fn item_on_base(&mut self, item: usize) -> i32 {
         let mut piles = self.world.query::<&Stack>();
         let mut loads = self.world.query::<&Carrying>();
-        piles
-            .iter(&self.world)
-            .filter(|s| s.item == item)
-            .map(|s| s.count)
-            .sum::<i32>()
-            + loads
-                .iter(&self.world)
-                .filter(|c| c.item == item)
-                .map(|c| c.count)
-                .sum::<i32>()
+        let have = crate::hauling::on_base_counts(piles.iter(&self.world), loads.iter(&self.world));
+        have.get(item).copied().unwrap_or(0)
     }
 
     /// Отправить кота `unit_id` учиться домену `skill_id`.
@@ -2670,6 +2707,7 @@ impl Sim {
                     // отличать занятую от свободной (§12.55).
                     x: order.spot.map_or(-1, |(x, _)| x),
                     y: order.spot.map_or(-1, |(_, y)| y),
+                    auto: order.auto,
                     unit: order
                         .assignee
                         .and_then(|e| names.iter().find(|&&(cat, _)| cat == e))
@@ -2702,6 +2740,14 @@ impl Sim {
                 });
             }
         }
+
+        // Пороги автопроизводства — длиной ровно в палитру рецептов: ресурс
+        // растёт под тот рецепт, которому порог задали, и короче палитры, пока
+        // остальные нули (§12.65).
+        let stocking = {
+            let rule = self.world.resource::<Stocking>();
+            (0..self.recipes.len()).map(|d| rule.min_of(d)).collect()
+        };
 
         // Записка. Что игрок знает о будущем — решает ядро: до `reveal` детали
         // в снапшот просто не кладутся (§4.6, §12.28).
@@ -2763,6 +2809,7 @@ impl Sim {
             topics,
             crafting,
             recipes,
+            stocking,
             techs,
             notes,
             goals,

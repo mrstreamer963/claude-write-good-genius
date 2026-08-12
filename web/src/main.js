@@ -89,6 +89,11 @@ function onPanelClick(el, selector, send) {
 onPanelClick(craftEl, ".craft-cancel", (node) =>
   sendAction({ type: "cancelCraft", recipe: Number(node.dataset.def) }),
 );
+// У заказа по порогу отменяют **правило**, а не заказ (§12.65): сам заказ ядро
+// завело бы обратно тем же тиком.
+onPanelClick(craftEl, ".keep-clear", (node) =>
+  sendAction({ type: "setStock", recipe: Number(node.dataset.def), min: 0 }),
+);
 onPanelClick(researchEl, ".research-cancel", () =>
   sendAction({ type: "cancelResearch" }),
 );
@@ -237,6 +242,10 @@ const recruitButtons = []; // кнопки найма — гасим по изв
 const teachButtons = []; // кнопки обучения — живы, когда выбран ровно один кот
 const topicButtons = []; // кнопки тем — гасим по технологиям, складу и допуску
 const recipeButtons = []; // кнопки рецептов — гасим по технологии и мастерской
+// Пороги автопроизводства в порядке палитры рецептов (§12.65). Число хранит
+// ядро; здесь оно нужно кнопкам «−/+», чтобы знать, от чего отсчитывать.
+let stocking = [];
+const stockRows = []; // строки «держать N» — по строке на рецепт
 const tileButtons = []; // кнопки палитры, закрытые технологией (§12.27)
 
 // --- worker ---------------------------------------------------------------
@@ -617,6 +626,7 @@ function renderSnapshot(snap) {
   syncRecruitButtons(snap.recruits);
   syncTopicButtons(snap.topics);
   syncRecipeButtons(snap.recipes);
+  syncStockRows(snap.stocking, snap.recipes);
   syncTileButtons(snap.techs);
   renderNotePanel(snap.notes, snap.tick);
   renderGoalsPanel(snap.goals, snap.goals_required, snap);
@@ -1483,12 +1493,17 @@ function renderCraftPanel(list) {
       : c.paid
         ? "ждёт исполнителя"
         : "ждёт материала";
+    // Заказ правила отменяют **снятием порога**, а не «Отменить»: правило завело
+    // бы его обратно тем же тиком, и кнопка читалась бы как поломка (§12.65).
+    const button = c.auto
+      ? `<button class="tool keep-clear" data-def="${c.def}"><span>Снять порог</span></button>`
+      : `<button class="tool craft-cancel" data-def="${c.def}"><span>Отменить</span></button>`;
     parts.push(
       '<div class="cat-skill">' +
         `<div class="cat-row"><span>${esc(def?.label || def?.id || "Заказ")}</span><b>${pct}%</b></div>` +
         `<div class="bar"><i style="width:${pct}%"></i></div>` +
-        `<div class="cat-sub">осталось ${c.left} шт · ${state}</div>` +
-        `<button class="tool craft-cancel" data-def="${c.def}"><span>Отменить</span></button>` +
+        `<div class="cat-sub">осталось ${c.left} шт · ${state}${c.auto ? " · по порогу" : ""}</div>` +
+        button +
         "</div>",
     );
   }
@@ -2441,6 +2456,7 @@ function buildToolbar() {
     const shop = mkSection(el, "Производство");
 
     recipeButtons.length = 0;
+    stockRows.length = 0;
     recipes.forEach((r, i) => {
       // На кнопке — что выходит, и следом цена: те же фишки, что у тайлов.
       const b = mkTool(
@@ -2452,6 +2468,19 @@ function buildToolbar() {
       b.classList.add("toggle");
       recipeButtons.push(b);
       shop.appendChild(b);
+
+      // Порог автопроизводства — **правило рядом с командой** (§12.64): «держать
+      // N» вместо «заказать ещё раз». Живёт здесь, а не в отдельном экране
+      // настроек: иначе игрок ищет причину происходящего не там, где решал.
+      const row = document.createElement("div");
+      row.className = "keep";
+      const minus = mkStep("−", (e) => bumpStock(i, e.shiftKey ? -5 : -1));
+      const label = document.createElement("span");
+      label.className = "keep-val";
+      const plus = mkStep("+", (e) => bumpStock(i, e.shiftKey ? 5 : 1));
+      row.append(minus, label, plus);
+      shop.appendChild(row);
+      stockRows.push({ row, label, minus, plus });
     });
   }
 
@@ -2759,6 +2788,47 @@ function syncRecipeButtons(list) {
         : r.affordable
           ? "Заказать: клик — штука, Shift — пять"
           : `На складе нет материала, заказ будет ждать: ${payHint((meta.recipes ?? [])[i]?.cost)}`;
+  });
+}
+
+// Кнопка шага у порога. Живёт в тулбаре, а не в панели, поэтому слушатель
+// вешается прямо на узел: перерисовка целиком (§12.57) грозит только правым
+// панелям, а тулбар собирается один раз.
+function mkStep(sign, onClick) {
+  const b = document.createElement("button");
+  b.className = "tool step";
+  b.textContent = sign;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+// Сдвинуть порог. Отсчитываем от **числа из снапшота**, а не от своего
+// счётчика: правило живёт в ядре, и второй его экземпляр здесь разошёлся бы с
+// ним при первой же загрузке партии (§12.53).
+function bumpStock(recipe, delta) {
+  const min = Math.max(0, (stocking[recipe] ?? 0) + delta);
+  if (min === (stocking[recipe] ?? 0)) return;
+  sendAction({ type: "setStock", recipe, min });
+}
+
+// Порог показываем словом, а не пустым нулём: «держать —» читается как «правила
+// нет», а «0» — как «держать ноль», то есть как настройку, которой игрок не
+// делал. Рецепт, закрытый технологией, порога не принимает — ядро его всё равно
+// не исполнит (§12.65).
+function syncStockRows(list, recipes) {
+  stockRows.forEach(({ row, label, minus, plus }, i) => {
+    const min = (list ?? [])[i] ?? 0;
+    const open = ((recipes ?? [])[i] ?? {}).unlocked ?? false;
+    stocking[i] = min;
+    label.textContent = min > 0 ? `держать ${min}` : "держать —";
+    row.classList.toggle("on", min > 0);
+    row.hidden = !open;
+    minus.disabled = !open || min <= 0;
+    plus.disabled = !open;
+    row.title =
+      min > 0
+        ? `Коты сами делают, пока на базе меньше ${min} шт. Клик — на штуку, Shift — на пять`
+        : "Держать запас: коты будут делать сами, когда просядет";
   });
 }
 

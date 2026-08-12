@@ -468,6 +468,38 @@ main#stage.mode-cursor #mode-banner {
   opacity: 1;
 }
 
+/* Порог автопроизводства: правило стоит **под своей командой** (§12.64), с
+   отступом — оно про ту же строку рецепта, а не про соседнюю. Гаснет вместе с
+   правилом: «держать —» это муть, «держать 5» — обычный текст.
+   Имя `keep`, а не `stock`: `.stock` уже занят фишкой имущества в шапке, и
+   вторая механика под тем же именем молча красила бы её. */
+.keep {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -2px 0 4px 22px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.keep.on {
+  color: var(--text);
+}
+/* `display: flex` выше перебивает браузерное правило для `[hidden]` — без этой
+   строки порог виден у рецепта, которого ещё нет. */
+.keep[hidden] {
+  display: none;
+}
+.keep .keep-val {
+  flex: 1 1 auto;
+}
+.tool.step {
+  padding: 1px 7px;
+  font-size: 13px;
+  line-height: 16px;
+  justify-content: center;
+  color: inherit;
+}
+
 /* Панель выбранного кота: рост навыка не виден в поле, поэтому у него есть
    единственное место, где он заметен (§12.17). */
 #cat {

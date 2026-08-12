@@ -6,7 +6,9 @@
 //! раз, а рецепт крутится, пока не выйдет `left` штук. Очереди заказов нет,
 //! счётчик и есть весь ответ на «сколько раз».
 //!
-//! Систем две, как у стройки и у науки:
+//! Систем три, и первая из них — не про работу, а про повод для неё:
+//!   * `plan_craft` — правило-порог: держит на базе не меньше заданного числа
+//!     штук, заводя **обычный** заказ, когда просело (§12.64, §12.65);
 //!   * `assign_craft` — раздатчик: ставит ближайшего свободного кота к ближайшей
 //!     клетке мастерской. **Допуска по навыку нет** — рецепт открывает
 //!     технология, а «Ремесло» только ускоряет (§12.14, §12.17);
@@ -21,7 +23,7 @@
 use bevy_ecs::prelude::*;
 
 use crate::components::*;
-use crate::hauling::{plan_spend, spill, storage_order};
+use crate::hauling::{on_base_counts, plan_spend, spill, storage_order};
 use crate::jobs::WORK_RATE;
 use crate::map::BaseMap;
 use crate::path::Reach;
@@ -48,6 +50,142 @@ fn shop_spot(
         .filter(|xy| !taken.contains(xy))
         .filter_map(|(x, y)| reach.dist_at(x, y).map(|d| ((x, y), d)))
         .min_by_key(|&((x, y), d)| (d, y, x))
+}
+
+/// Сколько штук рецепта не хватает, чтобы выйти на порог: `min` меряется по
+/// **каждому** предмету, который рецепт даёт, и берётся худший (§12.65).
+///
+/// У боевых рецептов выход один, и правило читается буквально — «держать пять
+/// деталей». Набор из двух предметов пришёл бы к тому же: заказ повторяют, пока
+/// хоть одного из выходов недостаёт.
+fn pieces_needed(rule: &CraftRule, have: &[i32], booked: &[(usize, i32)], min: i32) -> i32 {
+    rule.gives
+        .iter()
+        .filter(|&&(_, per)| per > 0)
+        .map(|&(item, per)| {
+            let promised = booked
+                .iter()
+                .find(|&&(i, _)| i == item)
+                .map_or(0, |&(_, n)| n);
+            let short = min - (have.get(item).copied().unwrap_or(0) - promised);
+            // Вверх: половина детали порога не закрывает.
+            short.div_euclid(per) + i32::from(short.rem_euclid(per) > 0)
+        })
+        .max()
+        .unwrap_or(0)
+        .max(0)
+}
+
+/// Правило-порог: держать на базе не меньше `Stocking` штук того, что даёт
+/// рецепт (§12.65).
+///
+/// **Ставит ту же разметку, что и игрок**, — обычный `Craft`, только с пометкой
+/// `auto`. Ни новой задачи у кота, ни второго способа делать предметы: правило
+/// заменяет повторный клик, а не механику (§12.64).
+///
+/// Считается **всё добро базы за вычетом обещанного покупателю**, а не склад:
+/// готовое ложится кучей под ноги мастеру (§12.30), и склад узнаёт о нём только
+/// после уборки — порог по складу штамповал бы лишнее всё время, пока носильщик
+/// идёт. Платит при этом по-прежнему склад (`plan_spend` в `work_craft`):
+/// «сколько есть» и «чем заплатить» — разные вопросы (§12.24, §12.53).
+///
+/// **Пересчитывается каждый тик**, и отсюда вся отмена: порог, поднятый
+/// игроком, дотягивает `left`; порог, снятый в ноль, снимает заказ сам. Руками
+/// мир при этом не трогает никто — `Sim::set_stock` только пишет число.
+/// Единственная оговорка — **начатую штуку правило не отбирает**: материал за
+/// неё уже списан, и отменить её значило бы сжечь его молча (§12.26).
+///
+/// Чужого не трогает: ручной заказ на тот же рецепт правило не ведёт и второго
+/// рядом не заводит — на одну разметку один источник (§12.64).
+pub(crate) fn plan_craft(
+    map: Res<BaseMap>,
+    tiles: Res<TileRules>,
+    rules: Res<CraftRules>,
+    techs: Res<Techs>,
+    stocking: Res<Stocking>,
+    mut commands: Commands,
+    mut orders: Query<(Entity, &mut Craft)>,
+    stacks: Query<&Stack>,
+    loads: Query<&Carrying>,
+    deals: Query<&Deal>,
+    in_paws: Query<(&Haul, &Carrying)>,
+) {
+    // Дешёвый выход для мира без правил (все тесты чужих механик и начало
+    // партии). **Заказы правила он обязан учитывать**: снятый порог — это ноль,
+    // и по одним только порогам система вышла бы отсюда, не убрав за собой тот
+    // самый заказ, который игрок и отменял.
+    if stocking.0.iter().all(|&min| min <= 0) && !orders.iter().any(|(_, o)| o.auto) {
+        return;
+    }
+    let have = on_base_counts(stacks.iter(), loads.iter());
+    let booked = crate::trade::booked(deals.iter(), in_paws.iter());
+
+    // Станок — слот заказа (§12.55). Отдельной проверки правилу не нужно: оно
+    // заводит ту же разметку, у которой ограничение уже есть, — просто молчит,
+    // когда свободного станка нет, как молчит кнопка у игрока.
+    let shops = (0..map.height)
+        .flat_map(|y| (0..map.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| tiles.is_shop(map.tile_at(x, y)))
+        .count();
+    let mut running = orders.iter().count();
+
+    // Обход по индексу рецепта, а не по сущностям: порядок обхода ECS зависит
+    // от истории вставок (§11), а палитра — нет.
+    for def in 0..stocking.0.len() {
+        let min = stocking.min_of(def);
+        let Some(rule) = rules.0.get(def) else {
+            continue;
+        };
+        // Рецепт, закрытый технологией, не существует (§12.27) — порог на нём
+        // ждёт науки, как ждал бы кнопки.
+        if !techs.covers(&rule.requires) {
+            continue;
+        }
+        let want = if min > 0 {
+            pieces_needed(rule, &have, &booked, min)
+        } else {
+            0
+        };
+
+        match orders.iter_mut().find(|(_, o)| o.def == def) {
+            Some((order_e, mut order)) => {
+                if !order.auto {
+                    continue; // ручной заказ ведёт игрок
+                }
+                // Оплаченная штука доделывается в любом случае: материал за неё
+                // уже списан.
+                let left = want.max(i32::from(order.paid));
+                if left <= 0 {
+                    if let Some(cat_e) = order.assignee {
+                        commands
+                            .entity(cat_e)
+                            .remove::<(Crafting, Path, MoveCooldown)>();
+                    }
+                    commands.entity(order_e).despawn();
+                    running -= 1;
+                } else if order.left != left {
+                    order.left = left;
+                }
+            }
+            None => {
+                if want <= 0 || running >= shops {
+                    continue;
+                }
+                // Заказ сразу на всю недостачу, а не поштучно: N заказов по
+                // штуке заняли бы станки по очереди и мигали бы в панели.
+                commands.spawn(Craft {
+                    def,
+                    left: want,
+                    progress: 0,
+                    paid: false,
+                    assignee: None,
+                    spot: None,
+                    auto: true,
+                });
+                running += 1;
+            }
+        }
+    }
 }
 
 /// Ставит к заказу ближайшего свободного кота — если есть чем платить.

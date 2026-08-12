@@ -532,3 +532,33 @@ fn goals_and_their_logs_survive_a_save() {
     assert_eq!(loaded.crafted_done(), vec![3], "журнал производства");
     assert_eq!(loaded.earned(), 137, "журнал заработка");
 }
+
+/// Порог автопроизводства — правило игрока, а не правило рулсета (§12.65), и
+/// промах здесь тоже ничего не роняет: база после загрузки просто перестала бы
+/// держать запас, а игрок узнал бы об этом, когда деталей не окажется. Признак
+/// `auto` у заказа отдельно: без него правило перестало бы вести уже
+/// заведённый заказ, и «Отменить» появилась бы там, где её быть не должно.
+#[test]
+fn a_stocking_rule_survives_a_save() {
+    let mut live = Sim::new(CORE).expect("рулсет");
+    live.without_timeline(); // мир по расписанию тут только шум
+    live.set_tech("materials"); // «Материаловедение» открывает и станок, и рецепт
+    assert!(live.add_blueprint(10, 7, 8), "мастерская размечена");
+    live.tick_n(600); // коты подвезли лом и построили её
+    // Заведомо выше стартового запаса деталей: порог, который база уже держит,
+    // заказа не заводит — в том и смысл правила.
+    assert!(live.set_stock(0, 20));
+    live.tick_n(2);
+    assert_eq!(live.craft_is_auto(0), Some(true), "заказ завело правило");
+
+    let json = live.save().expect("снимок");
+    let mut loaded = Sim::load_from(CORE, &json).expect("загрузка");
+
+    assert_eq!(loaded.stock_min(0), 20, "порог на месте");
+    assert_eq!(
+        loaded.craft_is_auto(0),
+        Some(true),
+        "и заказ по-прежнему его"
+    );
+    assert!(!loaded.cancel_craft(0), "а значит вручную не отменяется");
+}
