@@ -823,3 +823,134 @@ fn a_rescue_raid_has_no_target_while_everyone_is_home() {
         "и заявку ядро отклоняет",
     );
 }
+
+// —— Автовылазки (§12.67) ————————————————————————————————————————————————
+//
+// Правило повторяет клик игрока по кнопке заказа, и потому проверяется тем же,
+// чем проверялась бы кнопка: ушли или нет. Второго способа уйти в поле у него
+// нет — все ворота остаются у `launch_node`.
+
+/// Правило в чистом виде: игрок нажал один раз, отряд ушёл сам.
+#[test]
+fn a_node_with_a_rule_goes_out_by_itself() {
+    let mut sim = sim_with_nodes(1);
+    let def = sim.set_mission(1, 30, &[(0, 5)]);
+    assert!(sim.enlist("a", 1, 2), "кот зачислен в отряд узла");
+    assert!(sim.set_auto_raid(def as i32, 1, 2), "правило поставлено");
+
+    sim.tick_n(10);
+    assert!(sim.is_away("a"), "отряд ушёл без второго клика");
+    assert_eq!(sim.raid_count(), 1, "и ровно одна вылазка");
+}
+
+/// То, ради чего правило и заводилось: вернувшийся отряд уходит снова. Без
+/// этого автовылазка экономит один клик, а не рутину сотен тиков.
+#[test]
+fn the_rule_sends_the_squad_out_again_after_it_returns() {
+    let mut sim = sim_with_nodes(1);
+    let def = sim.set_mission(1, 30, &[(0, 5)]);
+    sim.enlist("a", 1, 2);
+    sim.set_auto_raid(def as i32, 1, 2);
+
+    sim.tick_n(200);
+    // Журнал `Raids` помнит заказ, а не число ходок (§12.58), поэтому «сходил не
+    // раз» читается парой: первая вылазка уже закрыта журналом, а прямо сейчас
+    // идёт следующая — и увёл в неё отряд не игрок.
+    assert!(
+        sim.raids_done().contains(&def),
+        "первая вылазка кончилась успехом",
+    );
+    assert_eq!(sim.raid_count(), 1, "и следующая уже идёт");
+    assert!(sim.is_away("a"), "тем же отрядом");
+}
+
+/// Раненого правило не отправляет — и не снимается: оно ждёт, как порог ждёт
+/// материала (§12.30). Иначе автовылазка отменяла бы цену провала (§12.37).
+#[test]
+fn the_rule_waits_while_a_cat_is_hurt() {
+    let mut sim = sim_with_nodes(1);
+    let def = sim.set_mission(1, 30, &[(0, 5)]);
+    // Яма глубокая намеренно: самозаживление идёт всегда и не меньше очка за
+    // тик, а рядом стоят коты, готовые лечить, — тест меряет «не ушёл, пока не
+    // встал», а не скорость лечения.
+    sim.set_health_rules(100, 90, 0);
+    sim.set_health("a", 1);
+    sim.enlist("a", 1, 2);
+    sim.set_auto_raid(def as i32, 1, 2);
+
+    sim.tick_n(10);
+    assert_eq!(sim.raid_count(), 0, "раненый в поле не идёт");
+
+    sim.set_health("a", 100);
+    sim.tick_n(20);
+    assert!(sim.is_away("a"), "а как встал — правило его отправило");
+}
+
+/// Спящего правило тоже ждёт. `launch_node` принял бы заявку и над спящим
+/// (§12.51), но правило повторяется каждый тик — и такая заявка заняла бы узел
+/// на всё время сна.
+#[test]
+fn the_rule_waits_for_a_sleeping_cat() {
+    let mut sim = sim_with_nodes(1);
+    let def = sim.set_mission(1, 30, &[(0, 5)]);
+    sim.set_needs(100, 40, 1);
+    sim.set_energy("a", 5);
+    sim.enlist("a", 1, 2);
+    sim.set_auto_raid(def as i32, 1, 2);
+
+    sim.tick_n(20);
+    assert_eq!(sim.raid_count(), 0, "уставший спит, а не идёт в поле");
+}
+
+/// Снятое правило новых вылазок не заводит, но идущую **не отзывает**: отряд
+/// уже в поле, а оттуда не отзывают вовсе (§12.22).
+#[test]
+fn clearing_the_rule_stops_the_next_raid_but_not_the_running_one() {
+    let mut sim = sim_with_nodes(1);
+    let def = sim.set_mission(1, 30, &[(0, 5)]);
+    sim.enlist("a", 1, 2);
+    sim.set_auto_raid(def as i32, 1, 2);
+    sim.tick_n(10);
+    assert!(sim.is_away("a"), "первая вылазка ушла");
+
+    assert!(sim.set_auto_raid(-1, 1, 2), "правило снято");
+    sim.tick_n(5);
+    assert_eq!(sim.raid_count(), 1, "идущую вылазку это не тронуло");
+
+    sim.tick_n(200);
+    assert_eq!(sim.raid_count(), 0, "а новой правило больше не заводит");
+    assert_eq!(sim.raids_done().len(), 1, "сходили ровно раз");
+}
+
+/// Правило на снесённой рации убирает за собой само: узла нет — нет и строки.
+/// Та же оговорка, из-за которой §12.65 пришлось убирать заказ снятого порога.
+#[test]
+fn a_rule_on_a_demolished_node_disappears() {
+    let mut sim = sim_with_nodes(1);
+    let def = sim.set_mission(1, 30, &[(0, 5)]);
+    sim.enlist("a", 1, 2);
+    sim.set_auto_raid(def as i32, 1, 2);
+
+    // Рации больше нет: клетка стала обычным полом.
+    sim.force_tile(1, 2, 0);
+    sim.tick_n(10);
+    assert_eq!(sim.raid_count(), 0, "без узла вылазки не идут");
+    assert!(sim.auto_raid_at(1, 2).is_none(), "и правило не осталось");
+}
+
+/// Неполный состав правило тоже ждёт: сколько нужно котов, знает заказ, и
+/// решает это `launch_node` — второго экземпляра проверки у правила нет.
+#[test]
+fn the_rule_waits_for_a_full_squad() {
+    let mut sim = sim_with_nodes(1);
+    let def = sim.set_mission(2, 30, &[(0, 5)]);
+    sim.enlist("a", 1, 2);
+    sim.set_auto_raid(def as i32, 1, 2);
+
+    sim.tick_n(20);
+    assert_eq!(sim.raid_count(), 0, "одного на двухместный заказ мало");
+
+    sim.enlist("b", 1, 2);
+    sim.tick_n(20);
+    assert!(sim.is_away("a") && sim.is_away("b"), "вдвоём ушли");
+}

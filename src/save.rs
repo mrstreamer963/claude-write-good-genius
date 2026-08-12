@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 8;
+pub(crate) const FORMAT: u32 = 9;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -118,6 +118,8 @@ pub(crate) const SAVED: &[&str] = &[
     // Пороги автопроизводства — правило игрока, а не правило рулсета (§12.65):
     // без них загруженная партия забыла бы, что база держит запас деталей.
     "Stocking",
+    // Автовылазки — то же правило игрока, только про узел связи (§12.67).
+    "AutoRaids",
     "Fame",
     "Money",
     "Standing",
@@ -218,6 +220,9 @@ pub(crate) struct StateDto {
     /// Пороги автопроизводства по индексу рецепта (§12.65).
     #[serde(default)]
     pub(crate) stocking: Vec<i32>,
+    /// Автовылазки: клетка узла и заказ, на который он ходит сам (§12.67).
+    #[serde(default)]
+    pub(crate) auto_raids: Vec<(i32, i32, usize)>,
     pub(crate) fame: i32,
     pub(crate) money: i32,
     pub(crate) standing: Vec<i32>,
@@ -572,6 +577,7 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
             auto_tidy: world.resource::<AutoTidy>().0,
             auto_rest: world.resource::<AutoRest>().0,
             stocking: world.resource::<Stocking>().0.clone(),
+            auto_raids: world.resource::<AutoRaids>().0.clone(),
             fame: world.resource::<Fame>().0,
             money: world.resource::<Money>().0,
             standing: world.resource::<Standing>().0.clone(),
@@ -638,6 +644,7 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
     world.resource_mut::<AutoTidy>().0 = s.auto_tidy;
     world.resource_mut::<AutoRest>().0 = s.auto_rest;
     world.resource_mut::<Stocking>().0 = s.stocking.clone();
+    world.resource_mut::<AutoRaids>().0 = s.auto_raids.clone();
     world.resource_mut::<Fame>().0 = s.fame;
     world.resource_mut::<Money>().0 = s.money;
     world.resource_mut::<Standing>().0 = s.standing.clone();

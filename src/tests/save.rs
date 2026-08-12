@@ -562,3 +562,36 @@ fn a_stocking_rule_survives_a_save() {
     );
     assert!(!loaded.cancel_craft(0), "а значит вручную не отменяется");
 }
+
+/// Автовылазка — то же правило игрока, что и порог (§12.67), и промах здесь
+/// столь же тихий: после загрузки узел просто перестал бы ходить сам, а игрок
+/// узнал бы об этом, не дождавшись отряда у шлюза.
+#[test]
+fn an_auto_raid_rule_survives_a_save() {
+    let mut live = Sim::new(CORE).expect("рулсет");
+    live.without_timeline();
+    let node = live
+        .relay_cells()
+        .first()
+        .copied()
+        .expect("рация в застройке");
+    assert!(
+        live.enlist("excellent", node.0, node.1),
+        "кот в отряде узла"
+    );
+    assert!(live.set_auto_raid(0, node.0, node.1), "правило поставлено");
+
+    let json = live.save().expect("снимок");
+    let mut loaded = Sim::load_from(CORE, &json).expect("загрузка");
+
+    assert_eq!(
+        loaded.auto_raid_at(node.0, node.1),
+        Some(0),
+        "правило на месте",
+    );
+    assert_eq!(
+        loaded.roster_at(node.0, node.1),
+        vec!["excellent".to_string()],
+        "и отряд, которому оно адресовано",
+    );
+}

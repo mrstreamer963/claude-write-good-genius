@@ -2405,6 +2405,17 @@ function buildToolbar() {
         y: Number(b.dataset.y),
       }),
     );
+    // Правило автовылазки (§12.67). Мир оно меняет — значит `sendAction`, как и
+    // сама заявка: тумблер и кнопка заказа это одно решение, разово или всякий
+    // раз. `data-def` уже несёт то, что надо отправить: `-1` у снятия.
+    onPanelClick(raidsEl, ".raid-auto", (b) =>
+      sendAction({
+        type: "setAutoRaid",
+        mission: Number(b.dataset.def),
+        x: Number(b.dataset.x),
+        y: Number(b.dataset.y),
+      }),
+    );
     // Состав набирается в панели самой рации (§12.61) — строка отряда только
     // приводит туда. Это осмотр, а не команда: `sendAction` тут не при чём, он
     // бы ещё и гасил выделение клетки, которую мы как раз выбираем.
@@ -2906,6 +2917,19 @@ function renderRaidsSection() {
             : "состав не набран — откройте рацию и отметьте котов"
         }</div>`,
       ];
+      // Правило автовылазки — про весь отряд, а не про одну кнопку, поэтому
+      // стоит строкой над заказами и видно его всегда: и когда отряд дома, и
+      // когда он уже в поле по этому самому правилу (§12.67). Иначе снять его
+      // во время вылазки было бы нечем, а следующая ушла бы «сама».
+      if (node.auto >= 0) {
+        rows.push(
+          '<div class="raid-rule">' +
+            `<span>ходит сама: «${esc(missionLabel(node.auto))}»</span>` +
+            `<button class="tool raid-auto" data-key="off@${at}" data-def="-1"` +
+            ` data-x="${node.x}" data-y="${node.y}">Снять</button>` +
+            "</div>",
+        );
+      }
       if (raid) {
         // Занятый узел кнопок не показывает вовсе: вторая вылазка отсюда всё
         // равно невозможна, а восемь погашенных кнопок под каждым отрядом —
@@ -2921,13 +2945,25 @@ function renderRaidsSection() {
       } else {
         for (let i = 0; i < defs.length; i++) {
           const g = raidGate(i, node);
+          const on = node.auto === i;
+          // Заказ и «ходить сюда самому» — про одно и то же решение, поэтому
+          // стоят одной строкой: клик отправляет разово, тумблер повторяет клик
+          // каждый раз, когда отряд снова готов (§12.67). Тумблер доступен и у
+          // закрытой вылазки: правило ждёт ворот, как порог ждёт материала, и
+          // поставить его заранее — это план, а не ошибка.
           rows.push(
-            `<button class="tool toggle raid-go${g.ready ? " on" : ""}"` +
+            '<div class="raid-line">' +
+              `<button class="tool toggle raid-go${g.ready ? " on" : ""}"` +
               `${g.ready ? "" : " disabled"}` +
               ` data-key="${i}@${at}" data-def="${i}" data-x="${node.x}" data-y="${node.y}"` +
               ` title="${esc(g.title)}">` +
               `<span class="sw sw-gate"></span><span>${esc(defs[i].label || defs[i].id)}</span>` +
-              `${costChips(defs[i].loot)}</button>`,
+              `${costChips(defs[i].loot)}</button>` +
+              `<button class="tool raid-auto${on ? " on" : ""}"` +
+              ` data-key="auto${i}@${at}" data-def="${on ? -1 : i}"` +
+              ` data-x="${node.x}" data-y="${node.y}"` +
+              ` title="${on ? "Отряд ходит сюда сам — снять правило" : "Ходить сюда самому, как только отряд готов"}">↻</button>` +
+              "</div>",
           );
         }
       }

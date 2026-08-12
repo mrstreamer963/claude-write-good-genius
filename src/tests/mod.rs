@@ -113,6 +113,9 @@ fn sim_from(rows: &[&str]) -> Sim {
     // Порогов автопроизводства в схеме нет: правило — решение игрока, и в чужих
     // тестах `plan_craft` не заводит ничего (§12.65). Включает `set_stock`.
     world.insert_resource(Stocking::default());
+    // Автовылазок тоже нет: узел ходит сам только по правилу игрока (§12.67).
+    // Включает `set_auto_raid`.
+    world.insert_resource(AutoRaids::default());
     world.insert_resource(Techs::default());
     world.insert_resource(TimelineRules::default());
     world.insert_resource(Chronicle::default());
@@ -1643,6 +1646,11 @@ impl Sim {
     /// Сколько заработано продажей за партию — журнал, а не текущие деньги.
     fn earned(&self) -> i32 {
         self.world.resource::<Earned>().0
+    }
+
+    /// Правило автовылазки на этой клетке, если оно есть (§12.67).
+    fn auto_raid_at(&mut self, x: i32, y: i32) -> Option<usize> {
+        self.world.resource::<AutoRaids>().of(x, y)
     }
 
     /// Журнал успешных вылазок: индексы миссий.

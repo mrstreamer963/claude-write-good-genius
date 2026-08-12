@@ -1002,3 +1002,34 @@ main#stage.mode-cursor #mode-banner {
 .raid-node .cat-sub {
   padding-left: 2px;
 }
+
+/* Заказ и «ходить сюда самому» — одно решение, разово или всякий раз (§12.67),
+   поэтому одна строка: кнопка заказа тянется, тумблер прижат справа. */
+.raid-line {
+  display: flex;
+  gap: 4px;
+  align-items: stretch;
+}
+.raid-line .raid-go {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.raid-auto {
+  flex: 0 0 auto;
+  padding: 0 8px;
+  font-size: 13px;
+}
+/* Правило видно всегда — и когда отряд уже ушёл по нему: иначе снять его во
+   время вылазки нечем, а следующая уходит «сама». */
+.raid-rule {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--accent);
+}
+.raid-rule .raid-auto {
+  font-size: 11px;
+  padding: 2px 8px;
+}
