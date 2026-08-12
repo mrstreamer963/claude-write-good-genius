@@ -73,7 +73,11 @@ function onPanelClick(el, selector, send) {
   // (`data-id`). Без него «нажал на одном, отпустил на другом» отдало бы
   // команду не тому: панель перерисовывается каждым кадром, и строки под
   // курсором успевают переехать.
-  const keyOf = (node) => node?.dataset.def ?? node?.dataset.id ?? "";
+  // `data-key` — для кнопок, у которых своего единственного ключа нет: в списке
+  // отрядов (§12.66) один и тот же заказ стоит кнопкой у каждого узла, и по
+  // `data-def` две такие кнопки поделили бы один взвод.
+  const keyOf = (node) =>
+    node?.dataset.key ?? node?.dataset.def ?? node?.dataset.id ?? "";
   el.addEventListener("mousedown", (e) => {
     const hit = e.target.closest(selector);
     armed = hit ? keyOf(hit) : null;
@@ -195,13 +199,19 @@ let cursorBtn = null;
 // одному заказу не бывает, и гасить надо именно свою кнопку.
 let relays = 0;
 let relayFree = false;
-// Узлы связи поимённо и **выбранный узел** (§12.61). Состав отряда живёт на
-// клетке рации, поэтому кнопка вылазки адресуется узлом, а не списком выделенных
-// котов: с двумя узлами иначе не сказать, чей отряд идёт. Выделение котов при
-// этом осталось осмотром и приказом — двух источников правды о составе быть не
-// должно, и это ровно то, что §12.61 отверг.
+// Узлы связи поимённо (§12.61). Состав отряда живёт на клетке рации, поэтому
+// кнопка вылазки адресуется узлом, а не списком выделенных котов: с двумя узлами
+// иначе не сказать, чей отряд идёт. Выделение котов при этом осталось осмотром и
+// приказом — двух источников правды о составе быть не должно, и это ровно то,
+// что §12.61 отверг.
+//
+// **Выбранного узла больше нет** (§12.66): раздел «Вылазки» показывает строку на
+// каждый узел, и своя кнопка заказа стоит внутри строки. Узел, с которого уходят,
+// — это та строка, в которой нажали, а не запомненный где-то в стороне клик.
 let nodes = [];
-let activeNode = null; // { x, y } — чей отряд пойдёт по кнопке вылазки
+// Идущие вылазки целиком: строке отряда надо сказать, чем занят **его** узел, а
+// не только «занят». Тот же список читает и панель миссий.
+let missionsOut = [];
 let running = new Set();
 let researchRunning = false; // и тема тоже одна за раз (§12.26)
 // Мастерских может быть несколько, и заказов идёт столько же (§12.55).
@@ -237,7 +247,10 @@ let stock = [];
 let posts = 0;
 let postFree = false;
 const tradeButtons = []; // кнопки сделок — гасим, когда все посты заняты (§12.55)
-const missionButtons = []; // кнопки запуска — их гасим, пока миссия идёт
+// Раздел вылазок — единственный, который перерисовывается целиком (§12.66):
+// строка на отряд, а состав и занятость узла меняются каждым снапшотом. Массива
+// живых кнопок у него поэтому нет — только контейнер.
+let raidsEl = null;
 const recruitButtons = []; // кнопки найма — гасим по известности и складу
 const teachButtons = []; // кнопки обучения — живы, когда выбран ровно один кот
 const topicButtons = []; // кнопки тем — гасим по технологиям, складу и допуску
@@ -542,12 +555,6 @@ function renderSnapshot(snap) {
   relays = snap.relays ?? 0;
   relayFree = !!snap.relay_free;
   nodes = snap.nodes ?? [];
-  // Выбранный узел переживает кадры, но не снос рации: узел, которого больше
-  // нет, отправил бы отряд ниоткуда. Единственный узел выбран сам собой —
-  // спрашивать «какой из одного» значит требовать клик ни за чем.
-  if (activeNode && !nodeAt(activeNode.x, activeNode.y)) activeNode = null;
-  if (!activeNode && nodes.length === 1)
-    activeNode = { x: nodes[0].x, y: nodes[0].y };
   scrapEl.innerHTML =
     (meta.items ?? [])
       .map((it, i) => {
@@ -612,7 +619,7 @@ function renderSnapshot(snap) {
   );
   captives = snap.entities.filter((e) => e.captive).map((e) => e.id);
   raids = snap.raids ?? [];
-  syncMissionButtons();
+  missionsOut = snap.missions ?? [];
 
   updateSelectionOverlay();
   renderCatPanel(snap.entities);
@@ -620,6 +627,9 @@ function renderSnapshot(snap) {
   renderCellPanel(snap);
   renderCaptivePanel();
   renderMissionPanel(snap.missions);
+  // После `renderMissionPanel`: он считает `running` — заказы, по которым отряд
+  // уже вышел, — а строка отряда обязана гасить именно свою кнопку (§12.59).
+  renderRaidsSection();
   renderResearchPanel(snap.research);
   renderCraftPanel(snap.crafting);
   renderDealPanel(snap.deals);
@@ -1275,9 +1285,7 @@ function cellWork(snap, x, y, def) {
         ? `отряд: ${node.crew.map(esc).join(" · ")}`
         : "отряд не набран: отметьте котов в списке ниже",
     );
-    if (activeNode && activeNode.x === x && activeNode.y === y && relays > 1) {
-      out.push("этот узел выбран: отсюда уйдёт вылазка");
-    }
+    out.push("вылазки отсюда — строкой этого отряда в разделе «Вылазки»");
     const raid = (snap.missions ?? []).find(
       (v) => v.node_x === x && v.node_y === y,
     );
@@ -1329,7 +1337,6 @@ function renderMissionPanel(list) {
   // Идущие вылазки — по заказу, а не по счёту: кнопка гасится именно у своей
   // (§12.59), двух вылазок по одному заказу не бывает.
   running = new Set(raidsOut.map((m) => m.def));
-  syncMissionButtons();
   if (!raidsOut.length || !meta) {
     missionEl.hidden = true;
     return;
@@ -1911,12 +1918,6 @@ function nodeAt(tx, ty) {
   return (nodes ?? []).find((n) => n.x === tx && n.y === ty) ?? null;
 }
 
-// Отряд выбранного узла: ровно то, что уйдёт по кнопке вылазки.
-function activeCrew() {
-  const node = activeNode && nodeAt(activeNode.x, activeNode.y);
-  return node ? node.crew : [];
-}
-
 // режим постройки: игрок тянет рамку, отпускание применяет её целиком
 function rectOf(a, b) {
   return {
@@ -1995,13 +1996,6 @@ function command(global, add) {
   // иначе клетку под котом не осмотреть вовсе — клик по ней выбирает кота, и
   // получается замкнутый круг.
   selectedCell = { x: t.tx, y: t.ty };
-  // Клик по рации выбирает узел, чей отряд пойдёт по кнопке вылазки (§12.61).
-  // Это **осмотр**, а не команда: мира он не трогает, как и раскрытие раздела
-  // тулбара ниже, — и потому уходит не через `sendAction`.
-  if (nodeAt(t.tx, t.ty)) {
-    activeNode = { x: t.tx, y: t.ty };
-    syncMissionButtons();
-  }
   revealSection(t.tx, t.ty);
   const hit = unitAt(t.tx, t.ty);
   // Shift — чистый набор отряда, обеими руками: приказа он не даёт никогда, и
@@ -2393,41 +2387,32 @@ function buildToolbar() {
   care.title = "На исходе сил кот бросает работу и уходит спать";
   rules.appendChild(care);
 
-  // Вылазки. Не режим ввода: клик — это сразу заявка, отряд наберётся сам
-  // (§12.22). Поэтому кнопки не входят в общую подсветку инструментов.
-  const missions = meta.missions ?? [];
-  if (missions.length) {
-    const raids = mkSection(el, "Вылазки");
-
-    missionButtons.length = 0;
-    missions.forEach((m, i) => {
-      // На кнопке — добыча теми же фишками, что и цена тайла: это одна и та же
-      // валюта. Отряд берётся **с выбранного узла** (§12.61): состав живёт на
-      // клетке рации и переживает вылазку, а выделение котов осталось осмотром.
-      const b = mkTool(
-        `<span class="sw sw-gate"></span><span>${esc(m.label || m.id)}</span>${costChips(m.loot)}`,
-        () =>
-          activeNode &&
-          sendAction({
-            type: "launch",
-            mission: i,
-            x: activeNode.x,
-            y: activeNode.y,
-          }),
-      );
-      b.classList.add("toggle");
-      b.dataset.squad = m.squad;
-      b.dataset.requires = m.requires ?? 0;
-      // Вылазка за своим доступна, только пока есть кого спасать: это решает
-      // ядро, а кнопка обязана показывать то же самое (§12.40).
-      b.dataset.rescue = m.rescue ? "1" : "";
-      b.dataset.hint =
-        `${m.squad} кота · ${m.ticks} тиков · сложность ${m.danger ?? 0}` +
-        (m.harm ? ` · раны при провале ${m.harm}` : "");
-      missionButtons.push(b);
-      raids.appendChild(b);
+  // Вылазки. Не режим ввода: клик — это сразу заявка (§12.22). Поэтому кнопки
+  // не входят в общую подсветку инструментов.
+  //
+  // Раздел — **список отрядов, а не список заказов** (§12.66): строка на узел
+  // связи, а кнопки заказов стоят внутри своей строки. Перерисовывается он
+  // целиком каждым снапшотом (состав, занятость и таймер меняются), поэтому
+  // кнопки внутри ловятся делегированием парой `mousedown`/`mouseup`, как в
+  // панелях (§12.57), а не своим `addEventListener` на узле-однодневке.
+  if ((meta.missions ?? []).length) {
+    raidsEl = mkSection(el, "Вылазки");
+    onPanelClick(raidsEl, ".raid-go", (b) =>
+      sendAction({
+        type: "launch",
+        mission: Number(b.dataset.def),
+        x: Number(b.dataset.x),
+        y: Number(b.dataset.y),
+      }),
+    );
+    // Состав набирается в панели самой рации (§12.61) — строка отряда только
+    // приводит туда. Это осмотр, а не команда: `sendAction` тут не при чём, он
+    // бы ещё и гасил выделение клетки, которую мы как раз выбираем.
+    onPanelClick(raidsEl, ".raid-crew", (b) => {
+      selectedCell = { x: Number(b.dataset.x), y: Number(b.dataset.y) };
+      updateSelectionOverlay();
     });
-    syncMissionButtons();
+    renderRaidsSection();
   }
 
   // Наука. Тема — разметка работы, как чертёж: кота не выбираем (§12.26).
@@ -2887,75 +2872,123 @@ function trustGap(needs) {
   return null;
 }
 
-function syncMissionButtons() {
-  missionButtons.forEach((b, i) => {
-    const need = Number(b.dataset.squad);
-    const requires = Number(b.dataset.requires);
-    // Открыта ли вылазка и есть ли у неё цель, решает ядро (§12.24): те же две
-    // проверки стоят в `launch`, и считать их здесь во второй раз значит однажды
-    // разойтись с фасадом. До первого снапшота ворот ещё нет — считаем закрытыми.
-    const gates = raids[i];
-    const known = !!gates?.unlocked;
-    // За своим идут, только пока есть за кем: у вылазки с `rescue` нет ни
-    // добычи, ни цели, если все дома.
-    const nobody = !(gates?.possible ?? true);
-    // Заказчик с базой не разговаривает (§12.43). Отдельно от известности:
-    // «не дорос» и «эти вас не жалуют» — разные новости, и вторая обратима.
-    const welcome = !!gates?.welcome;
-    const distrust = welcome ? null : trustGap((meta.missions ?? [])[i]?.needs);
-    // Раненого ядро в отряд не пустит (§12.37), и молчащая кнопка читалась бы
-    // как поломка: причину называем словом, как и нехватку известности.
-    const crew = activeCrew();
-    const hurt = crew.filter((id) => wounded.has(id));
-    // Пленный остаётся выбранным — на карте его нет, снять выделение игроку
-    // нечем. Ядро такую заявку отклонит (его нет на базе), а молчащая кнопка
-    // читается как поломка — причину называем словом, как и ранение.
-    const gone = crew.filter((id) => captives.includes(id));
-    // Свободен ли узел — считает ядро (§12.59). Отдельно от него «эта вылазка
-    // уже идёт»: двух отрядов по одному заказу не бывает, и это другая новость,
-    // чем «все узлы заняты».
-    const taken = running.has(i);
-    // Узел выбран, и **именно он** свободен: вылазку ведёт та рация, на которую
-    // нажал игрок (§12.61). `relayFree` при этом остаётся — «все узлы заняты» и
-    // «занят этот» разные новости, и первая объясняет, что делать дальше.
-    const node = activeNode && nodeAt(activeNode.x, activeNode.y);
-    const ready =
-      !!node &&
-      !node.busy &&
-      relayFree &&
-      !taken &&
-      known &&
-      welcome &&
-      !hurt.length &&
-      !gone.length &&
-      !nobody &&
-      crew.length === need;
-    b.disabled = !ready;
-    b.classList.toggle("on", ready);
-    // Закрытые вылазки видны, а не спрятаны: лестница ответственности — это то,
-    // к чему игрок идёт, и невидимая цель не тянет (§4.4).
-    b.title = taken
-      ? "Эта вылазка уже идёт"
-      : !node
-        ? relays
-          ? "Выберите узел связи на карте — отряд идёт с него"
-          : "Узлов связи нет — постройте рацию"
-        : node.busy
-          ? "Этот узел уже ведёт вылазку — выберите другой"
-          : !relayFree
-            ? `Все узлы связи заняты (${relays}) — постройте ещё один`
-            : !known
-              ? `${b.dataset.hint} · нужна известность ${requires}`
-              : distrust
-                ? `${b.dataset.hint} · ${distrust}`
-                : nobody
-                  ? `${b.dataset.hint} · все дома, спасать некого`
-                  : gone.length
-                    ? `${b.dataset.hint} · в плену: ${gone.join(", ")}`
-                    : hurt.length
-                      ? `${b.dataset.hint} · ранен: ${hurt.join(", ")}`
-                      : `${b.dataset.hint} · в отряде узла ${crew.length} из ${need} — состав набирается в панели узла`;
-  });
+// Раздел «Вылазки» целиком: строка на каждый узел связи (§12.66). Отряд живёт
+// на клетке рации и переживает вылазку (§12.61), поэтому список отрядов — это
+// список узлов, а заказы стоят кнопками внутри своей строки: вопрос «чей отряд
+// идёт» отвечается тем, в какой строке нажали, и запоминать выбранный узел
+// больше не нужно.
+function renderRaidsSection() {
+  if (!raidsEl || !meta) return;
+  const defs = meta.missions ?? [];
+  if (!nodes.length) {
+    // Ноль узлов — ноль вылазок, строго как ноль мастерских это ноль заказов
+    // (§12.59). Говорим это словом: пустой раздел читается как поломка.
+    raidsEl.innerHTML =
+      '<div class="cat-sub">Узлов связи нет — постройте рацию, она держит отряд и одну вылазку</div>';
+    return;
+  }
+  raidsEl.innerHTML = nodes
+    .map((node, n) => {
+      // Номер отряда — по порядку узлов из ядра, а он row-major по карте
+      // (`relay_cells`) и потому детерминирован. Своего имени у узла нет
+      // намеренно: это лишнее поле в снимке ради подписи (§12.59).
+      const at = `${node.x}, ${node.y}`;
+      const raid = missionsOut.find(
+        (m) => m.node_x === node.x && m.node_y === node.y,
+      );
+      const rows = [
+        `<button class="tool raid-crew" data-key="crew@${at}" data-x="${node.x}" data-y="${node.y}">` +
+          `<span class="sw sw-gate"></span><span>Отряд ${n + 1}</span>` +
+          `<span class="cell-at">${at}</span></button>`,
+        `<div class="cat-sub">${
+          node.crew.length
+            ? node.crew.map(esc).join(" · ")
+            : "состав не набран — откройте рацию и отметьте котов"
+        }</div>`,
+      ];
+      if (raid) {
+        // Занятый узел кнопок не показывает вовсе: вторая вылазка отсюда всё
+        // равно невозможна, а восемь погашенных кнопок под каждым отрядом —
+        // это шум, из-за которого список отрядов перестаёт читаться.
+        const label = esc(missionLabel(raid.def));
+        rows.push(
+          `<div class="cat-sub">${
+            raid.away
+              ? `в поле: «${label}» · вернутся через ${raid.left}`
+              : `собирается: «${label}»`
+          }</div>`,
+        );
+      } else {
+        for (let i = 0; i < defs.length; i++) {
+          const g = raidGate(i, node);
+          rows.push(
+            `<button class="tool toggle raid-go${g.ready ? " on" : ""}"` +
+              `${g.ready ? "" : " disabled"}` +
+              ` data-key="${i}@${at}" data-def="${i}" data-x="${node.x}" data-y="${node.y}"` +
+              ` title="${esc(g.title)}">` +
+              `<span class="sw sw-gate"></span><span>${esc(defs[i].label || defs[i].id)}</span>` +
+              `${costChips(defs[i].loot)}</button>`,
+          );
+        }
+      }
+      return `<div class="raid-node">${rows.join("")}</div>`;
+    })
+    .join("");
+}
+
+// Пойдёт ли этот отряд по этому заказу — и если нет, то почему словом. Ворота
+// считает ядро (§12.24, §12.43, §12.59): те же проверки стоят в `launch`, и
+// второй их экземпляр здесь однажды разойдётся с фасадом. Здесь только причина
+// отказа: молчащая кнопка читается как поломка.
+function raidGate(i, node) {
+  const def = (meta.missions ?? [])[i] ?? {};
+  const need = def.squad ?? 0;
+  const hint =
+    `${need} кота · ${def.ticks} тиков · сложность ${def.danger ?? 0}` +
+    (def.harm ? ` · раны при провале ${def.harm}` : "");
+  // До первого снапшота ворот ещё нет — считаем закрытыми.
+  const gates = raids[i];
+  const known = !!gates?.unlocked;
+  // За своим идут, только пока есть за кем: у вылазки с `rescue` нет ни добычи,
+  // ни цели, если все дома.
+  const nobody = !(gates?.possible ?? true);
+  // Заказчик с базой не разговаривает (§12.43). Отдельно от известности: «не
+  // дорос» и «эти вас не жалуют» — разные новости, и вторая обратима.
+  const welcome = !!gates?.welcome;
+  const distrust = welcome ? null : trustGap(def.needs);
+  // Раненого и пленного ядро в отряд не пустит (§12.37, §12.40) — причину
+  // называем словом, как и нехватку известности.
+  const hurt = node.crew.filter((id) => wounded.has(id));
+  const gone = node.crew.filter((id) => captives.includes(id));
+  // Двух вылазок по одному заказу не бывает (§12.59), и это другая новость, чем
+  // «этот узел занят»: там ждать своего отряда, здесь — брать другой заказ.
+  const taken = running.has(i);
+  const ready =
+    !taken &&
+    known &&
+    welcome &&
+    !hurt.length &&
+    !gone.length &&
+    !nobody &&
+    node.crew.length === need;
+  // Закрытые вылазки видны, а не спрятаны: лестница ответственности — это то, к
+  // чему игрок идёт, и невидимая цель не тянет (§4.4).
+  const title = taken
+    ? "Эта вылазка уже идёт другим отрядом"
+    : !known
+      ? `${hint} · нужна известность ${def.requires ?? 0}`
+      : distrust
+        ? `${hint} · ${distrust}`
+        : nobody
+          ? `${hint} · все дома, спасать некого`
+          : gone.length
+            ? `${hint} · в плену: ${gone.join(", ")}`
+            : hurt.length
+              ? `${hint} · ранен: ${hurt.join(", ")}`
+              : node.crew.length !== need
+                ? `${hint} · в отряде ${node.crew.length} из ${need} — состав набирается в панели рации`
+                : hint;
+  return { ready, title };
 }
 
 function mkTool(html, onClick) {

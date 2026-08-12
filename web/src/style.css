@@ -979,3 +979,26 @@ main#stage.mode-cursor #mode-banner {
 .hint-toggle {
   margin-left: 6px;
 }
+
+/* Список отрядов в разделе «Вылазки» (§12.66). Строка на узел связи: заголовок
+   отряда, состав и кнопки заказов **этого** отряда. Разделитель обязателен —
+   без него две пачки кнопок читаются как одна, а вопрос «чей отряд идёт» ровно
+   тот, ради которого список и заведён. */
+.raid-node {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 8px;
+}
+.raid-node + .raid-node {
+  border-top: 1px solid var(--line, #2a2f3a);
+  padding-top: 8px;
+}
+/* Заголовок отряда — кнопка (ведёт к составу в панели рации), но не инструмент:
+   подсветкой она не спорит с кнопками заказов под собой. */
+.raid-crew {
+  font-weight: 600;
+}
+.raid-node .cat-sub {
+  padding-left: 2px;
+}
