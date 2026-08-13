@@ -294,6 +294,7 @@ worker.onmessage = (e) => {
     // ...и цели тоже: у нового мира своя история взятого, и старая сделала бы
     // всё уже закрытое «только что закрытым» (см. `goalsDoneSeen`).
     goalsDoneSeen = null;
+    goalsOpen = true; // ...и свёрнутость панели: она про прошлый мир, а не про этот
     buildToolbar();
     layout();
     drawMap(m.map);
@@ -1779,11 +1780,14 @@ function renderGoalsPanel(goals, required, snap) {
     );
   }
   goalsEl.innerHTML = `<div class="cat-name">Цели</div>${rows.join("")}`;
-  goalsEl.hidden = !goalsOpen;
 
   // Оба перехода считаются по одному множеству — тому, что было в прошлом кадре.
   const doneNow = new Set(goals.filter((g) => g.done).map((g) => g.def));
   const first = goalsDoneSeen === null;
+  // Мир, поднятый уже пройденным (обновление страницы, загрузка снимка), панель
+  // тоже не разворачивает: перехода к полноте на первом кадре не случается —
+  // значит, свернуть её финалу будет уже нечем.
+  if (first && done >= required) goalsOpen = false;
   const fresh = first
     ? []
     : goals.filter((g) => g.done && !goalsDoneSeen.has(g.def));
@@ -1796,7 +1800,6 @@ function renderGoalsPanel(goals, required, snap) {
     // разом. Сворачиваем панель — но кнопку оставляем, и открыть её обратно
     // никто не мешает.
     goalsOpen = false;
-    goalsEl.hidden = true;
     showFinale(goals, snap);
   }
   // Уведомления **и о скрытых тоже**: взятая скрытая цель — это ровно тот момент,
@@ -1806,6 +1809,9 @@ function renderGoalsPanel(goals, required, snap) {
   if (!finale) fresh.forEach((g) => showGoalToast(g));
 
   goalsDoneSeen = doneNow;
+  // В самом конце: до сюда `goalsOpen` мог свернуться и финалом, и первым кадром
+  // уже пройденного мира.
+  goalsEl.hidden = !goalsOpen;
 }
 
 // --- уведомление о взятой цели ----------------------------------------------
