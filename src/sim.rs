@@ -285,17 +285,39 @@ impl Sim {
     ///
     /// Считается **здесь**, а не в панели: то же правило вторым экземпляром в
     /// JS однажды разойдётся с `plan_spend` (§12.26).
+    ///
+    /// **Бронь берётся сырой (`owed`), а груз под сделку числится складским**, а
+    /// не валяющимся (§12.69). Причина не в бухгалтерии, а в том, что игрок
+    /// видит: товар для продажи кот берёт со склада, и при обычном счёте он на
+    /// время ходки перетекал из главного числа в серое — то прыгало вверх, то
+    /// падало обратно, да ещё и утверждало про уже проданное, что оно «валяется
+    /// и годится на стройку». Здесь эти штуки остаются там, где были: учтёнными.
+    /// Главное число тогда падает **один раз, в момент заявки**, и держится до
+    /// отгрузки.
+    ///
+    /// Арифметика от перекладывания не меняется: `(склад + лапы под сделку) −
+    /// owed` — это ровно `in_storage − booked`, то есть те же ворота, что у
+    /// `Sim::trade` и у `plan_spend`.
     pub(crate) fn stock(&mut self) -> Vec<StockSnap> {
-        let booked = self.booked_for_sale();
+        let booked = self.owed_for_sale();
         let mut loose = vec![0; self.items.len()];
-        let stored;
+        let mut stored = vec![0; self.items.len()];
         {
             let mut q = self.world.query::<(&Position, &Stack)>();
             let map = self.world.resource::<BaseMap>();
             let rules = self.world.resource::<TileRules>();
             // Складское считает `stored_counts` — одно место на фасад и на цели
             // (§12.53). Пол остаётся здесь: он нужен только панели.
-            stored = stored_counts(q.iter(&self.world), map, rules);
+            // `stored_counts` растёт под встреченные типы и короче палитры,
+            // если чего-то на складе нет вовсе.
+            for (item, n) in stored_counts(q.iter(&self.world), map, rules)
+                .into_iter()
+                .enumerate()
+            {
+                if let Some(slot) = stored.get_mut(item) {
+                    *slot += n;
+                }
+            }
             for (p, s) in q.iter(&self.world) {
                 if rules.capacity_of(map.tile_at(p.x, p.y)) == 0 {
                     if let Some(n) = loose.get_mut(s.item) {
@@ -305,19 +327,24 @@ impl Sim {
             }
             // Груз в лапах — тоже имущество базы, и считать его надо: без него
             // счётчик проседает, пока кот несёт кучу, а это читается как
-            // потеря материала.
-            let mut paws = self.world.query::<&Carrying>();
-            for load in paws.iter(&self.world) {
-                if let Some(n) = loose.get_mut(load.item) {
+            // потеря материала. Куда его записать, решает адресат: везомое к
+            // посту уже учтено и забронировано, всё прочее поднято с пола или
+            // идёт на стройку — то есть неучтённое.
+            let mut paws = self.world.query::<(&Carrying, Option<&Haul>)>();
+            for (load, haul) in paws.iter(&self.world) {
+                let sold = haul.is_some_and(|h| matches!(h.to, HaulTo::Sale(_)));
+                let side = match sold {
+                    true => &mut stored,
+                    false => &mut loose,
+                };
+                if let Some(n) = side.get_mut(load.item) {
                     *n += load.count;
                 }
             }
         }
         (0..self.items.len())
             .map(|item| StockSnap {
-                // `stored_counts` растёт под встреченные типы и короче палитры,
-                // если чего-то на складе нет вовсе.
-                stored: stored.get(item).copied().unwrap_or(0),
+                stored: stored[item],
                 loose: loose[item],
                 booked: booked
                     .iter()
