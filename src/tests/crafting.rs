@@ -709,12 +709,14 @@ fn the_stock_rule_does_not_count_goods_on_their_way_to_a_buyer() {
     sim.force_tile(3, 1, 1);
     sim.set_trade_post(2, true);
     sim.force_tile(5, 1, 2);
+    sim.set_capacity(3, 100);
+    sim.force_tile(12, 1, 3); // склад: продаётся только учтённое (§12.69)
     let f = sim.set_faction(100);
     sim.set_market(f, 100, 40, 25, 0);
     sim.set_prices(f, PART, &[10]);
     let recipe = sim.set_recipe(50, &[(SCRAP, 1)], &[(PART, 1)], &[]);
 
-    sim.put_item(12, 1, PART, 2); // две детали уже лежат на полу
+    sim.put_item(12, 1, PART, 2); // две детали уже лежат на складе
     sim.set_stock(recipe, 2);
     sim.tick_n(1);
     assert_eq!(sim.craft_left_of(recipe), None, "порог закрыт — заказа нет");

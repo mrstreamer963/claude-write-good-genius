@@ -11,8 +11,12 @@
 
 use super::*;
 
-/// Коридор со шлюзом в (3,1) и торговым постом в (5,1); фракция с рынком.
-/// Вернёт симуляцию и индекс фракции.
+/// Коридор со шлюзом в (3,1), торговым постом в (5,1) и **складом в (6,1)**;
+/// фракция с рынком. Вернёт симуляцию и индекс фракции.
+///
+/// Склад здесь не украшение: с §12.69 наружу база отдаёт только учтённое, и
+/// `put_scrap(6, 1, …)` кладёт товар именно туда — то есть в единственное место,
+/// откуда его можно продать.
 fn sim_with_market() -> (Sim, usize) {
     let mut sim = sim_from(&["########", "#a....b#", "########"]);
     sim.set_gate(1, true);
@@ -20,6 +24,8 @@ fn sim_with_market() -> (Sim, usize) {
     sim.force_tile(3, 1, 1);
     sim.set_trade_post(2, true);
     sim.force_tile(5, 1, 2);
+    sim.set_capacity(3, 500);
+    sim.force_tile(6, 1, 3);
     let f = sim.set_faction(100);
     sim.set_market(f, 100, 40, 25, 0);
     sim.set_prices(f, 0, &[10]);
@@ -463,25 +469,54 @@ fn a_second_post_sells_what_the_first_left_alone() {
     assert!(!sim.trade(f, 0, 1, false), "а четвёртого лома на базе нет");
 }
 
-/// Товар в лапах кота — тоже товар на базе: его считает и счётчик в шапке, и
-/// донести его коту ничто не мешает (§12.50).
+/// **Неучтённое не продаётся** (§12.69): лом с пола годится на стройку внутри
+/// базы, но наружу база отдаёт только то, что убрано на склад.
+///
+/// Это и есть вся граница «внутрь/наружу» одним прогоном: сначала отказ, потом
+/// уборка, потом та же заявка проходит. Ничего, кроме места, не изменилось.
 #[test]
-fn goods_in_paws_count_as_goods_on_base() {
+fn unsorted_goods_cannot_be_sold_until_they_reach_storage() {
     let (mut sim, f) = sim_with_market();
-    sim.put_scrap(6, 1, 2);
-    sim.set_capacity(1, 20);
-    sim.force_tile(2, 1, 1); // склад, чтобы кот поднял лом уборкой
-    for _ in 0..200 {
-        if sim.carrying_of("a") > 0 || sim.carrying_of("b") > 0 {
+    sim.put_scrap(4, 1, 2); // пол посреди коридора, не склад
+
+    assert!(
+        !sim.trade(f, 0, 2, false),
+        "на полу лежит, а продать нельзя — учтённого нет"
+    );
+
+    // `scrap_is_in_storage` тут не годится: пока лом в лапах, куч нет вовсе, и
+    // «все кучи на складе» верно впустую. Ждём именно учтённого.
+    for _ in 0..300 {
+        sim.tick_n(1);
+        if sim.stock_of(0).0 == 2 {
             break;
         }
-        sim.tick_n(1);
     }
-    let paws = sim.carrying_of("a") + sim.carrying_of("b");
-    assert!(paws > 0, "кто-то из котов поднял лом");
+    assert_eq!(sim.stock_of(0).0, 2, "коты убрали лом на склад");
+    assert!(sim.trade(f, 0, 2, false), "теперь он учтён — и продаётся");
+}
 
-    assert_eq!(sim.item_on_base(0), 2, "весь лом цел, часть — в лапах");
-    assert!(sim.trade(f, 0, 2, false), "и продать его можно");
+/// Груз в лапах тоже неучтён (§12.69): кот поднял его с пола, на складе его
+/// нет, и продать его нельзя — как нельзя и заплатить им за найм.
+#[test]
+fn goods_in_paws_are_not_sellable() {
+    let (mut sim, f) = sim_with_market();
+    sim.put_scrap(4, 1, 2);
+    for _ in 0..200 {
+        sim.tick_n(1);
+        if sim.carrying_of("a") + sim.carrying_of("b") > 0 {
+            break;
+        }
+    }
+    assert!(
+        sim.carrying_of("a") + sim.carrying_of("b") > 0,
+        "кто-то из котов поднял лом",
+    );
+
+    assert!(
+        !sim.trade(f, 0, 2, false),
+        "в лапах — значит ещё не на складе"
+    );
 }
 
 /// Товар под сделкой базе больше не принадлежит: стройка его не заберёт

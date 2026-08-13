@@ -278,6 +278,12 @@ pub(crate) fn assign_hauls(
     needy.sort_unstable_by_key(|n| (n.at.1, n.at.0, n.sale));
 
     let map = &*map;
+    let tiles = &*rules;
+    // Учтённое — то, что лежит на клетке с ёмкостью (§12.69). Наружу база
+    // отдаёт только его: ворота продажи считают склад, и подвоз к посту обязан
+    // брать оттуда же. Иначе правило говорит «с пола нельзя», а коты на глазах
+    // носят с пола — и спорят с ним картинкой.
+    let in_store = |(x, y): (i32, i32)| tiles.capacity_of(map.tile_at(x, y)) > 0;
     let mut idle: Vec<(&str, Entity, Option<(usize, i32)>, Option<&Carry>, Reach)> = free_cats
         .iter()
         .map(|(e, id, p, load, carry)| {
@@ -323,7 +329,11 @@ pub(crate) fn assign_hauls(
                 needy.iter().enumerate().filter_map(move |(ni, n)| {
                     let wanted = |item: usize| n.miss.iter().any(|&(i, _)| i == item);
                     if let Some((item, _)) = *loaded {
-                        if !wanted(item) {
+                        // Груз в лапах — неучтённое (§12.69): откуда кот его
+                        // взял, уже не известно, а на складе он не лежит. К
+                        // площадке с ним можно, к посту — нет. Случай редкий
+                        // (ношу отобрали посреди ходки), но правило одно.
+                        if !wanted(item) || n.sale {
                             return None;
                         }
                         let (spot, steps) = build_spot(map, reach, n.at, n.tile, None)?;
@@ -332,6 +342,7 @@ pub(crate) fn assign_hauls(
                     view.iter()
                         .enumerate()
                         .filter(|(_, (_, _, item, ..))| wanted(*item))
+                        .filter(|(_, (_, pile, ..))| !n.sale || in_store(*pile))
                         .filter_map(|(pi, (_, pile, _, _, from_pile))| {
                             let to_pile = reach.dist_at(pile.0, pile.1)?;
                             let (_, rest) = build_spot(map, from_pile, n.at, n.tile, None)?;
