@@ -248,6 +248,17 @@ let stock = [];
 // покажет кнопку, которую фасад отклонит (§12.26).
 let posts = 0;
 let postFree = false;
+// Открытые сделки — те же, что рисуются на карте и в панели. Кнопкам они нужны
+// затем, что продать можно только непроданное: остаток считается по ним, а
+// **не** по `stock.booked` (§12.50). `booked` — это бронь «в кучах», из неё уже
+// вычтен груз в лапах, а `loose` его считает, — сложи их, и носильщик уйдёт в
+// счёт дважды. Ровно на этом попались ворота самой заявки в ядре.
+let openDeals = [];
+// Зажат ли Shift: он удваивает не смысл кнопки, а её размер (пять штук против
+// двадцати пяти), поэтому доступность и подпись обязаны следовать за клавишей.
+// Молчащая кнопка читается как поломка — а «денег хватает на пять, но не на
+// двадцать пять» без этого выглядело именно так.
+let shiftHeld = false;
 const tradeButtons = []; // кнопки сделок — гасим, когда все посты заняты (§12.55)
 // Раздел вылазок — единственный, который перерисовывается целиком (§12.66):
 // строка на отряд, а состав и занятость узла меняются каждым снапшотом. Массива
@@ -599,6 +610,7 @@ function renderSnapshot(snap) {
   money = snap.money ?? 0;
   prices = snap.prices ?? [];
   stock = snap.stock ?? [];
+  openDeals = snap.deals ?? [];
   posts = snap.posts ?? 0;
   postFree = !!snap.post_free;
   shops = snap.shops ?? 0;
@@ -2285,7 +2297,17 @@ function sendAction(msg) {
   updateSelectionOverlay();
 }
 
+// Shift держат, а не нажимают: кнопки сделок обязаны перерисоваться на зажатие
+// и на отпускание. `blur` здесь не перестраховка — отпустят клавишу в другом
+// окне, и кнопка навсегда останется «×25».
+function setShift(on) {
+  if (shiftHeld === on) return;
+  shiftHeld = on;
+  syncTradeButtons();
+}
+
 window.addEventListener("keydown", (e) => {
+  if (e.key === "Shift") setShift(true);
   if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.code === "Escape" || e.key === "Escape") {
     if (dragFrom) {
@@ -2315,6 +2337,11 @@ window.addEventListener("keydown", (e) => {
   const speedKey = SPEED_KEYS[e.code] ?? SPEED_KEYS["Digit" + e.key];
   if (speedKey) setSpeed(speedKey);
 });
+
+window.addEventListener("keyup", (e) => {
+  if (e.key === "Shift") setShift(false);
+});
+window.addEventListener("blur", () => setShift(false));
 
 // --- тулбар ---------------------------------------------------------------
 
@@ -2600,7 +2627,7 @@ function buildToolbar() {
         const b = mkTool(
           `<span class="sw" style="background:${it.color}"></span>` +
             `<span>${buying ? "Купить" : "Продать"} ${esc(it.label || it.id)}</span>` +
-            '<b class="rate">—</b>',
+            '<b class="rate">—</b><b class="qty">×5</b>',
           (ev) => {
             // Клик — пять штук, Shift — двадцать пять: тот же идиом, что у
             // заказа в мастерской, только товар возят мешками.
@@ -2708,9 +2735,34 @@ function quoteOf(faction, item) {
   return prices.find((p) => p.faction === faction && p.item === item);
 }
 
-// Доступность сделки: пост считает ядро, деньги — умножение уже названной им
-// цены. Причину отказа называем словом: молчащая кнопка читается как поломка.
+// Сколько предмета база вправе выставить на продажу: всё её добро за вычетом
+// того, что уже должны открытые сделки (§12.50).
+//
+// Считается **по сделкам**, а не по `stock.booked`, и это не вкус. `loose`
+// включает груз в лапах, а `booked` его вычитает: из куч эти штуки уже взяты, и
+// для тех, кто берёт из куч, скидка верна. Здесь же складываются кучи **и**
+// лапы, поэтому носильщик прошёл бы в счёт дважды — раз как «есть на базе», раз
+// как «уже не обещано». Ровно эта ошибка жила в воротах самой заявки и давала
+// продать то, что кот несёт покупателю.
+function sellableOf(item) {
+  const st = stock[item] ?? { stored: 0, loose: 0 };
+  const owed = openDeals.reduce(
+    (n, d) =>
+      d.buying || d.item !== item ? n : n + Math.max(0, d.count - d.delivered),
+    0,
+  );
+  return st.stored + st.loose - owed;
+}
+
+// Доступность сделки: пост считает ядро, деньги и товар — арифметика над уже
+// названными им числами. Причину отказа называем словом: молчащая кнопка
+// читается как поломка.
+//
+// Размер сделки следует за Shift, а не узнаётся в момент клика: кнопка,
+// одинаково горящая на пять и на двадцать пять, врёт ровно тогда, когда хватает
+// на первое и не хватает на второе.
 function syncTradeButtons() {
+  const qty = shiftHeld ? 25 : 5;
   for (const b of tradeButtons) {
     const fi = Number(b.dataset.faction);
     const ii = Number(b.dataset.item);
@@ -2718,13 +2770,20 @@ function syncTradeButtons() {
     const q = quoteOf(fi, ii);
     if (!q) continue;
     const unit = buying ? q.buy : q.sell;
-    const total = unit * 5;
+    const total = unit * qty;
     const broke = buying && money < total;
-    const ready = postFree && !broke;
+    const free = buying ? 0 : sellableOf(ii);
+    const empty = !buying && free < qty;
+    const ready = postFree && !broke && !empty;
     b.disabled = !ready;
     b.classList.toggle("on", ready);
     const rate = b.querySelector(".rate");
     if (rate) rate.textContent = `${unit}¤`;
+    const size = b.querySelector(".qty");
+    if (size) {
+      size.textContent = `×${qty}`;
+      size.classList.toggle("big", shiftHeld);
+    }
     // Расписание видно вперёд — это и есть разница между планированием и
     // караулом с секундомером (§12.40).
     const next = buying ? q.next_buy : q.next_sell;
@@ -2739,8 +2798,15 @@ function syncTradeButtons() {
           // второй случай игрок чинит сам, и сказать об этом надо здесь.
           `Свободных ячеек нет: разгрузите пост или постройте ещё один`
         : broke
-          ? `Нужно ${total}¤ за пять, у вас ${money}¤`
-          : `${unit}¤ за штуку · клик — пять (${total}¤), Shift — двадцать пять${ahead}`;
+          ? `Нужно ${total}¤ за ${qty}, у вас ${money}¤`
+          : empty
+            ? // Названное число — это «свободно», а не «есть»: под открытой
+              // сделкой товар базе уже не принадлежит (§12.50), и без этой
+              // оговорки отказ спорит с счётчиком в шапке.
+              `Свободно к продаже ${Math.max(0, free)}, нужно ${qty}`
+            : `${unit}¤ за штуку · ${qty} шт. = ${total}¤${
+                shiftHeld ? "" : " · Shift — двадцать пять"
+              }${ahead}`;
   }
 }
 

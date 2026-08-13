@@ -432,6 +432,21 @@ main#stage.mode-cursor #mode-banner {
   color: var(--muted);
 }
 
+/* Сколько уйдёт за клик: «×5» обычно, «×25» под Shift. Модификатор менял размер
+   сделки вслепую — теперь он виден и подсвечен, пока клавиша зажата. */
+.qty {
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: 3px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.qty.big {
+  background: #3a4a63;
+  color: #cfe3ff;
+}
+
 .standing {
   display: inline-flex;
   align-items: center;
