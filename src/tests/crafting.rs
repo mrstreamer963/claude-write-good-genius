@@ -693,3 +693,52 @@ fn the_shipped_ruleset_makes_a_part_from_scrap() {
         "деталей стало больше: у лома появился выход, а у детали — источник",
     );
 }
+
+/// Проданное порог своим не считает — **и пока его несут покупателю, тоже**
+/// (§12.50, §12.65).
+///
+/// Порог меряет добро базы вместе с лапами, а бронь из куч лапы вычитает: возьми
+/// он бронь как есть, носильщик засчитался бы дважды, и правило переставало бы
+/// дозаказывать ровно в тот момент, когда товар уходит с базы.
+#[test]
+fn the_stock_rule_does_not_count_goods_on_their_way_to_a_buyer() {
+    // Кучу и пост разводим по разным концам коридора: важен как раз тот
+    // десяток тиков, что деталь едет в лапах.
+    let mut sim = sim_from(&["################", "#a............b#", "################"]);
+    sim.set_shop(1, true);
+    sim.force_tile(3, 1, 1);
+    sim.set_trade_post(2, true);
+    sim.force_tile(5, 1, 2);
+    let f = sim.set_faction(100);
+    sim.set_market(f, 100, 40, 25, 0);
+    sim.set_prices(f, PART, &[10]);
+    let recipe = sim.set_recipe(50, &[(SCRAP, 1)], &[(PART, 1)], &[]);
+
+    sim.put_item(12, 1, PART, 2); // две детали уже лежат на полу
+    sim.set_stock(recipe, 2);
+    sim.tick_n(1);
+    assert_eq!(sim.craft_left_of(recipe), None, "порог закрыт — заказа нет");
+
+    assert!(sim.trade(f, PART, 2, false), "обе детали проданы");
+    sim.tick_n(1);
+    assert_eq!(sim.craft_left_of(recipe), Some(2), "взамен заказаны две");
+
+    for _ in 0..200 {
+        sim.tick_n(1);
+        if sim.carrying_item_of("b").is_some() {
+            break;
+        }
+    }
+    assert!(
+        sim.carrying_item_of("b").is_some(),
+        "деталь понесли к посту"
+    );
+
+    sim.tick_n(1); // тик, на котором правило пересчитывается с грузом в лапах
+    assert!(sim.carrying_item_of("b").is_some(), "и всё ещё несут");
+    assert_eq!(
+        sim.craft_left_of(recipe),
+        Some(2),
+        "заказ на месте: несомое покупателю базе уже не принадлежит",
+    );
+}

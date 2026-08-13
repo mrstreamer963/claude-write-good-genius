@@ -58,12 +58,12 @@ fn shop_spot(
 /// У боевых рецептов выход один, и правило читается буквально — «держать пять
 /// деталей». Набор из двух предметов пришёл бы к тому же: заказ повторяют, пока
 /// хоть одного из выходов недостаёт.
-fn pieces_needed(rule: &CraftRule, have: &[i32], booked: &[(usize, i32)], min: i32) -> i32 {
+fn pieces_needed(rule: &CraftRule, have: &[i32], owed: &[(usize, i32)], min: i32) -> i32 {
     rule.gives
         .iter()
         .filter(|&&(_, per)| per > 0)
         .map(|&(item, per)| {
-            let promised = booked
+            let promised = owed
                 .iter()
                 .find(|&&(i, _)| i == item)
                 .map_or(0, |&(_, n)| n);
@@ -108,7 +108,6 @@ pub(crate) fn plan_craft(
     stacks: Query<&Stack>,
     loads: Query<&Carrying>,
     deals: Query<&Deal>,
-    in_paws: Query<(&Haul, &Carrying)>,
 ) {
     // Дешёвый выход для мира без правил (все тесты чужих механик и начало
     // партии). **Заказы правила он обязан учитывать**: снятый порог — это ноль,
@@ -118,7 +117,10 @@ pub(crate) fn plan_craft(
         return;
     }
     let have = on_base_counts(stacks.iter(), loads.iter());
-    let booked = crate::trade::booked(deals.iter(), in_paws.iter());
+    // **`owed`, а не `booked`**: `have` считает и лапы, а из брони они вычтены
+    // (§12.50). Со скидкой порог засчитывал бы своим то, что кот уже несёт
+    // покупателю, и не дозаказывал взамен проданного.
+    let owed = crate::trade::owed(deals.iter());
 
     // Станок — слот заказа (§12.55). Отдельной проверки правилу не нужно: оно
     // заводит ту же разметку, у которой ограничение уже есть, — просто молчит,
@@ -142,7 +144,7 @@ pub(crate) fn plan_craft(
             continue;
         }
         let want = if min > 0 {
-            pieces_needed(rule, &have, &booked, min)
+            pieces_needed(rule, &have, &owed, min)
         } else {
             0
         };

@@ -424,6 +424,45 @@ fn a_sale_needs_the_goods_on_base() {
     assert_eq!(sim.money(), 20, "и их унесли");
 }
 
+/// **Два поста не продают один и тот же лом дважды** (§12.50).
+///
+/// Пока пост был один, ворота «продать можно только то, что есть» держались
+/// сами собой: второй заявке мешал занятый слот. §12.68 сделал постов много — и
+/// заявка, считающая базу в одиночку, снова открывает сделку, которой нечего
+/// везти: ровно ту вечную, ради которой бронь и заводилась.
+#[test]
+fn two_posts_cannot_sell_the_same_goods_twice() {
+    let (mut sim, f) = sim_with_market();
+    sim.force_tile(4, 1, 2); // второй торговый пост
+    sim.put_scrap(6, 1, 2);
+
+    assert!(sim.trade(f, 0, 2, false), "весь лом выставлен на продажу");
+    assert!(
+        !sim.trade(f, 0, 1, false),
+        "второму посту продавать уже нечего — он занят был бы навсегда"
+    );
+
+    sim.tick_n(300);
+    assert_eq!(sim.money(), 20, "заплатили ровно за один лом дважды по 10");
+    assert_eq!(sim.item_total(0), 0, "и лома на базе не осталось");
+}
+
+/// Бронь тает по мере сдачи, и освободившееся место второй пост берёт честно:
+/// правило запрещает продавать несуществующее, а не вторую сделку по предмету.
+#[test]
+fn a_second_post_sells_what_the_first_left_alone() {
+    let (mut sim, f) = sim_with_market();
+    sim.force_tile(4, 1, 2); // второй торговый пост
+    sim.put_scrap(6, 1, 3);
+
+    assert!(sim.trade(f, 0, 2, false), "два лома — первому посту");
+    assert!(
+        sim.trade(f, 0, 1, false),
+        "третий свободен, его берёт второй"
+    );
+    assert!(!sim.trade(f, 0, 1, false), "а четвёртого лома на базе нет");
+}
+
 /// Товар в лапах кота — тоже товар на базе: его считает и счётчик в шапке, и
 /// донести его коту ничто не мешает (§12.50).
 #[test]
@@ -562,5 +601,30 @@ fn the_shipped_ruleset_has_a_post_to_trade_from() {
     assert!(
         sim.tile_tech(posts[0]).is_none(),
         "пост не заперт технологией: без него у лишнего лома нет выхода до науки",
+    );
+}
+
+/// Груз в лапах уже обещан сделке: считать его свободным нельзя (§12.50).
+#[test]
+fn goods_already_in_paws_cannot_be_sold_again() {
+    let (mut sim, f) = sim_with_market();
+    sim.force_tile(4, 1, 2); // второй торговый пост
+    sim.put_scrap(6, 1, 2);
+
+    assert!(sim.trade(f, 0, 2, false), "весь лом выставлен на продажу");
+    for _ in 0..200 {
+        if sim.carrying_of("a") + sim.carrying_of("b") > 0 {
+            break;
+        }
+        sim.tick_n(1);
+    }
+    assert!(
+        sim.carrying_of("a") + sim.carrying_of("b") > 0,
+        "лом в лапах"
+    );
+
+    assert!(
+        !sim.trade(f, 0, 2, false),
+        "лом в лапах уже продан — второй раз его не продать"
     );
 }

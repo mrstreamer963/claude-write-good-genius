@@ -1907,6 +1907,9 @@ impl Sim {
     /// добро базы, а не только склад: продажу везут обычным подвозом, и коту
     /// одинаково годится куча на полу (§12.44). Лапы тоже в счёте — их считает
     /// и счётчик в шапке, а иначе игрок читал бы отказ как поломку.
+    /// **Из добра базы вычитается забронированное** соседними сделками: с
+    /// §12.68 постов много, и ворота, считающие каждую заявку в одиночку,
+    /// пропускали бы продажу одного и того же лома с двух постов сразу.
     ///
     /// Вернёт false, если счётчик неположителен, свободной ячейки поста нет,
     /// фракция этим не торгует, на покупку не хватает денег или на продажу не
@@ -1948,8 +1951,24 @@ impl Sim {
                 return false;
             }
             self.world.resource_mut::<Money>().0 -= total;
-        } else if self.item_on_base(item) < count {
-            return false; // продать нечего — слот занимать нельзя (§12.50)
+        } else {
+            // Вычесть уже обещанное другим сделкам обязательно: с §12.68 постов
+            // много, и без брони каждая заявка проходила бы ворота в одиночку —
+            // двадцать ломов продавались бы дважды. Заявка на продажу — седьмое
+            // место, где предмет уходит с базы (§12.50).
+            //
+            // Берётся здесь **`owed_for_sale`, а не `booked_for_sale`**: считаем
+            // мы всё добро базы, лапы в том числе, — а из брони лапы вычтены.
+            // Взять её значило бы засчитать носильщика дважды и разрешить
+            // продать ровно то, что он несёт покупателю.
+            let reserved = self
+                .owed_for_sale()
+                .iter()
+                .find(|&&(i, _)| i == item)
+                .map_or(0, |&(_, n)| n);
+            if self.item_on_base(item) - reserved < count {
+                return false; // продать нечего — слот занимать нельзя (§12.50)
+            }
         }
         self.world.spawn(Deal {
             faction,
@@ -1966,30 +1985,20 @@ impl Sim {
         true
     }
 
-    /// Что забронировано под открытую продажу (§12.50). Один расчёт на всех,
-    /// кто снимает предметы с базы, — здесь он собирается из мира.
-    pub(crate) fn booked_for_sale(&mut self) -> Vec<(usize, i32)> {
+    /// Сколько открытые продажи ещё **должны** — по предметам, **без скидки на
+    /// лапы** (§12.50).
+    ///
+    /// Половина брони, и половина осмысленная сама по себе: её спрашивает тот,
+    /// кто считает добро базы **вместе с лапами**, — то есть ворота самой заявки
+    /// на продажу. Скидка на лапы там засчитала бы носильщика дважды: один раз
+    /// как «есть на базе», второй — как «уже не обещано», и продать можно было
+    /// бы ровно то, что кот несёт покупателю. Тем и отличается от
+    /// `booked_for_sale`: та отвечает на вопрос «сколько нельзя брать **из
+    /// куч**», и лапы из неё вычтены потому, что из куч это уже взято.
+    pub(crate) fn owed_for_sale(&mut self) -> Vec<(usize, i32)> {
         let mut deals = self.world.query::<&Deal>();
-        let mut paws = self.world.query::<(&Haul, &Carrying)>();
-        let sales: Vec<Deal> = deals
-            .iter(&self.world)
-            .map(|d| Deal {
-                faction: d.faction,
-                item: d.item,
-                count: d.count,
-                unit: d.unit,
-                buying: d.buying,
-                left: d.left,
-                delivered: d.delivered,
-                cell: d.cell,
-            })
-            .collect();
-        let carried: Vec<(HaulTo, usize, i32)> = paws
-            .iter(&self.world)
-            .map(|(h, c)| (h.to, c.item, c.count))
-            .collect();
         let mut out: Vec<(usize, i32)> = Vec::new();
-        for deal in sales.iter().filter(|d| !d.buying) {
+        for deal in deals.iter(&self.world).filter(|d| !d.buying) {
             let left = deal.count - deal.delivered;
             if left <= 0 {
                 continue;
@@ -1999,6 +2008,22 @@ impl Sim {
                 None => out.push((deal.item, left)),
             }
         }
+        out
+    }
+
+    /// Что забронировано под открытую продажу **в кучах** (§12.50). Один расчёт
+    /// на всех, кто снимает предметы с базы, — здесь он собирается из мира.
+    ///
+    /// Это `owed_for_sale` минус то, что уже в лапах: из куч эти штуки взяты, и
+    /// запирать их второй раз значило бы держать базе лишнее. Кто считает лапы
+    /// наравне с кучами — берёт `owed_for_sale`, а не эту.
+    pub(crate) fn booked_for_sale(&mut self) -> Vec<(usize, i32)> {
+        let mut out = self.owed_for_sale();
+        let mut paws = self.world.query::<(&Haul, &Carrying)>();
+        let carried: Vec<(HaulTo, usize, i32)> = paws
+            .iter(&self.world)
+            .map(|(h, c)| (h.to, c.item, c.count))
+            .collect();
         for (to, item, count) in carried {
             if !matches!(to, HaulTo::Sale(_)) {
                 continue;
