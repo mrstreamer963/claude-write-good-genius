@@ -4081,17 +4081,36 @@ function selectCursor(btn) {
   mode = "cursor";
   activate(btn);
   applyModeChrome();
+  // Разметка кончилась — время идёт дальше, но только если его больше некому
+  // держать: раскрытая палитра держит паузу сама (§12.74), и «Курсор» при ней
+  // пустил бы время под открытым разделом.
+  if (autoPaused && openSection !== PAUSING_SECTION) {
+    autoPaused = false;
+    setSpeed(lastSpeed);
+  }
 }
+// Инструмент выбран — время стоит, ровно как у раскрытой палитры (§12.74):
+// разметка это решение о плане базы, а не действие в реальном времени, и рамка,
+// которую тянут по уезжающей карте, ложится не туда, куда целились.
+function pauseForMarkup() {
+  if (speed > 0) {
+    autoPaused = true;
+    setSpeed(0);
+  }
+}
+
 function selectBuild(i, btn) {
   mode = "build";
   buildTile = i;
   activate(btn);
   applyModeChrome();
+  pauseForMarkup();
 }
 function selectStore(btn) {
   mode = "store";
   activate(btn);
   applyModeChrome();
+  pauseForMarkup();
 }
 
 function showError(message) {
@@ -4130,11 +4149,18 @@ function setSpeed(s) {
   if (s > 0) {
     lastSpeed = s;
     // Время пустили в обход раздела (пробел, кнопка темпа, закрытие финала) —
-    // значит палитру держать больше нечем, и она сворачивается. Флаг снимаем
-    // до `openOnly`: иначе тот увидит нашу же паузу и пустит время второй раз.
-    const held = autoPaused;
+    // палитра сворачивается. Смотрим на **саму раскрытую палитру**, а не на
+    // `autoPaused`: паузу мог поставить и игрок (стартовая, пробелом), и тогда
+    // раскрытая поверх неё палитра «не наша» — а пуск времени всё равно обязан
+    // её закрыть, иначе получается ×10 под раскрытой палитрой, то есть ровно то
+    // состояние, ради которого §12.74 и писалась. Флаг снимаем до `openOnly`:
+    // иначе тот увидит нашу же паузу и пустит время второй раз.
     autoPaused = false;
-    if (held) openOnly(null);
+    if (openSection === PAUSING_SECTION) openOnly(null);
+    // И то же самое с самим инструментом: режим разметки липкий (§12.62), он
+    // переживает свёртку палитры, и «СТРОЙКА: Пол» поверх идущего ×10 — это та
+    // же неправда, что раскрытая палитра. Идёт время — рука не на карте.
+    if (mode !== "cursor") selectCursor(cursorBtn);
   }
   speed = s;
   worker.postMessage({ type: "setSpeed", speed: s });
