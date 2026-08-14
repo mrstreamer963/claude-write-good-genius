@@ -1065,3 +1065,53 @@ fn the_rule_waits_for_a_full_squad() {
     sim.tick_n(20);
     assert!(sim.is_away("a") && sim.is_away("b"), "вдвоём ушли");
 }
+
+/// Явный приказ отменяет правило (§12.72): игрок отправил узел на **другой**
+/// заказ, то есть принял решение взамен прежнего. Уцелевшее правило вернуло бы
+/// отряд в поле тем же тиком, каким тот дошёл до базы, — коты вернулись бы с
+/// назначенной вылазки и «сами собой» исчезли снова.
+#[test]
+fn a_manual_launch_elsewhere_drops_the_node_rule() {
+    let mut sim = sim_with_nodes(1);
+    let usual = sim.set_mission(1, 30, &[(0, 5)]);
+    let other = sim.set_mission(1, 30, &[(0, 5)]);
+    sim.enlist("a", 1, 2);
+    sim.set_auto_raid(usual as i32, 1, 2);
+
+    assert!(sim.launch_node(other, 1, 2), "игрок отправил отряд сам");
+    assert!(sim.auto_raid_at(1, 2).is_none(), "правило снято приказом");
+
+    // И отряд после возвращения остаётся дома: рутина кончилась вместе с
+    // правилом, а не пережила его.
+    sim.tick_n(200);
+    assert!(sim.raids_done().contains(&other), "ручная вылазка сходила");
+    assert_eq!(sim.raid_count(), 0, "а новую заводить больше некому");
+}
+
+/// Граница снятия: правило уходит в поле **через ту же кнопку**, поэтому
+/// сравнение идёт с заказом, а не с самим фактом заявки. Со своим заказом
+/// правило снять себя не может — иначе автовылазка сработала бы ровно один раз.
+#[test]
+fn the_rule_survives_its_own_departure() {
+    let mut sim = sim_with_nodes(1);
+    let def = sim.set_mission(1, 30, &[(0, 5)]);
+    sim.enlist("a", 1, 2);
+    sim.set_auto_raid(def as i32, 1, 2);
+
+    sim.tick_n(10);
+    assert!(sim.is_away("a"), "правило отправило отряд");
+    assert_eq!(sim.auto_raid_at(1, 2), Some(def), "и осталось на узле");
+}
+
+/// Ручная отправка на **тот же** заказ правило тоже не трогает: другого
+/// решения игрок не принимал, он лишь поторопил то же самое.
+#[test]
+fn a_manual_launch_of_the_same_mission_keeps_the_rule() {
+    let mut sim = sim_with_nodes(1);
+    let def = sim.set_mission(1, 30, &[(0, 5)]);
+    sim.enlist("a", 1, 2);
+    sim.set_auto_raid(def as i32, 1, 2);
+
+    assert!(sim.launch_node(def, 1, 2), "отправили руками тот же заказ");
+    assert_eq!(sim.auto_raid_at(1, 2), Some(def), "правило на месте");
+}
