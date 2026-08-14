@@ -31,7 +31,9 @@ use crate::goals::{WorldFacts, built_counts, progress_of};
 use crate::hauling::{plan_spend, stored_counts};
 use crate::jobs::BUILD_WORK;
 use crate::map::{BaseMap, rect_cells};
-use crate::missions::{duration, guide_of, guide_value, outcome, pick_gate, raid_danger};
+use crate::missions::{
+    duration, guide_cut, guide_of, guide_value, outcome, pick_gate, raid_danger,
+};
 use crate::movement::{Busy, is_stuck};
 use crate::path::find_path;
 use crate::relay::relay_force;
@@ -2777,13 +2779,13 @@ impl Sim {
                     raid_force: 1
                         + raid.map_or(0, |s| level_of(rules, skills, s))
                         + items.force_of_gear(gear),
-                    // Ступени врождённого — рядом с сырыми значениями: механику
-                    // двигают именно они (§12.70), а «Реакция 7» без ступени не
-                    // говорит, станет ли этот кот проводником.
-                    stat_steps: (0..stat_count).map(|i| stat_rules.step(i, stats)).collect(),
-                    // Какая из ступеней делает проводника, знает ядро: искать
-                    // `reflex` по имени в JS — тот же второй экземпляр правила.
+                    // Проводник: ступень — чтобы сравнить кандидата с нынешним
+                    // ведущим (считается по лучшему, а не по сумме), процент —
+                    // чтобы панель называла следствие реакции, а не её шкалу
+                    // (§12.71). Какая из ступеней делает проводника, знает ядро:
+                    // искать `reflex` по имени в JS — второй экземпляр правила.
                     guide_step: guide_of(stat_rules, stats),
+                    guide_cut: guide_cut(guide_of(stat_rules, stats)),
                 });
             }
         }
