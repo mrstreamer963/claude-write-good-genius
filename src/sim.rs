@@ -31,7 +31,7 @@ use crate::goals::{WorldFacts, built_counts, progress_of};
 use crate::hauling::{plan_spend, stored_counts};
 use crate::jobs::BUILD_WORK;
 use crate::map::{BaseMap, rect_cells};
-use crate::missions::{outcome, pick_gate};
+use crate::missions::{duration, guide_of, guide_value, outcome, pick_gate, raid_danger};
 use crate::movement::{Busy, is_stuck};
 use crate::path::find_path;
 use crate::relay::relay_force;
@@ -780,6 +780,17 @@ impl Sim {
         // Параметр навык тоже держит индексом: имена живут в рулсете, по коду
         // ходят номера палитры (§12.42).
         let stat_index = |id: &str| rs.stats.iter().position(|s| s.id == id);
+        // Ступени параметров (§12.70): что параметр делает **прямо сейчас**, в
+        // отличие от `demands` у навыка, который задаёт его потолок (§12.42).
+        world.insert_resource(StatRules(
+            rs.stats
+                .iter()
+                .map(|s| StatRule {
+                    id: s.id.clone(),
+                    steps: s.steps.clone(),
+                })
+                .collect(),
+        ));
         world.insert_resource(SkillRules(
             rs.skills
                 .iter()
@@ -952,8 +963,10 @@ impl Sim {
             rs.missions
                 .iter()
                 .map(|m| MissionRule {
-                    squad: m.squad,
-                    ticks: m.ticks,
+                    squad: m.squad.bounds().0,
+                    squad_max: m.squad.bounds().1,
+                    travel: m.travel,
+                    work: m.work,
                     danger: m.danger,
                     toll: m.toll,
                     harm: m.harm,
@@ -1035,6 +1048,7 @@ impl Sim {
         world.insert_resource(Trace::default());
         world.insert_resource(NeedRules {
             max: rs.energy.max,
+            drain: rs.energy.drain,
             tired: rs.energy.tired,
             critical: rs.energy.critical,
             floor: rs.energy.floor,
@@ -1405,11 +1419,121 @@ impl Sim {
         self.launch_at(def, units, Some((x, y)))
     }
 
+    /// Кто из списка уйдёт прямо сейчас — сущность и клетка (§12.70).
+    ///
+    /// **Одно место на кнопку и на панель.** Цена решения обязана быть видна до
+    /// нажатия (сколько лап уйдёт → срок и доля), а второй экземпляр правила
+    /// «кто готов» однажды разошёлся бы с фасадом, и панель обещала бы состав,
+    /// которого вылазка не увидит, — та же болезнь, из-за которой свободу
+    /// ячейки поста считает одно выражение (§12.68).
+    ///
+    /// Дубликаты отсекаются по сущности: «три раза excellent» — это один кот,
+    /// а не отряд.
+    fn ready_crew(&mut self, units: &[String]) -> Vec<(Entity, (i32, i32))> {
+        let spare = self.world.resource::<AutoRest>().0;
+        let hurt = self.world.resource::<HealthRules>().hurt;
+        let mut crew: Vec<(Entity, (i32, i32))> = Vec::new();
+        let mut q = self.world.query::<(
+            Entity,
+            &UnitId,
+            &Position,
+            Option<&Away>,
+            Option<&Health>,
+            Option<&Rest>,
+        )>();
+        for id in units {
+            let found = q
+                .iter(&self.world)
+                .find(|(_, u, _, away, health, rest)| {
+                    u.0 == *id
+                        && away.is_none()
+                        && !(spare && rest.is_some())
+                        && health.is_none_or(|h: &Health| h.0 > hurt)
+                })
+                .map(|(e, _, p, ..)| (e, (p.x, p.y)));
+            if let Some(cat) = found
+                && !crew.iter().any(|&(e, _)| e == cat.0)
+            {
+                crew.push(cat);
+            }
+        }
+        crew
+    }
+
+    /// Срок каждого заказа для отряда этого узла (§12.70) — цена до нажатия.
+    /// Тем же выражением, каким срок замёрзнет на уходе.
+    fn node_spans(&mut self, x: i32, y: i32) -> Vec<i32> {
+        let paws = self.ready_roster_of(x, y).len();
+        let rules = self.world.resource::<MissionRules>();
+        rules.0.iter().map(|r| duration(r, paws)).collect()
+    }
+
+    /// Опасность каждого заказа для отряда этого узла (§12.70): уже урезанная
+    /// проводником, тем же выражением, что и на возвращении.
+    fn node_dangers(&mut self, x: i32, y: i32) -> Vec<i32> {
+        let guide = self.node_guide_step(x, y);
+        let rules = self.world.resource::<MissionRules>();
+        rules
+            .0
+            .iter()
+            .map(|r| raid_danger(r.danger, guide))
+            .collect()
+    }
+
+    /// Ступень проводника среди готовых уйти — лучшая «Реакция» (§12.70).
+    fn node_guide_step(&mut self, x: i32, y: i32) -> i32 {
+        let roster = self.roster_of(x, y);
+        let crew = self.ready_crew(&roster);
+        let stats = self.world.resource::<StatRules>();
+        crew.iter()
+            .map(|&(e, _)| guide_of(stats, self.world.get::<Stats>(e)))
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Кто ведёт отряд узла: кот с лучшей ступенью, ничья — по `id` (§11).
+    fn node_guide(&mut self, x: i32, y: i32) -> String {
+        let step = self.node_guide_step(x, y);
+        if step <= 0 {
+            return String::new();
+        }
+        let roster = self.roster_of(x, y);
+        let crew = self.ready_crew(&roster);
+        let stats = self.world.resource::<StatRules>();
+        // Ничью по ступени решает **сырая реакция**, и только потом `id`
+        // (§11, §12.70): ступень грубая, у реакции 5 и 7 она одна, и назвать
+        // ведущим того, у кого реакция ниже, — заведомо неверное объяснение
+        // при верной механике.
+        crew.iter()
+            .filter(|&&(e, _)| guide_of(stats, self.world.get::<Stats>(e)) == step)
+            .filter_map(|&(e, _)| {
+                let raw = guide_value(stats, self.world.get::<Stats>(e));
+                self.world.get::<UnitId>(e).map(|u| (-raw, u.0.clone()))
+            })
+            .min()
+            .map(|(_, id)| id)
+            .unwrap_or_default()
+    }
+
+    /// Кто из отряда узла уйдёт прямо сейчас, по `id` (§12.70) — для панели.
+    /// Порядок тот же, что у состава: игрок читает оба списка рядом.
+    fn ready_roster_of(&mut self, x: i32, y: i32) -> Vec<String> {
+        let roster = self.roster_of(x, y);
+        let ready = self.ready_crew(&roster);
+        ready
+            .into_iter()
+            .filter_map(|(e, _)| self.world.get::<UnitId>(e).map(|u| u.0.clone()))
+            .collect()
+    }
+
     fn launch_at(&mut self, def: usize, units: Vec<String>, node: Option<(i32, i32)>) -> bool {
         let Some(rule) = self.world.resource::<MissionRules>().0.get(def).cloned() else {
             return false;
         };
-        if units.len() != rule.squad {
+        // Больше предела бригада не уводит: вилку задаёт заказ, а не приписка
+        // (§12.70). Отказ здесь молчаливый и лечится вычёркиванием кота с узла —
+        // подрезать список самим значило бы решать за игрока, кто останется.
+        if units.len() > rule.squad_max {
             return false;
         }
         if self.raids_running() >= self.relay_nodes() || self.mission_of(def).is_some() {
@@ -1435,31 +1559,29 @@ impl Sim {
             return false;
         }
 
-        // Ушедших в списке быть не может — их нет на базе; дубликаты отсекаем
-        // сравнением длины, иначе «три раза excellent» сошло бы за отряд.
+        // **Идут все, кто готов; неготовые остаются дома** (§12.70). До §12.70
+        // список требовалось иметь ровно по составу, и любой неготовый отменял
+        // вылазку целиком — то есть один невыносливый кот держал свою бригаду на
+        // приколе всё время своего сна. Ожидание при этом не ротация, а простой:
+        // подменить его в бригаде некем.
         //
-        // Раненого не берут вовсе (§12.37): выбывший — это и есть вся цена
-        // провала, и отправить его добирать урон значило бы отменить её. Отказ
-        // здесь молчаливый, как и на нехватку известности: почему кнопка не
-        // сработала, видно в панели кота — там его здоровье.
-        let hurt = self.world.resource::<HealthRules>().hurt;
-        let mut crew: Vec<(Entity, (i32, i32))> = Vec::new();
-        {
-            let mut q = self
-                .world
-                .query::<(Entity, &UnitId, &Position, Option<&Away>, Option<&Health>)>();
-            for id in &units {
-                let found = q
-                    .iter(&self.world)
-                    .find(|(_, u, _, away, health)| {
-                        u.0 == *id && away.is_none() && health.is_none_or(|h: &Health| h.0 > hurt)
-                    })
-                    .map(|(e, _, p, ..)| (e, (p.x, p.y)));
-                match found {
-                    Some(cat) if !crew.iter().any(|&(e, _)| e == cat.0) => crew.push(cat),
-                    _ => return false,
-                }
-            }
+        // Не готов — это три случая, и все они видны игроку в строке отряда:
+        //   * `Away` — кот в поле или в плену, его вообще нет на базе;
+        //   * ниже `hurt` — выбывший, и это вся цена провала (§12.37); отправить
+        //     его добирать урон значило бы её отменить;
+        //   * спит, **пока включено «Беречь себя»** — будить его заявка не имеет
+        //     права (§12.51), а ждать его теперь незачем. С выключенным
+        //     «Беречь себя» игрок сказал котов не жалеть: спящего поднимают и
+        //     уводят, как и до §12.70, — простоя от этого не возникает, он идёт
+        //     к шлюзу сразу.
+        //
+        // Дубликаты в списке отсекаются по сущности: «три раза excellent» — это
+        // один кот, а не отряд.
+        let crew = self.ready_crew(&units);
+        // Минимум — единственное, что вылазка требует безусловно: меньшим
+        // составом её не выполнить вовсе, а не «выполнить хуже».
+        if crew.len() < rule.squad {
+            return false;
         }
 
         let at: Vec<(i32, i32)> = crew.iter().map(|&(_, p)| p).collect();
@@ -1485,20 +1607,20 @@ impl Sim {
         let mission_e = self.world.spawn(Mission {
             def,
             gate: Some(gate),
-            left: rule.ticks,
+            // Срок пока неизвестен: он зависит от того, сколько лап дойдёт до
+            // шлюза, и замерзает в момент ухода (§12.70).
+            left: 0,
+            span: 0,
             node,
             covered: 0,
         });
         let mission_e = mission_e.id();
-        // Спящих заявка не поднимает, пока игрок велел беречь себя (§12.51).
-        // Проснувшихся подберёт `gather_squad` — он и так умеет ждать спящего
-        // бойца, потому что истощение из отряда не выводит (§12.23).
-        let spare = self.world.resource::<AutoRest>().0;
+        // Спящих в `crew` уже нет — их отсеял отбор состава (§12.70), и будить
+        // тут некого. Заснуть по дороге к шлюзу кот всё ещё может: тогда его
+        // ждёт `gather_squad`, который спящего не трогает, потому что истощение
+        // из отряда не выводит (§12.23, §12.51).
         for (cat_e, from) in crew {
-            let asleep = spare && self.world.get::<Rest>(cat_e).is_some();
-            if !asleep {
-                self.release_task(cat_e);
-            }
+            self.release_task(cat_e);
             // Ношу кот кладёт под ноги — прямо здесь и сейчас (§12.38). Уехать
             // с ней в поле значит вынуть лом из мира на сотни тиков: сумма
             // сходится, но кучу не видно, её не взять на стройку и не
@@ -1516,12 +1638,8 @@ impl Sim {
                 self.drop_stack(from.0, from.1, item, count);
                 self.world.entity_mut(cat_e).remove::<Carrying>();
             }
-            // Спящему маршрут не выдаём вовсе: `Path` при `Rest` значит «идёт к
-            // лежанке», и сон бы просто не пошёл (`needs::sleep` ждёт конца
-            // маршрута). В отряд он записан, а к шлюзу его поведёт `gather_squad`,
-            // как только сам проснётся.
             self.world.entity_mut(cat_e).insert(Squad(mission_e));
-            if !asleep {
+            {
                 let steps =
                     find_path(self.world.resource::<BaseMap>(), from, gate).unwrap_or_default();
                 self.world
@@ -1844,10 +1962,17 @@ impl Sim {
         }
     }
 
-    /// Готов ли отряд узла уйти прямо сейчас: все на базе, целы и не спят.
+    /// Готов ли отряд узла уйти прямо сейчас: **все** на базе, целы и не спят.
     ///
     /// Состав здесь **не считается** — его длину сверит `launch_node`: «сколько
     /// нужно» знает заказ, а правило про заказ ничего не решает.
+    ///
+    /// «Все» — это и есть запрет некомплекта у автовылазки (§12.70). Игрок,
+    /// нажимая кнопку, соглашается на просевшую долю осознанно и разово: он
+    /// видит цену в строке отряда до нажатия. Автомат принимал бы это решение за
+    /// него на каждом круге и гонял бы полупустые отряды — то есть делал бы
+    /// выбор, которого у него не просили. Ровно поэтому правило ждёт полного
+    /// состава, хотя кнопка ждать перестала.
     fn squad_is_fit(&mut self, x: i32, y: i32) -> bool {
         let hurt = self.world.resource::<HealthRules>().hurt;
         let tired = self.world.resource::<NeedRules>().tired;
@@ -2656,19 +2781,29 @@ impl Sim {
                 Option<&Skills>,
                 Option<&Gear>,
                 Option<&Rest>,
+                Option<&Stats>,
             )>();
             let skill_rules = self.world.resource::<SkillRules>();
+            let stat_rules = self.world.resource::<StatRules>();
             let items = self.world.resource::<ItemRules>();
             // Вклад кота в силу отряда считается ровно как в `run_missions`:
             // сам он стоит единицу, уровень «Вылазки» — сверху, надетое — ещё
             // сверху. Прогноз и результат обязаны быть одним выражением (§12.23).
-            let members: Vec<(Entity, String, bool, i32, bool)> = crew
+            let members: Vec<(Entity, String, bool, i32, bool, i32, i32)> = crew
                 .iter(&self.world)
-                .map(|(id, squad, away, skills, gear, rest)| {
+                .map(|(id, squad, away, skills, gear, rest, stats)| {
                     let force = 1
                         + raid.map_or(0, |s| level_of(skill_rules, skills, s))
                         + items.force_of_gear(gear);
-                    (squad.0, id.0.clone(), away.is_some(), force, rest.is_some())
+                    (
+                        squad.0,
+                        id.0.clone(),
+                        away.is_some(),
+                        force,
+                        rest.is_some(),
+                        guide_of(stat_rules, stats),
+                        guide_value(stat_rules, stats),
+                    )
                 })
                 .collect();
             // Кто прямо сейчас держит связь: дошедший дежурный, без маршрута
@@ -2682,27 +2817,53 @@ impl Sim {
             for (e, m) in q.iter(&self.world) {
                 let rule = rules.0.get(m.def);
                 let mine = || members.iter().filter(move |&&(owner, ..)| owner == e);
-                let danger = rule.map_or(0, |r| r.danger);
+                // Опасность, какой её встретит **этот** отряд: проводник режет
+                // её тем же выражением, что и на возвращении (§12.70,
+                // инвариант 14). Наружу едет уже урезанная — игрок должен
+                // видеть то, с чем коты столкнутся, а исходную рядом показывает
+                // панель по `danger_base`.
+                let base = rule.map_or(0, |r| r.danger);
+                let guide = mine().map(|&(.., g, _)| g).max().unwrap_or(0);
+                let danger = raid_danger(base, guide);
                 // Связь входит в **ту же** силу, что и отряд, и считается тем же
                 // выражением, что на возвращении (§12.60, инвариант 14). Число
                 // это «что будет, если связь оборвётся прямо сейчас»: она копится
                 // за тик, поэтому прогноз честно растёт вместе с ней.
-                let comms = relay_force(m.covered, rule.map_or(0, |r| r.ticks));
-                let force: i32 = mine().map(|&(.., force, _)| force).sum::<i32>() + comms;
+                // Полный срок до ухода ещё не посчитан (`span` = 0): прогноз
+                // берёт его по тому составу, который сейчас в отряде, — тем же
+                // выражением, каким срок замёрзнет на уходе (§12.70).
+                let paws = mine().count();
+                let span = match m.span {
+                    0 => rule.map_or(0, |r| duration(r, paws)),
+                    frozen => frozen,
+                };
+                let comms = relay_force(m.covered, span);
+                let force: i32 = mine().map(|&(.., force, _, _, _)| force).sum::<i32>() + comms;
                 let out = outcome(danger, force);
                 missions.push(MissionSnap {
                     def: m.def,
                     x: m.gate.map_or(-1, |(x, _)| x),
                     y: m.gate.map_or(-1, |(_, y)| y),
                     left: m.left,
-                    total: rule.map_or(0, |r| r.ticks),
+                    total: span,
                     squad: mine().map(|(_, id, ..)| id.clone()).collect(),
                     size: rule.map_or(0, |r| r.squad),
                     away: mine().any(|&(_, _, away, ..)| away),
                     // Ждать отряд может только на базе: за шлюзом не спят.
-                    resting: mine().any(|&(.., resting)| resting),
+                    resting: mine().any(|&(.., resting, _, _)| resting),
                     strength: out.strength,
                     danger,
+                    danger_base: base,
+                    // Проводник — кот с лучшей ступенью; ничью решает `id`,
+                    // потому что порядок обхода ECS недетерминирован (§11).
+                    // Ничью решает сырая реакция, потом `id` — то же правило,
+                    // что у `node_guide` (§12.70).
+                    guide: mine()
+                        .filter(|&&(.., g, _)| g > 0 && g == guide)
+                        .map(|(_, id, .., raw)| (-raw, id.clone()))
+                        .min()
+                        .map(|(_, id)| id)
+                        .unwrap_or_default(),
                     share: out.share,
                     failed: out.failed,
                     patron: rule.and_then(|r| r.patron).map_or(-1, |f| f as i32),
@@ -2799,6 +2960,10 @@ impl Sim {
                     x,
                     y,
                     crew: self.roster_of(x, y),
+                    ready: self.ready_roster_of(x, y),
+                    spans: self.node_spans(x, y),
+                    dangers: self.node_dangers(x, y),
+                    guide: self.node_guide(x, y),
                     busy: !self.node_is_free(x, y),
                     auto: self
                         .world

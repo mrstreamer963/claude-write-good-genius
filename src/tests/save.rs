@@ -436,7 +436,7 @@ fn a_save_from_another_ruleset_is_refused() {
     let json = live.save().expect("снимок");
 
     // Правка контента, какой она и бывает: цифра в прайсе.
-    let modded = CORE.replacen("squad: 2", "squad: 3", 1);
+    let modded = CORE.replacen("danger: 2", "danger: 3", 1);
     assert_ne!(modded, CORE, "рулсет для проверки должен отличаться");
 
     assert!(

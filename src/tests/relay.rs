@@ -445,3 +445,39 @@ fn the_shipped_ruleset_puts_someone_on_the_radio() {
         "оставшийся дома кот сел к рации",
     );
 }
+
+/// Автовылазка в некомплекте не уходит (§12.70): кнопка ждать перестала, а
+/// правило ждёт полного состава.
+///
+/// Игрок, нажимая кнопку, соглашается на просевшую долю разово и видя цену.
+/// Автомат делал бы этот выбор за него на каждом круге.
+#[test]
+fn an_auto_raid_waits_for_the_whole_brigade() {
+    let rows = &["########", "#ab....#", "########"];
+    let mut sim = sim_from(rows);
+    sim.set_gate(1, true);
+    sim.set_relay(1, true);
+    sim.force_tile(6, 1, 1);
+    let m = sim.set_mission(1, 20, &[(0, 5)]);
+    sim.set_squad_range(m, 1, 2);
+    sim.set_rest(2, 1);
+    sim.force_tile(3, 1, 2); // лежанка, до которой два шага
+    sim.set_needs(1000, 500, 1);
+
+    sim.enlist("a", 6, 1);
+    sim.enlist("b", 6, 1);
+    sim.set_auto_raid(m as i32, 6, 1);
+
+    // Один спит — правило молчит, хотя минимума хватило бы на одного.
+    sim.set_energy("b", 100);
+    sim.tick_n(20);
+    assert!(sim.is_resting("b"), "второй спит");
+    assert!(!sim.is_away("a"), "и правило не отправило первого одного");
+
+    // Выспался — ушли оба.
+    sim.set_energy("b", 1000);
+    sim.tick_n(30);
+    assert!(!sim.is_resting("b"), "проснулся");
+    sim.tick_n(30);
+    assert!(sim.is_away("a") && sim.is_away("b"), "ушли полным составом");
+}

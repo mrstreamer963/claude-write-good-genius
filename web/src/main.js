@@ -1487,6 +1487,13 @@ function missionCard(m) {
     parts.push(
       '<div class="cat-skill">' +
         `<div class="cat-row"><span>Сила / сложность</span><b>${m.strength} / ${m.danger}</b></div>` +
+        // Опасность едет уже урезанной проводником (§12.70). Показываем, откуда
+        // она такая: иначе игрок видит результат и не понимает, кто его дал.
+        (m.danger_base > m.danger
+          ? `<div class="cat-sub">сложность ${m.danger_base} → ${m.danger}${
+              m.guide ? ` · ведёт ${esc(m.guide)}` : ""
+            }</div>`
+          : "") +
         `<div class="bar"><i class="${m.failed ? "fail" : ""}" style="width:${m.failed ? 100 : m.share}%"></i></div>` +
         `<div class="cat-sub">${verdict}</div>` +
         "</div>",
@@ -3023,6 +3030,15 @@ function trustGap(needs) {
   return null;
 }
 
+// Вилка состава заказа: `squad` в рулсете — либо число (минимум = предел), либо
+// пара `[минимум, предел]` (§12.70). Одно место чтения на весь вид: разобрать
+// эту форму в двух местах — значит однажды показать «нужно 2», когда нужно 5.
+function squadBounds(def) {
+  const s = def?.squad;
+  if (Array.isArray(s)) return [s[0] ?? 0, s[1] ?? s[0] ?? 0];
+  return [s ?? 0, s ?? 0];
+}
+
 // Раздел «Вылазки» целиком: строка на каждый узел связи (§12.66). Отряд живёт
 // на клетке рации и переживает вылазку (§12.61), поэтому список отрядов — это
 // список узлов, а заказы стоят кнопками внутри своей строки: вопрос «чей отряд
@@ -3053,7 +3069,15 @@ function renderRaidsSection() {
           `<span class="cell-at">${at}</span></button>`,
         `<div class="cat-sub">${
           node.crew.length
-            ? node.crew.map(esc).join(" · ")
+            ? node.crew
+                .map((id) =>
+                  // Кто не уйдёт прямо сейчас — тусклым: цена решения обязана
+                  // читаться со строки, не открывая ничего (§12.70).
+                  (node.ready ?? []).includes(id)
+                    ? esc(id)
+                    : `<span class="dim">${esc(id)}</span>`,
+                )
+                .join(" · ")
             : "состав не набран — откройте рацию и отметьте котов"
         }</div>`,
       ];
@@ -3118,9 +3142,22 @@ function renderRaidsSection() {
 // отказа: молчащая кнопка читается как поломка.
 function raidGate(i, node) {
   const def = (meta.missions ?? [])[i] ?? {};
-  const need = def.squad ?? 0;
+  const [need, most] = squadBounds(def);
+  // Цена решения — до нажатия (§12.70): сколько лап уйдёт, столько и срок, и
+  // доля. Оба числа считает ядро (`node.spans`, `node.dangers`) теми же
+  // выражениями, какими они посчитаются на уходе, — второй экземпляр обещал бы
+  // игроку не то, что он получит.
+  const paws = node.ready?.length ?? 0;
+  const span = node.spans?.[i];
+  const danger = node.dangers?.[i] ?? def.danger ?? 0;
+  const cut =
+    danger !== (def.danger ?? 0)
+      ? ` (было ${def.danger}${node.guide ? `, ведёт ${node.guide}` : ""})`
+      : "";
   const hint =
-    `${need} кота · ${def.ticks} тиков · сложность ${def.danger ?? 0}` +
+    `идут ${paws} из ${node.crew.length}` +
+    (span == null ? "" : ` · ${span} тиков`) +
+    ` · сложность ${danger}${cut}` +
     (def.harm ? ` · раны при провале ${def.harm}` : "");
   // До первого снапшота ворот ещё нет — считаем закрытыми.
   const gates = raids[i];
@@ -3134,19 +3171,15 @@ function raidGate(i, node) {
   const distrust = welcome ? null : trustGap(def.needs);
   // Раненого и пленного ядро в отряд не пустит (§12.37, §12.40) — причину
   // называем словом, как и нехватку известности.
-  const hurt = node.crew.filter((id) => wounded.has(id));
-  const gone = node.crew.filter((id) => captives.includes(id));
+  // Раненый и пленный вылазку больше не отменяют — они просто остаются дома
+  // (§12.70), и ядро их уже вычло из `ready`. Называем их словом всё равно:
+  // «идут трое из пяти» без объяснения читается как поломка.
+  const home = node.crew.filter((id) => !(node.ready ?? []).includes(id));
   // Двух вылазок по одному заказу не бывает (§12.59), и это другая новость, чем
   // «этот узел занят»: там ждать своего отряда, здесь — брать другой заказ.
   const taken = running.has(i);
   const ready =
-    !taken &&
-    known &&
-    welcome &&
-    !hurt.length &&
-    !gone.length &&
-    !nobody &&
-    node.crew.length === need;
+    !taken && known && welcome && !nobody && paws >= need && paws <= most;
   // Закрытые вылазки видны, а не спрятаны: лестница ответственности — это то, к
   // чему игрок идёт, и невидимая цель не тянет (§4.4).
   const title = taken
@@ -3157,12 +3190,13 @@ function raidGate(i, node) {
         ? `${hint} · ${distrust}`
         : nobody
           ? `${hint} · все дома, спасать некого`
-          : gone.length
-            ? `${hint} · в плену: ${gone.join(", ")}`
-            : hurt.length
-              ? `${hint} · ранен: ${hurt.join(", ")}`
-              : node.crew.length !== need
-                ? `${hint} · в отряде ${node.crew.length} из ${need} — состав набирается в панели рации`
+          : paws < need
+            ? `${hint} · готовых ${paws}, нужно ${need}` +
+              (home.length ? ` · дома остаются: ${home.join(", ")}` : "")
+            : paws > most
+              ? `${hint} · в отряде ${paws}, а больше ${most} этот заказ не уводит`
+              : home.length
+                ? `${hint} · дома остаются: ${home.join(", ")}`
                 : hint;
   return { ready, title };
 }

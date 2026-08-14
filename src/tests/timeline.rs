@@ -228,8 +228,13 @@ fn the_shipped_ruleset_day_is_the_cats_cycle() {
         .unwrap_or(0);
     assert!(best_rest > 0, "лежанок в палитре нет — коту негде спать");
 
-    let awake = needs.max - needs.tired;
-    let asleep = awake / best_rest;
+    // Бодрствование считается **в тиках, а не в очках** (§12.70): расход теперь
+    // задан рулсетом и режется «Выносливостью», поэтому `max` сам по себе суток
+    // больше не значит. До §12.70 расход был единицей, и очки совпадали с
+    // тиками — совпадение, а не правило: сутки это `max / drain`.
+    let drain = if needs.drain > 0 { needs.drain } else { 1 };
+    let awake = (needs.max - needs.tired) / drain;
+    let asleep = (needs.max - needs.tired) / best_rest;
     let cycle = u64::try_from(awake + asleep).expect("цикл не отрицателен");
 
     assert!(

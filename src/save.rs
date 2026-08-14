@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 10;
+pub(crate) const FORMAT: u32 = 11;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -146,6 +146,7 @@ pub(crate) const SKIPPED: &[(&str, &str)] = &[
     // второй источник правды рядом с рулсетом, который к тому же разойдётся с
     // ним при первой же правке контента.
     ("SkillRules", "правила: пересобирает `Sim::new` из рулсета"),
+    ("StatRules", "правила: пересобирает `Sim::new` из рулсета"),
     ("TileRules", "правила: пересобирает `Sim::new` из рулсета"),
     ("ItemRules", "правила: пересобирает `Sim::new` из рулсета"),
     (
@@ -436,6 +437,10 @@ pub(crate) struct MissionDto {
     pub(crate) node: (i32, i32),
     #[serde(default)]
     pub(crate) covered: i32,
+    /// Замороженный на уходе срок вылазки (§12.70). Состояние, а не правило:
+    /// он посчитан по числу дошедших лап, и из рулсета его уже не вывести.
+    #[serde(default)]
+    pub(crate) span: i32,
 }
 
 // ── Снять снимок ──────────────────────────────────────────────────────────
@@ -556,6 +561,7 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                     def: m.def,
                     gate: m.gate,
                     left: m.left,
+                    span: m.span,
                     node: m.node,
                     covered: m.covered,
                 }),
@@ -852,6 +858,7 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
                 def: m.def,
                 gate: m.gate,
                 left: m.left,
+                span: m.span,
             });
         }
     }

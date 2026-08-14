@@ -103,6 +103,10 @@ fn sim_from(rows: &[&str]) -> Sim {
     world.insert_resource(AutoRest(true));
     world.insert_resource(Trace::default());
     world.insert_resource(SkillRules::default());
+    // Ступеней у параметров нет: проводника в синтетической схеме не бывает, и
+    // опасность вылазки никем не режется (§12.70) — ровно как без навыков
+    // работа идёт с базовой скоростью. Включает их `set_stat_steps`.
+    world.insert_resource(StatRules::default());
     world.insert_resource(NeedRules::default());
     world.insert_resource(FoodRules::default());
     world.insert_resource(HealthRules::default());
@@ -874,6 +878,10 @@ impl Sim {
     fn set_needs(&mut self, max: i32, tired: i32, floor: i32) {
         self.world.insert_resource(NeedRules {
             max,
+            // Расход — очко за тик, как было до §12.70: на такой шкале
+            // выносливость никого не различает, и тесты чужих механик о ней не
+            // знают. Разводит котов `set_drain` вместе с `set_stat_steps`.
+            drain: 0,
             tired,
             critical: 0,
             floor,
@@ -885,6 +893,12 @@ impl Sim {
         for cat in q.iter(&self.world).collect::<Vec<_>>() {
             self.world.entity_mut(cat).insert(Energy(max));
         }
+    }
+
+    /// Базовый расход бодрости за тик (§12.70): из него вычитается ступень
+    /// «Выносливости». Ноль возвращает расход в единицу.
+    fn set_drain(&mut self, drain: i32) {
+        self.world.resource_mut::<NeedRules>().drain = drain;
     }
 
     /// Порог, ниже которого кот бросает начатое и уходит спать; ноль выключает.
@@ -1236,15 +1250,51 @@ impl Sim {
         loot: &[(usize, i32)],
     ) -> usize {
         let mut rules = self.world.resource_mut::<MissionRules>();
+        // Вилки состава и работы на месте у синтетической вылазки нет: `squad`
+        // задаёт и минимум, и предел, а весь срок это одна дорога (§12.70). То
+        // есть тесты чужих механик видят ровно то поведение, что было до §12.70,
+        // — как `TileRules` в схеме `sim_from` не знает ни цены, ни ёмкости.
+        // Вилку заводит `set_squad_range`, работу на месте — `set_mission_work`.
         rules.0.push(MissionRule {
             squad,
-            ticks,
+            squad_max: squad,
+            travel: ticks,
             danger,
             toll,
             loot: loot.to_vec(),
             ..MissionRule::default()
         });
         rules.0.len() - 1
+    }
+
+    /// Ступени врождённого параметра (§12.70): на каких значениях он начинает
+    /// работать прямо сейчас, а не потолком.
+    fn set_stat_steps(&mut self, stat: &str, steps: &[i32]) {
+        let mut rules = self.world.resource_mut::<StatRules>();
+        match rules.0.iter_mut().find(|r| r.id == stat) {
+            Some(rule) => rule.steps = steps.to_vec(),
+            None => rules.0.push(StatRule {
+                id: stat.to_string(),
+                steps: steps.to_vec(),
+            }),
+        }
+    }
+
+    /// Вилка состава: сколько нужно и сколько бригада уведёт (§12.70).
+    fn set_squad_range(&mut self, mission: usize, min: usize, max: usize) {
+        let mut rules = self.world.resource_mut::<MissionRules>();
+        if let Some(rule) = rules.0.get_mut(mission) {
+            rule.squad = min;
+            rule.squad_max = max;
+        }
+    }
+
+    /// Работа на месте в очках: её отряд вырабатывает сообща (§12.70).
+    fn set_mission_work(&mut self, mission: usize, work: i32) {
+        let mut rules = self.world.resource_mut::<MissionRules>();
+        if let Some(rule) = rules.0.get_mut(mission) {
+            rule.work = work;
+        }
     }
 
     /// Вылазка за своим (§12.40): за добычей не ходит, зато возвращает пленных.
@@ -1562,6 +1612,13 @@ impl Sim {
     }
 
     /// Тиков до возвращения отряда; `None` — миссии нет.
+    /// Замороженный на уходе срок вылазки (§12.70): дорога плюс работа,
+    /// поделённая на число ушедших лап. До ухода — ноль.
+    fn mission_span(&mut self) -> Option<i32> {
+        let mut q = self.world.query::<&Mission>();
+        q.iter(&self.world).next().map(|m| m.span)
+    }
+
     fn mission_left(&mut self) -> Option<i32> {
         let mut q = self.world.query::<&Mission>();
         q.iter(&self.world).next().map(|m| m.left)

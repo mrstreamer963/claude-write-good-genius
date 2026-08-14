@@ -30,8 +30,39 @@ use crate::components::*;
 use crate::map::BaseMap;
 use crate::path::Reach;
 
-/// Бодрости тратится за тик бодрствования.
+/// Бодрости тратится за тик бодрствования, если рулсет не сказал иного.
+///
+/// Единица — это шкала без вариативности: ниже неё не спуститься (дроби ломают
+/// детерминизм, §11), поэтому «Выносливость» умеет двигать расход только на
+/// укрупнённой шкале, где база — десятки. Синтетические схемы живут на единице,
+/// и выносливость там никого не различает (§12.70).
 const TIRE_PER_TICK: i32 = 1;
+
+/// Параметр, которым кот держится дольше прочих (§12.70). Имя, а не номер:
+/// порядок записей `stats:` — дело рулсета.
+pub(crate) const STAT_GRIT: &str = "stamina";
+
+/// Сколько бодрости кот тратит за тик бодрствования (§12.70).
+///
+/// Ступень «Выносливости» вычитается из базового расхода — не прибавляется к
+/// потолку. Разница смысловая: выносливый **дольше держится**, а не дольше
+/// отсыпается, и пороги при этом остаются абсолютными, а сутки — одной формулой
+/// на всех. Потолок от параметра потребовал бы делать `tired` и `critical`
+/// долями `max`, и у каждого кота были бы свои сутки.
+///
+/// Ниже единицы расход не опускается никогда: кот, который не устаёт вовсе,
+/// не уснёт, а бодрость — это плата за котовремя, а не необязательный налог.
+fn tire_rate(needs: &NeedRules, stats: &StatRules, cat: Option<&Stats>) -> i32 {
+    let base = if needs.drain > 0 {
+        needs.drain
+    } else {
+        TIRE_PER_TICK
+    };
+    let step = stats
+        .index_of(STAT_GRIT)
+        .map_or(0, |stat| stats.step(stat, cat));
+    (base - step).max(1)
+}
 
 /// Кот на нуле бодрости засыпает где стоит, отпустив задачу.
 ///
@@ -585,11 +616,16 @@ pub(crate) fn doze(
 /// чьего сна не выйти, был бы наказанием без выхода, а §12.20 такие отверг.
 pub(crate) fn tire(
     food: Res<FoodRules>,
-    mut cats: Query<(&mut Energy, Option<&Fed>), (With<UnitId>, Without<Rest>, Without<Away>)>,
+    needs: Res<NeedRules>,
+    stats: Res<StatRules>,
+    mut cats: Query<
+        (&mut Energy, Option<&Fed>, Option<&Stats>),
+        (With<UnitId>, Without<Rest>, Without<Away>),
+    >,
 ) {
-    for (mut energy, fed) in &mut cats {
+    for (mut energy, fed, cat) in &mut cats {
         let starving = fed.is_some_and(|f| f.0 <= 0);
-        let rate = TIRE_PER_TICK * if starving { food.starve.max(1) } else { 1 };
+        let rate = tire_rate(&needs, &stats, cat) * if starving { food.starve.max(1) } else { 1 };
         energy.0 = (energy.0 - rate).max(0);
     }
 }
