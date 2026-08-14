@@ -1165,6 +1165,15 @@ impl Sim {
             items: self.items.clone(),
             skills: self.skills.clone(),
             stats: self.stats.clone(),
+            // Какой параметр ведёт отряд — знание ядра, и наружу оно уходит
+            // номером (§12.71): панель называет реакцию по имени и показывает
+            // её значение, а искать `reflex` строкой в JS — второй экземпляр
+            // правила.
+            guide_stat: self
+                .world
+                .resource::<StatRules>()
+                .index_of(crate::missions::STAT_GUIDE)
+                .map_or(-1, |i| i as i32),
             perks: self.perks.clone(),
             factions: self.factions.clone(),
             missions: self.missions.clone(),
