@@ -2739,7 +2739,7 @@ function mkSection(el, title) {
   const head = document.createElement("button");
   head.className = "sec-head";
   head.innerHTML = `<span>${esc(title)}</span><span class="chev">›</span>`;
-  head.addEventListener("click", () => openOnly(title, true));
+  head.addEventListener("click", () => openOnly(title));
   const body = document.createElement("div");
   body.className = "sec-body";
   sec.appendChild(head);
@@ -2753,11 +2753,12 @@ function mkSection(el, title) {
 // паузой палитры — игрок, пустивший время сам, закрывает её, и открывать вместо
 // неё чужой раздел никто не просил.
 //
-// `byUser` отделяет клик по заголовку от раскрытия за игрока (осмотр комнаты,
-// перестройка тулбара): время останавливает решение «хочу строить», а не
-// перерисовка. Отпускается пауза в обоих случаях — раздел закрыт, значит и
-// держать её больше некому.
-function openOnly(title, byUser = false) {
+// Правило без исключений: палитра раскрыта ⇔ время стоит. Кто её раскрыл —
+// игрок, осмотр комнаты или перестройка тулбара — неважно; «открыто, но идёт»
+// это ровно то состояние, которое пауза и должна была убрать, а игрок читает
+// его как поломку, а не как оговорку. Отсюда и старт партии: палитра открыта с
+// первого кадра, значит первый кадр — пауза.
+function openOnly(title) {
   openSection = title;
   for (const s of sections) {
     const on = s.title === title;
@@ -2765,7 +2766,7 @@ function openOnly(title, byUser = false) {
     s.body.hidden = !on;
   }
   if (title === PAUSING_SECTION) {
-    if (byUser && speed > 0) {
+    if (speed > 0) {
       autoPaused = true;
       setSpeed(0);
     }
