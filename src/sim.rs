@@ -228,6 +228,11 @@ impl Sim {
             unlocked: self.world.resource::<Fame>().0 >= rule.requires,
             welcome: self.world.resource::<Standing>().covers(&rule.needs),
             possible: !rule.rescue || self.has_captive(),
+            // Границы срока — свойство заказа, а не отряда (§12.71): тем же
+            // `duration`, каким срок замёрзнет на уходе. Равные границы и
+            // означают «весь срок — дорога, состав его не двигает».
+            span_slow: duration(&rule, rule.squad),
+            span_fast: duration(&rule, rule.squad_max),
         }
     }
 
