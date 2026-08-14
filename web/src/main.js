@@ -269,6 +269,9 @@ let nodes = [];
 // «выбранный узел» из §12.66: тулбарная строка по-прежнему адресуется собой, а
 // здесь помнится ровно то, что игрок сейчас читает в модальном окне.
 let raidWinAt = null;
+// Разметка окна с прошлого кадра: заменять её, когда она не изменилась, значит
+// каждым кадром отматывать прокрутку в ноль (§12.71).
+let raidWinHtml = "";
 // Последний снапшот целиком: штаб перерисовывается каждым кадром и читает из
 // него состав базы (`entities`), как это делает панель клетки.
 let lastSnap = null;
@@ -3193,6 +3196,7 @@ function renderRaidsSection() {
         );
       } else {
         for (let i = 0; i < defs.length; i++) {
+          if (hiddenRaid(i)) continue;
           const g = raidGate(i, node);
           const on = node.auto === i;
           // Заказ и «ходить сюда самому» — про одно и то же решение, поэтому
@@ -3223,6 +3227,22 @@ function renderRaidsSection() {
       return `<div class="raid-node">${rows.join("")}</div>`;
     })
     .join("");
+}
+
+// Единственная вылазка, которую прячут, а не гасят, — за своим (§12.71).
+//
+// Общее правило обратное: закрытые вылазки видны, потому что лестница
+// ответственности — это то, к чему игрок идёт, и невидимая цель не тянет
+// (§4.4). Но «За своим» не ступень лестницы, а **ответ на событие**: пока плена
+// не случилось, звать она никуда не зовёт и стоит в списке ровно тем шумом,
+// из-за которого список перестают читать. Появится пленный — появится и строка,
+// и это само по себе новость.
+//
+// Спрашиваем ядро (`RaidSnap.possible`), а не считаем пленных в JS: это те же
+// ворота, которыми `launch` примет или отклонит заявку (§12.40).
+function hiddenRaid(i) {
+  const def = (meta.missions ?? [])[i];
+  return !!def?.rescue && !(raids[i]?.possible ?? true);
 }
 
 // Пойдёт ли этот отряд по этому заказу — и если нет, то почему словом. Ворота
@@ -3367,6 +3387,7 @@ function openRaidWindow(x, y) {
 
 function closeRaidWindow() {
   raidWinAt = null;
+  raidWinHtml = "";
   raidWinEl.hidden = true;
   raidWinEl.innerHTML = "";
 }
@@ -3435,10 +3456,10 @@ function renderRaidWindow() {
             ? `Отряд в поле: «${esc(missionLabel(raid.def))}» · вернутся через ${raid.left}`
             : `Отряд собирается: «${esc(missionLabel(raid.def))}»`
         }<div class="cat-sub">Пока он не вернётся, новую вылазку отсюда не отправить. Отозвать — в панели вылазки справа.</div></div>`
-      : defs.map((_, i) => raidCard(i, node)).join("")) +
+      : defs.map((_, i) => (hiddenRaid(i) ? "" : raidCard(i, node))).join("")) +
     "</div>";
 
-  raidWinEl.innerHTML =
+  const html =
     '<div class="raidwin-box">' +
     '<div class="raidwin-top">' +
     `<div class="raidwin-title">Отряд ${n + 1}<span class="cell-at">рация ${node.x}, ${node.y}</span></div>` +
@@ -3447,7 +3468,26 @@ function renderRaidWindow() {
     tabs +
     `<div class="raidwin-body">${left}${right}</div>` +
     "</div>";
+
+  // Окно перерисовывается каждым снапшотом, а `innerHTML` заменяет узлы вместе
+  // с их `scrollTop` — то есть шестьдесят раз в секунду отматывает прокрутку в
+  // ноль. Полоса при этом видна и таскается мышью, а колесо «не работает»:
+  // прокрутка происходит и тут же откатывается. Ровно этим списки в панелях
+  // отличаются от списка в окне — те короткие и не прокручиваются вовсе.
+  //
+  // Лечим двумя мерами, и нужны обе. Первая: не трогаем разметку, пока она не
+  // изменилась, — большую часть кадров она совпадает дословно. Вторая: когда
+  // изменилась (у идущей вылазки тикает таймер), возвращаем прокрутку по месту.
+  if (html === raidWinHtml) return;
+  const tops = [...raidWinEl.querySelectorAll(".raidwin-col")].map(
+    (c) => c.scrollTop,
+  );
+  raidWinHtml = html;
+  raidWinEl.innerHTML = html;
   raidWinEl.hidden = false;
+  raidWinEl
+    .querySelectorAll(".raidwin-col")
+    .forEach((c, i) => (c.scrollTop = tops[i] ?? 0));
 }
 
 // Одна карточка заказа: что получим, чем рискуем и почему нельзя. Всё, что
