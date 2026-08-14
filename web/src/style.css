@@ -610,6 +610,13 @@ main#stage.mode-cursor #mode-banner {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* «· Отряд 2» у чужого кота: приписка к имени, а не часть имени. Серым — потому
+   что группа уже сказала главное («в других отрядах»), а номер отвечает на
+   уточняющее «в каком именно». */
+.crew-at {
+  color: var(--muted);
+  font-style: normal;
+}
 .crew-row .crew-pick.on {
   border-color: var(--accent);
   box-shadow: inset 0 0 0 1px var(--accent);
