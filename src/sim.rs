@@ -1480,6 +1480,40 @@ impl Sim {
             .collect()
     }
 
+    /// Вклад каждого готового кота в силу отряда, в порядке `ready_roster_of`
+    /// (§12.71): сам кот стоит единицу, уровень «Вылазки» — сверху, надетое —
+    /// ещё сверху. Ровно то же выражение, что в `run_missions` и в прогнозе
+    /// идущей вылазки, — второй экземпляр в JS однажды пообещал бы игроку не ту
+    /// силу, с которой отряд уйдёт (инвариант 14).
+    fn node_forces(&mut self, x: i32, y: i32) -> Vec<i32> {
+        let roster = self.roster_of(x, y);
+        let crew = self.ready_crew(&roster);
+        let raid = self.world.resource::<SkillRules>().index_of(SKILL_RAID);
+        let skill_rules = self.world.resource::<SkillRules>();
+        let items = self.world.resource::<ItemRules>();
+        crew.iter()
+            .map(|&(e, _)| {
+                1 + raid.map_or(0, |s| level_of(skill_rules, self.world.get::<Skills>(e), s))
+                    + items.force_of_gear(self.world.get::<Gear>(e))
+            })
+            .collect()
+    }
+
+    /// Прогноз исхода по каждому заказу для отряда этого узла (§12.71): доля
+    /// добычи и провал, теми же `outcome`/`raid_danger`, какими они посчитаются
+    /// на возвращении. Связь в силу здесь не входит намеренно: она копится за
+    /// время вылазки и на уходе равна нулю (§12.60).
+    fn node_outcomes(&mut self, x: i32, y: i32) -> (Vec<i32>, Vec<bool>) {
+        let force: i32 = self.node_forces(x, y).iter().sum();
+        let dangers = self.node_dangers(x, y);
+        let out: Vec<crate::missions::Outcome> =
+            dangers.iter().map(|&d| outcome(d, force)).collect();
+        (
+            out.iter().map(|o| o.share).collect(),
+            out.iter().map(|o| o.failed).collect(),
+        )
+    }
+
     /// Ступень проводника среди готовых уйти — лучшая «Реакция» (§12.70).
     fn node_guide_step(&mut self, x: i32, y: i32) -> i32 {
         let roster = self.roster_of(x, y);
@@ -2956,25 +2990,33 @@ impl Sim {
             let cells = self.relay_cells();
             cells
                 .into_iter()
-                .map(|(x, y)| NodeSnap {
-                    x,
-                    y,
-                    crew: self.roster_of(x, y),
-                    ready: self.ready_roster_of(x, y),
-                    spans: self.node_spans(x, y),
-                    dangers: self.node_dangers(x, y),
-                    guide: self.node_guide(x, y),
-                    busy: !self.node_is_free(x, y),
-                    auto: self
-                        .world
-                        .resource::<AutoRaids>()
-                        .of(x, y)
-                        .map_or(-1, |def| def as i32),
-                    comms: {
-                        let map = self.world.resource::<BaseMap>();
-                        let tiles = self.world.resource::<TileRules>();
-                        tiles.comms_of(map.tile_at(x, y))
-                    },
+                .map(|(x, y)| {
+                    let forces = self.node_forces(x, y);
+                    let (shares, fails) = self.node_outcomes(x, y);
+                    NodeSnap {
+                        x,
+                        y,
+                        crew: self.roster_of(x, y),
+                        ready: self.ready_roster_of(x, y),
+                        spans: self.node_spans(x, y),
+                        dangers: self.node_dangers(x, y),
+                        force: forces.iter().sum(),
+                        forces,
+                        shares,
+                        fails,
+                        guide: self.node_guide(x, y),
+                        busy: !self.node_is_free(x, y),
+                        auto: self
+                            .world
+                            .resource::<AutoRaids>()
+                            .of(x, y)
+                            .map_or(-1, |def| def as i32),
+                        comms: {
+                            let map = self.world.resource::<BaseMap>();
+                            let tiles = self.world.resource::<TileRules>();
+                            tiles.comms_of(map.tile_at(x, y))
+                        },
+                    }
                 })
                 .collect()
         };

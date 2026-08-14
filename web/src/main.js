@@ -42,6 +42,7 @@ const noteEl = document.getElementById("note");
 const goalsEl = document.getElementById("goals");
 const goalsToggleEl = document.getElementById("goals-toggle");
 const finaleEl = document.getElementById("finale");
+const raidWinEl = document.getElementById("raidwin");
 const toastsEl = document.getElementById("toasts");
 
 // Кнопки внутри панелей вешаются **делегированием, один раз на контейнер**, и
@@ -125,6 +126,59 @@ onPanelClick(cellEl, ".crew-duty", (b) =>
     y: Number(b.dataset.y),
   }),
 );
+
+onPanelClick(cellEl, ".raid-open", (b) =>
+  openRaidWindow(Number(b.dataset.x), Number(b.dataset.y)),
+);
+
+// Штаб вылазок (§12.71). Кнопки те же и делегируются так же: окно
+// перерисовывается каждым снапшотом целиком — иначе прогноз не менялся бы от
+// щелчка по коту, ради чего окно и заведено.
+onPanelClick(raidWinEl, ".crew-pick", (b) =>
+  sendAction({
+    type: b.dataset.in ? "dismiss" : "enlist",
+    id: b.dataset.id,
+    x: Number(b.dataset.x),
+    y: Number(b.dataset.y),
+  }),
+);
+onPanelClick(raidWinEl, ".crew-duty", (b) =>
+  sendAction({
+    type: b.dataset.in ? "unpostRelay" : "postRelay",
+    id: b.dataset.id,
+    x: Number(b.dataset.x),
+    y: Number(b.dataset.y),
+  }),
+);
+onPanelClick(raidWinEl, ".raid-go", (b) =>
+  sendAction({
+    type: "launch",
+    mission: Number(b.dataset.def),
+    x: Number(b.dataset.x),
+    y: Number(b.dataset.y),
+  }),
+);
+onPanelClick(raidWinEl, ".raid-auto", (b) =>
+  sendAction({
+    type: "setAutoRaid",
+    mission: Number(b.dataset.def),
+    x: Number(b.dataset.x),
+    y: Number(b.dataset.y),
+  }),
+);
+// Переключение узла внутри окна — осмотр, а не команда: `sendAction` тут не при
+// чём. Отряды листаются на месте, чтобы «перекинуть кота с узла на узел» не
+// требовало закрывать окно и искать вторую рацию на карте.
+onPanelClick(raidWinEl, ".raidwin-tab", (b) => {
+  raidWinAt = { x: Number(b.dataset.x), y: Number(b.dataset.y) };
+  renderRaidWindow();
+});
+onPanelClick(raidWinEl, ".raidwin-close", () => closeRaidWindow());
+// Клик по затемнению — тот же выход, что и Escape: окно модальное, и промах
+// мимо него это почти всегда «хватит».
+raidWinEl.addEventListener("mousedown", (e) => {
+  if (e.target === raidWinEl) closeRaidWindow();
+});
 
 const app = new Application();
 await app.init({ background: COLORS.bg, antialias: true, resizeTo: stageEl });
@@ -211,6 +265,13 @@ let relayFree = false;
 // каждый узел, и своя кнопка заказа стоит внутри строки. Узел, с которого уходят,
 // — это та строка, в которой нажали, а не запомненный где-то в стороне клик.
 let nodes = [];
+// Какой узел открыт в штабе вылазок, или `null` — штаб закрыт (§12.71). Это не
+// «выбранный узел» из §12.66: тулбарная строка по-прежнему адресуется собой, а
+// здесь помнится ровно то, что игрок сейчас читает в модальном окне.
+let raidWinAt = null;
+// Последний снапшот целиком: штаб перерисовывается каждым кадром и читает из
+// него состав базы (`entities`), как это делает панель клетки.
+let lastSnap = null;
 // Идущие вылазки целиком: строке отряда надо сказать, чем занят **его** узел, а
 // не только «занят». Тот же список читает и панель миссий.
 let missionsOut = [];
@@ -551,6 +612,7 @@ function days(n) {
 }
 
 function renderSnapshot(snap) {
+  lastSnap = snap;
   // Сырой тик остаётся под наведением: он нужен для отладки и для сверки с
   // тестами, которые меряют время тиками и ничем другим мерить не могут.
   const day = dayOf(snap.tick);
@@ -689,6 +751,10 @@ function renderSnapshot(snap) {
   // После `renderMissionPanel`: он считает `running` — заказы, по которым отряд
   // уже вышел, — а строка отряда обязана гасить именно свою кнопку (§12.59).
   renderRaidsSection();
+  // Штаб — после `renderMissionPanel` по той же причине: он читает `running`.
+  // Перерисовывается он каждым кадром намеренно (§12.71): цена решения меняется
+  // от щелчка по коту, и увидеть это игрок должен сразу, а не после закрытия.
+  renderRaidWindow();
   renderResearchPanel(snap.research);
   renderCraftPanel(snap.crafting);
   renderDealPanel(snap.deals);
@@ -1218,7 +1284,16 @@ function renderCellPanel(snap) {
   // осмотром. Второго пути к тому же действию нет намеренно — два источника
   // правды в UI, и игрок не знает, какой сработал (тот же довод, по которому
   // §12.61 отверг «оба способа разом» в ядре).
-  if (def?.relay) parts.push(...crewList(snap, x, y));
+  if (def?.relay) {
+    // Штаб — второй вход к тому же составу, но не второй источник правды: он
+    // показывает этот же список, только рядом с прогнозом (§12.71). Кто хочет
+    // просто вычеркнуть кота, делает это здесь и окна не открывает.
+    parts.push(
+      `<button class="tool raid-open" data-key="open@${x},${y}"` +
+        ` data-x="${x}" data-y="${y}">Штаб вылазок — состав и прогноз</button>`,
+    );
+    parts.push(...crewList(snap, x, y));
+  }
 
   cellEl.innerHTML = parts.join("");
   cellEl.hidden = false;
@@ -2326,6 +2401,12 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "Shift") setShift(true);
   if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.code === "Escape" || e.key === "Escape") {
+    // Штаб — модальное окно и закрывается первым: он поверх всего, и пока он
+    // открыт, «отменить» может значить только «закрыть его» (§12.71).
+    if (raidWinAt) {
+      closeRaidWindow();
+      return;
+    }
     if (dragFrom) {
       endDrag(false);
       return;
@@ -2528,13 +2609,17 @@ function buildToolbar() {
         y: Number(b.dataset.y),
       }),
     );
-    // Состав набирается в панели самой рации (§12.61) — строка отряда только
-    // приводит туда. Это осмотр, а не команда: `sendAction` тут не при чём, он
-    // бы ещё и гасил выделение клетки, которую мы как раз выбираем.
-    onPanelClick(raidsEl, ".raid-crew", (b) => {
-      selectedCell = { x: Number(b.dataset.x), y: Number(b.dataset.y) };
-      updateSelectionOverlay();
-    });
+    // Строка отряда открывает штаб (§12.71): состав и прогноз стоят там рядом,
+    // и менять первый, глядя на второй, можно не закрывая окна. Это осмотр, а
+    // не команда: `sendAction` тут не при чём — он бы ещё и гасил выделение.
+    onPanelClick(raidsEl, ".raid-crew", (b) =>
+      openRaidWindow(Number(b.dataset.x), Number(b.dataset.y)),
+    );
+    // Закрытый заказ ведёт туда же: причину отказа там видно словом, а не
+    // нативной подсказкой, которой на `disabled`-кнопке не бывает вовсе.
+    onPanelClick(raidsEl, ".raid-why", (b) =>
+      openRaidWindow(Number(b.dataset.x), Number(b.dataset.y)),
+    );
     renderRaidsSection();
   }
 
@@ -3115,10 +3200,14 @@ function renderRaidsSection() {
           // каждый раз, когда отряд снова готов (§12.67). Тумблер доступен и у
           // закрытой вылазки: правило ждёт ворот, как порог ждёт материала, и
           // поставить его заранее — это план, а не ошибка.
+          // Закрытый заказ — **не** `disabled`: по disabled-кнопке браузер не
+          // шлёт событий мыши, и нативная подсказка с причиной не показывается
+          // никогда — то есть ровно там, где объяснение нужнее всего, его нет
+          // (§12.71). Вместо этого кнопка живая и ведёт в штаб, где причина
+          // написана словом.
           rows.push(
             '<div class="raid-line">' +
-              `<button class="tool toggle raid-go${g.ready ? " on" : ""}"` +
-              `${g.ready ? "" : " disabled"}` +
+              `<button class="tool toggle ${g.ready ? "raid-go on" : "raid-why off"}"` +
               ` data-key="${i}@${at}" data-def="${i}" data-x="${node.x}" data-y="${node.y}"` +
               ` title="${esc(g.title)}">` +
               `<span class="sw sw-gate"></span><span>${esc(defs[i].label || defs[i].id)}</span>` +
@@ -3198,7 +3287,276 @@ function raidGate(i, node) {
               : home.length
                 ? `${hint} · дома остаются: ${home.join(", ")}`
                 : hint;
-  return { ready, title };
+  // Причина отказа отдельной строкой от подсказки: тулбар склеивает их в один
+  // `title`, а штаб (§12.71) печатает причину словом под заказом — там она и
+  // должна читаться, не наводя мышь.
+  const reason = taken
+    ? "эту вылазку уже ведёт другой отряд"
+    : !known
+      ? `нужна известность ${def.requires ?? 0}, у базы ${fame}`
+      : distrust
+        ? distrust
+        : nobody
+          ? "все дома — спасать некого"
+          : paws < need
+            ? `готовы идти ${paws}, а нужно ${need}`
+            : paws > most
+              ? `в отряде ${paws}, а больше ${most} этот заказ не уводит`
+              : null;
+  return {
+    ready,
+    title,
+    reason,
+    paws,
+    need,
+    most,
+    span,
+    danger,
+    base: def.danger ?? 0,
+    guide: node.guide ?? "",
+    home,
+    share: node.shares?.[i] ?? 0,
+    failed: !!node.fails?.[i],
+  };
+}
+
+// --- штаб вылазок (§12.71) -------------------------------------------------
+//
+// Одно окно на все вылазки: слева состав отряда, справа заказы. Раньше это были
+// два разных места экрана — состав правился в панели рации, а исход показывался
+// в тулбаре шириной 190px, — и связи между ними игрок не видел вовсе: добыча
+// уезжала за правый край, а причина, по которой заказ закрыт, жила в нативной
+// подсказке на `disabled`-кнопке, то есть не показывалась никогда (браузер не
+// шлёт по ним события мыши).
+//
+// Прогноз здесь **весь из ядра** (`node.spans`, `dangers`, `force`, `shares`,
+// `fails`): щелчок по коту уходит командой `enlist`/`dismiss`, ядро пересчитывает
+// узел, и следующий же снапшот приносит новые числа. Второго экземпляра формулы
+// в JS нет и быть не может (инвариант 14) — именно поэтому «добавил кота, и вот
+// что изменилось» получается само.
+// Срок словом. Тик остаётся единственными часами мира (§12.28, §12.46), но
+// «60 тиков» игрок ни с чем не соотносит: рядом переводим в те же сутки, что
+// показывают часы в шапке. Календарь — подача, а не механика, и живёт он здесь,
+// на стороне вида.
+function spanText(span) {
+  const len = meta?.day ?? 0;
+  if (len <= 0) return `${span} тиков`;
+  const days = span / len;
+  const when =
+    days >= 1
+      ? `${days.toFixed(1)} дн`
+      : `${Math.max(1, Math.round(days * 24))} ч`;
+  return `${span} тиков (≈${when})`;
+}
+
+// Доля от полной шкалы кота. Максимум спрашиваем у самого кота, а не пишем
+// числом рядом с рулсетом: второй экземпляр баланса в JS однажды разойдётся с
+// YAML, и игрок увидит «−40 %» там, где отнимут половину.
+function scaleText(value, field) {
+  const max = Math.max(
+    0,
+    ...(lastSnap?.entities ?? []).map((e) => e[field] ?? 0),
+  );
+  return max > 0 ? `${Math.round((value / max) * 100)} %` : `${value}`;
+}
+
+function openRaidWindow(x, y) {
+  raidWinAt = { x, y };
+  renderRaidWindow();
+}
+
+function closeRaidWindow() {
+  raidWinAt = null;
+  raidWinEl.hidden = true;
+  raidWinEl.innerHTML = "";
+}
+
+function renderRaidWindow() {
+  if (!raidWinAt || !meta) return;
+  // Рацию могли снести, пока окно открыто: узел пропал — закрываемся, а не
+  // показываем отряд, которого больше нет.
+  const node = nodeAt(raidWinAt.x, raidWinAt.y);
+  if (!node || !lastSnap) {
+    closeRaidWindow();
+    return;
+  }
+  const n = nodes.indexOf(node);
+  const defs = meta.missions ?? [];
+  const raid = missionsOut.find(
+    (m) => m.node_x === node.x && m.node_y === node.y,
+  );
+
+  // Вкладки узлов: перекинуть кота с отряда на отряд — это одно решение, и
+  // закрывать ради него окно незачем. При единственном узле вкладок нет.
+  const tabs =
+    nodes.length > 1
+      ? '<div class="raidwin-tabs">' +
+        nodes
+          .map(
+            (o, i) =>
+              `<button class="tool raidwin-tab${o === node ? " on" : ""}"` +
+              ` data-key="tab@${o.x},${o.y}" data-x="${o.x}" data-y="${o.y}">` +
+              `Отряд ${i + 1}${o.busy ? " · в поле" : ""}</button>`,
+          )
+          .join("") +
+        "</div>"
+      : "";
+
+  // Шапка отряда: сила, состав и проводник — те самые числа, которые крутит
+  // список слева. Сила без заказа ничего не значит, поэтому рядом с ней сразу
+  // стоит, из чего она сложилась.
+  const paws = node.ready?.length ?? 0;
+  const parts = node.ready.map(
+    (id, i) => `${esc(id)}&nbsp;+${node.forces?.[i] ?? 0}`,
+  );
+  const summary =
+    '<div class="raidwin-sum">' +
+    `<div class="raidwin-force"><b>${node.force ?? 0}</b><span>сила отряда</span></div>` +
+    '<div class="raidwin-sumtext">' +
+    `<div>идут ${paws} из ${node.crew.length}${
+      node.guide ? ` · ведёт ${esc(node.guide)}` : " · проводника нет"
+    }</div>` +
+    `<div class="cat-sub">${parts.join(" · ") || "в отряде никого"}</div>` +
+    "</div></div>";
+
+  const left =
+    '<div class="raidwin-col raidwin-crew">' +
+    '<div class="raidwin-h">Кто идёт</div>' +
+    summary +
+    crewList(lastSnap, node.x, node.y).join("") +
+    "</div>";
+
+  const right =
+    '<div class="raidwin-col raidwin-jobs">' +
+    '<div class="raidwin-h">Заказы</div>' +
+    (raid
+      ? `<div class="raidwin-busy">${
+          raid.away
+            ? `Отряд в поле: «${esc(missionLabel(raid.def))}» · вернутся через ${raid.left}`
+            : `Отряд собирается: «${esc(missionLabel(raid.def))}»`
+        }<div class="cat-sub">Пока он не вернётся, новую вылазку отсюда не отправить. Отозвать — в панели вылазки справа.</div></div>`
+      : defs.map((_, i) => raidCard(i, node)).join("")) +
+    "</div>";
+
+  raidWinEl.innerHTML =
+    '<div class="raidwin-box">' +
+    '<div class="raidwin-top">' +
+    `<div class="raidwin-title">Отряд ${n + 1}<span class="cell-at">рация ${node.x}, ${node.y}</span></div>` +
+    '<button class="tool raidwin-close" data-key="close">Закрыть</button>' +
+    "</div>" +
+    tabs +
+    `<div class="raidwin-body">${left}${right}</div>` +
+    "</div>";
+  raidWinEl.hidden = false;
+}
+
+// Одна карточка заказа: что получим, чем рискуем и почему нельзя. Всё, что
+// зависит от состава, идёт из `raidGate`, то есть из ядра, — а всё, что зависит
+// только от заказа (добыча, раны, репутация), из палитры.
+function raidCard(i, node) {
+  const def = (meta.missions ?? [])[i] ?? {};
+  const g = raidGate(i, node);
+  const at = `${node.x}, ${node.y}`;
+  const on = node.auto === i;
+  const rows = [];
+
+  // Прогноз — первым и крупно: это ответ на «стоит ли». Провал называем словом,
+  // а не нулём: «добыча 0 %» и «отряд не вернётся с добычей, да ещё и ранят» —
+  // разные новости (§12.37).
+  const verdict = g.failed
+    ? '<span class="bad">провал</span>'
+    : g.share >= 100
+      ? '<span class="good">вся добыча</span>'
+      : `<span class="warn">добыча ${g.share} %</span>`;
+  rows.push(
+    `<div class="raidwin-verdict">${verdict}` +
+      `<i>сила ${node.force ?? 0} против сложности ${g.danger}</i></div>`,
+  );
+
+  // Проводник режет сложность делением (§12.70), и без «было» число выглядит
+  // взятым с потолка.
+  if (g.danger !== g.base) {
+    rows.push(
+      `<div class="cat-sub">сложность ${g.base} → ${g.danger}: ведёт ${esc(g.guide)}</div>`,
+    );
+  }
+
+  const facts = [];
+  if (g.span != null) facts.push(`срок ${spanText(g.span)}`);
+  facts.push(
+    g.need === g.most ? `нужно котов ${g.need}` : `котов ${g.need}—${g.most}`,
+  );
+  // Бодрость и здоровье укрупнены вдесятеро ради ступени «Выносливости»
+  // (§12.70), и сырые «−12000» не значат для игрока ничего. Долей от полной
+  // шкалы — значат: шкалы он видит полосками в карточке кота. Максимум берётся
+  // из самого кота, а не из второго экземпляра рулсета в JS.
+  if (def.toll) facts.push(`бодрости −${scaleText(def.toll, "energy_max")}`);
+  if (def.harm) {
+    facts.push(`раны при провале ${scaleText(def.harm, "health_max")}`);
+  }
+  if (def.fame) facts.push(`известность +${def.fame}`);
+  rows.push(`<div class="cat-sub">${facts.join(" · ")}</div>`);
+
+  // Добыча целиком, а не обрезанная краем колонки, — ровно то, чего не было
+  // видно в тулбаре. Рядом с ней доля: полную получают не всегда.
+  if (def.rescue) {
+    rows.push('<div class="cat-sub">возвращает пленного, а не добычу</div>');
+  } else {
+    const loot = costChips(def.loot);
+    if (loot) {
+      rows.push(
+        `<div class="raidwin-loot">добыча ${loot}` +
+          (g.share > 0 && g.share < 100 ? ` <i>× ${g.share} %</i>` : "") +
+          "</div>",
+      );
+    }
+  }
+
+  // Заказчик и пострадавший: репутация — единственная знаковая шкала, и цену
+  // выбора стороны игрок обязан видеть до нажатия (§12.43).
+  const fname = (id) => {
+    const f = (meta.factions ?? []).find((v) => v.id === id);
+    return esc(f?.label || id);
+  };
+  if (def.patron || def.against) {
+    const moves = [];
+    if (def.patron) moves.push(`${fname(def.patron)} +${def.standing ?? 0}`);
+    if (def.against) moves.push(`${fname(def.against)} −${def.standing ?? 0}`);
+    rows.push(`<div class="cat-sub">репутация: ${moves.join(" · ")}</div>`);
+  }
+
+  // Причина отказа — строкой, а не в нативной подсказке: на `disabled`-кнопке
+  // её не увидеть вовсе, и закрытый заказ читался как поломка.
+  if (g.reason) rows.push(`<div class="raidwin-why">${esc(g.reason)}</div>`);
+  else if (g.home.length) {
+    rows.push(
+      `<div class="cat-sub">дома остаются: ${g.home.map(esc).join(", ")}</div>`,
+    );
+  }
+
+  const go =
+    `<button class="tool raid-go${g.ready ? " on" : ""}"` +
+    `${g.ready ? "" : " disabled"}` +
+    ` data-key="go${i}@${at}" data-def="${i}" data-x="${node.x}" data-y="${node.y}">` +
+    (g.ready ? "Отправить" : "Нельзя") +
+    "</button>";
+  // Тумблер доступен и у закрытого заказа: правило ждёт ворот, как порог
+  // производства ждёт материала, и поставить его заранее — это план (§12.67).
+  const auto =
+    `<button class="tool raid-auto${on ? " on" : ""}"` +
+    ` data-key="auto${i}@${at}" data-def="${on ? -1 : i}"` +
+    ` data-x="${node.x}" data-y="${node.y}"` +
+    ` title="${on ? "Отряд ходит сюда сам — снять правило" : "Ходить сюда самому, как только отряд готов"}">` +
+    (on ? "↻ ходит сама" : "↻") +
+    "</button>";
+
+  return (
+    `<div class="raidwin-card${g.ready ? "" : " off"}">` +
+    `<div class="raidwin-name">${esc(def.label || def.id || "Вылазка")}</div>` +
+    rows.join("") +
+    `<div class="raidwin-act">${go}${auto}</div>` +
+    "</div>"
+  );
 }
 
 function mkTool(html, onClick) {

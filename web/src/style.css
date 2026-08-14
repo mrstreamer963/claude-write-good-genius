@@ -1056,3 +1056,203 @@ main#stage.mode-cursor #mode-banner {
   font-size: 11px;
   padding: 2px 8px;
 }
+
+/* Штаб вылазок (§12.71): состав и заказы рядом, в одном модальном окне.
+   Тулбар шириной 190px не мог показать ни добычу целиком, ни цену решения, а
+   состав правился в панели рации — то есть в другом месте экрана, чем прогноз,
+   который от него зависит. Здесь оба ответа стоят рядом, и щелчок по коту
+   виден числом сразу. Разметка та же, что у финала (`#finale`): затемнение
+   плюс коробка по центру — второго вида модального окна в игре нет. */
+#raidwin {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(14, 15, 19, 0.72);
+  backdrop-filter: blur(3px);
+  z-index: 11;
+}
+#raidwin[hidden] {
+  display: none;
+}
+.raidwin-box {
+  display: flex;
+  flex-direction: column;
+  width: min(900px, calc(100vw - 60px));
+  max-height: calc(100vh - 80px);
+  padding: 16px 18px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+}
+.raidwin-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.raidwin-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  color: var(--accent);
+  font-size: 17px;
+  font-weight: 600;
+}
+.raidwin-close {
+  flex: 0 0 auto;
+}
+.raidwin-tabs {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+.raidwin-tabs .raidwin-tab {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.raidwin-tabs .raidwin-tab.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Две колонки, и левая уже: список котов — это имена, а карточка заказа —
+   пять строк цифр. Скроллятся они порознь: длинный ростер не должен угонять
+   заказы за нижний край. */
+.raidwin-body {
+  display: flex;
+  gap: 16px;
+  margin-top: 12px;
+  min-height: 0;
+  overflow: hidden;
+}
+.raidwin-col {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+.raidwin-crew {
+  flex: 0 0 264px;
+  border-right: 1px solid var(--line);
+  padding-right: 14px;
+}
+.raidwin-jobs {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.raidwin-h {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+/* Сила отряда — крупным числом: это то, что меняется от щелчка по коту, и
+   заметить перемену игрок должен не вчитываясь. */
+.raidwin-sum {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.raidwin-force {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.1;
+}
+.raidwin-force b {
+  color: var(--accent);
+  font-size: 24px;
+  font-variant-numeric: tabular-nums;
+}
+.raidwin-force span {
+  color: var(--muted);
+  font-size: 10px;
+}
+.raidwin-sumtext {
+  min-width: 0;
+  font-size: 12px;
+}
+
+/* Карточка заказа. Закрытая приглушена, но читается: лестница ответственности
+   — это то, к чему игрок идёт, и невидимая цель не тянет (§4.4). */
+.raidwin-card {
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.raidwin-card.off {
+  opacity: 0.72;
+}
+.raidwin-name {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.raidwin-verdict {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+}
+.raidwin-verdict i {
+  color: var(--muted);
+  font-style: normal;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.raidwin-verdict .good {
+  color: #86c06a;
+}
+.raidwin-verdict .warn {
+  color: var(--accent);
+}
+.raidwin-verdict .bad {
+  color: var(--bad);
+}
+.raidwin-loot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  margin-top: 2px;
+}
+.raidwin-loot i {
+  color: var(--muted);
+  font-style: normal;
+  font-size: 11px;
+}
+/* Причина отказа — строкой в карточке, а не нативной подсказкой: по
+   `disabled`-кнопке браузер событий мыши не шлёт, и `title` на ней не
+   показывается никогда. Ровно там, где объяснение нужнее всего, его не было. */
+.raidwin-why {
+  margin-top: 4px;
+  color: var(--bad);
+  font-size: 11px;
+}
+.raidwin-act {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.raidwin-act .raid-go {
+  flex: 1 1 auto;
+  justify-content: center;
+}
+.raidwin-busy {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+/* Заказ, закрытый воротами, в тулбаре остаётся живой кнопкой — она ведёт в
+   штаб, где причина написана словом (§12.71). Гасим её видом, а не
+   `disabled`: тот отнимает и события мыши, и подсказку вместе с ними. */
+.tool.off {
+  opacity: 0.45;
+}
