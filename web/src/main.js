@@ -4031,21 +4031,47 @@ function activate(btn) {
   if (btn) btn.classList.add("active");
 }
 
+// Разметка ставит время на паузу сама: рамку тянут по живой карте, а на ×10
+// за время мазка коты успевают перестроиться под курсором. Своей памяти темпа
+// тут нет — возвращаем `lastSpeed`, то есть ровно то, куда возвращает пробел
+// и финальный модал; вторая такая память однажды разошлась бы с ними.
+//
+// Пауза, поставленная игроком, режимом не отменяется (`setSpeed(0)` не трогает
+// `lastSpeed`), а снятая игроком вручную прямо в режиме гасит флаг: раз он
+// пустил время сам, выход из режима его останавливать не должен.
+let autoPaused = false;
+
+function pauseForMode() {
+  if (speed > 0) {
+    autoPaused = true;
+    setSpeed(0);
+  }
+}
+
+function resumeAfterMode() {
+  if (!autoPaused) return;
+  autoPaused = false;
+  setSpeed(lastSpeed);
+}
+
 function selectCursor(btn) {
   mode = "cursor";
   activate(btn);
   applyModeChrome();
+  resumeAfterMode();
 }
 function selectBuild(i, btn) {
   mode = "build";
   buildTile = i;
   activate(btn);
   applyModeChrome();
+  pauseForMode();
 }
 function selectStore(btn) {
   mode = "store";
   activate(btn);
   applyModeChrome();
+  pauseForMode();
 }
 
 function showError(message) {
@@ -4081,7 +4107,12 @@ function setSpeed(s) {
   // Мусор до воркера не доходит: скорость приходит из разметки и с клавиш, и
   // одна опечатка в `data-speed` иначе тихо замораживает симуляцию.
   if (!Number.isFinite(s) || s < 0) return;
-  if (s > 0) lastSpeed = s;
+  if (s > 0) {
+    lastSpeed = s;
+    // Время пустил кто-то ещё (пробел, кнопка темпа) — значит наша пауза уже
+    // не «наша», и выходу из режима останавливать нечего.
+    autoPaused = false;
+  }
   speed = s;
   worker.postMessage({ type: "setSpeed", speed: s });
   for (const b of document.querySelectorAll(".speed")) {
