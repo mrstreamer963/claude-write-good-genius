@@ -2716,13 +2716,30 @@ let openSection = "Постройка";
 // месте.
 const TOOL_SECTIONS = new Set(["Постройка", "Лом"]);
 
+// Раздел, который останавливает время: палитру раскрывают, чтобы подумать над
+// планом базы, а на ×10 к концу раздумья карта уже другая. Пауза принадлежит
+// разделу целиком — открыт он, стоит и время, — поэтому закрыть его и пустить
+// время это одно действие, с какой бы стороны игрок за него ни взялся:
+// переключился на другой раздел — время пошло, пустил время сам — палитра
+// свернулась.
+//
+// Своей памяти темпа тут нет: возвращаем `lastSpeed`, то есть ровно туда, куда
+// возвращает пробел и финальный модал (§12.58). Вторая такая память однажды
+// разошлась бы с ними.
+const PAUSING_SECTION = "Постройка";
+
+// Пауза наша, пока её не отобрали: `setSpeed` гасит флаг на любом явном пуске
+// времени, и тогда свёртка палитры — уже не «вернуть темп», а просто свёртка.
+// Пауза, поставленная игроком до раздела, тоже не наша: снимать её нечем.
+let autoPaused = false;
+
 function mkSection(el, title) {
   const sec = document.createElement("div");
   if (!TOOL_SECTIONS.has(title)) sec.classList.add("gated");
   const head = document.createElement("button");
   head.className = "sec-head";
   head.innerHTML = `<span>${esc(title)}</span><span class="chev">›</span>`;
-  head.addEventListener("click", () => openOnly(title));
+  head.addEventListener("click", () => openOnly(title, true));
   const body = document.createElement("div");
   body.className = "sec-body";
   sec.appendChild(head);
@@ -2732,12 +2749,31 @@ function mkSection(el, title) {
   return body;
 }
 
-function openOnly(title) {
+// `title === null` значит «свёрнуто всё»: это состояние появилось вместе с
+// паузой палитры — игрок, пустивший время сам, закрывает её, и открывать вместо
+// неё чужой раздел никто не просил.
+//
+// `byUser` отделяет клик по заголовку от раскрытия за игрока (осмотр комнаты,
+// перестройка тулбара): время останавливает решение «хочу строить», а не
+// перерисовка. Отпускается пауза в обоих случаях — раздел закрыт, значит и
+// держать её больше некому.
+function openOnly(title, byUser = false) {
   openSection = title;
   for (const s of sections) {
     const on = s.title === title;
     s.head.classList.toggle("active", on);
     s.body.hidden = !on;
+  }
+  if (title === PAUSING_SECTION) {
+    if (byUser && speed > 0) {
+      autoPaused = true;
+      setSpeed(0);
+    }
+    return;
+  }
+  if (autoPaused) {
+    autoPaused = false;
+    setSpeed(lastSpeed);
   }
 }
 
@@ -3059,8 +3095,12 @@ function buildToolbar() {
 
   // Раскрыт тот раздел, что был открыт до перестройки; на первом кадре это
   // палитра — с неё игра и начинается.
+  // `null` — это выбор игрока «всё свёрнуто», а не «раздел потерялся», поэтому
+  // подстановка палитры его не касается.
   openOnly(
-    sections.some((s) => s.title === openSection) ? openSection : "Постройка",
+    openSection === null || sections.some((s) => s.title === openSection)
+      ? openSection
+      : "Постройка",
   );
   selectCursor(cursorBtn); // режим по умолчанию
 }
@@ -4031,47 +4071,21 @@ function activate(btn) {
   if (btn) btn.classList.add("active");
 }
 
-// Разметка ставит время на паузу сама: рамку тянут по живой карте, а на ×10
-// за время мазка коты успевают перестроиться под курсором. Своей памяти темпа
-// тут нет — возвращаем `lastSpeed`, то есть ровно то, куда возвращает пробел
-// и финальный модал; вторая такая память однажды разошлась бы с ними.
-//
-// Пауза, поставленная игроком, режимом не отменяется (`setSpeed(0)` не трогает
-// `lastSpeed`), а снятая игроком вручную прямо в режиме гасит флаг: раз он
-// пустил время сам, выход из режима его останавливать не должен.
-let autoPaused = false;
-
-function pauseForMode() {
-  if (speed > 0) {
-    autoPaused = true;
-    setSpeed(0);
-  }
-}
-
-function resumeAfterMode() {
-  if (!autoPaused) return;
-  autoPaused = false;
-  setSpeed(lastSpeed);
-}
-
 function selectCursor(btn) {
   mode = "cursor";
   activate(btn);
   applyModeChrome();
-  resumeAfterMode();
 }
 function selectBuild(i, btn) {
   mode = "build";
   buildTile = i;
   activate(btn);
   applyModeChrome();
-  pauseForMode();
 }
 function selectStore(btn) {
   mode = "store";
   activate(btn);
   applyModeChrome();
-  pauseForMode();
 }
 
 function showError(message) {
@@ -4109,9 +4123,12 @@ function setSpeed(s) {
   if (!Number.isFinite(s) || s < 0) return;
   if (s > 0) {
     lastSpeed = s;
-    // Время пустил кто-то ещё (пробел, кнопка темпа) — значит наша пауза уже
-    // не «наша», и выходу из режима останавливать нечего.
+    // Время пустили в обход раздела (пробел, кнопка темпа, закрытие финала) —
+    // значит палитру держать больше нечем, и она сворачивается. Флаг снимаем
+    // до `openOnly`: иначе тот увидит нашу же паузу и пустит время второй раз.
+    const held = autoPaused;
     autoPaused = false;
+    if (held) openOnly(null);
   }
   speed = s;
   worker.postMessage({ type: "setSpeed", speed: s });
