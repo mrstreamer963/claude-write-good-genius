@@ -2630,6 +2630,14 @@ impl Sim {
             let needs = self.world.resource::<NeedRules>();
             let food = self.world.resource::<FoodRules>();
             let hurts = self.world.resource::<HealthRules>();
+            // Каков этот кот **в поле** (§12.71). Раньше это знал только узел, и
+            // только про уже зачисленных (`NodeSnap::forces`), — про кота,
+            // которого игрок ещё не взял, окно не знало ничего, и состав
+            // подбирался перебором. Считается здесь, потому что это свойство
+            // кота, а не узла: то же число объясняет карточку кота на карте.
+            let raid = self.world.resource::<SkillRules>().index_of(SKILL_RAID);
+            let items = self.world.resource::<ItemRules>();
+            let stat_rules = self.world.resource::<StatRules>();
             for (
                 id,
                 r,
@@ -2762,6 +2770,20 @@ impl Sim {
                     // отряду силы, и без этого игрок не свяжет пропавший со
                     // склада комбинезон с выросшим прогнозом вылазки (§12.29).
                     gear: gear.map(|g| g.0.clone()).unwrap_or_default(),
+                    // Тем же выражением, каким сила отряда сложится на уходе
+                    // (§12.23, инвариант 14): сам кот стоит единицу, уровень
+                    // «Вылазки» — сверху, надетое — ещё сверху. Складывать их
+                    // в JS значило бы завести второй экземпляр правила силы.
+                    raid_force: 1
+                        + raid.map_or(0, |s| level_of(rules, skills, s))
+                        + items.force_of_gear(gear),
+                    // Ступени врождённого — рядом с сырыми значениями: механику
+                    // двигают именно они (§12.70), а «Реакция 7» без ступени не
+                    // говорит, станет ли этот кот проводником.
+                    stat_steps: (0..stat_count).map(|i| stat_rules.step(i, stats)).collect(),
+                    // Какая из ступеней делает проводника, знает ядро: искать
+                    // `reflex` по имени в JS — тот же второй экземпляр правила.
+                    guide_step: guide_of(stat_rules, stats),
                 });
             }
         }

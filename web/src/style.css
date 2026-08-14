@@ -1141,7 +1141,7 @@ main#stage.mode-cursor #mode-banner {
   overscroll-behavior: contain;
 }
 .raidwin-crew {
-  flex: 0 0 264px;
+  flex: 0 0 300px;
   border-right: 1px solid var(--line);
   padding-right: 14px;
 }
@@ -1262,4 +1262,35 @@ main#stage.mode-cursor #mode-banner {
    `disabled`: тот отнимает и события мыши, и подсказку вместе с ними. */
 .tool.off {
   opacity: 0.45;
+}
+
+/* Каков кот в поле — строкой под именем, только в штабе (§12.71). Вклад в силу
+   выделен: это единственное здесь число, которое складывается, и складывать его
+   игрок будет глазами. «Проводник» — акцентом: он свойство не кота, а бригады
+   (максимум по отряду), и потому читается как роль, а не как цифра. */
+.crew-field {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-style: normal;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.crew-field b {
+  color: var(--text);
+  font-weight: 600;
+}
+.crew-field u {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+/* В штабе строка характеристик переносится, а не обрезается многоточием: она и
+   есть ответ на «кого взять», и «Реакция 1/2 · Вы…» отвечает ровно наполовину
+   (§12.71). В панели рации этой строки нет вовсе — там колонка вдвое уже. */
+.raidwin-crew .crew-field {
+  white-space: normal;
+  overflow: visible;
 }
