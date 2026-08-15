@@ -580,6 +580,9 @@ fn an_auto_raid_rule_survives_a_save() {
         "кот в отряде узла"
     );
     assert!(live.set_auto_raid(0, node.0, node.1), "правило поставлено");
+    // Пауза — такое же решение игрока, как само правило (§12.77): забудь её
+    // снимок, и загрузка молча вернула бы отряд в поле.
+    assert!(live.set_auto_raid_on(node.0, node.1, false), "и усыплено");
 
     let json = live.save().expect("снимок");
     let mut loaded = Sim::load_from(CORE, &json).expect("загрузка");
@@ -588,6 +591,10 @@ fn an_auto_raid_rule_survives_a_save() {
         loaded.auto_raid_at(node.0, node.1),
         Some(0),
         "правило на месте",
+    );
+    assert!(
+        !loaded.auto_raid_is_on(node.0, node.1),
+        "и по-прежнему неактивно",
     );
     assert_eq!(
         loaded.roster_at(node.0, node.1),

@@ -1077,15 +1077,30 @@ main#stage.mode-cursor #mode-banner {
    время вылазки нечем, а следующая уходит «сама». */
 .raid-rule {
   display: flex;
+  /* Кнопок теперь две — «Пауза» и «Снять» (§12.77), а тулбар шириной 190px их
+     в строку не берёт: без переноса «Снять» уезжает за край и правило нечем
+     стереть. */
+  flex-wrap: wrap;
   gap: 6px;
   align-items: center;
   justify-content: space-between;
   font-size: 11px;
   color: var(--accent);
 }
-.raid-rule .raid-auto {
+.raid-rule .raid-auto,
+.raid-rule .raid-pause {
   font-size: 11px;
   padding: 2px 8px;
+}
+/* Неактивное правило — тем же тусклым, что и кот, который никуда не идёт
+   (§12.77): «помню, но не веду» обязано читаться со строки, а не из подсказки. */
+.raid-rule.off {
+  opacity: 0.55;
+}
+.raid-pause {
+  flex: 0 0 auto;
+  padding: 0 8px;
+  font-size: 13px;
 }
 
 /* Штаб вылазок (§12.71): состав и заказы рядом, в одном модальном окне.

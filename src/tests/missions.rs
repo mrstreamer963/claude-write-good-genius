@@ -1066,12 +1066,12 @@ fn the_rule_waits_for_a_full_squad() {
     assert!(sim.is_away("a") && sim.is_away("b"), "вдвоём ушли");
 }
 
-/// Явный приказ отменяет правило (§12.72): игрок отправил узел на **другой**
-/// заказ, то есть принял решение взамен прежнего. Уцелевшее правило вернуло бы
-/// отряд в поле тем же тиком, каким тот дошёл до базы, — коты вернулись бы с
-/// назначенной вылазки и «сами собой» исчезли снова.
+/// Явный приказ усыпляет правило (§12.72, §12.77): игрок отправил узел на
+/// **другой** заказ, то есть принял решение взамен ближайшего круга. Уцелевшее
+/// активным правило вернуло бы отряд в поле тем же тиком, каким тот дошёл до
+/// базы, — коты вернулись бы с назначенной вылазки и «сами собой» исчезли снова.
 #[test]
-fn a_manual_launch_elsewhere_drops_the_node_rule() {
+fn a_manual_launch_elsewhere_pauses_the_node_rule() {
     let mut sim = sim_with_nodes(1);
     let usual = sim.set_mission(1, 30, &[(0, 5)]);
     let other = sim.set_mission(1, 30, &[(0, 5)]);
@@ -1079,13 +1079,67 @@ fn a_manual_launch_elsewhere_drops_the_node_rule() {
     sim.set_auto_raid(usual as i32, 1, 2);
 
     assert!(sim.launch_node(other, 1, 2), "игрок отправил отряд сам");
-    assert!(sim.auto_raid_at(1, 2).is_none(), "правило снято приказом");
+    assert!(!sim.auto_raid_is_on(1, 2), "правило усыплено приказом");
+    assert_eq!(sim.auto_raid_at(1, 2), Some(usual), "но заказ помнится");
 
-    // И отряд после возвращения остаётся дома: рутина кончилась вместе с
-    // правилом, а не пережила его.
+    // И отряд после возвращения остаётся дома: усыплённое правило круга не
+    // ведёт, пока игрок его не разбудил.
     sim.tick_n(200);
     assert!(sim.raids_done().contains(&other), "ручная вылазка сходила");
     assert_eq!(sim.raid_count(), 0, "а новую заводить больше некому");
+}
+
+/// Пауза в чистом виде (§12.77): игрок прервал рутину, разгрёб базу и вернул
+/// правило в строй — не выбирая заказ второй раз.
+#[test]
+fn a_paused_rule_stays_home_and_resumes_by_the_same_switch() {
+    let mut sim = sim_with_nodes(1);
+    let def = sim.set_mission(1, 30, &[(0, 5)]);
+    sim.enlist("a", 1, 2);
+    sim.set_auto_raid(def as i32, 1, 2);
+
+    assert!(sim.set_auto_raid_on(1, 2, false), "правило усыплено");
+    sim.tick_n(50);
+    assert_eq!(sim.raid_count(), 0, "неактивное правило в поле не гонит");
+    assert_eq!(sim.auto_raid_at(1, 2), Some(def), "но заказ помнится");
+
+    assert!(
+        sim.set_auto_raid_on(1, 2, true),
+        "и будится тем же тумблером"
+    );
+    sim.tick_n(10);
+    assert!(sim.is_away("a"), "отряд снова ушёл сам");
+}
+
+/// Отзыв собравшегося отряда усыпляет правило (§12.77). Без этого «Отозвать» у
+/// автоматического отряда не значит ничего: заявка заводится заново тем же
+/// тиком, и кнопка читается как сломанная.
+#[test]
+fn recalling_an_auto_squad_pauses_the_rule() {
+    let mut sim = sim_with_nodes(1);
+    let def = sim.set_mission(1, 30, &[(0, 5)]);
+    // Кот подальше от шлюза: отозвать можно только тех, кто ещё на базе
+    // (§12.22), а от соседней клетки отряд уходит первым же тиком.
+    sim.enlist("c", 1, 2);
+    sim.set_auto_raid(def as i32, 1, 2);
+    sim.tick_n(1);
+    assert_eq!(sim.raid_count(), 1, "правило подало заявку");
+
+    assert!(sim.cancel_mission(def), "игрок отозвал отряд");
+    assert!(!sim.auto_raid_is_on(1, 2), "правило усыплено отзывом");
+    assert_eq!(sim.auto_raid_at(1, 2), Some(def), "но заказ помнится");
+
+    sim.tick_n(50);
+    assert_eq!(sim.raid_count(), 0, "и заявка заново не заводится");
+}
+
+/// Будить нечего — правила нет: тумблер сам правил не заводит, это делает
+/// только `set_auto_raid` (§12.77).
+#[test]
+fn switching_a_missing_rule_changes_nothing() {
+    let mut sim = sim_with_nodes(1);
+    assert!(!sim.set_auto_raid_on(1, 2, true), "правила на узле нет");
+    assert!(sim.auto_raid_at(1, 2).is_none(), "и тумблер его не завёл");
 }
 
 /// Граница снятия: правило уходит в поле **через ту же кнопку**, поэтому

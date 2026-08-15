@@ -172,6 +172,16 @@ onPanelClick(raidWinEl, ".raid-auto", (b) =>
     y: Number(b.dataset.y),
   }),
 );
+// Пауза правила (§12.77). Мир она меняет — значит `sendAction`. `data-on` уже
+// несёт то, что надо отправить: пусто у «приостановить», «1» у «возобновить».
+onPanelClick(raidWinEl, ".raid-pause", (b) =>
+  sendAction({
+    type: "setAutoRaidOn",
+    on: !!b.dataset.on,
+    x: Number(b.dataset.x),
+    y: Number(b.dataset.y),
+  }),
+);
 // Переключение узла внутри окна — осмотр, а не команда: `sendAction` тут не при
 // чём. Отряды листаются на месте, чтобы «перекинуть кота с узла на узел» не
 // требовало закрывать окно и искать вторую рацию на карте.
@@ -2882,6 +2892,16 @@ function buildToolbar() {
         y: Number(b.dataset.y),
       }),
     );
+    // Пауза правила (§12.77): то же решение по уже принятому решению, что и
+    // «Снять», только обратимое. `data-on` несёт направление переключения.
+    onPanelClick(raidsEl, ".raid-pause", (b) =>
+      sendAction({
+        type: "setAutoRaidOn",
+        on: !!b.dataset.on,
+        x: Number(b.dataset.x),
+        y: Number(b.dataset.y),
+      }),
+    );
     // Строка отряда открывает штаб (§12.71): состав и прогноз стоят там рядом,
     // и менять первый, глядя на второй, можно не закрывая окна. Это осмотр, а
     // не команда: `sendAction` тут не при чём — он бы ещё и гасил выделение.
@@ -3451,15 +3471,7 @@ function renderRaidsSection() {
       // стоит строкой над заказами и видно его всегда: и когда отряд дома, и
       // когда он уже в поле по этому самому правилу (§12.67). Иначе снять его
       // во время вылазки было бы нечем, а следующая ушла бы «сама».
-      if (node.auto >= 0) {
-        rows.push(
-          '<div class="raid-rule">' +
-            `<span>ходит сама: «${esc(missionLabel(node.auto))}»</span>` +
-            `<button class="tool raid-auto" data-key="off@${at}" data-def="-1"` +
-            ` data-x="${node.x}" data-y="${node.y}">Снять</button>` +
-            "</div>",
-        );
-      }
+      if (node.auto >= 0) rows.push(ruleRow(node, at));
       if (raid) {
         const label = esc(missionLabel(raid.def));
         rows.push(
@@ -3748,13 +3760,7 @@ function renderRaidWindow() {
   // же самое, а список цел. У занятого узла её не дублируем: там правило стоит
   // кнопкой в самой карточке (`busyCard`).
   const rule =
-    !raid && node.auto >= 0
-      ? '<div class="raid-rule">' +
-        `<span>ходит сама: «${esc(missionLabel(node.auto))}»</span>` +
-        `<button class="tool raid-auto" data-key="off@${node.x},${node.y}"` +
-        ` data-def="-1" data-x="${node.x}" data-y="${node.y}">Снять</button>` +
-        "</div>"
-      : "";
+    !raid && node.auto >= 0 ? ruleRow(node, `${node.x},${node.y}`) : "";
 
   const right =
     '<div class="raidwin-col raidwin-jobs">' +
@@ -3803,7 +3809,10 @@ function raidCard(i, node) {
   const def = (meta.missions ?? [])[i] ?? {};
   const g = raidGate(i, node);
   const at = `${node.x}, ${node.y}`;
-  const on = node.auto === i;
+  const on = node.auto === i && node.auto_on;
+  // Усыплённое правило на этом же заказе — не «нет правила»: заказ узел помнит,
+  // и тумблер обязан будить его, а не заводить заново (§12.77).
+  const paused = node.auto === i && !node.auto_on;
   const rows = [];
 
   // Прогноз — первым и крупно: это ответ на «стоит ли». Провал называем словом,
@@ -3954,13 +3963,17 @@ function raidCard(i, node) {
     "</button>";
   // Тумблер доступен и у закрытого заказа: правило ждёт ворот, как порог
   // производства ждёт материала, и поставить его заранее — это план (§12.67).
-  const auto =
-    `<button class="tool raid-auto${on ? " on" : ""}"` +
-    ` data-key="auto${i}@${at}" data-def="${on ? -1 : i}"` +
-    ` data-x="${node.x}" data-y="${node.y}"` +
-    ` title="${on ? "Отряд ходит сюда сам — снять правило" : "Ходить сюда самому, как только отряд готов"}">` +
-    (on ? "↻ ходит сама" : "↻") +
-    "</button>";
+  const auto = paused
+    ? `<button class="tool raid-pause" data-key="auto${i}@${at}" data-on="1"` +
+      ` data-x="${node.x}" data-y="${node.y}"` +
+      ' title="Правило стоит на паузе — вернуть отряд на этот круг">' +
+      "↻ неактивно</button>"
+    : `<button class="tool raid-auto${on ? " on" : ""}"` +
+      ` data-key="auto${i}@${at}" data-def="${on ? -1 : i}"` +
+      ` data-x="${node.x}" data-y="${node.y}"` +
+      ` title="${on ? "Отряд ходит сюда сам — снять правило" : "Ходить сюда самому, как только отряд готов"}">` +
+      (on ? "↻ ходит сама" : "↻") +
+      "</button>";
 
   return (
     `<div class="raidwin-card${g.ready ? "" : " off"}">` +
@@ -4044,18 +4057,56 @@ function busyCard(raid, node) {
   // кнопке называем **только в этом случае**: карточка одна и уже озаглавлена
   // своим именем, и повторять его в кнопке значит писать его дважды подряд.
   if (node.auto >= 0) {
+    const same = node.auto === raid.def;
+    const name = `: «${esc(missionLabel(node.auto))}»`;
     act.push(
-      `<button class="tool raid-auto on" data-key="off@${at}" data-def="-1"` +
+      `<button class="tool raid-pause${node.auto_on ? " on" : ""}"` +
+        ` data-key="pause@${at}" data-on="${node.auto_on ? "" : "1"}"` +
         ` data-x="${node.x}" data-y="${node.y}"` +
-        ` title="Отряд ходит сюда сам — снять правило">` +
-        (node.auto === raid.def
-          ? "↻ ходит сама"
-          : `↻ ходит сама: «${esc(missionLabel(node.auto))}»`) +
+        ` title="${
+          node.auto_on
+            ? "Отряд ходит сюда сам — приостановить правило"
+            : "Правило на паузе — вернуть отряд на этот круг"
+        }">` +
+        (node.auto_on ? "↻ ходит сама" : "↻ неактивно") +
+        (same ? "" : name) +
         "</button>",
+      `<button class="tool raid-auto" data-key="off@${at}" data-def="-1"` +
+        ` data-x="${node.x}" data-y="${node.y}"` +
+        ' title="Забыть правило совсем">Снять</button>',
     );
   }
   if (act.length) rows.push(`<div class="raidwin-act">${act.join("")}</div>`);
   return `<div class="raidwin-card">${rows.join("")}</div>`;
+}
+
+/// Строка правила автовылазки — одна на раздел «Вылазки» и на штаб (§12.77).
+///
+/// Правило у узла одно, а решений по нему два: «пока не ходи» и «забудь». Пауза
+/// стоит первой, потому что она обратима: игрок прерывает круг ради разового
+/// дела на базе — разгрести привезённое — и возвращается к тому же заказу, не
+/// выбирая его среди карточек второй раз. «Снять» остаётся рядом: правило,
+/// которое нечем стереть, читалось бы как навязанное.
+function ruleRow(node, at) {
+  const label = esc(missionLabel(node.auto));
+  return (
+    `<div class="raid-rule${node.auto_on ? "" : " off"}">` +
+    `<span>${node.auto_on ? "ходит сама" : "неактивно"}: «${label}»</span>` +
+    `<button class="tool raid-pause${node.auto_on ? " on" : ""}"` +
+    ` data-key="pause@${at}" data-on="${node.auto_on ? "" : "1"}"` +
+    ` data-x="${node.x}" data-y="${node.y}"` +
+    ` title="${
+      node.auto_on
+        ? "Приостановить: заказ узел запомнит, но отряд по нему не уйдёт"
+        : "Вернуть отряд на этот круг"
+    }">` +
+    (node.auto_on ? "Пауза" : "Возобновить") +
+    "</button>" +
+    `<button class="tool raid-auto" data-key="off@${at}" data-def="-1"` +
+    ` data-x="${node.x}" data-y="${node.y}"` +
+    ' title="Забыть правило совсем">Снять</button>' +
+    "</div>"
+  );
 }
 
 function mkTool(html, onClick) {

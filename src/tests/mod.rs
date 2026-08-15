@@ -1710,6 +1710,12 @@ impl Sim {
         self.world.resource::<AutoRaids>().of(x, y)
     }
 
+    /// Работает ли правило автовылазки прямо сейчас (§12.77): усыплённое
+    /// помнит заказ, но отряд сам не уводит.
+    fn auto_raid_is_on(&mut self, x: i32, y: i32) -> bool {
+        self.world.resource::<AutoRaids>().is_on(x, y)
+    }
+
     /// Журнал успешных вылазок: индексы миссий.
     fn raids_done(&self) -> Vec<usize> {
         self.world.resource::<Raids>().0.clone()
