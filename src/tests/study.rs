@@ -185,6 +185,34 @@ fn an_order_ends_the_enrolment() {
     assert_eq!(sim.pos_of("a"), (1, 1), "а дошёл, куда велено");
 }
 
+/// «Снять с учёбы» — своя команда (§12.84), зеркало `unpost_relay`: снимает и
+/// приписку, и текущую задачу. Не снимай она задачу — кот досидел бы за партой
+/// до потолка, и игрок решил бы, что кнопка не сработала.
+#[test]
+fn unteaching_takes_the_cat_off_the_desk_at_once() {
+    let (mut sim, science) = sim_with_desk();
+    sim.teach("a", "science");
+    sim.tick_n(4);
+    let xp = sim.xp_of("a", science);
+    assert!(xp > 0, "учится");
+
+    assert!(sim.unteach("a"));
+    assert!(!sim.is_enrolled("a") && !sim.is_studying("a"), "снят разом");
+    assert!(sim.teach("b", "science"), "и парта свободна");
+
+    sim.tick_n(10);
+    assert_eq!(sim.xp_of("a", science), xp, "опыт остался, но не растёт");
+}
+
+/// Снимать некого — команда отказывает, а не молчит: `false` наверх и есть
+/// разница между «сделано» и «нечего делать».
+#[test]
+fn unteaching_a_cat_who_studies_nothing_fails() {
+    let (mut sim, _) = sim_with_desk();
+    assert!(!sim.unteach("a"), "никуда не приписан");
+    assert!(!sim.unteach("нет такого"), "и такого кота нет");
+}
+
 /// Приказ игрока снимает учёбу и освобождает парту — учёба такая же задача, как
 /// стройка и сон, и решение игрока весомее любой из них (§12.15, §12.20).
 #[test]

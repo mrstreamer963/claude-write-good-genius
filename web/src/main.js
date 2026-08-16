@@ -329,6 +329,10 @@ const tradeButtons = []; // кнопки сделок — гасим, когда
 let raidsEl = null;
 const recruitButtons = []; // кнопки найма — гасим по известности и складу
 const teachButtons = []; // кнопки обучения — живы, когда выбран ровно один кот
+// Парты по доменам: сколько всего и сколько свободно (§12.84). Считает ядро —
+// «свободна» значит «её не держит ничей `Study`», а занятость знает только оно.
+// Нужны здесь ровно за тем же, чем `standing`: назвать отказ словом.
+let desks = [];
 const topicButtons = []; // кнопки тем — гасим по технологиям, складу и допуску
 const recipeButtons = []; // кнопки рецептов — гасим по технологии и мастерской
 // Пороги автопроизводства в порядке палитры рецептов (§12.65). Число хранит
@@ -675,6 +679,7 @@ function renderSnapshot(snap) {
   money = snap.money ?? 0;
   prices = snap.prices ?? [];
   stock = snap.stock ?? [];
+  desks = snap.desks ?? [];
   posts = snap.posts ?? 0;
   postFree = !!snap.post_free;
   shops = snap.shops ?? 0;
@@ -751,6 +756,9 @@ function renderSnapshot(snap) {
 
   updateSelectionOverlay();
   renderCatPanel(snap.entities);
+  // Приписка к парте меняется без участия игрока — кот доучился, и кнопка
+  // обязана перестать быть «Снять с учёбы» тем же кадром (§12.84).
+  syncTeachButtons();
   // После цикла по сущностям: панель читает `unitTiles`, и он обновлён выше.
   renderCellPanel(snap);
   renderCaptivePanel();
@@ -3088,22 +3096,32 @@ function buildToolbar() {
   // Обучение. Кнопка адресная, а не разметка работы: игрок отправляет за парту
   // конкретного кота, и это решение о его судьбе (§12.18). Домены без `taught`
   // сюда не попадают — «Стройке» парта не нужна.
-  const taught = (meta.skills ?? []).filter((s) => (s.taught ?? 0) > 0);
+  const taught = (meta.skills ?? [])
+    .map((s, i) => ({ s, i }))
+    .filter(({ s }) => (s.taught ?? 0) > 0);
   if (taught.length) {
     const school = mkSection(el, "Обучение");
 
     teachButtons.length = 0;
-    for (const s of taught) {
-      const b = mkTool(
-        `<span class="sw sw-study"></span><span>Учить: ${esc(s.label || s.id)}</span>`,
-        () => {
-          if (selectedUnits.length === 1) {
-            sendAction({ type: "teach", id: selectedUnits[0], skill: s.id });
-          }
-        },
-      );
+    for (const { s, i } of taught) {
+      // Одна кнопка на домен, а не две: «Учить» и «Снять» — это одно решение в
+      // двух состояниях, и вторая кнопка стояла бы мёртвой в девяти случаях из
+      // десяти. Что именно она сейчас делает, решает `syncTeachButtons` — он же
+      // и пишет на ней слово.
+      const b = mkTool("", () => {
+        if (selectedUnits.length !== 1) return;
+        if (b.classList.contains("off")) return; // отказ уже написан в подсказке
+        const id = selectedUnits[0];
+        sendAction(
+          b.dataset.on === "1"
+            ? { type: "unteach", id }
+            : { type: "teach", id, skill: s.id },
+        );
+      });
       b.classList.add("toggle");
       b.dataset.skill = s.id;
+      b.dataset.i = i;
+      b.dataset.label = s.label || s.id;
       b.dataset.hint = `до ${s.taught}-го уровня, дальше только практика`;
       teachButtons.push(b);
       school.appendChild(b);
@@ -3495,14 +3513,48 @@ function syncTileButtons(techs) {
 
 // Учат по одному: обучение адресно, и «учить троих разом» — это уже не решение
 // о судьбе кота, а разметка работы, которой обучение как раз не является.
+// Кнопка обучения: что она сейчас делает и почему не делает ничего (§12.84).
+//
+// Гасим классом, а не `disabled`: по выключенному элементу браузер не шлёт
+// событий мыши, и подсказка с причиной не показывается **никогда** (§12.71).
+// Ровно на этом кнопка «Учить» и стояла — молчала на все пять причин отказа.
+//
+// Причины считает ядро и везёт числами: `desk` у навыка кота (докуда доводит
+// парта именно его) и `desks` по домену (сколько парт есть и сколько свободно).
+// Вывести их в JS нельзя — оба про то, чего в виде нет: врождённый предел и
+// занятость парты чужой задачей.
 function syncTeachButtons() {
-  const ready = selectedUnits.length === 1;
+  const cat =
+    selectedUnits.length === 1
+      ? (lastSnap?.entities ?? []).find((e) => e.id === selectedUnits[0])
+      : null;
   for (const b of teachButtons) {
-    b.disabled = !ready;
-    b.classList.toggle("on", ready);
-    b.title = ready
-      ? `${selectedUnits[0]} — ${b.dataset.hint}`
-      : "Выберите одного кота";
+    const i = +b.dataset.i;
+    const name = esc(b.dataset.label);
+    const skill = cat?.skills?.[i];
+    const desk = desks[i] ?? { total: 0, free: 0 };
+    const on = cat?.study === i;
+    // Порядок причин — от «про этого кота» к «про базу»: сперва то, что
+    // решается выбором другого кота, потом то, что решается стройкой.
+    let why = null;
+    if (!cat) why = "Выберите одного кота";
+    else if (cat.away) why = `${cat.id} не на базе`;
+    else if (!on && skill && skill.xp >= skill.desk)
+      why = `парта уже ничему не научит: ${cat.id} на её потолке`;
+    else if (!on && desk.total === 0) why = `парты для «${b.dataset.label}» нет`;
+    else if (!on && desk.free === 0) why = "все парты этого домена заняты";
+
+    b.dataset.on = on ? "1" : "";
+    b.innerHTML =
+      `<span class="sw sw-study"></span>` +
+      `<span>${on ? `Снять с учёбы: ${name}` : `Учить: ${name}`}</span>`;
+    b.classList.toggle("off", !!why);
+    b.classList.toggle("on", !why);
+    b.title =
+      why ??
+      (on
+        ? `${cat.id} учится: после сна и еды вернётся за парту сам`
+        : `${cat.id} — ${b.dataset.hint}`);
   }
 }
 

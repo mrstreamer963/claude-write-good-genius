@@ -47,9 +47,9 @@ use crate::skills::{
     SKILL_RAID, SKILL_SCIENCE, desk_cap, level_cap_of, level_of, nearest_desk, xp_ceiling,
 };
 use crate::snapshot::{
-    BaseMapDto, BlueprintSnap, CraftSnap, DealSnap, EntitySnap, GoalSnap, MapMeta, MissionSnap,
-    NodeSnap, NoteSnap, PriceSnap, RaidGates, RaidSnap, RecipeSnap, RecruitSnap, ResearchSnap,
-    SkillSnap, Snapshot, StackSnap, StockSnap, TopicSnap,
+    BaseMapDto, BlueprintSnap, CraftSnap, DealSnap, DeskSnap, EntitySnap, GoalSnap, MapMeta,
+    MissionSnap, NodeSnap, NoteSnap, PriceSnap, RaidGates, RaidSnap, RecipeSnap, RecruitSnap,
+    ResearchSnap, SkillSnap, Snapshot, StackSnap, StockSnap, TopicSnap,
 };
 use crate::timeline::{ready_for, revealed};
 
@@ -2406,6 +2406,39 @@ impl Sim {
         true
     }
 
+    /// Снять кота с учёбы — и приписку, и текущую задачу (§12.84).
+    ///
+    /// Зеркало `unpost_relay`, и снимать задачу тут обязательно по той же
+    /// причине: иначе кот досидел бы за партой до потолка, и игрок решил бы,
+    /// что кнопка не сработала.
+    ///
+    /// До §12.84 отменяли учёбу приказом «иди туда» — он приписку снимает и
+    /// сейчас. Но приказ отменяет её **побочно**, заодно уводя кота с места, и
+    /// «перестань учиться» приходилось выражать через «сходи вон туда». Своя
+    /// команда стоит одного метода и убирает из механики единственный шаг,
+    /// который игрок делал не тем, чем думал.
+    ///
+    /// Вернёт false, если кота нет или он ничему не приписан.
+    pub fn unteach(&mut self, unit_id: &str) -> bool {
+        note(&mut self.world, format!("unteach {unit_id}"));
+        let found = {
+            let mut q = self.world.query::<(Entity, &UnitId)>();
+            q.iter(&self.world)
+                .find(|(_, id)| id.0 == unit_id)
+                .map(|(e, _)| e)
+        };
+        let Some(cat_e) = found else {
+            return false;
+        };
+        if self.world.get::<Enrolled>(cat_e).is_none() {
+            return false;
+        }
+        self.world
+            .entity_mut(cat_e)
+            .remove::<(Enrolled, Study, Path, MoveCooldown)>();
+        true
+    }
+
     /// Приписать кота к узлу связи (§12.60): пока идёт вылазка этого узла, он
     /// садится к рации и держит связь.
     ///
@@ -2746,6 +2779,14 @@ impl Sim {
                     .map(|(id, e)| (id.0.clone(), e.spot))
                     .collect()
             };
+            // Приписка к парте (§12.84) — тем же отдельным запросом и по той же
+            // причине, что и зачисление в отряд.
+            let enrolled: Vec<(String, usize)> = {
+                let mut q = self.world.query::<(&UnitId, &Enrolled)>();
+                q.iter(&self.world)
+                    .map(|(id, e)| (id.0.clone(), e.skill))
+                    .collect()
+            };
             let map = self.world.resource::<BaseMap>();
             let rules = self.world.resource::<SkillRules>();
             let tiles = self.world.resource::<TileRules>();
@@ -2882,6 +2923,7 @@ impl Sim {
                                 xp,
                                 next: rules.next_threshold(i, xp),
                                 cap: level_cap_of(rules, stats, i),
+                                desk: desk_cap(rules, stats, i),
                             }
                         })
                         .collect(),
@@ -2896,6 +2938,12 @@ impl Sim {
                     // отряду силы, и без этого игрок не свяжет пропавший со
                     // склада комбинезон с выросшим прогнозом вылазки (§12.29).
                     gear: gear.map(|g| g.0.clone()).unwrap_or_default(),
+                    // Приписка, а не задача: `study` в `job` уже есть, но он
+                    // молчит про кота, которого увёл сон (§12.84).
+                    study: enrolled
+                        .iter()
+                        .find(|(who, _)| who == &id.0)
+                        .map_or(-1, |(_, skill)| *skill as i32),
                     // Тем же выражением, каким сила отряда сложится на уходе
                     // (§12.23, инвариант 14): сам кот стоит единицу, уровень
                     // «Вылазки» — сверху, надетое — ещё сверху. Складывать их
@@ -3338,6 +3386,34 @@ impl Sim {
             }
         }
 
+        // Парты по доменам (§12.84): сколько их всего и сколько свободно.
+        // Считается здесь, а не в JS, по той же причине, что и `post_free`:
+        // «свободна» значит «её не держит ничей `Study`», а занятость — знание
+        // ядра. Панели это нужно ровно для того, чтобы отказ кнопки «Учить» был
+        // назван словом, а не молчанием (§12.53).
+        let desks: Vec<DeskSnap> = {
+            let taken: Vec<(i32, i32)> = self.taken_desks();
+            let map = self.world.resource::<BaseMap>();
+            let tiles = self.world.resource::<TileRules>();
+            let cells: Vec<Option<usize>> = (0..map.height)
+                .flat_map(|y| (0..map.width).map(move |x| (x, y)))
+                .map(|(x, y)| tiles.teaches_of(map.tile_at(x, y)))
+                .collect();
+            let spots: Vec<((i32, i32), Option<usize>)> = (0..map.height)
+                .flat_map(|y| (0..map.width).map(move |x| (x, y)))
+                .zip(cells)
+                .collect();
+            (0..self.world.resource::<SkillRules>().0.len())
+                .map(|i| {
+                    let mine = spots.iter().filter(|(_, s)| *s == Some(i));
+                    DeskSnap {
+                        total: mine.clone().count() as i32,
+                        free: mine.filter(|(c, _)| !taken.contains(c)).count() as i32,
+                    }
+                })
+                .collect()
+        };
+
         let goals_required = self.world.resource::<GoalRules>().required();
         let goals = self.goals();
 
@@ -3351,6 +3427,7 @@ impl Sim {
             raids,
             relays,
             nodes,
+            desks,
             fame,
             standing,
             money,
