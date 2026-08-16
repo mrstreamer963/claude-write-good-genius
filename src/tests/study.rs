@@ -117,6 +117,74 @@ fn a_student_is_not_taken_by_other_work() {
     assert!(!sim.has_haul("a") && !sim.has_assignment("a"));
 }
 
+/// Учёба — приписка, а не разовая посадка (§12.84): ученик, которого увела
+/// усталость, возвращается за парту сам. До §12.84 он не возвращался никогда, и
+/// узнать об этом можно было только по не растущему уровню.
+///
+/// И возвращается он **раньше, чем берётся за работу**: приписка, уступающая
+/// чертежу, не значила бы ничего — работа на базе есть всегда.
+#[test]
+fn a_rested_student_returns_to_the_desk_before_taking_work() {
+    let (mut sim, science) = sim_with_desk();
+    sim.set_taught(science, 2); // потолок повыше: тест не про него
+    sim.set_needs(100, 50, 1);
+    sim.set_critical(20); // ниже него кот бросает начатое (§12.33)
+    sim.set_rest(2, 2);
+    sim.set_wake(2, 60); // с потолком: проснётся, а не доспит до полной
+    sim.force_tile(5, 1, 2);
+    sim.set_energy("a", 23);
+    sim.add_blueprint(4, 1, 3); // работа рядом с партой — на всякий случай
+
+    sim.teach("a", "science");
+    sim.tick_n(2);
+    assert!(sim.is_studying("a"), "сел за парту");
+
+    sim.tick_n(6);
+    assert!(sim.is_resting("a"), "бодрость кончилась, парта брошена");
+    assert!(!sim.is_studying("a"));
+    assert!(sim.is_enrolled("a"), "но приписка держится");
+
+    let xp = sim.xp_of("a", science);
+    sim.tick_n(30);
+    assert_eq!(sim.desk_of("a"), Some((3, 1)), "выспался и вернулся сам");
+    assert!(sim.xp_of("a", science) > xp, "и учится дальше");
+    assert!(!sim.has_assignment("a"), "а не ушёл на чертёж");
+}
+
+/// Дойдя до потолка, кот снимается с приписки, а не только встаёт из-за парты
+/// (§12.84). Иначе доучившийся ходил бы к ней вечно и вечно вставал бы с неё —
+/// игрок прочёл бы это как зависшего кота.
+#[test]
+fn the_ceiling_ends_the_enrolment() {
+    let (mut sim, science) = sim_with_desk();
+    sim.teach("a", "science");
+    sim.tick_n(60);
+
+    assert_eq!(sim.xp_of("a", science), 20, "ровно первый порог");
+    assert!(!sim.is_enrolled("a"), "приписка снята");
+
+    sim.tick_n(10);
+    assert!(!sim.is_studying("a"), "и к парте кот не возвращается");
+    assert!(sim.teach("b", "science"), "а парта досталась другому");
+}
+
+/// Приказ «иди туда» снимает и приписку (§12.84): два адресных распоряжения
+/// одним котом противоречили бы друг другу — ровно так же `teach` снимает
+/// приказ. Отдельной команды «перестань учиться» поэтому не нужно.
+#[test]
+fn an_order_ends_the_enrolment() {
+    let (mut sim, _) = sim_with_desk();
+    sim.teach("a", "science");
+    sim.tick_n(3);
+
+    sim.set_target("a", 1, 1);
+    assert!(!sim.is_enrolled("a"), "приписка снята приказом");
+
+    sim.tick_n(10);
+    assert!(!sim.is_studying("a"), "и кот за парту не вернулся");
+    assert_eq!(sim.pos_of("a"), (1, 1), "а дошёл, куда велено");
+}
+
 /// Приказ игрока снимает учёбу и освобождает парту — учёба такая же задача, как
 /// стройка и сон, и решение игрока весомее любой из них (§12.15, §12.20).
 #[test]

@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 12;
+pub(crate) const FORMAT: u32 = 13;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -99,6 +99,10 @@ pub(crate) const SAVED: &[&str] = &[
     // Состав отряда на узле (§12.61) — той же природы: конфигурация, но
     // состояние мира. Без неё загруженная партия распустила бы все отряды.
     "Enlisted",
+    // Приписка к парте (§12.84) — третья конфигурация того же рода: без неё
+    // загруженная партия забыла бы, кого игрок отправил учиться, и ученик,
+    // спавший в момент сохранения, за парту больше не вернулся бы.
+    "Enrolled",
     // Состояния кота, которые не задачи.
     "Away",
     "Captive",
@@ -324,6 +328,10 @@ pub(crate) struct EntityDto {
     /// В отряде какого узла кот числится (§12.61) — тоже клетка, а не ссылка.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) enlisted: Option<(i32, i32)>,
+    /// Чему кот приписан учиться (§12.84) — домен, а не клетка: парту он
+    /// выбирает сам, любую свободную.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) enrolled: Option<usize>,
 
     // Состояния кота, которые не задачи.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -521,6 +529,7 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                 on_duty: e.get::<OnDuty>().map(|d| d.spot),
                 posted: e.get::<Posted>().map(|p| p.spot),
                 enlisted: e.get::<Enlisted>().map(|c| c.spot),
+                enrolled: e.get::<Enrolled>().map(|c| c.skill),
 
                 away: e.contains::<Away>(),
                 captive: e.contains::<Captive>(),
@@ -795,6 +804,9 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
         }
         if let Some(spot) = dto.posted {
             e.insert(Posted { spot });
+        }
+        if let Some(skill) = dto.enrolled {
+            e.insert(Enrolled { skill });
         }
         if let Some(spot) = dto.enlisted {
             e.insert(Enlisted { spot });

@@ -825,6 +825,13 @@ impl Sim {
         self.world.get::<Study>(cat).is_some()
     }
 
+    /// Кот приписан к парте (§12.84): вернётся за неё, как только освободится.
+    /// Не то же, что `is_studying` — тот про задачу здесь и сейчас.
+    fn is_enrolled(&mut self, unit: &str) -> bool {
+        let cat = self.entity_of(unit);
+        self.world.get::<Enrolled>(cat).is_some()
+    }
+
     /// Парта, которую занял ученик; `None` — кот не учится.
     fn desk_of(&mut self, unit: &str) -> Option<(i32, i32)> {
         let cat = self.entity_of(unit);

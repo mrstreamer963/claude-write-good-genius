@@ -123,6 +123,99 @@ pub(crate) fn nearest_desk(
         .map(|(_, cell)| cell)
 }
 
+/// Сажает **приписанного** к парте кота, как только тот освободился (§12.84).
+///
+/// Раздачи здесь нет, как нет её и у `assign_relay`: система перебирает не
+/// свободных котов, а приписки игрока (`Enrolled`). Никого не приписали — за
+/// партами пусто, и это законное состояние.
+///
+/// **Стоит сразу за нуждами и экипировкой, до всех работ по базе.** Приписка,
+/// уступающая чертежу, не значит ничего: работа на базе есть всегда, и
+/// разбуженного ученика уводил бы первый же подвоз — та же причина, по которой
+/// §12.34 поставила экипировку впереди стройки. Но нужды идут раньше: голодный
+/// и раненый ученик сперва человек, а потом ученик.
+///
+/// **Доучившегося приписка отпускает здесь же.** Кот, которому парта больше
+/// ничего не даёт, иначе ходил бы к ней вечно и вечно вставал бы с неё, — а
+/// игрок читал бы это как кота, который «завис». Предел тот же двойной, что и
+/// у самой учёбы (`desk_cap`): расходись они — приписка звала бы за парту,
+/// с которой `study` поднимает в тот же тик.
+///
+/// Свободной парты может не быть: тогда кот просто работает и попробует
+/// следующим тиком. Занятость парты держит `Study` ученика, как везде (§12.20),
+/// поэтому отдельного реестра тут нет.
+///
+/// Ничью решает `id` кота, как во всех раздатчиках (инвариант 9): порядок
+/// обхода сущностей ECS зависит от истории вставок и недетерминирован.
+pub(crate) fn assign_study(
+    map: Res<BaseMap>,
+    tiles: Res<TileRules>,
+    rules: Res<SkillRules>,
+    mut commands: Commands,
+    students: Query<&Study>,
+    free_cats: Query<
+        (
+            Entity,
+            &UnitId,
+            &Position,
+            &Enrolled,
+            Option<&Skills>,
+            Option<&Stats>,
+        ),
+        (
+            Without<Assignment>,
+            Without<Haul>,
+            Without<Rest>,
+            Without<Study>,
+            Without<Researching>,
+            Without<Crafting>,
+            Without<Equipping>,
+            Without<Eating>,
+            Without<Healing>,
+            Without<Treating>,
+            Without<Squad>,
+            Without<OnDuty>,
+            Without<Away>,
+            Without<Path>,
+        ),
+    >,
+) {
+    let mut taken: Vec<(i32, i32)> = students.iter().map(|s| s.spot).collect();
+
+    let mut idle: Vec<(&str, Entity, (i32, i32), usize, i32, i32)> = free_cats
+        .iter()
+        .map(|(e, id, p, enrolled, skills, stats)| {
+            let skill = enrolled.skill;
+            (
+                id.0.as_str(),
+                e,
+                (p.x, p.y),
+                skill,
+                skills.map_or(0, |s| s.xp_of(skill)),
+                desk_cap(&rules, stats, skill),
+            )
+        })
+        .collect();
+    idle.sort_unstable_by_key(|&(id, ..)| id);
+
+    for (_, cat_e, at, skill, xp, cap) in idle {
+        if xp >= cap {
+            commands.entity(cat_e).remove::<Enrolled>();
+            continue;
+        }
+        let Some(spot) = nearest_desk(&map, &tiles, skill, at, &taken) else {
+            continue; // парт нет, все заняты или не дойти — попробуем следующим тиком
+        };
+        taken.push(spot);
+        let path = find_path(&map, at, spot).unwrap_or_default();
+        commands.entity(cat_e).insert((
+            Study { skill, spot },
+            Path { steps: path },
+            MoveCooldown(0),
+        ));
+    }
+}
+
 /// Учеников за партой — держит и доводит до порога.
 ///
 /// Раздатчика у обучения нет: **оно адресно** (§12.18). Правило §12.16 «игрок
@@ -159,8 +252,12 @@ pub(crate) fn study(
         // молча отнимать у базы работника. Предел здесь двойной: докуда доводит
         // парта (§12.18) и докуда пускает врождённый параметр (§12.42) —
         // тупому коту парта помогает меньше, а не дольше.
+        //
+        // Вместе с задачей снимается и приписка (§12.84): она значит «вернись за
+        // парту, когда освободишься», а возвращаться уже незачем — иначе кот
+        // ходил бы к ней вечно и вечно вставал бы с неё.
         if skills.map_or(0, |s| s.xp_of(task.skill)) >= desk_cap(&rules, stats, task.skill) {
-            commands.entity(cat_e).remove::<Study>();
+            commands.entity(cat_e).remove::<(Study, Enrolled)>();
             continue;
         }
 
