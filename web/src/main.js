@@ -1230,6 +1230,23 @@ function renderCellPanel(snap) {
   // видно: он придёт сам, и звать его второй раз не надо. Домен в строке не
   // повторяется (он выше, в роли), имя — тоже не повторяется, потому что
   // стоящего здесь кота называет «здесь: …» (§12.80).
+  // Молчать вместо обещания нельзя: пропавшая рамка читается как «клик не
+  // сработал» ровно так же, как её отсутствие на первом шаге (§4.4). Поэтому
+  // про уже посланного панель говорит фактом — тускло, как про приписанного.
+  if (selectedUnits.length === 1) {
+    const cat = (lastSnap?.entities ?? []).find(
+      (e) => e.id === selectedUnits[0],
+    );
+    if (
+      cat &&
+      cat.order_x === x &&
+      cat.order_y === y &&
+      !(cat.x === x && cat.y === y)
+    ) {
+      parts.push(`<div class="cat-sub">${esc(cat.id)} уже идёт сюда</div>`);
+    }
+  }
+
   if (def?.teaches && selectedUnits.length === 1) {
     const i = (meta.skills ?? []).findIndex((s) => s.id === def.teaches);
     const cat = (lastSnap?.entities ?? []).find(
@@ -2423,8 +2440,13 @@ function alreadyHere(def, x, y) {
   if (selectedUnits.length !== 1) return false;
   const cat = (lastSnap?.entities ?? []).find((e) => e.id === selectedUnits[0]);
   if (!cat) return false;
+  // Кот уже послан сюда приказом (§12.86): второй клик повторит тот же приказ,
+  // то есть не изменит ничего. Проверка стоит **до** ролей, потому что верна
+  // для любой клетки — у пола других причин «уже здесь» нет вовсе.
+  if (cat.order_x === x && cat.order_y === y) return true;
   if (def?.relay) return cat.post_x === x && cat.post_y === y;
   if (!def?.teaches) return false;
+  const i = (meta.skills ?? []).findIndex((s) => s.id === def.teaches);
   // У парты приписка к **домену**, а не к клетке (§12.84), поэтому «уже здесь»
   // значит «уже учится этому»: кот, идущий к соседней парте того же домена,
   // тоже никуда не денется. Позицию сюда добавлять нельзя — на дороге к парте
