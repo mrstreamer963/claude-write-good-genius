@@ -156,7 +156,7 @@ cargo test whole_room_is_erased_completely -- --nocapture
 | main → worker | `store {x, y, w, h}` | рамка «на склад»: `mark_to_store_rect` |
 | main → worker | `setAutoTidy {on}` | кнопка «Убирать сам» |
 | main → worker | `setAutoRest {on}` | кнопка «Беречь себя»: бросает ли кот работу на исходе сил (§12.33) |
-| main → worker | `move {id, x, y}` | приказ выбранному коту |
+| main → worker | `move {id, x, y}` | приказ выбранному коту. **Клетка с ролью отвечает на приказ своей ролью** (§12.85): парта записывает кота на учёбу (`teach_at` — за **эту** парту, а не ближайшую), узел связи приписывает связиста (`post_relay`). Отказ (парта занята, коту нечему учиться) оставляет приказ приказом — молчаливая запись, которая ничего не делает, это та же молчащая кнопка |
 | main → worker | `launch {mission, x, y}` | кнопка вылазки: `launch_node(def, x, y)`, отряд берётся **с узла** (§12.61). Кнопка стоит **в штабе вылазок** (§12.71, §12.75): узел — это открытая вкладка штаба, запомненного «выбранного узла» нет |
 | main → worker | `setAutoRaid {mission, x, y}` | тумблер «↻» в карточке заказа: `set_auto_raid(def, x, y)` — **правило, а не заявка** (§12.67); `mission = -1` и есть снятие, как ноль у порога |
 | main → worker | `setAutoRaidOn {x, y, on}` | «Пауза»/«Возобновить» в строке правила: `set_auto_raid_on(x, y, on)` — **пауза, а не снятие** (§12.77): заказ узел помнит, но отряд по нему не уходит. То же делают за игрока **ручная отправка узла на другой заказ** (§12.72) и **отзыв собравшегося отряда**: правило повторяет последнее решение, а не первое |
@@ -713,7 +713,7 @@ check_goals`.
 
 ## Тесты
 
-503 теста живёт в `src/tests/` по механикам (`paths` · `voids` · `orders` · `jobs` · `demolition` ·
+508 тестов живёт в `src/tests/` по механикам (`paths` · `voids` · `orders` · `jobs` · `demolition` ·
 `hauling` · `tidying` · `skills` · `stats` · `study` · `research` · `needs` · `food` · `health` · `items` · `missions` ·
 `captivity` · `fame` · `factions` · `trade` · `terrain` · `timeline` · `gear` · `crafting` · `crowd` · `panel` ·
 `goals` · `relay` · `save`); общие хелперы и сборка мира —

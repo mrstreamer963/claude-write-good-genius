@@ -463,3 +463,17 @@ fn an_auto_raid_waits_for_the_whole_brigade() {
     sim.tick_n(30);
     assert!(sim.is_away("a") && sim.is_away("b"), "ушли полным составом");
 }
+
+/// Клик по рации приписывает связиста (§12.85) — то же правило, что у парты:
+/// клетка с ролью отвечает на приказ своей ролью. «Иди туда» на узле связи не
+/// значит ничего — кот постоит и уйдёт работать, а бонус связи не появится.
+#[test]
+fn an_order_onto_a_relay_node_posts_the_cat() {
+    let mut sim = sim_from(&["########", "#a....b#", "########"]);
+    sim.force_tile(3, 1, 1);
+    sim.set_relay(1, true);
+    sim.set_comms(1, 10);
+
+    assert!(sim.set_target("a", 3, 1), "приказ на рацию принят");
+    assert_eq!(sim.post_of("a"), Some((3, 1)), "и это приписка");
+}

@@ -196,6 +196,61 @@ fn unteaching_a_cat_who_studies_nothing_fails() {
     assert!(!sim.unteach("нет такого"), "и такого кота нет");
 }
 
+/// Два клика игрока: выбрал кота, ткнул в парту — и кот учится (§12.85).
+///
+/// Это тот жест, которым механикой пользуются, и до §12.85 он не делал ничего:
+/// «иди туда» на парте — это «постой и уйди работать». Кнопка в тулбаре была, но
+/// её надо было знать; клетка же говорит о себе сама.
+#[test]
+fn an_order_onto_a_desk_enrols_the_cat() {
+    let (mut sim, science) = sim_with_desk();
+
+    assert!(sim.set_target("a", 3, 1), "приказ на парту принят");
+    assert!(sim.is_enrolled("a"), "и это запись на учёбу");
+    assert_eq!(sim.desk_of("a"), Some((3, 1)), "именно за эту парту");
+
+    sim.tick_n(4);
+    assert_eq!(sim.pos_of("a"), (3, 1));
+    assert!(sim.xp_of("a", science) > 0, "дошёл и учится");
+}
+
+/// Парта именно та, в которую ткнули, а не ближайшая свободная: игрок указал
+/// клетку, и посадить за соседнюю значило бы ответить не на тот жест.
+#[test]
+fn an_order_picks_the_desk_the_player_pointed_at() {
+    let (mut sim, _) = sim_with_desk();
+    sim.force_tile(5, 1, 1); // вторая парта, дальняя
+
+    sim.set_target("a", 5, 1);
+    assert_eq!(sim.desk_of("a"), Some((5, 1)), "дальняя, раз ткнули в неё");
+}
+
+/// Занятую парту клик не отнимает: два кота за одной не сидят (§12.20), и приказ
+/// остаётся приказом — кот дойдёт и займётся своим.
+#[test]
+fn an_order_onto_a_taken_desk_stays_an_order() {
+    let (mut sim, _) = sim_with_desk();
+    sim.teach("a", "science");
+    sim.tick_n(3);
+
+    assert!(sim.set_target("b", 3, 1), "приказ принят");
+    assert!(!sim.is_enrolled("b"), "но за партой не он");
+    assert_eq!(sim.desk_of("a"), Some((3, 1)), "она осталась за первым");
+}
+
+/// Доучившегося клик по парте не записывает: молчаливая запись, которая ничего
+/// не даёт, — это та же молчащая кнопка (§12.84). Приказ при этом работает.
+#[test]
+fn an_order_onto_a_desk_at_the_ceiling_stays_an_order() {
+    let (mut sim, science) = sim_with_desk();
+    sim.set_xp("a", science, 20); // потолок парты
+
+    assert!(sim.set_target("a", 3, 1));
+    assert!(!sim.is_enrolled("a"), "учить нечему");
+    sim.tick_n(4);
+    assert_eq!(sim.pos_of("a"), (3, 1), "но дойти — дошёл");
+}
+
 /// Приказ «иди туда» приписку **не** снимает (§12.84), как не снимает приписку
 /// к рации: кот сходит куда велено и вернётся за парту сам.
 ///

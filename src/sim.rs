@@ -2406,6 +2406,67 @@ impl Sim {
         true
     }
 
+    /// Если в клетке парта и коту есть чему за ней научиться — записать его
+    /// именно за эту парту (§12.85). Иначе `false`, и приказ идёт как обычно.
+    ///
+    /// Парта **именно эта**, а не ближайшая свободная, как у `teach`: игрок
+    /// ткнул в клетку, и посадить его за другую значило бы ответить не на тот
+    /// жест. Занятую парту это отклоняет — тогда «иди туда» остаётся приказом,
+    /// и кот просто дойдёт: два кота за одной партой не сидят (§12.20).
+    fn teach_at(&mut self, unit_id: &str, x: i32, y: i32) -> bool {
+        let skill = {
+            let map = self.world.resource::<BaseMap>();
+            let tiles = self.world.resource::<TileRules>();
+            match tiles.teaches_of(map.tile_at(x, y)) {
+                Some(skill) => skill,
+                None => return false,
+            }
+        };
+        if self.taken_desks().contains(&(x, y)) {
+            return false;
+        }
+        let Some(cat_e) = self.unit_on_base(unit_id) else {
+            return false;
+        };
+        // Доучившемуся парта не поможет: приказ остаётся приказом, кот дойдёт и
+        // займётся своими делами. Молчаливой записи, которая ничего не даёт,
+        // тут быть не должно — причину игрок читает на кнопке (§12.84).
+        let (xp, cap) = {
+            let skills = self
+                .world
+                .get::<Skills>(cat_e)
+                .map_or(0, |s| s.xp_of(skill));
+            let stats = self.world.get::<Stats>(cat_e);
+            let rules = self.world.resource::<SkillRules>();
+            (skills, desk_cap(rules, stats, skill))
+        };
+        if xp >= cap {
+            return false;
+        }
+        let id = unit_id.to_string();
+        note(&mut self.world, format!("teach_at {id} {x} {y}"));
+
+        let from = self
+            .world
+            .get::<Position>(cat_e)
+            .map_or((0, 0), |p| (p.x, p.y));
+        self.release_task(cat_e);
+        if let Some(mission_e) = self.world.get::<Squad>(cat_e).map(|s| s.0) {
+            self.disband(mission_e);
+        }
+        let path = find_path(self.world.resource::<BaseMap>(), from, (x, y)).unwrap_or_default();
+        self.world.entity_mut(cat_e).remove::<Order>().insert((
+            Enrolled { skill },
+            Study {
+                skill,
+                spot: (x, y),
+            },
+            Path { steps: path },
+            MoveCooldown(0),
+        ));
+        true
+    }
+
     /// Снять кота с учёбы — и приписку, и текущую задачу (§12.84).
     ///
     /// Зеркало `unpost_relay`, и снимать задачу тут обязательно по той же
@@ -2611,7 +2672,33 @@ impl Sim {
     /// перепроложен автоматически, как только карта изменится (см. `retry_orders`).
     /// Вернёт true, если приказ принят (цель проходима), false — если цель не тайл-пол
     /// или юнит не найден.
+    ///
+    /// **Клетка с ролью отвечает на приказ своей ролью** (§12.85): послать кота
+    /// на парту и значит записать его учиться, отдельного шага для этого нет.
+    /// Это и есть жест, которым игрок пользуется, — «кликнул кота, кликнул
+    /// парту», — а «иди туда» на парте не значит ничего: кот постоит и уйдёт
+    /// работать. Кнопка в тулбаре остаётся вторым путём для тех, кто не хочет
+    /// искать клетку глазами.
     pub fn set_target(&mut self, unit_id: &str, x: i32, y: i32) -> bool {
+        // Парта и рация разбираются до всего остального: это не приказ с
+        // довеском, а другие команды, и `note` о них пишут они сами.
+        if self.teach_at(unit_id, x, y) {
+            return true;
+        }
+        // Рация — второй случай того же правила (§12.85): послать кота на узел
+        // связи и значит приписать его к нему. Садится он не сразу, а когда
+        // отсюда уйдёт вылазка (§12.76), — поэтому приписка тут и уместна:
+        // «иди туда» на рации не значит ровно ничего, кот постоит и уйдёт.
+        {
+            let node = {
+                let map = self.world.resource::<BaseMap>();
+                let tiles = self.world.resource::<TileRules>();
+                tiles.is_relay_node(map.tile_at(x, y))
+            };
+            if node && self.post_relay(unit_id, x, y) {
+                return true;
+            }
+        }
         note(&mut self.world, format!("move {unit_id} {x} {y}"));
         let mut found = None;
         {

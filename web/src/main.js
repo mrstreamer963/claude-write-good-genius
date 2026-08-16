@@ -1202,19 +1202,26 @@ function renderCellPanel(snap) {
   ];
 
   // Что случится по второму клику — до всего остального: приказ двухшаговый, и
-  // невидимый второй шаг читается как «клик не сработал» (§4.4).
+  // невидимый второй шаг читается как «клик не сработал» (§4.4). На клетке с
+  // ролью он значит не «пойдут», а саму роль (§12.85): обещать «пойдут» там, где
+  // кот сядет учиться, — это то же молчание, только вслух.
   if (cellIsArmed()) {
+    const who = selectedUnits.map(esc).join(" · ");
     parts.push(
-      `<div class="cell-armed">ещё клик сюда — пойдут: ${selectedUnits.map(esc).join(" · ")}</div>`,
+      `<div class="cell-armed">ещё клик сюда — ${
+        deskWelcomes(def, x, y)
+          ? `сядут учиться «${esc(skillLabel(def.teaches))}»: ${who}`
+          : def?.relay && selectedUnits.length === 1
+            ? `${who} сядет на связь, когда отсюда уйдёт отряд`
+            : `пойдут: ${who}`
+      }</div>`,
     );
   } else if (cellReleases()) {
     parts.push('<div class="cell-armed">ещё клик — снять выделение</div>');
   }
 
-  // Клик по парте — это приказ «иди туда», а не «сядь учиться»: учёбу включает
-  // раздел «Обучение», и приписка ведёт кота сюда сама (§12.84). Разница видна
-  // только тому, кто её уже знает, поэтому про уже приписанного пишем прямо:
-  // иначе строка выше читается как «он ещё не идёт», хотя он идёт.
+  // Про уже приписанного — прямо: иначе строка выше читается как «он ещё не
+  // идёт», хотя он идёт и вернётся сюда сам после сна (§12.84).
   if (def?.teaches && selectedUnits.length === 1) {
     const i = (meta.skills ?? []).findIndex((s) => s.id === def.teaches);
     const cat = (lastSnap?.entities ?? []).find(
@@ -2403,6 +2410,22 @@ function perkLabel(id) {
 
 // Парта хранит `id` навыка, а не его номер (§12.18) — отсюда поиск по имени, а
 // не индексация, как у перков и технологий.
+// Сядет ли выбранный кот за эту парту по второму клику (§12.85). Условия те же,
+// что у `teach_at` в ядре, — но здесь они только выбирают слово: ошибись эта
+// проверка, и хуже обещания «пойдут» не станет, а команду всё равно решает ядро.
+function deskWelcomes(def, x, y) {
+  if (!def?.teaches || selectedUnits.length !== 1) return false;
+  const i = (meta.skills ?? []).findIndex((s) => s.id === def.teaches);
+  const cat = (lastSnap?.entities ?? []).find((e) => e.id === selectedUnits[0]);
+  const skill = cat?.skills?.[i];
+  if (!skill || skill.xp >= skill.desk) return false;
+  // Занятую парту ядро отклонит, и клик останется приказом: обещать за неё
+  // учёбу — это соврать ровно там, где игрок и так удивится (§12.20).
+  return !(lastSnap?.entities ?? []).some(
+    (e) => e.id !== cat.id && e.job === "study" && e.x === x && e.y === y,
+  );
+}
+
 function skillLabel(id) {
   const def = (meta.skills ?? []).find((s) => s.id === id);
   return def?.label || id;
