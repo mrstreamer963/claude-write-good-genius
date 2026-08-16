@@ -1211,6 +1211,24 @@ function renderCellPanel(snap) {
     parts.push('<div class="cell-armed">ещё клик — снять выделение</div>');
   }
 
+  // Клик по парте — это приказ «иди туда», а не «сядь учиться»: учёбу включает
+  // раздел «Обучение», и приписка ведёт кота сюда сама (§12.84). Разница видна
+  // только тому, кто её уже знает, поэтому про уже приписанного пишем прямо:
+  // иначе строка выше читается как «он ещё не идёт», хотя он идёт.
+  if (def?.teaches && selectedUnits.length === 1) {
+    const i = (meta.skills ?? []).findIndex((s) => s.id === def.teaches);
+    const cat = (lastSnap?.entities ?? []).find(
+      (e) => e.id === selectedUnits[0],
+    );
+    if (cat && cat.study === i) {
+      parts.push(
+        `<div class="cat-sub">${esc(cat.id)} и так сюда придёт: он учится «${esc(
+          skillLabel(def.teaches),
+        )}»</div>`,
+      );
+    }
+  }
+
   if (!def) {
     parts.push('<div class="cat-sub">непроходима: коты её не пересекут</div>');
   } else {
@@ -3541,7 +3559,8 @@ function syncTeachButtons() {
     else if (cat.away) why = `${cat.id} не на базе`;
     else if (!on && skill && skill.xp >= skill.desk)
       why = `парта уже ничему не научит: ${cat.id} на её потолке`;
-    else if (!on && desk.total === 0) why = `парты для «${b.dataset.label}» нет`;
+    else if (!on && desk.total === 0)
+      why = `парты для «${b.dataset.label}» нет`;
     else if (!on && desk.free === 0) why = "все парты этого домена заняты";
 
     b.dataset.on = on ? "1" : "";
