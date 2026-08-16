@@ -1139,7 +1139,9 @@ function tileRoles(def) {
   if (def.rest > 0) roles.push("лежанка");
   if (def.heal > 0) roles.push("койка лазарета");
   if (def.gate) roles.push("шлюз: отсюда уходят на вылазку");
-  if (def.teaches) roles.push(`парта: учит «${esc(skillLabel(def.teaches))}»`);
+  // Без слова «парта» — оно уже в заголовке панели; роль отвечает только на
+  // «чему тут учат» (§12.80: строка, повторяющая соседа по экрану, лишняя).
+  if (def.teaches) roles.push(`учит «${esc(skillLabel(def.teaches))}»`);
   if (def.lab) roles.push("лаборатория");
   if (def.shop) roles.push("мастерская");
   // Поста в списке нет (§12.81): «торговый пост» — это заголовок панели слово в
@@ -1205,7 +1207,11 @@ function renderCellPanel(snap) {
   // невидимый второй шаг читается как «клик не сработал» (§4.4). На клетке с
   // ролью он значит не «пойдут», а саму роль (§12.85): обещать «пойдут» там, где
   // кот сядет учиться, — это то же молчание, только вслух.
-  if (cellIsArmed()) {
+  // ...но не тогда, когда второй клик уже ничего не изменит: кот приписан к
+  // этой самой парте или к этой самой рации. Зелёная рамка это обещание
+  // перемены, и стоять она обязана только там, где перемена будет (§12.85).
+  // Про уже приписанного панель говорит строкой ниже — тускло, как факт.
+  if (cellIsArmed() && !alreadyHere(def, x, y)) {
     const who = selectedUnits.map(esc).join(" · ");
     parts.push(
       `<div class="cell-armed">ещё клик сюда — ${
@@ -1220,19 +1226,17 @@ function renderCellPanel(snap) {
     parts.push('<div class="cell-armed">ещё клик — снять выделение</div>');
   }
 
-  // Про уже приписанного — прямо: иначе строка выше читается как «он ещё не
-  // идёт», хотя он идёт и вернётся сюда сам после сна (§12.84).
+  // Приписанный, которого сейчас здесь нет, — единственное, чего по клетке не
+  // видно: он придёт сам, и звать его второй раз не надо. Домен в строке не
+  // повторяется (он выше, в роли), имя — тоже не повторяется, потому что
+  // стоящего здесь кота называет «здесь: …» (§12.80).
   if (def?.teaches && selectedUnits.length === 1) {
     const i = (meta.skills ?? []).findIndex((s) => s.id === def.teaches);
     const cat = (lastSnap?.entities ?? []).find(
       (e) => e.id === selectedUnits[0],
     );
-    if (cat && cat.study === i) {
-      parts.push(
-        `<div class="cat-sub">${esc(cat.id)} и так сюда придёт: он учится «${esc(
-          skillLabel(def.teaches),
-        )}»</div>`,
-      );
+    if (cat && cat.study === i && !(cat.x === x && cat.y === y)) {
+      parts.push(`<div class="cat-sub">${esc(cat.id)} придёт сюда сам</div>`);
     }
   }
 
@@ -2413,6 +2417,22 @@ function perkLabel(id) {
 // Сядет ли выбранный кот за эту парту по второму клику (§12.85). Условия те же,
 // что у `teach_at` в ядре, — но здесь они только выбирают слово: ошибись эта
 // проверка, и хуже обещания «пойдут» не станет, а команду всё равно решает ядро.
+// Приписан ли выбранный кот **к этой самой клетке** (§12.85): за эту парту или
+// на эту рацию. Второй клик тогда ничего не меняет, и обещать перемену нечем.
+function alreadyHere(def, x, y) {
+  if (selectedUnits.length !== 1) return false;
+  const cat = (lastSnap?.entities ?? []).find((e) => e.id === selectedUnits[0]);
+  if (!cat) return false;
+  if (def?.relay) return cat.post_x === x && cat.post_y === y;
+  if (!def?.teaches) return false;
+  // У парты приписка к **домену**, а не к клетке (§12.84), поэтому «уже здесь»
+  // значит «уже учится этому»: кот, идущий к соседней парте того же домена,
+  // тоже никуда не денется. Позицию сюда добавлять нельзя — на дороге к парте
+  // рамка снова загорелась бы, а это ровно тот случай, на котором её и
+  // поймали: она обещает перемену коту, который и так идёт.
+  return cat.study === i;
+}
+
 function deskWelcomes(def, x, y) {
   if (!def?.teaches || selectedUnits.length !== 1) return false;
   const i = (meta.skills ?? []).findIndex((s) => s.id === def.teaches);
@@ -3587,9 +3607,17 @@ function syncTeachButtons() {
     else if (!on && desk.free === 0) why = "все парты этого домена заняты";
 
     b.dataset.on = on ? "1" : "";
-    b.innerHTML =
+    // ⚠️ Только при изменении. `syncTeachButtons` зовётся каждым снапшотом, то
+    // есть ~60 раз в секунду, и безусловный `innerHTML` пересоздавал бы детей
+    // кнопки каждые 16 мс. Клик человека длится сотни миллисекунд: `mousedown`
+    // приходится на один `<span>`, `mouseup` — на другой, уже несуществующий, и
+    // `click` браузер не выдаёт вовсе. Кнопка выглядит живой и не работает —
+    // ровно та же ловушка, из-за которой панели ходят через `onPanelClick`,
+    // только здесь узел кнопки жив, а мрут его дети.
+    const html =
       `<span class="sw sw-study"></span>` +
       `<span>${on ? `Снять с учёбы: ${name}` : `Учить: ${name}`}</span>`;
+    if (b.innerHTML !== html) b.innerHTML = html;
     b.classList.toggle("off", !!why);
     b.classList.toggle("on", !why);
     b.title =
