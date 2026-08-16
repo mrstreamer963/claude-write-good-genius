@@ -602,3 +602,25 @@ fn an_auto_raid_rule_survives_a_save() {
         "и отряд, которому оно адресовано",
     );
 }
+
+/// Автопродажа — третье правило игрока того же рода (§12.87), и промах здесь
+/// тише двух предыдущих: после загрузки база просто копит лом, и не происходит
+/// ровно ничего — заметить это можно только по не растущим деньгам.
+#[test]
+fn a_selling_rule_survives_a_save() {
+    let mut live = Sim::new(CORE).expect("рулсет");
+    live.without_timeline();
+    // Пара берётся из самого рулсета: порог живёт на «фракция + предмет», и
+    // фракция обязана этим предметом торговать (§12.87).
+    let (faction, item) = live.first_traded_pair().expect("кто-то чем-то торгует");
+    assert!(live.set_sale(faction, item, 50), "правило поставлено");
+
+    let json = live.save().expect("снимок");
+    let loaded = Sim::load_from(CORE, &json).expect("загрузка");
+
+    assert_eq!(
+        loaded.sale_keep(faction, item),
+        50,
+        "порог на месте вместе с адресатом",
+    );
+}

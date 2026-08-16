@@ -323,6 +323,11 @@ let postFree = false;
 // двадцать пять» без этого выглядело именно так.
 let shiftHeld = false;
 const tradeButtons = []; // кнопки сделок — гасим, когда все посты заняты (§12.55)
+// Пороги автопродажи (§12.87). Число хранит ядро и везёт его в строке курса —
+// той самой, где стоит и кнопка «Продать»: у правила и у команды один адресат,
+// пара «фракция + предмет». Здесь оно нужно кнопкам «−/+», чтобы знать, от чего
+// отсчитывать, — как `stocking` у порога производства.
+const saleRows = []; // строки «продавать сверх N» — по строке на кнопку продажи
 // Раздел вылазок — единственный, который перерисовывается целиком (§12.66):
 // строка на отряд, а состав и занятость узла меняются каждым снапшотом. Массива
 // живых кнопок у него поэтому нет — только контейнер.
@@ -777,6 +782,7 @@ function renderSnapshot(snap) {
   syncTopicButtons(snap.topics);
   syncRecipeButtons(snap.recipes);
   syncStockRows(snap.stocking, snap.recipes);
+  syncSaleRows();
   syncTileButtons(snap.techs);
   renderNotePanel(snap.notes, snap.tick);
   renderGoalsPanel(snap.goals, snap.goals_required, snap);
@@ -3183,6 +3189,7 @@ function buildToolbar() {
   // по заказам. Кнопок по две на предмет: купить и продать, чтобы направление
   // не пряталось за модификатором.
   tradeButtons.length = 0;
+  saleRows.length = 0;
   (meta.factions ?? []).forEach((fac, fi) => {
     // Чем фракция торгует, видно из палитры, а не из снапшота: тулбар строится
     // один раз по `ready`, когда курсов ещё нет. `prices` приезжает `Map`, а не
@@ -3217,6 +3224,21 @@ function buildToolbar() {
         b.dataset.buying = buying ? "1" : "";
         tradeButtons.push(b);
         sec.appendChild(b);
+
+        // Порог автопродажи — **правило рядом с командой** (§12.64, §12.87):
+        // «продавать сверх N» вместо «продать ещё раз». Стоит только под
+        // продажей: автозакупка отвергнута (§12.65) — это уже не повторение
+        // решения игрока, а инициатива симуляции.
+        if (buying) continue;
+        const row = document.createElement("div");
+        row.className = "keep";
+        const minus = mkStep("−", (e) => bumpSale(fi, ii, e.shiftKey ? -5 : -1));
+        const label = document.createElement("span");
+        label.className = "keep-val";
+        const plus = mkStep("+", (e) => bumpSale(fi, ii, e.shiftKey ? 5 : 1));
+        row.append(minus, label, plus);
+        sec.appendChild(row);
+        saleRows.push({ row, label, minus, plus, faction: fi, item: ii });
       }
     }
   });
@@ -3537,6 +3559,41 @@ function syncStockRows(list, recipes) {
         ? `Коты сами делают, пока на базе меньше ${min} шт. Клик — на штуку, Shift — на пять`
         : "Держать запас: коты будут делать сами, когда просядет";
   });
+}
+
+// Сдвинуть порог автопродажи. Отсчитываем от **числа из снапшота** — по той же
+// причине, что и у порога производства: правило живёт в ядре, и второй его
+// экземпляр здесь разошёлся бы с ним при первой же загрузке партии (§12.53).
+function bumpSale(faction, item, delta) {
+  const was = quoteOf(faction, item)?.keep ?? 0;
+  const keep = Math.max(0, was + delta);
+  if (keep === was) return;
+  sendAction({ type: "setSale", faction, item, keep });
+}
+
+// Порог продажи показываем словом, а не пустым нулём: «сверх —» читается как
+// «правила нет», а «сверх 0» — как «продавать всё до последнего лома», то есть
+// как настройка, которой игрок не делал (и которой в ядре нет: ноль — снятие).
+//
+// Число едет в строке курса (`keep`), потому что у правила и у кнопки один
+// адресат — пара «фракция + предмет» (§12.87).
+function syncSaleRows() {
+  for (const { row, label, minus, plus, faction, item } of saleRows) {
+    const keep = quoteOf(faction, item)?.keep ?? 0;
+    label.textContent = keep > 0 ? `сверх ${keep}` : "сверх —";
+    row.classList.toggle("on", keep > 0);
+    minus.disabled = keep <= 0;
+    plus.disabled = false;
+    // Поста может не быть вовсе — тогда правило стоит, но не сработает ни разу,
+    // и сказать об этом надо здесь же: молчащее правило читается как поломка
+    // (§12.53), а причина у него та же, что у погашенной кнопки сделки.
+    row.title =
+      keep > 0
+        ? `Коты сами продают всё, что сверх ${keep} шт.${
+            posts ? "" : " Но торгового поста ещё нет."
+          } Клик — на штуку, Shift — на пять`
+        : "Продавать излишек: коты сами отнесут на пост всё, что сверх порога";
+  }
 }
 
 // Почему рецепт не заказать. «Мастерской нет» и «все станки заняты» — разные

@@ -120,6 +120,9 @@ fn sim_from(rows: &[&str]) -> Sim {
     // Автовылазок тоже нет: узел ходит сам только по правилу игрока (§12.67).
     // Включает `set_auto_raid`.
     world.insert_resource(AutoRaids::default());
+    // И автопродажи: рынка в схеме нет вовсе, а правило — решение игрока
+    // (§12.87). Включает `set_sale`, и только вместе с `set_prices`.
+    world.insert_resource(Selling::default());
     world.insert_resource(Techs::default());
     world.insert_resource(TimelineRules::default());
     world.insert_resource(Chronicle::default());
@@ -1469,6 +1472,44 @@ impl Sim {
         q.iter(&self.world)
             .next()
             .map(|d| (d.buying, d.count, d.unit, d.left, d.delivered))
+    }
+
+    /// Сколько сделок открыто — то же, что занятых ячеек у постов (§12.68).
+    fn deals_open(&mut self) -> usize {
+        let mut q = self.world.query::<&Deal>();
+        q.iter(&self.world).count()
+    }
+
+    /// Открытые продажи: `(фракция, предмет, штук)`, **отсортированные** —
+    /// порядок обхода ECS зависит от истории вставок (§11), а спрашивают их
+    /// там, где сделок несколько.
+    fn sales(&mut self) -> Vec<(usize, usize, i32)> {
+        let mut q = self.world.query::<&Deal>();
+        let mut out: Vec<(usize, usize, i32)> = q
+            .iter(&self.world)
+            .filter(|d| !d.buying)
+            .map(|d| (d.faction, d.item, d.count))
+            .collect();
+        out.sort_unstable();
+        out
+    }
+
+    /// Порог автопродажи на паре «фракция + предмет»; ноль — правила нет
+    /// (§12.87).
+    fn sale_keep(&self, faction: usize, item: usize) -> i32 {
+        self.world.resource::<Selling>().keep_of(faction, item)
+    }
+
+    /// Первая пара «фракция + предмет», которой рулсет разрешает торговать, —
+    /// та, на которую можно повесить порог (§12.87). В синтетической схеме
+    /// прайсов нет вовсе, поэтому спрашивают это только тесты боевого рулсета.
+    fn first_traded_pair(&self) -> Option<(usize, usize)> {
+        self.world
+            .resource::<FactionRules>()
+            .0
+            .iter()
+            .enumerate()
+            .find_map(|(f, rule)| rule.prices.first().map(|&(item, _)| (f, item)))
     }
 
     /// Курс так, как его видит и панель, и фасад, — одно выражение (§12.44).
