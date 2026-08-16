@@ -3064,7 +3064,8 @@ impl Sim {
         let money = self.world.resource::<Money>().0;
         let deals: Vec<DealSnap> = {
             let mut q = self.world.query::<&Deal>();
-            q.iter(&self.world)
+            let mut out: Vec<DealSnap> = q
+                .iter(&self.world)
                 .map(|d| DealSnap {
                     faction: d.faction,
                     item: d.item,
@@ -3076,7 +3077,13 @@ impl Sim {
                     x: d.cell.0,
                     y: d.cell.1,
                 })
-                .collect()
+                .collect();
+            // По клетке, а не по обходу ECS: тот порядок зависит от истории
+            // вставок, и закрывшаяся сделка переставляла соседние карточки под
+            // курсором игрока. Правило то же, по которому сортируются кучи и
+            // места в раздатчиках (инвариант 9), — «места по клетке», row-major.
+            out.sort_by_key(|d| (d.y, d.x));
+            out
         };
         // Курсы считаются тем же `quote`, которым посчитается заказ, — двух
         // арифметик цены быть не должно (§12.44).
