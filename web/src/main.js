@@ -317,6 +317,10 @@ let stock = [];
 // покажет кнопку, которую фасад отклонит (§12.26).
 let posts = 0;
 let postFree = false;
+// Сколько влезает в контейнер ячейки, которую займёт следующая сделка (§12.90);
+// ноль — предела нет. Считает ядро тем же выражением, что и `trade`: разойдись
+// они, и Shift обещал бы объём, который фасад отклоняет молча.
+let postLot = 0;
 // Зажат ли Shift: он удваивает не смысл кнопки, а её размер (пять штук против
 // двадцати пяти), поэтому доступность и подпись обязаны следовать за клавишей.
 // Молчащая кнопка читается как поломка — а «денег хватает на пять, но не на
@@ -692,6 +696,7 @@ function renderSnapshot(snap) {
   desks = snap.desks ?? [];
   posts = snap.posts ?? 0;
   postFree = !!snap.post_free;
+  postLot = snap.post_lot ?? 0;
   shops = snap.shops ?? 0;
   relays = snap.relays ?? 0;
   nodes = snap.nodes ?? [];
@@ -2861,6 +2866,11 @@ function setShift(on) {
 }
 
 window.addEventListener("keydown", (e) => {
+  // ⚠️ Пока печатают в поле, клавиши игры молчат (§12.92). Пробел ставит паузу,
+  // а цифры переключают скорость — без этой строки набор «100» в пороге уводил
+  // бы игру в ×1. Проверка общая, а не про конкретное поле: следующее заведут
+  // через полгода и об этом не вспомнят.
+  if (e.target instanceof HTMLInputElement) return;
   if (e.key === "Shift") setShift(true);
   if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.code === "Escape" || e.key === "Escape") {
@@ -3165,8 +3175,7 @@ function buildToolbar() {
       const read = () => stocking[i] ?? 0;
       const write = (min) => sendAction({ type: "setStock", recipe: i, min });
       const minus = mkStep("−", key, read, write);
-      const label = document.createElement("span");
-      label.className = "keep-val";
+      const label = mkKeepLabel(key, read, write);
       const plus = mkStep("+", key, read, write);
       row.append(minus, label, plus);
       shop.appendChild(row);
@@ -3238,9 +3247,10 @@ function buildToolbar() {
             `<span>${buying ? "Купить" : "Продать"} ${esc(it.label || it.id)}</span>` +
             '<b class="rate">—</b><b class="qty">×5</b>',
           (ev) => {
-            // Клик — пять штук, Shift — двадцать пять: тот же идиом, что у
-            // заказа в мастерской, только товар возят мешками.
-            const count = ev.shiftKey ? 25 : 5;
+            // Клик — пять штук, Shift — полный контейнер (§12.90): идиом тот
+            // же, что у заказа в мастерской, но верхнее число теперь свойство
+            // поста, а не константа — оно вырастет вместе с контейнером.
+            const count = dealSize(ev.shiftKey);
             sendAction({ type: "trade", faction: fi, item: ii, count, buying });
           },
         );
@@ -3321,8 +3331,7 @@ function buildToolbar() {
             keep,
           });
         const minus = mkStep("−", key, read, write);
-        const label = document.createElement("span");
-        label.className = "keep-val";
+        const label = mkKeepLabel(key, read, write);
         const plus = mkStep("+", key, read, write);
         row.append(minus, label, plus);
         sale.appendChild(row);
@@ -3436,6 +3445,20 @@ function quoteOf(faction, item) {
   return prices.find((p) => p.faction === faction && p.item === item);
 }
 
+// Размер сделки: клик — пять штук, Shift — **полный контейнер** (§12.90).
+//
+// Верхнее число перестало быть константой: контейнер это свойство поста, и
+// когда наука даст пост побольше, Shift вырастет вместе с ним сам. Ноль от
+// ядра значит «предела нет» (синтетические миры и база без постов) — там
+// остаётся прежняя двадцатка с хвостиком.
+//
+// Клик тоже прижимается к контейнеру: обещать пять штук там, где влезает три,
+// значит показывать кнопку, которую фасад отклонит (§12.53).
+function dealSize(shift) {
+  const lot = postLot > 0 ? postLot : 25;
+  return shift ? lot : Math.min(5, lot);
+}
+
 // Сколько предмета база вправе выставить на продажу — **то же самое, чем она
 // платит** (§12.69): склад минус бронь. Учтённым база распоряжается наружу,
 // неучтённое (пол, лапы, ячейки постов) годится только на стройку внутри.
@@ -3457,7 +3480,7 @@ function sellableOf(item) {
 // одинаково горящая на пять и на двадцать пять, врёт ровно тогда, когда хватает
 // на первое и не хватает на второе.
 function syncTradeButtons() {
-  const qty = shiftHeld ? 25 : 5;
+  const qty = dealSize(shiftHeld);
   for (const b of tradeButtons) {
     const fi = Number(b.dataset.faction);
     const ii = Number(b.dataset.item);
@@ -3509,7 +3532,9 @@ function syncTradeButtons() {
               // оговорки отказ спорит с счётчиком в шапке.
               `Свободно к продаже ${Math.max(0, free)}, нужно ${qty}`
             : `${unit}¤ за штуку · ${qty} шт. = ${total}¤${
-                shiftHeld ? "" : " · Shift — двадцать пять"
+                shiftHeld
+                  ? ""
+                  : ` · Shift — полный контейнер (${dealSize(true)})`
               }${ahead}${auto}`;
   }
 }
@@ -3712,6 +3737,86 @@ function repeatStep() {
   stepHold.timer = setTimeout(repeatStep, STEP_REPEAT_MS);
 }
 
+// Число порога, которое **правится на месте** (§12.92): клик по нему — и это
+// уже поле ввода, Enter применяет, Escape отменяет.
+//
+// Порог — число, которое у игрока уже в голове («держать пятьсот»), а не
+// величина, которую нащупывают: кнопками пятьсот набирается тремя секундами
+// удержания, и промах на семь штук стоит семи кликов. Правка на месте оставляет
+// правило там же, где стоит команда (§12.64), и не утолщает строку.
+//
+// «Завершение набора» из §12.89 здесь становится **явным**: не догадка по
+// таймеру, а Enter. Поэтому набранное кнопками досылается сразу, как только
+// открывают поле, — это было отдельное решение игрока, и терять его нельзя.
+let numEdit = null;
+
+function mkKeepLabel(key, read, write) {
+  const label = document.createElement("span");
+  label.className = "keep-val";
+  label.title = "Клик — ввести число";
+  label.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault(); // иначе начинается выделение текста, а не правка
+    startNumEdit(key, label, read, write);
+  });
+  return label;
+}
+
+// Правится ли сейчас эта строка. Спрашивают подписи: пока игрок печатает, его
+// текст затирать снапшотом нельзя — а подписи зовутся каждым кадром (§12.84).
+function numEditing(key) {
+  return !!numEdit && numEdit.key === key;
+}
+
+function startNumEdit(key, label, read, write) {
+  if (numEdit) endNumEdit(true);
+  // Набранное кнопками, но ещё не отданное ядру, — это решение игрока: досылаем
+  // его и начинаем правку **с него**, а не со старого числа из снапшота (§12.89).
+  const start = stepPending(key) ?? read();
+  flushStep();
+
+  const input = document.createElement("input");
+  input.className = "keep-input";
+  input.type = "text";
+  input.inputMode = "numeric";
+  input.value = String(start);
+  label.textContent = "";
+  label.appendChild(input);
+  numEdit = { key, label, input, write };
+
+  // ⚠️ Клавиши игры висят на окне: пробел ставит паузу, цифры переключают
+  // скорость. Без этого набор «100» уводил бы игру в ×1 — молча и в чужом
+  // месте. Гасим их здесь, у самого поля; на окне стоит вторая, общая защита.
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") endNumEdit(true);
+    else if (e.key === "Escape") endNumEdit(false);
+  });
+  input.addEventListener("blur", () => endNumEdit(true));
+
+  input.focus();
+  input.select();
+}
+
+// Закончить правку: `commit` — применить набранное, иначе бросить.
+//
+// Мусор и пустая строка равны отмене: «сколько-то» — это не число, а ноль игрок
+// вводит явно (ноль снимает правило, §12.87).
+function endNumEdit(commit) {
+  if (!numEdit) return;
+  const { input, label, write } = numEdit;
+  const raw = input.value.trim();
+  // Снимаем правку до записи: подпись вернёт ближайший снапшот, а `blur` от
+  // `remove()` не должен зайти сюда второй раз.
+  numEdit = null;
+  input.remove();
+  label.textContent = "";
+  if (!commit) return;
+  const value = Number.parseInt(raw, 10);
+  if (!Number.isFinite(value) || value < 0) return;
+  write(value);
+}
+
 // Кнопка шага у порога. Живёт в тулбаре, а не в панели, поэтому слушатель
 // вешается прямо на узел: перерисовка целиком (§12.57) грозит только правым
 // панелям, а тулбар собирается один раз на партию.
@@ -3758,7 +3863,12 @@ function syncStockRows(list, recipes) {
     stocking[i] = (list ?? [])[i] ?? 0;
     const min = stepPending(key) ?? stocking[i];
     const open = ((recipes ?? [])[i] ?? {}).unlocked ?? false;
-    label.textContent = min > 0 ? `держать ${min}` : "держать —";
+    // Пока игрок печатает — его текст не трогаем (§12.92): подпись зовётся
+    // каждым кадром и затёрла бы набранное на первом же снапшоте.
+    const typing = numEditing(key);
+    if (!typing) {
+      label.textContent = min > 0 ? `держать ${min}` : "держать —";
+    }
     row.classList.toggle("on", min > 0);
     row.hidden = !open;
     minus.disabled = !open || min <= 0;
@@ -3826,19 +3936,23 @@ function syncSaleRows() {
       ? `Этот товар берёт только «${name?.label || name?.id}» — выбирать не из кого`
       : `Излишек уходит «${name?.label || name?.id}». Клик — другая сторона; порог при этом остаётся`;
 
-    label.textContent = keep > 0 ? `сверх ${keep}` : "сверх —";
+    // Пока игрок печатает — его текст не трогаем (§12.92).
+    if (!numEditing(key)) {
+      label.textContent = keep > 0 ? `сверх ${keep}` : "сверх —";
+    }
     row.classList.toggle("on", keep > 0);
     minus.disabled = keep <= 0;
     plus.disabled = false;
+    // Порог меряет **склад** (§12.91), и сказать это надо прямо: то же число
+    // игрок видит главным в шапке, а лежащее на полу правило своим не считает.
     // Поста может не быть вовсе — тогда правило стоит, но не сработает ни разу,
-    // и сказать об этом надо здесь же: молчащее правило читается как поломка
-    // (§12.53), а причина у него та же, что у погашенной кнопки сделки.
+    // и об этом здесь же: молчащее правило читается как поломка (§12.53).
     row.title =
       keep > 0
-        ? `Коты сами продают всё, что сверх ${keep} шт.${
+        ? `Коты продают всё, что на складе сверх ${keep} шт. (лежащее на полу не в счёт — сперва уберут).${
             posts ? "" : " Но торгового поста ещё нет."
           } Клик — на штуку, Shift — на пять, зажать — быстрее`
-        : "Продавать излишек: коты сами отнесут на пост всё, что сверх порога";
+        : "Продавать излишек: всё, что на складе сверх порога, коты отнесут на пост сами";
   }
 }
 

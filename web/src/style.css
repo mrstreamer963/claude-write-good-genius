@@ -506,6 +506,27 @@ main#stage.mode-cursor #mode-banner {
 }
 .keep .keep-val {
   flex: 1 1 auto;
+  /* Число правится на месте (§12.92), и курсор обязан это обещать: кликабельная
+     подпись, ничем не отличающаяся от обычной, остаётся ненайденной. */
+  cursor: text;
+}
+/* Поле ввода живёт внутри той же подписи и занимает ровно её место: строка не
+   толстеет и не прыгает, когда правку открывают и закрывают. */
+.keep .keep-input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 0 3px;
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font: inherit;
+  line-height: 16px;
+}
+.keep .keep-input:focus {
+  outline: none;
+  border-color: var(--accent, #7fb0d6);
 }
 .tool.step {
   padding: 1px 7px;

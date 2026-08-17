@@ -165,6 +165,9 @@ fn sim_from(rows: &[&str]) -> Sim {
             shop: false,
             solid: false,
             trade: false,
+            // Контейнера у схемы нет: ноль — без предела (§12.90), сделки в
+            // синтетических мирах любого размера. Включает `set_lot`.
+            lot: 0,
             relay: false,
             comms: 0,
             tech: String::new(),
@@ -1365,6 +1368,17 @@ impl Sim {
     /// Сделать тайл торговым постом: без него база не торгует (§12.44).
     fn set_trade_post(&mut self, tile: i16, on: bool) {
         self.tile_rule(tile, |r| r.trade = on);
+    }
+
+    /// Ёмкость контейнера у поста: предел объёма одной сделки (§12.90). Ноль —
+    /// без предела, и в схеме `sim_from` он именно такой.
+    fn set_lot(&mut self, tile: i16, lot: i32) {
+        self.tile_rule(tile, |r| r.lot = lot);
+    }
+
+    /// Сколько влезает в контейнер этого тайла; ноль — без предела (§12.90).
+    fn lot_of(&self, tile: i16) -> i32 {
+        self.world.resource::<TileRules>().lot_of(tile)
     }
 
     /// Завести фракцию в мире теста. Вернёт её индекс — им же адресуются
