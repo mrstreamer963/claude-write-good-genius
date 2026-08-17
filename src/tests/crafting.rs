@@ -744,3 +744,27 @@ fn the_stock_rule_does_not_count_goods_on_their_way_to_a_buyer() {
         "заказ на месте: несомое покупателю базе уже не принадлежит",
     );
 }
+
+/// Порог производства открывается наукой (§12.93). Имя технологии живёт в
+/// рулсете, поэтому в схеме ворот нет вовсе — здесь их включаем руками.
+#[test]
+fn a_stock_threshold_needs_its_technology() {
+    let mut sim = sim_with_shop();
+    let recipe = sim.set_recipe(100, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+    sim.set_auto_gates("", "planning", "");
+
+    assert!(
+        !sim.set_stock(recipe, 2),
+        "технологии нет — порога не будет"
+    );
+    assert_eq!(sim.stock_min(recipe), 0);
+
+    sim.set_tech("planning");
+    assert!(sim.set_stock(recipe, 2), "изучили — можно");
+    assert_eq!(sim.stock_min(recipe), 2);
+
+    // Снятие ворот не спрашивает: запертая отмена оставила бы порог навсегда.
+    sim.forget_techs();
+    assert!(sim.set_stock(recipe, 0), "снять можно всегда");
+    assert_eq!(sim.stock_min(recipe), 0);
+}

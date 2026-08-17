@@ -543,6 +543,7 @@ fn a_stocking_rule_survives_a_save() {
     let mut live = Sim::new(CORE).expect("рулсет");
     live.without_timeline(); // мир по расписанию тут только шум
     live.set_tech("materials"); // «Материаловедение» открывает и станок, и рецепт
+    live.set_tech("planning"); // а «Наряды» — само правило-порог (§12.93)
     assert!(live.add_blueprint(10, 7, 8), "мастерская размечена");
     live.tick_n(600); // коты подвезли лом и построили её
     // Заведомо выше стартового запаса деталей: порог, который база уже держит,
@@ -579,6 +580,7 @@ fn an_auto_raid_rule_survives_a_save() {
         live.enlist("excellent", node.0, node.1),
         "кот в отряде узла"
     );
+    live.set_tech("callsigns"); // ворота автоматики (§12.93)
     assert!(live.set_auto_raid(0, node.0, node.1), "правило поставлено");
     // Пауза — такое же решение игрока, как само правило (§12.77): забудь её
     // снимок, и загрузка молча вернула бы отряд в поле.
@@ -613,6 +615,7 @@ fn a_selling_rule_survives_a_save() {
     // Пара берётся из самого рулсета: правило висит на предмете, но фракция
     // обязана этим предметом торговать (§12.87, §12.88).
     let (faction, item) = live.first_traded_pair().expect("кто-то чем-то торгует");
+    live.set_tech("logistics"); // ворота автоматики (§12.93)
     assert!(live.set_sale(faction, item, 50), "правило поставлено");
 
     let json = live.save().expect("снимок");

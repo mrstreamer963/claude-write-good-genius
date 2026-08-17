@@ -120,6 +120,10 @@ fn sim_from(rows: &[&str]) -> Sim {
     // Автовылазок тоже нет: узел ходит сам только по правилу игрока (§12.67).
     // Включает `set_auto_raid`.
     world.insert_resource(AutoRaids::default());
+    // Ворот у автоматики в схеме нет (§12.93): `AutoRules` пуст, значит все три
+    // правила доступны сразу. Так и должно быть — рулсета синтетический мир не
+    // знает, а имена технологий живут только в нём.
+    world.insert_resource(AutoRules::default());
     // И автопродажи: рынка в схеме нет вовсе, а правило — решение игрока
     // (§12.87). Включает `set_sale`, и только вместе с `set_prices`.
     world.insert_resource(Selling::default());
@@ -761,6 +765,48 @@ impl Sim {
     /// Выдать технологию напрямую — как `set_fame` для известности.
     fn set_tech(&mut self, tech: &str) {
         self.world.resource_mut::<Techs>().0.push(tech.to_string());
+    }
+
+    /// Забыть всё изученное. Технологии сами не забываются (§12.18) — это нужно
+    /// одному тесту: проверить, что снятие правила ворот не спрашивает (§12.93).
+    fn forget_techs(&mut self) {
+        self.world.resource_mut::<Techs>().0.clear();
+    }
+
+    /// Имена технологий, которыми рулсет запирает автоматику (§12.93); пустые
+    /// не в счёт. Спрашивает это сторож боевого рулсета.
+    fn auto_gates(&self) -> Vec<String> {
+        let rules = self.world.resource::<AutoRules>();
+        [&rules.sales, &rules.crafting, &rules.raids]
+            .into_iter()
+            .filter(|g| !g.is_empty())
+            .cloned()
+            .collect()
+    }
+
+    /// Тема по её `id`; `None` — такой темы в рулсете нет.
+    fn topic_by_id(&self, id: &str) -> Option<ResearchRule> {
+        self.world
+            .resource::<ResearchRules>()
+            .0
+            .iter()
+            .find(|t| t.id == id)
+            .cloned()
+    }
+
+    /// До какого уровня доводит парта этого домена (§12.18).
+    fn taught_cap(&self, skill_id: &str) -> i32 {
+        let rules = self.world.resource::<SkillRules>();
+        rules.index_of(skill_id).map_or(0, |s| rules.taught_cap(s))
+    }
+
+    /// Ворота автоматики: имена технологий, открывающих правила (§12.93). Пустая
+    /// строка — ворот нет, и в схеме `sim_from` они все такие.
+    fn set_auto_gates(&mut self, sales: &str, crafting: &str, raids: &str) {
+        let mut rules = self.world.resource_mut::<AutoRules>();
+        rules.sales = sales.to_string();
+        rules.crafting = crafting.to_string();
+        rules.raids = raids.to_string();
     }
 
     /// Проступили ли детали события — то же, что уходит в снапшот (§12.28).

@@ -47,9 +47,9 @@ use crate::skills::{
     SKILL_RAID, SKILL_SCIENCE, desk_cap, level_cap_of, level_of, nearest_desk, xp_ceiling,
 };
 use crate::snapshot::{
-    BaseMapDto, BlueprintSnap, CraftSnap, DealSnap, DeskSnap, EntitySnap, GoalSnap, MapMeta,
-    MissionSnap, NodeSnap, NoteSnap, PriceSnap, RaidGates, RaidSnap, RecipeSnap, RecruitSnap,
-    ResearchSnap, SaleSnap, SkillSnap, Snapshot, StackSnap, StockSnap, TopicSnap,
+    AutoGateNames, BaseMapDto, BlueprintSnap, CraftSnap, DealSnap, DeskSnap, EntitySnap, GoalSnap,
+    MapMeta, MissionSnap, NodeSnap, NoteSnap, PriceSnap, RaidGates, RaidSnap, RecipeSnap,
+    RecruitSnap, ResearchSnap, SaleSnap, SkillSnap, Snapshot, StackSnap, StockSnap, TopicSnap,
 };
 use crate::timeline::{ready_for, revealed};
 
@@ -592,6 +592,22 @@ impl Sim {
         rules.lot_of(map.tile_at(x, y))
     }
 
+    /// Открыта ли автоматика — по правилу на каждое: `(сбыт, производство,
+    /// вылазки)`, §12.93.
+    ///
+    /// Одно место на снимок и на тесты: снапшот на хосте не собрать, а три
+    /// почти одинаковых флага рядом — приглашение перепутать их местами, и
+    /// заметить это можно было бы только по молча не работающей строке.
+    pub(crate) fn auto_gates_open(&self) -> (bool, bool, bool) {
+        let gates = self.world.resource::<AutoRules>();
+        let techs = self.world.resource::<Techs>();
+        (
+            gates.sales_open(techs),
+            gates.crafting_open(techs),
+            gates.raids_open(techs),
+        )
+    }
+
     /// Предел одной сделки прямо сейчас — контейнер той ячейки, которую займёт
     /// следующая заявка (§12.90). Ноль — предела нет.
     ///
@@ -1079,6 +1095,14 @@ impl Sim {
         // И автопродажи: база, которая с первого тика сбывает «излишки», сама
         // решала бы, что излишек, — а сделка не отменяется (§12.44, §12.87).
         world.insert_resource(Selling::default());
+        // Ворота автоматики — контент, а не состояние (§12.93): пустое имя
+        // технологии значит «правило доступно сразу», и так живут все
+        // синтетические миры тестов.
+        world.insert_resource(AutoRules {
+            sales: rs.automation.sales.clone(),
+            crafting: rs.automation.crafting.clone(),
+            raids: rs.automation.raids.clone(),
+        });
         world.insert_resource(Trace::default());
         world.insert_resource(NeedRules {
             max: rs.energy.max,
@@ -1212,6 +1236,26 @@ impl Sim {
                 .resource::<SkillRules>()
                 .index_of(crate::skills::SKILL_RAID)
                 .map_or(-1, |i| i as i32),
+            // Ярлыки тем-ворот (§12.93): вид обязан назвать отказ по имени темы,
+            // а не «нужна какая-то наука». Ищем тему по `id` из рулсета — имён
+            // технологий в ядре нет, они контент.
+            auto_gates: {
+                let gates = self.world.resource::<AutoRules>();
+                let name = |id: &str| {
+                    if id.is_empty() {
+                        return String::new();
+                    }
+                    self.research
+                        .iter()
+                        .find(|t| t.id == id)
+                        .map_or_else(|| id.to_string(), |t| t.label.clone())
+                };
+                AutoGateNames {
+                    sales: name(&gates.sales.clone()),
+                    crafting: name(&gates.crafting.clone()),
+                    raids: name(&gates.raids.clone()),
+                }
+            },
             perks: self.perks.clone(),
             factions: self.factions.clone(),
             missions: self.missions.clone(),
@@ -2000,6 +2044,17 @@ impl Sim {
         if min < 0 || self.world.resource::<CraftRules>().0.len() <= def {
             return false;
         }
+        // Ворота автоматики (§12.93). Проверяются только при **постановке**:
+        // снятие обязано проходить всегда, иначе правило, поставленное до
+        // изучения, стало бы несбрасываемым.
+        if min > 0
+            && !self
+                .world
+                .resource::<AutoRules>()
+                .crafting_open(self.world.resource::<Techs>())
+        {
+            return false;
+        }
         self.world.resource_mut::<Stocking>().set(def, min);
         true
     }
@@ -2024,6 +2079,15 @@ impl Sim {
     pub fn set_auto_raid(&mut self, def: i32, x: i32, y: i32) -> bool {
         note(&mut self.world, format!("auto_raid {def} {x} {y}"));
         if !self.is_relay_at(x, y) {
+            return false;
+        }
+        // Ворота автоматики (§12.93); снятие (`def < 0`) проходит всегда.
+        if def >= 0
+            && !self
+                .world
+                .resource::<AutoRules>()
+                .raids_open(self.world.resource::<Techs>())
+        {
             return false;
         }
         if def < 0 {
@@ -2325,6 +2389,15 @@ impl Sim {
     pub fn set_sale(&mut self, faction: usize, item: usize, keep: i32) -> bool {
         note(&mut self.world, format!("sale {faction} {item} {keep}"));
         if keep < 0 {
+            return false;
+        }
+        // Ворота автоматики (§12.93); снятие (`keep == 0`) проходит всегда.
+        if keep > 0
+            && !self
+                .world
+                .resource::<AutoRules>()
+                .sales_open(self.world.resource::<Techs>())
+        {
             return false;
         }
         // Ворота ровно те же, по которым `quote` вернул бы `None`: чем фракция
@@ -3451,6 +3524,10 @@ impl Sim {
         // с фасадом на первой же неубранной куче, и игрок увидел бы живую
         // кнопку, которую фасад отклоняет молча.
         let post_free = self.free_post_cell().is_some();
+        // Открыта ли автоматика (§12.93) — тем же выражением, которым это решают
+        // сами команды: три почти одинаковых поля напрашиваются на путаницу,
+        // поэтому считает их одно место, общее со тестами (как `raid_gates`).
+        let auto_open = self.auto_gates_open();
         // Предел одной сделки — контейнер той ячейки, которую займёт заявка
         // (§12.90). Считает ядро тем же выражением, что и `trade`: разойдись
         // они, и Shift на кнопке обещал бы объём, который фасад отклоняет.
@@ -3705,6 +3782,9 @@ impl Sim {
             post_free,
             post_lot,
             shops: shops as i32,
+            auto_sales: auto_open.0,
+            auto_crafting: auto_open.1,
+            auto_raids: auto_open.2,
             recruits,
             research,
             topics,

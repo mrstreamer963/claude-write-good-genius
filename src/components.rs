@@ -610,6 +610,44 @@ impl Stocking {
     }
 }
 
+/// Ворота автоматики: какая технология открывает какое правило игрока (§12.93).
+/// Пустая строка — правило доступно с первого тика.
+///
+/// Это `*Rules`-ресурс, то есть разобранный рулсет: в снимок он не уходит
+/// никогда (§12.45), а `Sim::new` пересобирает его заново.
+///
+/// **Проверяются эти ворота только в командах фасада**, а не в системах:
+/// технологии только растут и только открывают (§12.18), забытой технологии не
+/// бывает, — поэтому правило, поставленное законно, работать не перестанет, и
+/// второй проверки в `plan_craft` / `run_auto_raids` / `run_auto_sales` не
+/// нужно. Снятие правила ворота не проверяют вовсе: запертая отмена оставила бы
+/// правило несбрасываемым.
+#[derive(Resource, Default)]
+pub(crate) struct AutoRules {
+    pub(crate) sales: String,
+    pub(crate) crafting: String,
+    pub(crate) raids: String,
+}
+
+impl AutoRules {
+    /// Открыто ли правило: ворот нет или технология изучена.
+    fn opens(gate: &str, techs: &Techs) -> bool {
+        gate.is_empty() || techs.knows(gate)
+    }
+
+    pub(crate) fn sales_open(&self, techs: &Techs) -> bool {
+        Self::opens(&self.sales, techs)
+    }
+
+    pub(crate) fn crafting_open(&self, techs: &Techs) -> bool {
+        Self::opens(&self.crafting, techs)
+    }
+
+    pub(crate) fn raids_open(&self, techs: &Techs) -> bool {
+        Self::opens(&self.raids, techs)
+    }
+}
+
 /// Что продавать сверх запаса и кому: тройки «предмет, фракция, сколько
 /// держать» (§12.87, §12.88). Ноль — правила нет, как и у порога производства.
 ///

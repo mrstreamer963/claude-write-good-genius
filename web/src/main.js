@@ -321,6 +321,18 @@ let postFree = false;
 // ноль — предела нет. Считает ядро тем же выражением, что и `trade`: разойдись
 // они, и Shift обещал бы объём, который фасад отклоняет молча.
 let postLot = 0;
+// Открыта ли автоматика такого рода (§12.93): ворота названы технологиями в
+// рулсете, а изучены они или нет — считает ядро. Ярлыки самих тем приезжают
+// один раз в `meta.auto_gates`, потому что имя темы это контент.
+let autoOpen = { sales: true, crafting: true, raids: true };
+
+// Отказ ворот автоматики словом (§12.53): «нужна какая-то наука» не говорит
+// ничего, поэтому называем тему по имени. `null` — ворота открыты.
+function autoGateHint(kind) {
+  if (autoOpen[kind]) return null;
+  const name = (meta?.auto_gates ?? {})[kind];
+  return name ? `Нужно исследование «${name}»` : "Нужно исследование";
+}
 // Зажат ли Shift: он удваивает не смысл кнопки, а её размер (пять штук против
 // двадцати пяти), поэтому доступность и подпись обязаны следовать за клавишей.
 // Молчащая кнопка читается как поломка — а «денег хватает на пять, но не на
@@ -695,6 +707,11 @@ function renderSnapshot(snap) {
   stock = snap.stock ?? [];
   desks = snap.desks ?? [];
   posts = snap.posts ?? 0;
+  autoOpen = {
+    sales: !!snap.auto_sales,
+    crafting: !!snap.auto_crafting,
+    raids: !!snap.auto_raids,
+  };
   postFree = !!snap.post_free;
   postLot = snap.post_lot ?? 0;
   shops = snap.shops ?? 0;
@@ -3866,17 +3883,23 @@ function syncStockRows(list, recipes) {
     // Пока игрок печатает — его текст не трогаем (§12.92): подпись зовётся
     // каждым кадром и затёрла бы набранное на первом же снапшоте.
     const typing = numEditing(key);
+    // Ворота автоматики (§12.93). **Гасим, а не скрываем**: скрытая строка не
+    // расскажет, что такая возможность есть, — в отличие от рецепта, закрытого
+    // технологией, который скрыт целиком.
+    const gate = autoGateHint("crafting");
     if (!typing) {
       label.textContent = min > 0 ? `держать ${min}` : "держать —";
     }
-    row.classList.toggle("on", min > 0);
+    row.classList.toggle("on", min > 0 && !gate);
+    row.classList.toggle("off", !!gate);
     row.hidden = !open;
     minus.disabled = !open || min <= 0;
     plus.disabled = !open;
     row.title =
-      min > 0
+      gate ??
+      (min > 0
         ? `Коты сами делают, пока на базе меньше ${min} шт. Клик — на штуку, Shift — на пять, зажать — быстрее`
-        : "Держать запас: коты будут делать сами, когда просядет";
+        : "Держать запас: коты будут делать сами, когда просядет");
   });
 }
 
@@ -3940,7 +3963,9 @@ function syncSaleRows() {
     if (!numEditing(key)) {
       label.textContent = keep > 0 ? `сверх ${keep}` : "сверх —";
     }
-    row.classList.toggle("on", keep > 0);
+    const gate = autoGateHint("sales");
+    row.classList.toggle("on", keep > 0 && !gate);
+    row.classList.toggle("off", !!gate);
     minus.disabled = keep <= 0;
     plus.disabled = false;
     // Порог меряет **склад** (§12.91), и сказать это надо прямо: то же число
@@ -3948,11 +3973,12 @@ function syncSaleRows() {
     // Поста может не быть вовсе — тогда правило стоит, но не сработает ни разу,
     // и об этом здесь же: молчащее правило читается как поломка (§12.53).
     row.title =
-      keep > 0
+      gate ??
+      (keep > 0
         ? `Коты продают всё, что на складе сверх ${keep} шт. (лежащее на полу не в счёт — сперва уберут).${
             posts ? "" : " Но торгового поста ещё нет."
           } Клик — на штуку, Shift — на пять, зажать — быстрее`
-        : "Продавать излишек: всё, что на складе сверх порога, коты отнесут на пост сами";
+        : "Продавать излишек: всё, что на складе сверх порога, коты отнесут на пост сами");
   }
 }
 
@@ -4632,19 +4658,26 @@ function raidCard(i, node) {
     ` data-key="go${i}@${at}" data-def="${i}" data-x="${node.x}" data-y="${node.y}">` +
     (g.ready ? "Отправить" : "Нельзя") +
     "</button>";
+  // Ворота автоматики (§12.93): без технологии правило не поставить, и причина
+  // называется словом — по `.off` браузер события мыши шлёт, в отличие от
+  // `disabled` (§12.71).
+  const autoGate = autoGateHint("raids");
   // Тумблер доступен и у закрытого заказа: правило ждёт ворот, как порог
   // производства ждёт материала, и поставить его заранее — это план (§12.67).
-  const auto = paused
-    ? `<button class="tool raid-pause" data-key="auto${i}@${at}" data-on="1"` +
-      ` data-x="${node.x}" data-y="${node.y}"` +
-      ' title="Правило стоит на паузе — вернуть отряд на этот круг">' +
-      "↻ неактивно</button>"
-    : `<button class="tool raid-auto${on ? " on" : ""}"` +
-      ` data-key="auto${i}@${at}" data-def="${on ? -1 : i}"` +
-      ` data-x="${node.x}" data-y="${node.y}"` +
-      ` title="${on ? "Отряд ходит сюда сам — снять правило" : "Ходить сюда самому, как только отряд готов"}">` +
-      (on ? "↻ автовылазка" : "↻") +
-      "</button>";
+  const auto = autoGate
+    ? `<button class="tool raid-auto off" data-key="auto${i}@${at}"` +
+      ` title="${esc(autoGate)}">↻</button>`
+    : paused
+      ? `<button class="tool raid-pause" data-key="auto${i}@${at}" data-on="1"` +
+        ` data-x="${node.x}" data-y="${node.y}"` +
+        ' title="Правило стоит на паузе — вернуть отряд на этот круг">' +
+        "↻ неактивно</button>"
+      : `<button class="tool raid-auto${on ? " on" : ""}"` +
+        ` data-key="auto${i}@${at}" data-def="${on ? -1 : i}"` +
+        ` data-x="${node.x}" data-y="${node.y}"` +
+        ` title="${on ? "Отряд ходит сюда сам — снять правило" : "Ходить сюда самому, как только отряд готов"}">` +
+        (on ? "↻ автовылазка" : "↻") +
+        "</button>";
 
   return (
     `<div class="raidwin-card${g.ready ? "" : " off"}">` +

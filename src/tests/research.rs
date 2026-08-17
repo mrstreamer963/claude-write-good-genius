@@ -361,3 +361,42 @@ fn the_shipped_ruleset_researches_its_first_topic() {
     let nest = 7; // а «Гнездо» ждёт следующей темы
     assert!(!sim.add_blueprint(11, 7, nest), "быт колонии ещё не изучен");
 }
+
+/// **Боевой рулсет: автоматика достижима.** Ловит контент, в котором ворота
+/// названы технологией, которой нет; тема-веха забыта в `requires`; или допуск
+/// подтемы выше того, до которого доводит парта, — то есть автоматика,
+/// запертая навсегда (§12.93).
+#[test]
+fn the_shipped_ruleset_can_reach_its_automation() {
+    let sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
+    let cap = sim.taught_cap("science");
+    let gates = sim.auto_gates();
+    assert_eq!(gates.len(), 3, "ворота названы у всех трёх правил");
+
+    for gate in gates {
+        let topic = sim
+            .topic_by_id(&gate)
+            .unwrap_or_else(|| panic!("ворота named `{gate}`, а темы с таким id нет"));
+        assert!(
+            topic.level <= cap,
+            "тема `{gate}` требует «Науки» {}, а парта доводит до {cap} — автоматика заперта",
+            topic.level,
+        );
+        // Веха обязана стоять в `requires`: иначе подтема висит сама по себе, и
+        // ветки нет — а именно ветка и была решением (§12.93).
+        assert!(
+            !topic.requires.is_empty(),
+            "тема `{gate}` не требует вехи: ветки автоматики нет, есть три отдельные темы",
+        );
+        for need in &topic.requires {
+            let parent = sim
+                .topic_by_id(need)
+                .unwrap_or_else(|| panic!("тема `{gate}` требует `{need}`, которой нет"));
+            assert!(
+                parent.level <= cap,
+                "веха `{need}` требует «Науки» {}, а парта доводит до {cap}",
+                parent.level,
+            );
+        }
+    }
+}

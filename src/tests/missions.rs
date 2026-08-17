@@ -1169,3 +1169,29 @@ fn a_manual_launch_of_the_same_mission_keeps_the_rule() {
     assert!(sim.launch_node(def, 1, 2), "отправили руками тот же заказ");
     assert_eq!(sim.auto_raid_at(1, 2), Some(def), "правило на месте");
 }
+
+/// Автовылазка открывается наукой (§12.93) — и это единственное правило, которое
+/// само отправляет котов в поле, поэтому в боевом рулсете его тема второго
+/// уровня. Ворота живут в рулсете, в схеме их нет: включаем руками.
+#[test]
+fn an_auto_raid_rule_needs_its_technology() {
+    let mut sim = sim_with_nodes(1);
+    let def = sim.set_mission(1, 30, &[(0, 5)]);
+    assert!(sim.enlist("a", 1, 2), "кот зачислен в отряд узла");
+    sim.set_auto_gates("", "", "callsigns");
+
+    assert!(
+        !sim.set_auto_raid(def as i32, 1, 2),
+        "технологии нет — правило не ставится"
+    );
+    assert_eq!(sim.auto_raid_at(1, 2), None);
+
+    sim.set_tech("callsigns");
+    assert!(sim.set_auto_raid(def as i32, 1, 2), "изучили — можно");
+    assert_eq!(sim.auto_raid_at(1, 2), Some(def));
+
+    // Снятие ворот не спрашивает.
+    sim.forget_techs();
+    assert!(sim.set_auto_raid(-1, 1, 2), "снять можно всегда");
+    assert_eq!(sim.auto_raid_at(1, 2), None);
+}

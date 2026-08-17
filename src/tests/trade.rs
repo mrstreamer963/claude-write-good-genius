@@ -1126,3 +1126,70 @@ fn the_threshold_measures_storage_not_the_floor() {
         "на складе четыреста — продавать нечего, сколько бы ни лежало на полу",
     );
 }
+
+// --- ворота автоматики -----------------------------------------------------
+//
+// Правила игрока открываются наукой (§12.93), а имена технологий живут в
+// рулсете: в синтетической схеме `AutoRules` пуст, значит ворот нет вовсе — и
+// все тесты выше про это не знают. Здесь ворота включаются вручную.
+
+/// Без технологии правило не поставить, с ней — поставить.
+#[test]
+fn a_sale_rule_needs_its_technology() {
+    let (mut sim, f) = sim_with_market();
+    sim.set_auto_gates("logistics", "", "");
+
+    assert!(
+        !sim.set_sale(f, 0, 20),
+        "технологии нет — правило не ставится"
+    );
+    assert_eq!(sim.sale_of(0), None);
+
+    sim.set_tech("logistics");
+    assert!(sim.set_sale(f, 0, 20), "изучили — можно");
+    assert_eq!(sim.sale_of(0), Some((f, 20)));
+}
+
+/// **Снятие проходит и без технологии.** Иначе правило, поставленное до правки
+/// рулсета, стало бы несбрасываемым — запертая отмена это не ворота, а ловушка.
+#[test]
+fn clearing_a_rule_needs_no_technology() {
+    let (mut sim, f) = sim_with_market();
+    sim.set_tech("logistics");
+    sim.set_auto_gates("logistics", "", "");
+    assert!(sim.set_sale(f, 0, 20));
+
+    sim.forget_techs();
+    assert!(sim.set_sale(f, 0, 0), "снять можно всегда");
+    assert_eq!(sim.sale_of(0), None);
+}
+
+/// Пустые ворота — это «правило доступно сразу»: так живут все синтетические
+/// миры, и так же будет жить рулсет, в котором ветки автоматики нет.
+#[test]
+fn empty_gates_open_everything() {
+    let (mut sim, f) = sim_with_market();
+
+    assert!(sim.set_sale(f, 0, 20), "ворот нет — правило ставится");
+}
+
+/// **Три флага не перепутаны местами.** Снапшот на хосте не собрать, поэтому
+/// панель и этот тест спрашивают одно выражение (`auto_gates_open`) — иначе
+/// перепутанные поля дали бы молча не работающую строку, и заметить это можно
+/// было бы только в игре (§12.93).
+#[test]
+fn each_automation_gate_answers_for_itself() {
+    let (mut sim, _) = sim_with_market();
+    sim.set_auto_gates("logistics", "planning", "callsigns");
+    assert_eq!(sim.auto_gates_open(), (false, false, false), "закрыто всё");
+
+    sim.set_tech("planning");
+    assert_eq!(
+        sim.auto_gates_open(),
+        (false, true, false),
+        "изучили «Наряды» — открылось только производство",
+    );
+
+    sim.set_tech("logistics");
+    assert_eq!(sim.auto_gates_open(), (true, true, false), "и сбыт");
+}
