@@ -922,44 +922,79 @@ fn clearing_the_threshold_leaves_the_open_deal_alone() {
     assert_eq!(sim.deals_open(), 1);
 
     assert!(sim.set_sale(f, 0, 0), "порог снят");
-    assert_eq!(sim.sale_keep(f, 0), 0, "правила больше нет");
+    assert_eq!(sim.sale_of(0), None, "правила больше нет");
     sim.tick_n(300);
     assert_eq!(sim.money(), 60, "а начатая сделка дошла до конца");
     assert_eq!(sim.item_total(0), 4, "и новых заявок не появилось");
 }
 
-/// Порог висит на паре «фракция + предмет»: чем фракция не торгует, на то у неё
-/// и правила нет. Молча не работающее правило читалось бы как поломка (§12.53).
+/// Адресата называет игрок, но фракция обязана этим предметом торговать: чем не
+/// торгует — на то у неё и правила нет. Молча не работающее правило читалось бы
+/// как поломка (§12.53).
 #[test]
 fn a_threshold_needs_the_faction_to_trade_that_item() {
     let (mut sim, f) = sim_with_market();
 
     assert!(!sim.set_sale(f, 1, 5), "деталью эти не торгуют");
     assert!(!sim.set_sale(f + 1, 0, 5), "и фракции такой нет");
-    assert_eq!(sim.sale_keep(f, 1), 0);
+    assert_eq!(sim.sale_of(1), None);
 }
 
-/// Два адресата на один предмет — это два решения игрока, и излишек берёт
-/// первое по палитре. Порядок фиксирован (§11): список правил отсортирован, а
-/// заявка первого тут же бронирует товар, поэтому второму уже нечего продавать.
+/// **Правило на предмет одно** (§12.88): второе перезаписывает первое вместе с
+/// покупателем.
+///
+/// До §12.88 правило висело на паре «фракция + предмет», и у лома их выходило
+/// два: включить можно было оба, а излишек молча доставался первому по палитре.
+/// Порядок был честно детерминирован — но игроку неоткуда его прочесть, то есть
+/// интерфейс предлагал выбор, который сам же и разрешал.
 #[test]
-fn two_buyers_take_the_surplus_in_palette_order() {
+fn a_second_rule_on_the_same_item_replaces_the_first() {
     let (mut sim, first) = sim_with_market();
-    sim.force_tile(4, 1, 2); // второй пост: ячейка для второго правила есть
+    sim.force_tile(4, 1, 2); // второй пост: ячейка под «вторую» сделку есть
     let second = sim.set_faction(100);
     sim.set_market(second, 100, 40, 25, 0);
     sim.set_prices(second, 0, &[10]);
     sim.put_scrap(6, 1, 10);
 
-    assert!(sim.set_sale(second, 0, 4), "правило второму");
-    assert!(
-        sim.set_sale(first, 0, 4),
-        "и первому — порядок клика не важен"
+    assert!(sim.set_sale(first, 0, 4), "сначала сбывать первой стороне");
+    assert!(sim.set_sale(second, 0, 4), "потом передумали — второй");
+    assert_eq!(
+        sim.sale_of(0),
+        Some((second, 4)),
+        "правило одно, и оно про нового покупателя",
     );
+
     sim.tick();
     assert_eq!(
         sim.sales(),
-        vec![(first, 0, 6)],
-        "излишек ушёл первому по палитре, второму осталось ноль",
+        vec![(second, 0, 6)],
+        "излишек ушёл выбранной стороне, и сделка ровно одна",
     );
+}
+
+/// Смена покупателя — это не сброс порога: число остаётся, меняется адресат.
+/// Иначе «передумал, кому продавать» стоило бы игроку набора числа заново.
+#[test]
+fn switching_the_buyer_keeps_the_threshold() {
+    let (mut sim, first) = sim_with_market();
+    let second = sim.set_faction(100);
+    sim.set_market(second, 100, 40, 25, 0);
+    sim.set_prices(second, 0, &[10]);
+
+    assert!(sim.set_sale(first, 0, 20));
+    assert!(sim.set_sale(second, 0, 20), "тот же порог, другая сторона");
+    assert_eq!(sim.sale_of(0), Some((second, 20)));
+}
+
+/// Правила на **разные** предметы живут порознь и друг друга не трогают: ключ —
+/// предмет, и один предмет о другом ничего не знает.
+#[test]
+fn rules_on_different_items_do_not_collide() {
+    let (mut sim, f) = sim_with_market();
+    sim.set_prices(f, 1, &[20]); // этой фракции продают и деталь
+
+    assert!(sim.set_sale(f, 0, 4));
+    assert!(sim.set_sale(f, 1, 7));
+    assert_eq!(sim.sale_of(0), Some((f, 4)), "лом на месте");
+    assert_eq!(sim.sale_of(1), Some((f, 7)), "и деталь рядом");
 }

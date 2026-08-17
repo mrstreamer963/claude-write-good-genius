@@ -610,17 +610,19 @@ fn an_auto_raid_rule_survives_a_save() {
 fn a_selling_rule_survives_a_save() {
     let mut live = Sim::new(CORE).expect("рулсет");
     live.without_timeline();
-    // Пара берётся из самого рулсета: порог живёт на «фракция + предмет», и
-    // фракция обязана этим предметом торговать (§12.87).
+    // Пара берётся из самого рулсета: правило висит на предмете, но фракция
+    // обязана этим предметом торговать (§12.87, §12.88).
     let (faction, item) = live.first_traded_pair().expect("кто-то чем-то торгует");
     assert!(live.set_sale(faction, item, 50), "правило поставлено");
 
     let json = live.save().expect("снимок");
     let loaded = Sim::load_from(CORE, &json).expect("загрузка");
 
+    // Покупатель сверяется наравне с числом: порядок полей в снимке менялся, а
+    // тип — нет, и разъехавшийся снимок продавал бы лом не тому (§12.45).
     assert_eq!(
-        loaded.sale_keep(faction, item),
-        50,
+        loaded.sale_of(item),
+        Some((faction, 50)),
         "порог на месте вместе с адресатом",
     );
 }

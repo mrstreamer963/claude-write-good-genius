@@ -323,11 +323,15 @@ let postFree = false;
 // двадцать пять» без этого выглядело именно так.
 let shiftHeld = false;
 const tradeButtons = []; // кнопки сделок — гасим, когда все посты заняты (§12.55)
-// Пороги автопродажи (§12.87). Число хранит ядро и везёт его в строке курса —
-// той самой, где стоит и кнопка «Продать»: у правила и у команды один адресат,
-// пара «фракция + предмет». Здесь оно нужно кнопкам «−/+», чтобы знать, от чего
-// отсчитывать, — как `stocking` у порога производства.
-const saleRows = []; // строки «продавать сверх N» — по строке на кнопку продажи
+// Правила автопродажи (§12.87, §12.88): **по одному на предмет**, покупатель —
+// поле правила. Хранит их ядро и везёт отдельным списком, а не полем в строке
+// курса: строк у предмета столько, сколько сторон им торгует, а правило одно.
+let sales = [];
+const saleRows = []; // строки «сверх N» — по строке на предмет
+// Кого выберет следующий клик у предмета, на котором правила ещё нет. Это не
+// зеркало правила (его нет), а заготовка выбора: как только порог поставят,
+// сторона уедет в ядро и читаться будет уже оттуда (§12.53).
+const picked = new Map();
 // Раздел вылазок — единственный, который перерисовывается целиком (§12.66):
 // строка на отряд, а состав и занятость узла меняются каждым снапшотом. Массива
 // живых кнопок у него поэтому нет — только контейнер.
@@ -683,6 +687,7 @@ function renderSnapshot(snap) {
   standing = snap.standing ?? [];
   money = snap.money ?? 0;
   prices = snap.prices ?? [];
+  sales = snap.sales ?? [];
   stock = snap.stock ?? [];
   desks = snap.desks ?? [];
   posts = snap.posts ?? 0;
@@ -2898,6 +2903,24 @@ window.addEventListener("keyup", (e) => {
 });
 window.addEventListener("blur", () => setShift(false));
 
+// Удержание «−/+» у порога отпускают где угодно — хоть мимо кнопки, хоть в
+// другом окне, — поэтому конец жеста ловит окно, и ровно в одном месте на всё
+// приложение: у самих кнопок жизнь короче окна (тулбар пересобирается на каждой
+// новой партии), и слушатель на каждой из них копился бы с ними.
+window.addEventListener("mouseup", stopStep);
+window.addEventListener("blur", () => {
+  stopStep();
+  // Набранное, но ещё не отданное ядру, досылаем: игрок ушёл из окна, ждать
+  // продолжения нечего, а потерять его настройку — хуже, чем применить её
+  // на полсекунды раньше (§12.89).
+  flushStep();
+});
+// Уход со вкладки — тот же случай: воркер в этот момент пишет автосейв (§12.45),
+// и набранное обязано попасть в него, а не пропасть вместе со вкладкой.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) flushStep();
+});
+
 // --- тулбар ---------------------------------------------------------------
 
 // Цена тайла: по цветной фишке на каждый нужный предмет. Порядок — как в
@@ -3138,13 +3161,16 @@ function buildToolbar() {
       // настроек: иначе игрок ищет причину происходящего не там, где решал.
       const row = document.createElement("div");
       row.className = "keep";
-      const minus = mkStep("−", (e) => bumpStock(i, e.shiftKey ? -5 : -1));
+      const key = `stock:${i}`;
+      const read = () => stocking[i] ?? 0;
+      const write = (min) => sendAction({ type: "setStock", recipe: i, min });
+      const minus = mkStep("−", key, read, write);
       const label = document.createElement("span");
       label.className = "keep-val";
-      const plus = mkStep("+", (e) => bumpStock(i, e.shiftKey ? 5 : 1));
+      const plus = mkStep("+", key, read, write);
       row.append(minus, label, plus);
       shop.appendChild(row);
-      stockRows.push({ row, label, minus, plus });
+      stockRows.push({ row, label, minus, plus, key });
     });
   }
 
@@ -3224,24 +3250,97 @@ function buildToolbar() {
         b.dataset.buying = buying ? "1" : "";
         tradeButtons.push(b);
         sec.appendChild(b);
-
-        // Порог автопродажи — **правило рядом с командой** (§12.64, §12.87):
-        // «продавать сверх N» вместо «продать ещё раз». Стоит только под
-        // продажей: автозакупка отвергнута (§12.65) — это уже не повторение
-        // решения игрока, а инициатива симуляции.
-        if (buying) continue;
-        const row = document.createElement("div");
-        row.className = "keep";
-        const minus = mkStep("−", (e) => bumpSale(fi, ii, e.shiftKey ? -5 : -1));
-        const label = document.createElement("span");
-        label.className = "keep-val";
-        const plus = mkStep("+", (e) => bumpSale(fi, ii, e.shiftKey ? 5 : 1));
-        row.append(minus, label, plus);
-        sec.appendChild(row);
-        saleRows.push({ row, label, minus, plus, faction: fi, item: ii });
       }
     }
   });
+
+  // Сбыт (§12.88) — пороги автопродажи, **по строке на предмет**. До §12.88 они
+  // стояли под кнопками «Продать», то есть на паре «фракция + предмет», и у
+  // лома строк выходило две: включить можно обе, а излишек молча доставался
+  // первой по палитре. Правило теперь одно на предмет, а покупатель назван в
+  // самой строке и переключается кликом — выбор остаётся за игроком (§12.87),
+  // но разрешать его молча больше нечего.
+  //
+  // Цена переезда: правило больше не стоит там же, где команда (§12.64).
+  // Платим за это подсказкой на самой кнопке «Продать» — она называет
+  // действующее правило (см. `syncTradeButtons`).
+  saleRows.length = 0;
+  {
+    // Кто чем торгует — из палитры, а не из снапшота: тулбар строится по
+    // `ready`, когда курсов ещё нет. `prices` приезжает `Map` (см. `costChips`).
+    const buyers = new Map(); // предмет → фракции, которые его берут
+    (meta.factions ?? []).forEach((fac, fi) => {
+      const list =
+        fac.prices instanceof Map
+          ? [...fac.prices.keys()]
+          : Object.keys(fac.prices ?? {});
+      (meta.items ?? []).forEach((it, ii) => {
+        if (!list.includes(it.id)) return;
+        if (!buyers.has(ii)) buyers.set(ii, []);
+        buyers.get(ii).push(fi);
+      });
+    });
+
+    if (buyers.size) {
+      const sale = mkSection(el, "Сбыт");
+      for (const [ii, sides] of [...buyers.entries()].sort(
+        (a, b) => a[0] - b[0],
+      )) {
+        const it = (meta.items ?? [])[ii];
+        // Заголовок строки — предмет и покупатель. Кнопка перебирает стороны по
+        // кругу; там, где сторона одна, выбирать не из чего — кнопка гаснет
+        // классом `.off` и говорит об этом словом, а не молчит (§12.53).
+        const key = `sale:${ii}`;
+        const head = mkTool("", () => {
+          if (sides.length < 2) return;
+          const now = buyerOf(ii, sides);
+          const next = sides[(sides.indexOf(now) + 1) % sides.length];
+          picked.set(ii, next);
+          // Правило уже стоит — смена стороны это его правка, а не заготовка:
+          // пишем сразу, иначе игрок увидел бы нового покупателя, а сбывали бы
+          // старому. Порог при этом не сбрасывается (§12.88), и **набираемое
+          // число тоже**: оно уезжает вместе со сменой стороны, а не теряется.
+          const keep = stepPending(key) ?? saleOf(ii)?.keep ?? 0;
+          if (stepEdit) clearTimeout(stepEdit.timer);
+          stepEdit = null;
+          if (keep > 0)
+            sendAction({ type: "setSale", faction: next, item: ii, keep });
+          syncSaleRows();
+        });
+        head.classList.add("toggle");
+        sale.appendChild(head);
+
+        const row = document.createElement("div");
+        row.className = "keep";
+        const read = () => saleOf(ii)?.keep ?? 0;
+        const write = (keep) =>
+          sendAction({
+            type: "setSale",
+            faction: buyerOf(ii, sides),
+            item: ii,
+            keep,
+          });
+        const minus = mkStep("−", key, read, write);
+        const label = document.createElement("span");
+        label.className = "keep-val";
+        const plus = mkStep("+", key, read, write);
+        row.append(minus, label, plus);
+        sale.appendChild(row);
+        saleRows.push({
+          head,
+          row,
+          label,
+          minus,
+          plus,
+          item: ii,
+          sides,
+          it,
+          key,
+        });
+      }
+      syncSaleRows();
+    }
+  }
 
   // Найм. Кандидаты уникальны (§4.2): каждый приходит один раз, известность
   // открывает, а платит склад — цена теми же фишками, что и у тайлов (§12.24).
@@ -3387,6 +3486,15 @@ function syncTradeButtons() {
       q.next_in > 0 && next !== unit
         ? ` · через ${q.next_in} станет ${next}¤`
         : "";
+    // Правило автопродажи живёт в своём разделе (§12.88), и кнопка «Продать»
+    // обязана про него сказать: иначе игрок, у которого излишек уходит сам,
+    // ищет причину не там, где принимал решение (§12.64).
+    const rule = buying ? null : saleOf(ii);
+    const auto = rule
+      ? ` · излишек сверх ${rule.keep} уходит «${
+          (meta.factions ?? [])[rule.faction]?.label ?? "?"
+        }» сам (раздел «Сбыт»)`
+      : "";
     b.title = !posts
       ? "Нужен «Торговый пост»"
       : !postFree
@@ -3402,7 +3510,7 @@ function syncTradeButtons() {
               `Свободно к продаже ${Math.max(0, free)}, нужно ${qty}`
             : `${unit}¤ за штуку · ${qty} шт. = ${total}¤${
                 shiftHeld ? "" : " · Shift — двадцать пять"
-              }${ahead}`;
+              }${ahead}${auto}`;
   }
 }
 
@@ -3520,24 +3628,123 @@ function syncRecipeButtons(list) {
   });
 }
 
+// Через сколько миллисекунд удержания начинается повтор и как часто он идёт.
+// Задержка длиннее обычного клика человека (сотня-другая миллисекунд, §12.84),
+// иначе одиночное нажатие превращалось бы в два.
+const STEP_HOLD_MS = 400;
+const STEP_REPEAT_MS = 70;
+// Сколько ждать после последнего шага, прежде чем отдать число ядру (§12.89).
+// Больше паузы между двумя кликами человека, иначе набор «клик-клик-клик»
+// доедет в ядро тремя разными правилами.
+const STEP_SETTLE_MS = 700;
+
+// Разгон удержания: первые повторы по штуке, дальше по пять, дальше по
+// двадцать пять. Сотня набирается примерно за полторы секунды, а начало
+// остаётся точным — попасть в «держать 7» можно тем же удержанием, не целясь
+// одиночными кликами.
+function stepSize(done) {
+  if (done < 10) return 1;
+  if (done < 20) return 5;
+  return 25;
+}
+
+// Удерживаемый шаг — **один на всё приложение**, а не по замыканию на кнопку.
+// Причина не в экономии: тулбар пересобирается на каждой новой партии и на
+// каждой загрузке снимка (`ready`), а слушатели окна переживают `innerHTML` —
+// с ними накопились бы десятки мёртвых обработчиков, дёргающихся на каждый
+// `mouseup`. Двух кнопок разом человек не удерживает, так что держатель один.
+let stepHold = null;
+
+// Число, которое игрок **сейчас набирает**: `{ key, value, write, timer }`.
+//
+// ⚠️ **Промежуточное значение — не решение** (§12.89). Порог это правило, а не
+// команда, и ядро исполняет его сразу: набирая «сверх 1000» с нуля, игрок
+// проезжает через «сверх 1», и на этом числе автопродажа успевает выставить
+// весь склад — а сделка не отменяется (§12.44). Поэтому число живёт здесь, пока
+// его набирают, и уезжает в ядро, только когда набор **устоялся**. Набор — один
+// на всё приложение по тому же доводу, что и удержание: двух чисел разом никто
+// не набирает, а чужой набор при переходе к другой строке досылается сразу.
+let stepEdit = null;
+
+function stopStep() {
+  if (!stepHold) return;
+  clearTimeout(stepHold.timer);
+  stepHold = null;
+}
+
+// Число, которое игрок набирает у этой строки; `null` — набора нет и читать
+// надо снапшот. Спрашивают это подписи строк: пока идёт набор, на экране обязано
+// стоять то, что игрок видит под пальцем, а не то, что уже знает ядро.
+function stepPending(key) {
+  return stepEdit && stepEdit.key === key ? stepEdit.value : null;
+}
+
+// Досылает набранное немедленно. Зовётся, когда ждать больше нельзя: игрок ушёл
+// к другой строке, сменил покупателя или увёл окно.
+function flushStep() {
+  if (!stepEdit) return;
+  clearTimeout(stepEdit.timer);
+  const { value, write } = stepEdit;
+  stepEdit = null;
+  write(value);
+}
+
+// Один шаг: цель считается **локально, от значения, снятого на нажатии**.
+// Перечитывать снапшот на каждом повторе нельзя — ответ ядра идёт кадр-другой,
+// и повтор, обогнавший его, послал бы то же самое число второй раз: игрок
+// держит кнопку, а порог стоит. Своего счётчика, живущего дольше набора, при
+// этом не заводится: устоялось — и число снова берётся из снапшота (§12.53).
+function stepOnce(size) {
+  const hold = stepHold;
+  const next = Math.max(0, hold.value + hold.dir * size);
+  if (next === hold.value) return; // упёрлись в ноль — молчим, а не спамим ядро
+  hold.value = next;
+  // Не пишем в ядро, а откладываем: писать на каждом шаге значит исполнять
+  // числа, которых игрок не решал (§12.89).
+  if (stepEdit) clearTimeout(stepEdit.timer);
+  stepEdit = { key: hold.key, value: next, write: hold.write, timer: null };
+  stepEdit.timer = setTimeout(flushStep, STEP_SETTLE_MS);
+}
+
+function repeatStep() {
+  stepOnce(stepSize(stepHold.done));
+  stepHold.done += 1;
+  stepHold.timer = setTimeout(repeatStep, STEP_REPEAT_MS);
+}
+
 // Кнопка шага у порога. Живёт в тулбаре, а не в панели, поэтому слушатель
 // вешается прямо на узел: перерисовка целиком (§12.57) грозит только правым
-// панелям, а тулбар собирается один раз.
-function mkStep(sign, onClick) {
+// панелям, а тулбар собирается один раз на партию.
+//
+// **Нажатие, а не клик**: работа идёт по `mousedown`, потому что удержание и
+// есть жест, а `click` приходит только на отпускании. Кнопка, погашенная
+// `disabled`, событий не шлёт вовсе — здесь это и нужно: на нуле уменьшать
+// нечего, и называть словом тоже нечего (§12.53 — про кнопки, у которых есть
+// причина отказа).
+function mkStep(sign, key, read, write) {
   const b = document.createElement("button");
   b.className = "tool step";
   b.textContent = sign;
-  b.addEventListener("click", onClick);
-  return b;
-}
+  const dir = sign === "+" ? 1 : -1;
 
-// Сдвинуть порог. Отсчитываем от **числа из снапшота**, а не от своего
-// счётчика: правило живёт в ядре, и второй его экземпляр здесь разошёлся бы с
-// ним при первой же загрузке партии (§12.53).
-function bumpStock(recipe, delta) {
-  const min = Math.max(0, (stocking[recipe] ?? 0) + delta);
-  if (min === (stocking[recipe] ?? 0)) return;
-  sendAction({ type: "setStock", recipe, min });
+  b.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    stopStep();
+    // Ушли к другой строке — её число доспать нельзя, дописываем прежнее.
+    if (stepEdit && stepEdit.key !== key) flushStep();
+    // Продолжаем начатое: набор «клик-клик-клик» это одно число, а не три.
+    const from = stepPending(key) ?? read();
+    stepHold = { timer: null, done: 0, value: from, dir, write, key };
+    // Первый шаг — обычный: клик по-прежнему двигает на штуку, а Shift на пять.
+    // Дальше размер задаёт разгон: у удержания своя скорость, и умножать её ещё
+    // и на Shift значило бы промахиваться мимо любого числа.
+    stepOnce(e.shiftKey ? 5 : 1);
+    stepHold.timer = setTimeout(repeatStep, STEP_HOLD_MS);
+  });
+  // Увёл курсор с кнопки — значит передумал: порог не должен расти за спиной.
+  // Отпускание же ловит окно (см. `mouseup` ниже): кнопку отпускают и мимо неё.
+  b.addEventListener("mouseleave", stopStep);
+  return b;
 }
 
 // Порог показываем словом, а не пустым нулём: «держать —» читается как «правила
@@ -3545,10 +3752,12 @@ function bumpStock(recipe, delta) {
 // делал. Рецепт, закрытый технологией, порога не принимает — ядро его всё равно
 // не исполнит (§12.65).
 function syncStockRows(list, recipes) {
-  stockRows.forEach(({ row, label, minus, plus }, i) => {
-    const min = (list ?? [])[i] ?? 0;
+  stockRows.forEach(({ row, label, minus, plus, key }, i) => {
+    // Пока число набирают, на экране стоит набираемое, а не то, что уже знает
+    // ядро (§12.89): иначе подпись отставала бы от пальца на полсекунды.
+    stocking[i] = (list ?? [])[i] ?? 0;
+    const min = stepPending(key) ?? stocking[i];
     const open = ((recipes ?? [])[i] ?? {}).unlocked ?? false;
-    stocking[i] = min;
     label.textContent = min > 0 ? `держать ${min}` : "держать —";
     row.classList.toggle("on", min > 0);
     row.hidden = !open;
@@ -3556,30 +3765,67 @@ function syncStockRows(list, recipes) {
     plus.disabled = !open;
     row.title =
       min > 0
-        ? `Коты сами делают, пока на базе меньше ${min} шт. Клик — на штуку, Shift — на пять`
+        ? `Коты сами делают, пока на базе меньше ${min} шт. Клик — на штуку, Shift — на пять, зажать — быстрее`
         : "Держать запас: коты будут делать сами, когда просядет";
   });
 }
 
-// Сдвинуть порог автопродажи. Отсчитываем от **числа из снапшота** — по той же
-// причине, что и у порога производства: правило живёт в ядре, и второй его
-// экземпляр здесь разошёлся бы с ним при первой же загрузке партии (§12.53).
-function bumpSale(faction, item, delta) {
-  const was = quoteOf(faction, item)?.keep ?? 0;
-  const keep = Math.max(0, was + delta);
-  if (keep === was) return;
-  sendAction({ type: "setSale", faction, item, keep });
+// Действующее правило по предмету — из снапшота (§12.88). Правило одно, и
+// покупатель приезжает вместе с числом: второго источника ни того, ни другого
+// в JS быть не должно.
+function saleOf(item) {
+  return sales.find((s) => s.item === item);
+}
+
+// Кому уйдёт излишек этого предмета: сторона из правила, если оно есть, иначе
+// заготовка выбора, иначе первая, кто этим торгует. Порядок именно такой —
+// правило старше заготовки, иначе игрок правил бы одно, а видел другое.
+function buyerOf(item, sides) {
+  return saleOf(item)?.faction ?? picked.get(item) ?? sides[0];
 }
 
 // Порог продажи показываем словом, а не пустым нулём: «сверх —» читается как
 // «правила нет», а «сверх 0» — как «продавать всё до последнего лома», то есть
 // как настройка, которой игрок не делал (и которой в ядре нет: ноль — снятие).
 //
-// Число едет в строке курса (`keep`), потому что у правила и у кнопки один
-// адресат — пара «фракция + предмет» (§12.87).
+// Заголовок строки называет **предмет и покупателя**: правило одно на предмет,
+// и сторона — его поле (§12.88). Там, где сторона одна, выбирать не из чего —
+// кнопка гаснет классом `.off` и объясняется словом, а не молчит (§12.53).
 function syncSaleRows() {
-  for (const { row, label, minus, plus, faction, item } of saleRows) {
-    const keep = quoteOf(faction, item)?.keep ?? 0;
+  for (const {
+    head,
+    row,
+    label,
+    minus,
+    plus,
+    item,
+    sides,
+    it,
+    key,
+  } of saleRows) {
+    // Набираемое число старше того, что знает ядро (§12.89): пока игрок жмёт
+    // «+», на экране обязано стоять то, что у него под пальцем.
+    const keep = stepPending(key) ?? saleOf(item)?.keep ?? 0;
+    const who = buyerOf(item, sides);
+    const name = (meta.factions ?? [])[who];
+    const one = sides.length < 2;
+
+    // ⚠️ Только при изменении (§12.84): `syncSaleRows` зовётся каждым снапшотом,
+    // и безусловный `innerHTML` пересоздавал бы детей кнопки каждые 16 мс —
+    // `mousedown` пришёлся бы на один `<span>`, `mouseup` на другой, уже
+    // мёртвый, и `click` браузер не выдал бы вовсе. Кнопка смены покупателя
+    // выглядела бы живой и молча не работала.
+    const html =
+      `<span class="sw" style="background:${it.color}"></span>` +
+      `<span>${esc(it.label || it.id)}</span>` +
+      `<b class="rate">${esc(name?.label || name?.id || "—")}</b>`;
+    if (head.innerHTML !== html) head.innerHTML = html;
+    head.classList.toggle("on", keep > 0);
+    head.classList.toggle("off", one);
+    head.title = one
+      ? `Этот товар берёт только «${name?.label || name?.id}» — выбирать не из кого`
+      : `Излишек уходит «${name?.label || name?.id}». Клик — другая сторона; порог при этом остаётся`;
+
     label.textContent = keep > 0 ? `сверх ${keep}` : "сверх —";
     row.classList.toggle("on", keep > 0);
     minus.disabled = keep <= 0;
@@ -3591,7 +3837,7 @@ function syncSaleRows() {
       keep > 0
         ? `Коты сами продают всё, что сверх ${keep} шт.${
             posts ? "" : " Но торгового поста ещё нет."
-          } Клик — на штуку, Shift — на пять`
+          } Клик — на штуку, Shift — на пять, зажать — быстрее`
         : "Продавать излишек: коты сами отнесут на пост всё, что сверх порога";
   }
 }
