@@ -3785,6 +3785,7 @@ impl Sim {
             auto_sales: auto_open.0,
             auto_crafting: auto_open.1,
             auto_raids: auto_open.2,
+            auto_tidy: self.world.resource::<AutoTidy>().0,
             recruits,
             research,
             topics,
