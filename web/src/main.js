@@ -2998,7 +2998,12 @@ function mkSection(el, title) {
   const head = document.createElement("button");
   head.className = "sec-head";
   head.innerHTML = `<span>${esc(title)}</span><span class="chev">›</span>`;
-  head.addEventListener("click", () => openOnly(title));
+  // Повторный клик по открытому разделу его закрывает: заголовок — это
+  // переключатель, а не только «открыть». «Свёрнуто всё» и так законное
+  // состояние (см. `openOnly`), просто попасть в него мышью было нельзя.
+  head.addEventListener("click", () =>
+    openOnly(openSection === title ? null : title),
+  );
   const body = document.createElement("div");
   body.className = "sec-body";
   sec.appendChild(head);
