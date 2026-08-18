@@ -33,6 +33,19 @@ const tickEl = document.getElementById("tick");
 const scrapEl = document.getElementById("scrap");
 const catEl = document.getElementById("cat");
 const cellEl = document.getElementById("cell");
+// ⚠️ Панель клетки перерисовывается каждым снапшотом целиком, поэтому её
+// единственная кнопка идёт делегированием и парой `mousedown`/`mouseup`
+// (§12.80, §12.95): узел кнопки живёт один кадр, а клик человека — сотню
+// миллисекунд. Регистрируется один раз, здесь, а не при отрисовке панели.
+onPanelClick(cellEl, ".store-mark", (b) =>
+  sendAction({
+    type: "store",
+    x: Number(b.dataset.x),
+    y: Number(b.dataset.y),
+    w: 1,
+    h: 1,
+  }),
+);
 const missionEl = document.getElementById("mission");
 const captiveEl = document.getElementById("captive");
 const researchEl = document.getElementById("research");
@@ -229,7 +242,7 @@ let meta = null; // { width, height, palette, items, skills, perks }
 let paletteColors = []; // number[]
 let itemColors = []; // number[] — цвет предмета по индексу палитры items
 let mapCells = null; // Int-массив состояния карты
-let mode = "cursor"; // 'cursor' | 'build' | 'store'
+let mode = "cursor"; // 'cursor' | 'build'
 let buildTile = 0; // индекс палитры, или -1 = стереть (в режиме build)
 let autoTidy = true; // коты сами свозят лом на склад (см. ядро, §12.16)
 let autoRest = true; // и сами бросают работу на исходе сил (§12.33)
@@ -1325,9 +1338,17 @@ function renderCellPanel(snap) {
       .join(" · ");
     parts.push(`<div class="cat-sub">${chips}</div>`);
     // Пометка «на склад» объясняет, почему за кучей кто-то придёт, — а при
-    // включённой автоуборке помечено всё, что лежит вне склада.
-    if (piles.some((s) => s.marked))
-      parts.push('<div class="cat-sub">помечено на склад</div>');
+    // включённой автоуборке помечено всё, что лежит вне склада. Она же и
+    // единственное решение об этой клетке, поэтому с §12.95 стоит здесь
+    // кнопкой: разметка рамкой была режимом ввода, который держал на прицеле
+    // каждый клик по карте ради жеста в одну клетку.
+    const marked = piles.some((s) => s.marked);
+    parts.push(
+      `<button class="tool store-mark${marked ? " on" : ""}" data-key="store@${x}, ${y}"` +
+        ` data-x="${x}" data-y="${y}">` +
+        (marked ? "✓ помечено на склад" : "Пометить на склад") +
+        "</button>",
+    );
   } else if (def?.capacity > 0) {
     // «Пусто» пишется только там, где что-то могло бы лежать (§12.80): на полу,
     // за партой и у рации куч не бывает вовсе, и отсутствие того, чего тут не
@@ -2590,8 +2611,7 @@ function rectOf(a, b) {
 function applyDrag() {
   if (!dragFrom || !dragTo) return;
   const rect = rectOf(dragFrom, dragTo);
-  if (mode === "store") worker.postMessage({ type: "store", ...rect });
-  else worker.postMessage({ type: "build", ...rect, tile: buildTile });
+  worker.postMessage({ type: "build", ...rect, tile: buildTile });
 }
 
 // `global` — где отпустили кнопку: подсветка сразу возвращается к одной клетке
@@ -2726,9 +2746,6 @@ function cssColor(n) {
 // что игрок ставит (это ответ на «что именно»), а плашка — заметной (ответ на
 // «я в режиме»), и тёмный пол в этой роли не работает.
 function modeChrome() {
-  if (mode === "store") {
-    return { key: "store", label: "НА СКЛАД", color: COLORS.scrap, tint: null };
-  }
   if (mode === "build") {
     if (buildTile < 0) {
       return { key: "erase", label: "СНОС", color: COLORS.erase, tint: null };
@@ -2749,12 +2766,7 @@ function modeChrome() {
 // читаться до клика — периферийным зрением и там, куда игрок смотрит.
 function applyModeChrome() {
   const m = modeChrome();
-  stageEl.classList.remove(
-    "mode-cursor",
-    "mode-build",
-    "mode-erase",
-    "mode-store",
-  );
+  stageEl.classList.remove("mode-cursor", "mode-build", "mode-erase");
   stageEl.classList.add(`mode-${m.key}`);
   stageEl.style.setProperty("--mode-color", cssColor(m.color));
   // Разметка модальна: пока она идёт, «управлять» нечем. Признак висит на
@@ -2864,6 +2876,10 @@ const KEEPS_CELL = new Set([
   "unpostRelay",
   "enlist",
   "dismiss",
+  // Пометка «на склад» (§12.95) — единственная команда, кнопка которой стоит
+  // в самой панели клетки: снять выделение значило бы закрыть панель тем же
+  // кликом, которым её нажали, и «снять пометку» стало бы недостижимо.
+  "store",
 ]);
 
 function sendAction(msg) {
@@ -2998,7 +3014,7 @@ let openSection = null;
 // «Лом» здесь вместе с «Постройкой» намеренно: рамка на склад — та же разметка,
 // и гонять игрока через курсор между двумя рамками было бы налогом на ровном
 // месте.
-const TOOL_SECTIONS = new Set(["Постройка", "Лом"]);
+const TOOL_SECTIONS = new Set(["Постройка"]);
 
 function mkSection(el, title) {
   const sec = document.createElement("div");
@@ -3068,16 +3084,6 @@ function buildToolbar() {
     () => selectBuild(-1, er),
   );
   build.appendChild(er);
-
-  const scrap = mkSection(el, "Лом");
-
-  // Разметка уборки рамкой: повторный жест по помеченному снимает пометку.
-  // Кот не выбирается — задачу возьмёт любой свободный.
-  const st = mkTool(
-    '<span class="sw sw-scrap"></span><span>На склад</span>',
-    () => selectStore(st),
-  );
-  scrap.appendChild(st);
 
   // Правила симуляции — не режимы ввода, а тумблеры поведения котов, поэтому
   // они живут отдельно от инструментов и своей подсветкой их не сбивают.
@@ -4908,11 +4914,6 @@ function selectCursor(btn) {
 function selectBuild(i, btn) {
   mode = "build";
   buildTile = i;
-  activate(btn);
-  applyModeChrome();
-}
-function selectStore(btn) {
-  mode = "store";
   activate(btn);
   applyModeChrome();
 }

@@ -133,8 +133,7 @@ main#stage canvas {
    `--mode-color` — считает его `modeChrome()`, и второго места, где режим
    превращается в цвет, быть не должно. */
 main#stage.mode-build,
-main#stage.mode-erase,
-main#stage.mode-store {
+main#stage.mode-erase {
   cursor: crosshair;
 }
 /* Обводка поля — отдельным слоем поверх канваса, а не `box-shadow: inset` на
@@ -144,8 +143,7 @@ main#stage.mode-store {
    боковыми панелями, и линия по самому краю экрана теряется — а размытое пятно
    по периметру ловится боковым зрением, чего от этого сигнала и надо. */
 main#stage.mode-build::after,
-main#stage.mode-erase::after,
-main#stage.mode-store::after {
+main#stage.mode-erase::after {
   content: "";
   position: absolute;
   inset: 0;
