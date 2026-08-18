@@ -3580,6 +3580,14 @@ function payHint(cost) {
   return short.join(" · ");
 }
 
+// Раздел, в котором не осталось ни одной живой кнопки, прячется целиком:
+// пустой заголовок обещает выбор, которого нет.
+function syncSectionRows(title, buttons) {
+  const sec = sections.find((s) => s.title === title);
+  if (!sec) return;
+  sec.head.parentElement.hidden = buttons.every((b) => b.hidden);
+}
+
 // Доступность кандидата считает ядро (известность + содержимое склада), здесь
 // только показываем: дублировать правило в JS значит однажды показать кнопку,
 // которую ядро отклонит.
@@ -3587,6 +3595,10 @@ function syncRecruitButtons(list) {
   recruitButtons.forEach((b, i) => {
     const r = (list ?? [])[i];
     if (!r) return;
+    // Нанятый кандидат уникален и второй раз не придёт (§4.2), поэтому строка
+    // его — не выбор, а память. Убираем совсем: список найма про тех, кого
+    // ещё можно позвать.
+    b.hidden = !!r.hired;
     const ready = !r.hired && r.unlocked && r.welcome && r.affordable;
     b.disabled = !ready;
     b.classList.toggle("on", ready);
@@ -3608,6 +3620,7 @@ function syncRecruitButtons(list) {
     // «зачем мне этот кот» игрок спрашивает до того, как накопит.
     b.title = [b.dataset.hint, why].filter(Boolean).join(" · ");
   });
+  syncSectionRows("Найм", recruitButtons);
 }
 
 // Кнопка живая, только когда выделено ровно столько котов, сколько уходит:
@@ -3620,6 +3633,12 @@ function syncTopicButtons(list) {
   topicButtons.forEach((b, i) => {
     const t = (list ?? [])[i];
     if (!t) return;
+    // Технологии не забываются (§12.18), значит изученная тема — это уже не
+    // решение. Прячем её, как и тему, запертую другими технологиями: список
+    // показывает то, за что можно взяться сейчас. Остальные причины отказа
+    // (склад, допуск, лаборатория) кнопку не прячут — они про «пока нечем»,
+    // а не про «пока нельзя выбрать».
+    b.hidden = !!t.known || !t.unlocked;
     const ready =
       !t.known &&
       t.unlocked &&
@@ -3643,6 +3662,7 @@ function syncTopicButtons(list) {
                 ? "Тема уже изучается"
                 : "Взяться за тему";
   });
+  syncSectionRows("Наука", topicButtons);
 }
 
 // Доступность рецепта считает ядро (технологии, мастерская, склад), здесь
@@ -3883,16 +3903,15 @@ function syncStockRows(list, recipes) {
     // Пока игрок печатает — его текст не трогаем (§12.92): подпись зовётся
     // каждым кадром и затёрла бы набранное на первом же снапшоте.
     const typing = numEditing(key);
-    // Ворота автоматики (§12.93). **Гасим, а не скрываем**: скрытая строка не
-    // расскажет, что такая возможность есть, — в отличие от рецепта, закрытого
-    // технологией, который скрыт целиком.
+    // Ворота автоматики (§12.93): до технологии строки нет вовсе — правило
+    // ещё не механика игры, и полоска «держать —» обещала бы то, чего нет.
     const gate = autoGateHint("crafting");
     if (!typing) {
       label.textContent = min > 0 ? `держать ${min}` : "держать —";
     }
     row.classList.toggle("on", min > 0 && !gate);
     row.classList.toggle("off", !!gate);
-    row.hidden = !open;
+    row.hidden = !open || !!gate;
     minus.disabled = !open || min <= 0;
     plus.disabled = !open;
     row.title =
@@ -3963,7 +3982,11 @@ function syncSaleRows() {
     if (!numEditing(key)) {
       label.textContent = keep > 0 ? `сверх ${keep}` : "сверх —";
     }
+    // Раздел «Сбыт» — это целиком правило автопродажи, поэтому до технологии
+    // прячется и строка, и её заголовок; пустой раздел уберёт `syncSectionRows`.
     const gate = autoGateHint("sales");
+    row.hidden = !!gate;
+    head.hidden = !!gate;
     row.classList.toggle("on", keep > 0 && !gate);
     row.classList.toggle("off", !!gate);
     minus.disabled = keep <= 0;
@@ -3980,6 +4003,11 @@ function syncSaleRows() {
           } Клик — на штуку, Shift — на пять, зажать — быстрее`
         : "Продавать излишек: всё, что на складе сверх порога, коты отнесут на пост сами");
   }
+  // Весь раздел — про одно правило, поэтому до технологии он пуст и не нужен.
+  syncSectionRows(
+    "Сбыт",
+    saleRows.map((r) => r.head),
+  );
 }
 
 // Почему рецепт не заказать. «Мастерской нет» и «все станки заняты» — разные
@@ -4664,9 +4692,10 @@ function raidCard(i, node) {
   const autoGate = autoGateHint("raids");
   // Тумблер доступен и у закрытого заказа: правило ждёт ворот, как порог
   // производства ждёт материала, и поставить его заранее — это план (§12.67).
+  // А вот до самой технологии тумблера нет вовсе: автоматики в игре ещё не
+  // существует, и кнопка обещала бы механику, о которой игрок не знает.
   const auto = autoGate
-    ? `<button class="tool raid-auto off" data-key="auto${i}@${at}"` +
-      ` title="${esc(autoGate)}">↻</button>`
+    ? ""
     : paused
       ? `<button class="tool raid-pause" data-key="auto${i}@${at}" data-on="1"` +
         ` data-x="${node.x}" data-y="${node.y}"` +

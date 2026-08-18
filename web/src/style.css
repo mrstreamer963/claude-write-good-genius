@@ -321,6 +321,12 @@ main#stage.mode-cursor #mode-banner {
   font-size: 13px;
   text-align: left;
 }
+/* Явный display у .tool перебивает атрибут hidden — без этой строки скрытая
+   кнопка остаётся видимой (на этом уже попались). То же и у самого раздела. */
+.tool[hidden],
+[hidden] {
+  display: none !important;
+}
 .tool:hover {
   border-color: #3b4560;
 }
