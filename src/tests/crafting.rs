@@ -30,6 +30,19 @@ fn sim_with_two_shops() -> Sim {
     sim
 }
 
+/// Коридор пошире: три мастерских — (2,1), (3,1), (4,1), — склад в (6,1) и трое
+/// котов. Мир под §12.96: один заказ обязан занять все три станка, а не один.
+fn sim_with_three_shops() -> Sim {
+    let mut sim = sim_from(&["###########", "#a.....b.c#", "###########"]);
+    sim.set_capacity(1, 100);
+    sim.force_tile(6, 1, 1);
+    sim.set_shop(2, true);
+    for x in 2..=4 {
+        sim.force_tile(x, 1, 2);
+    }
+    sim
+}
+
 // --- работа над заказом -----------------------------------------------------
 
 #[test]
@@ -206,7 +219,9 @@ fn crafting_without_a_shop_is_refused() {
     assert!(!sim.start_craft(recipe, 1), "работать негде");
 }
 
-/// Заказов столько, сколько мастерских: станок — это слот (§12.55).
+/// Заказов столько, сколько мастерских: станок — это ячейка, и второму заказу
+/// в неё не встать (§12.55, §12.96). Рецепт при этом чужой — своему заказу
+/// заявка добавила бы штук, см. `a_repeat_order_of_the_same_recipe_adds_count`.
 #[test]
 fn orders_are_capped_by_the_number_of_shops() {
     let mut sim = sim_with_shop();
@@ -221,9 +236,9 @@ fn orders_are_capped_by_the_number_of_shops() {
     );
 }
 
-/// Повторная заявка на тот же рецепт **добавляет штук**, а не заводит второй
-/// заказ: счётчик у заказа для этого и есть, а два одинаковых заняли бы два
-/// станка ради работы, которую один сделает подряд (§12.55).
+/// **Когда свободных ячеек не осталось**, повторная заявка добавляет штук к
+/// своему заказу, а не отказывает (§12.96). Мастерская здесь одна, и это ровно
+/// то поведение, что было до §12.96: на маленькой базе ничего не изменилось.
 #[test]
 fn a_repeat_order_of_the_same_recipe_adds_count() {
     let mut sim = sim_with_shop();
@@ -257,18 +272,19 @@ fn two_shops_run_two_orders_at_once() {
     );
     sim.tick_n(6);
 
-    assert!(sim.crafter_of(bolt).is_some(), "первый заказ взят");
-    assert!(sim.crafter_of(nut).is_some(), "и второй тоже");
+    assert!(sim.crafter_at(3, 1).is_some(), "первый заказ взят");
+    assert!(sim.crafter_at(4, 1).is_some(), "и второй тоже");
     assert_ne!(
-        sim.crafter_of(bolt),
-        sim.crafter_of(nut),
+        sim.crafter_at(3, 1),
+        sim.crafter_at(4, 1),
         "и берут их разные коты: `commands` отложены, и без списков один и тот \
          же кот достался бы обоим"
     );
 }
 
-/// Два заказа никогда не садятся за один станок: занятость держит `Craft::spot`,
-/// как лежанку держит `Rest::spot` (§12.55, §12.20).
+/// Два заказа никогда не садятся в одну ячейку: с §12.96 её держит сам
+/// `Craft::cell`, как сделка держит ячейку поста, — и держит с самой заявки, а
+/// не с той минуты, когда нашёлся мастер.
 #[test]
 fn two_orders_never_share_a_shop() {
     let mut sim = sim_with_two_shops();
@@ -282,11 +298,96 @@ fn two_orders_never_share_a_shop() {
     // конечным состоянием замаскировалось бы (ср. `demolish_job_is_done_...`).
     for _ in 0..40 {
         sim.tick_n(1);
-        let (a, b) = (sim.craft_spot_of(bolt), sim.craft_spot_of(nut));
-        if let (Some(a), Some(b)) = (a, b) {
-            assert_ne!(a, b, "два заказа за одним верстаком");
-        }
+        let (a, b) = (sim.craft_cells_of(bolt), sim.craft_cells_of(nut));
+        assert!(
+            a.iter().all(|c| !b.contains(c)),
+            "два заказа за одним верстаком: {a:?} и {b:?}"
+        );
     }
+}
+
+// --- ячейка станка (§12.96) -------------------------------------------------
+
+/// **Один рецепт занимает все свободные станки.** Та самая жалоба, из-за
+/// которой заказ и переехал в ячейку: пятнадцать деталей при трёх мастерских
+/// делались на одной, потому что заказ был уникален по рецепту и держал одного
+/// кота (§12.55).
+#[test]
+fn one_recipe_fills_every_shop() {
+    let mut sim = sim_with_three_shops();
+    sim.put_item(6, 1, SCRAP, 60);
+    let recipe = sim.set_recipe(400, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+
+    assert!(sim.start_craft(recipe, 5));
+    assert!(sim.start_craft(recipe, 5), "второй клик — второй станок");
+    assert!(sim.start_craft(recipe, 5), "третий — третий");
+    assert_eq!(sim.orders_count(), 3, "три заказа по одному рецепту");
+    assert_eq!(
+        sim.craft_left_of(recipe),
+        Some(15),
+        "и пятнадцать штук всего"
+    );
+
+    sim.tick_n(10);
+    assert_eq!(
+        sim.crafters_busy(),
+        3,
+        "работают трое разом, а не по очереди"
+    );
+}
+
+/// Ячейку выбирает **ядро**, первую свободную по обходу карты (§12.96), а не
+/// игрок мышью: §12.16 держится тем, что разметка не зависит ни от исполнителя,
+/// ни от того, какую комнату игрок нашёл курсором.
+#[test]
+fn an_order_takes_the_first_free_cell_in_map_order() {
+    let mut sim = sim_with_three_shops();
+    sim.put_item(6, 1, SCRAP, 60);
+    let recipe = sim.set_recipe(400, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+    sim.start_craft(recipe, 1);
+    sim.start_craft(recipe, 1);
+
+    assert_eq!(
+        sim.craft_cells_of(recipe),
+        vec![(2, 1), (3, 1)],
+        "заказы легли по обходу карты, а не по истории вставок (§11)"
+    );
+}
+
+/// Ячеек не осталось — **своему** рецепту штуки добавляют, чужому отказывают
+/// (§12.96). Первая ветка и есть всё поведение базы с одной мастерской.
+#[test]
+fn a_full_base_adds_to_its_own_order_and_refuses_a_stranger() {
+    let mut sim = sim_with_three_shops();
+    sim.put_item(6, 1, SCRAP, 60);
+    let bolt = sim.set_recipe(400, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+    let nut = sim.set_recipe(400, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+    for _ in 0..3 {
+        assert!(sim.start_craft(bolt, 1));
+    }
+    assert_eq!(sim.orders_count(), 3, "все три ячейки заняты");
+
+    assert!(sim.start_craft(bolt, 4), "своему заказу штуки добавят");
+    assert_eq!(sim.craft_left_of(bolt), Some(7));
+    assert_eq!(sim.orders_count(), 3, "и четвёртой ячейки не завели");
+    assert!(!sim.start_craft(nut, 1), "а чужому вставать некуда");
+}
+
+/// Приказ игрока отбирает у заказа **мастера, но не ячейку** (§12.96): станок
+/// принадлежит самому заказу, а не задаче кота. Снятая тут ячейка стоила бы
+/// заказу станка вместе с оплаченной штукой.
+#[test]
+fn an_order_keeps_its_cell_when_its_crafter_is_pulled_away() {
+    let mut sim = sim_with_shop();
+    sim.put_item(5, 1, SCRAP, 10);
+    let recipe = sim.set_recipe(1000, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+    sim.start_craft(recipe, 1);
+    sim.tick_n(6);
+    assert_eq!(sim.crafter_at(3, 1), Some("a".to_string()));
+
+    assert!(sim.set_target("a", 6, 1));
+    assert_eq!(sim.crafter_at(3, 1), None, "мастера увели");
+    assert_eq!(sim.craft_left_at(3, 1), Some(1), "а заказ остался в ячейке");
 }
 
 /// Освободившийся станок достаётся ждавшему заказу: слот отпускается вместе с
@@ -301,7 +402,7 @@ fn a_cancelled_order_frees_its_shop_for_the_next() {
     sim.tick_n(6);
     assert!(!sim.start_craft(nut, 1), "станок занят");
 
-    assert!(sim.cancel_craft(bolt));
+    assert!(sim.cancel_craft(3, 1));
     assert!(
         sim.start_craft(nut, 1),
         "станок освободился вместе с заказом"
@@ -401,14 +502,18 @@ fn cancelling_the_order_frees_the_cat() {
     sim.start_craft(recipe, 1);
     sim.tick_n(6);
 
-    assert!(sim.cancel_craft(recipe));
+    assert!(sim.cancel_craft(3, 1));
     assert_eq!(sim.craft_left(), None, "заказа нет");
     assert!(!sim.is_crafting("a"), "и кот свободен");
 }
 
-/// Мастерскую снесли, пока мастер шёл, — заказ отпускает кота и ждёт (§12.26).
+/// **Снесённый станок уносит свой заказ** (§12.96) — как снесённая рация уносит
+/// правило автовылазки (§12.67). До §12.96 заказ искал себе другую комнату и
+/// ждал; теперь ячейка и есть заказ, а другой ячейки у него нет. Материал
+/// начатой штуки не возвращается — та же цена поспешной разметки, что у
+/// отменённого заказа (§12.30).
 #[test]
-fn a_demolished_shop_releases_the_order() {
+fn a_demolished_shop_takes_its_order_with_it() {
     let mut sim = sim_with_shop();
     sim.put_item(5, 1, SCRAP, 10);
     let recipe = sim.set_recipe(1000, &[(SCRAP, 2)], &[(PART, 1)], &[]);
@@ -418,11 +523,31 @@ fn a_demolished_shop_releases_the_order() {
 
     sim.force_tile(3, 1, 0); // мастерской больше нет
     sim.tick_n(3);
-    assert_eq!(sim.crafter(), None, "заказ свободен");
-    assert!(sim.craft_left().is_some(), "но не потерян");
+    assert_eq!(sim.craft_left(), None, "заказ ушёл вместе со станком");
+    assert!(!sim.is_crafting("a"), "и мастер свободен");
 }
 
 // --- правило-порог (§12.65) -------------------------------------------------
+
+/// Правило **раскладывает недостачу по свободным станкам поровну** (§12.96).
+/// Один заказ на всё занял бы одну ячейку, и три мастерских работали бы как
+/// одна — ровно та жалоба, из-за которой заказ и переехал в ячейку. Доля
+/// пересчитывается на каждом витке, поэтому пятнадцать штук ложатся как 5+5+5,
+/// а не 5+5+4+1.
+#[test]
+fn a_threshold_spreads_its_shortfall_across_free_shops() {
+    let mut sim = sim_with_three_shops();
+    sim.set_auto_tidy(false);
+    sim.put_item(6, 1, SCRAP, 60);
+    let recipe = sim.set_recipe(400, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+
+    assert!(sim.set_stock(recipe, 15));
+    sim.tick_n(1);
+    assert_eq!(sim.orders_count(), 3, "недостача легла на все три станка");
+    assert_eq!(sim.craft_left_at(2, 1), Some(5), "и поровну: пять…");
+    assert_eq!(sim.craft_left_at(3, 1), Some(5), "…пять…");
+    assert_eq!(sim.craft_left_at(4, 1), Some(5), "…и пять");
+}
 
 /// Порог — это **правило**, а не заказ (§12.64): игрок задал число один раз, а
 /// заказ заводит система, когда запас просел.
@@ -526,7 +651,7 @@ fn a_threshold_waits_for_a_free_shop() {
     sim.tick_n(5);
     assert_eq!(sim.craft_left_of(nut), None, "второму заказу негде встать");
 
-    assert!(sim.cancel_craft(bolt));
+    assert!(sim.cancel_craft(3, 1));
     sim.tick_n(1);
     assert_eq!(
         sim.craft_left_of(nut),
@@ -565,7 +690,7 @@ fn an_auto_order_is_not_cancelled_by_hand() {
     sim.set_stock(recipe, 2);
     sim.tick_n(1);
 
-    assert!(!sim.cancel_craft(recipe), "отмена не про заказ правила");
+    assert!(!sim.cancel_craft(3, 1), "отмена не про заказ правила");
     assert!(sim.craft_left_of(recipe).is_some(), "заказ на месте");
 }
 

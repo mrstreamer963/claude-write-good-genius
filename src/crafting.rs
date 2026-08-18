@@ -29,27 +29,28 @@ use crate::map::BaseMap;
 use crate::path::Reach;
 use crate::skills::{SKILL_CRAFT, level_of};
 
-/// Ближайшая к коту **свободная** клетка мастерской и её цена в шагах.
+/// Первая свободная клетка мастерской по обходу карты; `None` — свободных нет.
 ///
-/// Работать кот будет **стоя на ней**, как в лаборатории: мастерская — комната,
-/// а не стройплощадка, и правило соседства (§12.12) тут ничего не спасает.
+/// Близнец `free_post_cell` (§12.68): с §12.96 заказ, как и сделка, рождается
+/// **в ячейке** и держит её до последней штуки. Обход карты фиксирован, значит
+/// выбор детерминирован (§11) — ровно как выбор ячейки поста и узла связи.
 ///
-/// `taken` — станки, за которыми уже сидят другие заказы (§12.55). Мастерская
-/// это слот, и второй заказ на неё не сядет; при равном расстоянии выбираем
-/// клетку по координате, а не по порядку обхода карты — он-то как раз
-/// детерминирован, но ключ должен быть полным (§12.14).
-fn shop_spot(
+/// Свободная функция, а не метод фасада, потому что зовут её трое:
+/// `Sim::start_craft`, `plan_craft` и снапшот. Второй экземпляр «куда встанет
+/// заказ» однажды разошёлся бы с первым — та же дисциплина, по которой
+/// `trade::quote` один на фасад и на снимок (инвариант 14).
+///
+/// Работает кот **стоя на клетке заказа**, как в лаборатории: мастерская —
+/// комната, а не стройплощадка, и правило соседства (§12.12) тут ни при чём.
+pub(crate) fn free_shop(
     map: &BaseMap,
     tiles: &TileRules,
-    reach: &Reach,
     taken: &[(i32, i32)],
-) -> Option<((i32, i32), i32)> {
+) -> Option<(i32, i32)> {
     (0..map.height)
         .flat_map(|y| (0..map.width).map(move |x| (x, y)))
         .filter(|&(x, y)| tiles.is_shop(map.tile_at(x, y)))
-        .filter(|xy| !taken.contains(xy))
-        .filter_map(|(x, y)| reach.dist_at(x, y).map(|d| ((x, y), d)))
-        .min_by_key(|&((x, y), d)| (d, y, x))
+        .find(|xy| !taken.contains(xy))
 }
 
 /// Сколько штук рецепта не хватает, чтобы выйти на порог: `min` меряется по
@@ -122,14 +123,12 @@ pub(crate) fn plan_craft(
     // покупателю, и не дозаказывал взамен проданного.
     let owed = crate::trade::owed(deals.iter());
 
-    // Станок — слот заказа (§12.55). Отдельной проверки правилу не нужно: оно
-    // заводит ту же разметку, у которой ограничение уже есть, — просто молчит,
-    // когда свободного станка нет, как молчит кнопка у игрока.
-    let shops = (0..map.height)
-        .flat_map(|y| (0..map.width).map(move |x| (x, y)))
-        .filter(|&(x, y)| tiles.is_shop(map.tile_at(x, y)))
-        .count();
-    let mut running = orders.iter().count();
+    // Ячейки, уже занятые заказами (§12.96). Отдельной проверки «есть ли слот»
+    // правилу не нужно: оно заводит ту же разметку, у которой ограничение уже
+    // есть, — просто молчит, когда свободной ячейки нет, как молчит кнопка у
+    // игрока. Ведём список вручную: `commands` отложены до конца тика, и
+    // заведённый выше заказ на втором витке выглядел бы несуществующим.
+    let mut taken: Vec<(i32, i32)> = orders.iter().map(|(_, o)| o.cell).collect();
 
     // Обход по индексу рецепта, а не по сущностям: порядок обхода ECS зависит
     // от истории вставок (§11), а палитра — нет.
@@ -149,45 +148,97 @@ pub(crate) fn plan_craft(
             0
         };
 
-        match orders.iter_mut().find(|(_, o)| o.def == def) {
-            Some((order_e, mut order)) => {
-                if !order.auto {
-                    continue; // ручной заказ ведёт игрок
+        // Ручной заказ на этот рецепт забирает разметку себе целиком: на одну
+        // разметку — один источник (§12.64). Правило не ведёт его и своего
+        // рядом не заводит, пока он есть.
+        if orders.iter().any(|(_, o)| o.def == def && !o.auto) {
+            continue;
+        }
+        // Свои заказы — по клетке: порядок обхода ECS зависит от истории
+        // вставок (§11), а срезаем мы ниже именно «с конца».
+        let mut mine: Vec<(Entity, (i32, i32), i32, bool)> = orders
+            .iter()
+            .filter(|(_, o)| o.def == def)
+            .map(|(e, o)| (e, o.cell, o.left, o.paid))
+            .collect();
+        mine.sort_unstable_by_key(|&(_, (x, y), _, _)| (y, x));
+        let ordered: i32 = mine.iter().map(|&(_, _, left, _)| left).sum();
+
+        if want < ordered {
+            // Порог просел — срезаем лишнее с конца. **Оплаченную штуку
+            // правило не отбирает**: материал за неё уже списан, и отменить её
+            // значило бы сжечь его молча (§12.26).
+            let mut cut = ordered - want;
+            for &(order_e, cell, left, paid) in mine.iter().rev() {
+                if cut <= 0 {
+                    break;
                 }
-                // Оплаченная штука доделывается в любом случае: материал за неё
-                // уже списан.
-                let left = want.max(i32::from(order.paid));
-                if left <= 0 {
-                    if let Some(cat_e) = order.assignee {
-                        commands
-                            .entity(cat_e)
-                            .remove::<(Crafting, Path, MoveCooldown)>();
+                let keep = (left - cut).max(i32::from(paid));
+                cut -= left - keep;
+                if keep > 0 {
+                    if let Ok((_, mut order)) = orders.get_mut(order_e) {
+                        order.left = keep;
                     }
-                    commands.entity(order_e).despawn();
-                    running -= 1;
-                } else if order.left != left {
-                    order.left = left;
-                }
-            }
-            None => {
-                if want <= 0 || running >= shops {
                     continue;
                 }
-                // Заказ сразу на всю недостачу, а не поштучно: N заказов по
-                // штуке заняли бы станки по очереди и мигали бы в панели.
+                if let Some(cat_e) = orders.get(order_e).ok().and_then(|(_, o)| o.assignee) {
+                    commands
+                        .entity(cat_e)
+                        .remove::<(Crafting, Path, MoveCooldown)>();
+                }
+                commands.entity(order_e).despawn();
+                taken.retain(|&c| c != cell);
+            }
+        } else if want > ordered {
+            // **Недостача раскладывается по свободным станкам поровну**
+            // (§12.96): один заказ на всё занял бы одну ячейку, и три
+            // мастерских снова работали бы как одна — ровно та жалоба, из-за
+            // которой заказ и переехал в ячейку. Доля пересчитывается на каждом
+            // витке, поэтому пятнадцать штук на три станка ложатся как 5+5+5, а
+            // не 5+5+4+1.
+            let mut short = want - ordered;
+            while short > 0 {
+                let free = shop_count(&map, &tiles, &taken);
+                let Some(cell) = free.and_then(|_| free_shop(&map, &tiles, &taken)) else {
+                    break;
+                };
+                let per = free.unwrap_or(1).max(1);
+                let share = short.div_euclid(per) + i32::from(short.rem_euclid(per) > 0);
                 commands.spawn(Craft {
                     def,
-                    left: want,
+                    left: share,
                     progress: 0,
                     paid: false,
                     assignee: None,
-                    spot: None,
+                    cell,
                     auto: true,
                 });
-                running += 1;
+                taken.push(cell);
+                short -= share;
+            }
+            // Свободных ячеек не осталось — дотягиваем свой первый заказ, как
+            // делал поднятый порог до §12.96. Второго заказа рядом не заводим:
+            // ставить некуда.
+            if let Some(&(order_e, ..)) = mine.first().filter(|_| short > 0)
+                && let Ok((_, mut order)) = orders.get_mut(order_e)
+            {
+                order.left += short;
             }
         }
     }
+}
+
+/// Сколько клеток мастерской сейчас свободно; `None` — ни одной.
+///
+/// Отдельно от `free_shop`, потому что правилу нужно **число**: недостачу оно
+/// делит на него, а не раскладывает по одной штуке (§12.96).
+fn shop_count(map: &BaseMap, tiles: &TileRules, taken: &[(i32, i32)]) -> Option<i32> {
+    let n = (0..map.height)
+        .flat_map(|y| (0..map.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| tiles.is_shop(map.tile_at(x, y)))
+        .filter(|xy| !taken.contains(xy))
+        .count() as i32;
+    (n > 0).then_some(n)
 }
 
 /// Ставит к заказу ближайшего свободного кота — если есть чем платить.
@@ -232,18 +283,35 @@ pub(crate) fn assign_craft(
     // Забронированное под продажу заказу не принадлежит (§12.50).
     let booked = crate::trade::booked(deals.iter(), in_paws.iter());
 
-    // Станки, за которыми уже сидят другие заказы (§12.55). Занятость держит сам
-    // `Craft::spot`, ровно как лежанку держит `Rest::spot`: снимается вместе с
-    // задачей, отдельного реестра нет и заводить его не надо.
-    let mut taken: Vec<(i32, i32)> = orders.iter().filter_map(|(_, o)| o.spot).collect();
+    // **Снесённый станок уносит свой заказ** (§12.96). Правило то же, по
+    // которому снесённая рация уносит правило автовылазки (§12.67): заказ —
+    // свойство клетки, а клетки больше нет. Материал начатой штуки при этом не
+    // возвращается — та же цена поспешной разметки, что у брошенной темы и у
+    // отменённого заказа (§12.30). Убирает их раздатчик, а не своя система: он
+    // и так обходит заказы каждым тиком.
+    for (order_e, order) in orders.iter() {
+        if tiles.is_shop(map.tile_at(order.cell.0, order.cell.1)) {
+            continue;
+        }
+        if let Some(cat_e) = order.assignee {
+            commands
+                .entity(cat_e)
+                .remove::<(Crafting, Path, MoveCooldown)>();
+        }
+        commands.entity(order_e).despawn();
+    }
 
     // Заказы, которые сейчас можно раздать. Собираем списком, а не раздаём на
-    // ходу, потому что заказов теперь несколько: `commands` отложены до конца
-    // тика, и на втором витке цикла тот же кот и тот же станок выглядели бы
-    // свободными (§12.55).
-    let mut open: Vec<(Entity, usize)> = Vec::new();
+    // ходу, потому что заказов несколько: `commands` отложены до конца тика, и
+    // на втором витке цикла тот же кот выглядел бы свободным (§12.55).
+    let mut open: Vec<(Entity, (i32, i32))> = Vec::new();
     for (order_e, order) in orders.iter() {
         if order.assignee.is_some() || order.left <= 0 {
+            continue;
+        }
+        // `despawn` выше отложен до конца тика — заказ снесённого станка сейчас
+        // ещё виден, и раздать его значило бы послать кота в никуда.
+        if !tiles.is_shop(map.tile_at(order.cell.0, order.cell.1)) {
             continue;
         }
         let Some(rule) = rules.0.get(order.def) else {
@@ -261,15 +329,16 @@ pub(crate) fn assign_craft(
                 continue; // склад пуст — заказ ждёт материала, а кот работает
             }
         }
-        open.push((order_e, order.def));
+        open.push((order_e, order.cell));
     }
     if open.is_empty() {
         return;
     }
-    // Порядок обхода ECS зависит от истории вставок (§11), а жадный выбор ниже
-    // при равенстве берёт первый заказ. Сортируем по рецепту: двух заказов на
-    // один рецепт не бывает по построению, значит ключ полный.
-    open.sort_unstable_by_key(|&(_, def)| def);
+    // Порядок обхода ECS зависит от истории вставок (§11). Сортируем **по
+    // клетке**: заказов на один рецепт теперь бывает несколько (§12.96), и
+    // рецепт перестал их различать — а клетка различает полностью, потому что
+    // двух заказов в одной ячейке не бывает.
+    open.sort_unstable_by_key(|&(_, (x, y))| (y, x));
 
     // Достижимость считаем по разу на кота, коты — по `id` (§12.14, §11).
     let mut idle: Vec<(&str, Entity, Reach)> = free_cats
@@ -278,31 +347,35 @@ pub(crate) fn assign_craft(
         .collect();
     idle.sort_unstable_by_key(|&(id, ..)| id);
 
-    // Пара выбирается только между котом и станком: **какой именно заказ он
-    // возьмёт, не влияет ни на что** — станки одинаковы, и любой кот делает
-    // любой рецепт с одной скоростью (навык домена общий, §12.17). Поэтому
-    // заказ берём первый по рецепту, а минимизируем расстояние до верстака.
+    // Пара выбирается между котом и **заказом**, а расстояние меряется до его
+    // клетки — дословно `assign_jobs` с его парами (кот, чертёж) (§12.14). До
+    // §12.96 заказ в паре не участвовал вовсе: он искал себе станок сам, и
+    // выбирать было не из чего. Ключ полный (шаги, кот, заказ), а входные
+    // списки отсортированы — ничья решается явно, а не обходом ECS (§11).
     while !idle.is_empty() && !open.is_empty() {
         let chosen = idle
             .iter()
             .enumerate()
-            .filter_map(|(ci, (_, _, reach))| {
-                shop_spot(&map, &tiles, reach, &taken).map(|(spot, steps)| (steps, ci, spot))
+            .flat_map(|(ci, (_, _, reach))| {
+                open.iter().enumerate().filter_map(move |(oi, &(_, cell))| {
+                    reach
+                        .dist_at(cell.0, cell.1)
+                        .map(|steps| (steps, ci, oi, cell))
+                })
             })
-            .min_by_key(|&(steps, ci, _)| (steps, ci));
-        // Ни один кот не дошёл до свободного станка — остальные заказы ждут.
-        let Some((_, ci, spot)) = chosen else {
+            .min_by_key(|&(steps, ci, oi, _)| (steps, ci, oi));
+        // Ни один кот не дошёл ни до одного станка — заказы ждут, как ждёт
+        // чертёж, к которому нет дороги.
+        let Some((_, ci, oi, cell)) = chosen else {
             break;
         };
 
         let (_, cat_e, reach) = idle.remove(ci);
-        let (order_e, _) = open.remove(0);
-        taken.push(spot);
+        let (order_e, _) = open.remove(oi);
         if let Ok((_, mut order)) = orders.get_mut(order_e) {
             order.assignee = Some(cat_e);
-            order.spot = Some(spot);
         }
-        let path = reach.path_to(spot.0, spot.1).unwrap_or_default();
+        let path = reach.path_to(cell.0, cell.1).unwrap_or_default();
         commands
             .entity(cat_e)
             .insert((Crafting(order_e), Path { steps: path }, MoveCooldown(0)));
@@ -343,12 +416,13 @@ pub(crate) fn work_craft(
         };
 
         if !tiles.is_shop(map.tile_at(pos.x, pos.y)) {
-            // Мастерскую могли снести, пока кот шёл, — тогда маршрут кончился
-            // не там. Отпускаем заказ: раздатчик подыщет другую комнату, а нет
-            // её — заказ просто ждёт, как ждёт чертёж без материала.
+            // Мастерскую могли снести, пока кот шёл, или его самого сдвинули
+            // с клетки (§12.32) — тогда маршрут кончился не там. Отпускаем
+            // **кота, а не ячейку**: станок цел — раздатчик вернёт его тем же
+            // тиком, снесён — с ним ушёл и весь заказ (§12.96, это делает
+            // `assign_craft`).
             if path.is_none() {
                 order.assignee = None;
-                order.spot = None;
                 commands.entity(cat_e).remove::<Crafting>();
             }
             continue;
@@ -377,9 +451,9 @@ pub(crate) fn work_craft(
                 None => {
                     // Материал разобрали, пока мастер шёл. Отпускаем его на
                     // другую работу: стоять у верстака в ожидании — это ровно
-                    // то, чего §12.15 избегает у чертежей.
+                    // то, чего §12.15 избегает у чертежей. Ячейку заказ при
+                    // этом держит: он ждёт материала, а не исполнителя (§12.96).
                     order.assignee = None;
-                    order.spot = None;
                     commands
                         .entity(cat_e)
                         .remove::<(Crafting, Path, MoveCooldown)>();

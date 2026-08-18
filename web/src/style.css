@@ -446,6 +446,25 @@ main#stage.mode-cursor #mode-banner {
   font-variant-numeric: tabular-nums;
 }
 
+/* Кнопка рецепта — единственная, где рядом стоят название, выход, цена и
+   «сколько за клик»: в одну строку это не влезает даже без бейджа. Поэтому она
+   одна переносит, а заголовок (свотч + название) забирает первую строку
+   целиком — иначе перенос оставлял бы цветной квадратик в строке одного.
+   Выход, цена и «×N» встают второй строкой, бейдж — по правому краю, там же,
+   где его ищут глазами у сделок. */
+.tool.recipe {
+  flex-wrap: wrap;
+}
+.tool.recipe .rhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 0 100%;
+}
+.tool.recipe .qty {
+  margin-left: auto;
+}
+
 .qty.big {
   background: #3a4a63;
   color: #cfe3ff;

@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 15;
+pub(crate) const FORMAT: u32 = 16;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -432,7 +432,10 @@ pub(crate) struct CraftDto {
     pub(crate) progress: i32,
     pub(crate) paid: bool,
     pub(crate) assignee: Option<u32>,
-    pub(crate) spot: Option<(i32, i32)>,
+    /// Ячейка станка, в которой стоит заказ (§12.96). Не `Option`: заказ
+    /// рождается в ней и держит её до последней штуки, как сделка — ячейку
+    /// поста.
+    pub(crate) cell: (i32, i32),
     /// Заказ ведёт правило-порог (§12.65). Без него загруженная партия отдала бы
     /// автозаказ игроку: правило перестало бы его вести, а «Отменить» появилась
     /// бы там, где её быть не должно.
@@ -572,7 +575,7 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                     progress: c.progress,
                     paid: c.paid,
                     assignee: c.assignee.and_then(at),
-                    spot: c.spot,
+                    cell: c.cell,
                     auto: c.auto,
                 }),
                 deal: e.get::<Deal>().map(|d| DealDto {
@@ -794,15 +797,15 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
         if let Some(n) = dto.crafting.and_then(at) {
             e.insert(Crafting(n));
         }
-        if let Some((item, pile)) = dto.equipping {
-            if let Some(pile) = at(pile) {
-                e.insert(Equipping { item, pile });
-            }
+        if let Some((item, pile)) = dto.equipping
+            && let Some(pile) = at(pile)
+        {
+            e.insert(Equipping { item, pile });
         }
-        if let Some((item, pile)) = dto.eating {
-            if let Some(pile) = at(pile) {
-                e.insert(Eating { item, pile });
-            }
+        if let Some((item, pile)) = dto.eating
+            && let Some(pile) = at(pile)
+        {
+            e.insert(Eating { item, pile });
         }
         if let Some(h) = &dto.healing {
             e.insert(Healing {
@@ -868,7 +871,7 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
                 progress: c.progress,
                 paid: c.paid,
                 assignee: c.assignee.and_then(at),
-                spot: c.spot,
+                cell: c.cell,
                 auto: c.auto,
             });
         }

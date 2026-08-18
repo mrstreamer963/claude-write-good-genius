@@ -384,10 +384,10 @@ fn links_of(sim: &Sim) -> Vec<String> {
         if let (Some(who), Some(t)) = (&who, e.get::<Treating>()) {
             out.push(format!("treat {who} -> {}", name(t.0)));
         }
-        if let (Some(who), Some(h)) = (&who, e.get::<Healing>()) {
-            if let Some(medic) = h.medic {
-                out.push(format!("medic {who} <- {}", name(medic)));
-            }
+        if let (Some(who), Some(h)) = (&who, e.get::<Healing>())
+            && let Some(medic) = h.medic
+        {
+            out.push(format!("medic {who} <- {}", name(medic)));
         }
         if let (Some(who), Some(q)) = (&who, e.get::<Equipping>()) {
             out.push(format!(
@@ -404,20 +404,20 @@ fn links_of(sim: &Sim) -> Vec<String> {
         if let (Some(who), Some(s)) = (&who, e.get::<Study>()) {
             out.push(format!("study {who} -> {},{:?}", s.skill, s.spot));
         }
-        if let Some(b) = e.get::<Blueprint>() {
-            if let Some(a) = b.assignee {
-                out.push(format!("site {},{} <- {}", b.x, b.y, name(a)));
-            }
+        if let Some(b) = e.get::<Blueprint>()
+            && let Some(a) = b.assignee
+        {
+            out.push(format!("site {},{} <- {}", b.x, b.y, name(a)));
         }
-        if let Some(r) = e.get::<Research>() {
-            if let Some(a) = r.assignee {
-                out.push(format!("topic {} <- {}", r.def, name(a)));
-            }
+        if let Some(r) = e.get::<Research>()
+            && let Some(a) = r.assignee
+        {
+            out.push(format!("topic {} <- {}", r.def, name(a)));
         }
-        if let Some(c) = e.get::<Craft>() {
-            if let Some(a) = c.assignee {
-                out.push(format!("order {} <- {}", c.def, name(a)));
-            }
+        if let Some(c) = e.get::<Craft>()
+            && let Some(a) = c.assignee
+        {
+            out.push(format!("order {} <- {}", c.def, name(a)));
         }
     }
     out.sort();
@@ -561,7 +561,12 @@ fn a_stocking_rule_survives_a_save() {
         Some(true),
         "и заказ по-прежнему его"
     );
-    assert!(!loaded.cancel_craft(0), "а значит вручную не отменяется");
+    // Отмена адресуется клеткой (§12.96), а мастерская здесь одна — та, что
+    // разметили выше.
+    assert!(
+        !loaded.cancel_craft(10, 7),
+        "а значит вручную не отменяется"
+    );
 }
 
 /// Автовылазка — то же правило игрока, что и порог (§12.67), и промах здесь

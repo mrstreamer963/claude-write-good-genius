@@ -144,18 +144,20 @@ pub(crate) fn release_work(
     // гасить, у площадки, сделки и кучи больше нет (§12.48). Груз при этом
     // остаётся в лапах: донесёт следующей ходкой (§12.15).
     let (assignment, _haul, researching, crafting, _treating) = work;
-    if let Some(bp_e) = assignment.map(|a| a.0) {
-        if let Ok(mut bp) = blueprints.get_mut(bp_e) {
-            bp.assignee = None;
-        }
+    if let Some(bp_e) = assignment.map(|a| a.0)
+        && let Ok(mut bp) = blueprints.get_mut(bp_e)
+    {
+        bp.assignee = None;
     }
     if let Some(mut topic) = researching.and_then(|r| topics.get_mut(r.0).ok()) {
         topic.assignee = None;
         topic.spot = None;
     }
+    // У заказа гасим **только исполнителя**: ячейка станка принадлежит самому
+    // заказу, а не задаче кота (§12.96). Снятая здесь, она стоила бы заказу
+    // станка и оплаченной штуки — а сон и рана работу отбирают, но не сжигают.
     if let Some(mut order) = crafting.and_then(|c| orders.get_mut(c.0).ok()) {
         order.assignee = None;
-        order.spot = None;
     }
     // Пациента освобождать не нужно: `Healing::medic` — claim, который чинит
     // сам `assign_treat`, заметив, что `Treating` у медика больше нет (§12.37).

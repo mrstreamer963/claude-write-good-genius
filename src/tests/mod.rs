@@ -664,14 +664,41 @@ impl Sim {
         q.iter(&self.world).count()
     }
 
-    /// Сколько штук осталось у заказа на этот рецепт; `None` — заказа нет.
+    /// Сколько штук осталось у заказа **в этой ячейке**; `None` — заказа нет.
     ///
-    /// По рецепту, а не «первый попавшийся»: заказов теперь несколько, а порядок
-    /// обхода ECS недетерминирован (§11). Двух заказов на один рецепт не бывает,
-    /// поэтому рецепт их и различает.
+    /// По клетке, а не по рецепту: с §12.96 заказов на один рецепт бывает
+    /// несколько, и различает их ячейка — в одной их не бывает двух. Порядок
+    /// обхода ECS при этом недетерминирован (§11), так что «первый попавшийся»
+    /// не годится ни в каком виде.
+    fn craft_left_at(&mut self, x: i32, y: i32) -> Option<i32> {
+        let mut q = self.world.query::<&Craft>();
+        q.iter(&self.world)
+            .find(|o| o.cell == (x, y))
+            .map(|o| o.left)
+    }
+
+    /// Сколько всего штук осталось по этому рецепту — по всем его заказам.
+    /// Порога и общего счёта это и касается: правило меряет базу, а не ячейку.
     fn craft_left_of(&mut self, def: usize) -> Option<i32> {
         let mut q = self.world.query::<&Craft>();
-        q.iter(&self.world).find(|o| o.def == def).map(|o| o.left)
+        let total: i32 = q
+            .iter(&self.world)
+            .filter(|o| o.def == def)
+            .map(|o| o.left)
+            .sum();
+        (total > 0).then_some(total)
+    }
+
+    /// Ячейки, в которых стоят заказы по этому рецепту, по обходу карты.
+    fn craft_cells_of(&mut self, def: usize) -> Vec<(i32, i32)> {
+        let mut q = self.world.query::<&Craft>();
+        let mut cells: Vec<(i32, i32)> = q
+            .iter(&self.world)
+            .filter(|o| o.def == def)
+            .map(|o| o.cell)
+            .collect();
+        cells.sort_unstable_by_key(|&(x, y)| (y, x));
+        cells
     }
 
     /// Порог автопроизводства по рецепту: сколько штук база держит (§12.65).
@@ -679,26 +706,35 @@ impl Sim {
         self.world.resource::<Stocking>().min_of(def)
     }
 
-    /// Ведёт ли этот заказ правило-порог, а не игрок (§12.65); `None` — заказа
-    /// нет вовсе.
+    /// Ведёт ли правило-порог заказы этого рецепта (§12.65); `None` — их нет.
+    /// Смотрит на первый по карте: правило ведёт либо все свои, либо ни одного —
+    /// ручная заявка забирает рецепт себе целиком (§12.64).
     fn craft_is_auto(&mut self, def: usize) -> Option<bool> {
-        let mut q = self.world.query::<&Craft>();
-        q.iter(&self.world).find(|o| o.def == def).map(|o| o.auto)
+        let cells = self.craft_cells_of(def);
+        let first = cells.first().copied()?;
+        self.craft_is_auto_at(first.0, first.1)
     }
 
-    /// Станок, за которым идёт этот заказ; `None` — исполнителя ещё нет.
-    fn craft_spot_of(&mut self, def: usize) -> Option<(i32, i32)> {
+    /// Ведёт ли заказ в этой ячейке правило-порог, а не игрок (§12.65); `None` —
+    /// заказа там нет вовсе.
+    fn craft_is_auto_at(&mut self, x: i32, y: i32) -> Option<bool> {
         let mut q = self.world.query::<&Craft>();
         q.iter(&self.world)
-            .find(|o| o.def == def)
-            .and_then(|o| o.spot)
+            .find(|o| o.cell == (x, y))
+            .map(|o| o.auto)
     }
 
-    /// Кто стоит у верстака по этому рецепту; `None` — исполнителя нет.
-    fn crafter_of(&mut self, def: usize) -> Option<String> {
+    /// Кто стоит у верстака **в этой ячейке**; `None` — исполнителя нет.
+    fn crafter_at(&mut self, x: i32, y: i32) -> Option<String> {
         let mut q = self.world.query::<&Craft>();
-        let assignee = q.iter(&self.world).find(|o| o.def == def)?.assignee?;
+        let assignee = q.iter(&self.world).find(|o| o.cell == (x, y))?.assignee?;
         self.world.get::<UnitId>(assignee).map(|u| u.0.clone())
+    }
+
+    /// Сколько котов сейчас стоит у верстаков — то, ради чего §12.96 и писалась.
+    fn crafters_busy(&mut self) -> usize {
+        let mut q = self.world.query::<&Craft>();
+        q.iter(&self.world).filter(|o| o.assignee.is_some()).count()
     }
 
     /// Завести тему исследования: допуск по «Науке», объём работы, цена и

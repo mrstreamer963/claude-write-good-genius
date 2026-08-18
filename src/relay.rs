@@ -125,7 +125,7 @@ pub(crate) fn assign_relay(
     missions: Query<(Entity, &Mission)>,
     crew: Query<(&Squad, Option<&Away>)>,
     // Кто уже сидит: занятость держит сам `OnDuty`, отдельного реестра нет —
-    // ровно как у лежанки (`Rest::spot`) и станка (`Craft::spot`).
+    // ровно как у лежанки (`Rest::spot`) и станка (`Craft::cell`, §12.96).
     posted: Query<(Entity, &OnDuty, Option<&Posted>)>,
     free_cats: Query<
         (Entity, &UnitId, &Position, &Posted),
