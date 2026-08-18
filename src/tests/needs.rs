@@ -684,7 +684,7 @@ fn without_energy_rules_nobody_sleeps() {
 #[test]
 fn the_shipped_ruleset_makes_beds_the_only_full_sleep() {
     let yaml = include_str!("../../assets/rulesets/core.yaml");
-    let sim = Sim::new(yaml).ok().expect("рулсет должен разбираться");
+    let sim = Sim::new(yaml).expect("рулсет должен разбираться");
     let (tired, _) = sim.thresholds();
     let (floor_wake, max) = sim.ceilings();
 
@@ -718,7 +718,7 @@ fn the_shipped_ruleset_makes_beds_the_only_full_sleep() {
 #[test]
 fn the_shipped_ruleset_sends_the_crew_to_bed() {
     let yaml = include_str!("../../assets/rulesets/core.yaml");
-    let mut sim = Sim::new(yaml).ok().expect("рулсет должен разбираться");
+    let mut sim = Sim::new(yaml).expect("рулсет должен разбираться");
     let crew = ["excellent", "sp2", "sp3"];
 
     // Пороги идут в правильном порядке: критический выше нуля (иначе второго

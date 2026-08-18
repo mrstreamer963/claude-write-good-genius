@@ -193,7 +193,7 @@ fn a_site_costlier_than_paws_is_supplied_in_several_trips() {
 #[test]
 fn the_shipped_ruleset_grows_skills_and_deals_paws() {
     let yaml = include_str!("../../assets/rulesets/core.yaml");
-    let mut sim = Sim::new(yaml).ok().expect("рулсет должен разбираться");
+    let mut sim = Sim::new(yaml).expect("рулсет должен разбираться");
     let build = sim.skill_index("build").expect("навык стройки в рулсете");
 
     assert_eq!(sim.carry_max_of("sp2"), 8, "«Носильщик» удваивает лапы");

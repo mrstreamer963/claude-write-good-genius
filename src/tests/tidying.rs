@@ -225,7 +225,7 @@ fn marking_empty_floor_does_nothing() {
 #[test]
 fn the_shipped_ruleset_tidies_demolition_scrap() {
     let yaml = include_str!("../../assets/rulesets/core.yaml");
-    let mut sim = Sim::new(yaml).ok().expect("рулсет должен разбираться");
+    let mut sim = Sim::new(yaml).expect("рулсет должен разбираться");
     sim.without_timeline(); // тест про материал, а не про мир по расписанию
     let before = sim.scrap_total();
 
