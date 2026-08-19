@@ -6,6 +6,16 @@
 //!
 //! Мир везде один: коридор со складом (тайл 1) и мастерской (тайл 2) — в схеме
 //! `sim_from` ни того, ни другого нет, поэтому свойства задаём явно.
+//!
+//! ⚠️ С §12.102 материал **везут ногами**, а не списывают со склада мгновенно,
+//! поэтому между заявкой и первым очком работы стоит целая ходка: кот идёт к
+//! куче, берёт груз, несёт к станку и только потом садится за него.
+//!
+//! Отсюда же и то, что мастером в этих схемах оказывается `b`, а не `a`:
+//! носильщика выбирают по дороге к куче (§12.14), `b` стоит к складу вплотную,
+//! а сдав груз, он оказывается **ближайшим свободным котом к станку** — и
+//! садится за него сам. Это не случайность схемы, а следствие подвоза: везёт и
+//! делает обычно один и тот же кот.
 
 use super::*;
 
@@ -52,8 +62,13 @@ fn an_order_is_taken_to_the_shop_and_worked_on() {
     let recipe = sim.set_recipe(200, &[(SCRAP, 2)], &[(PART, 1)], &[]);
 
     assert!(sim.start_craft(recipe, 1));
-    sim.tick_n(6);
-    assert_eq!(sim.pos_of("a"), (3, 1), "мастер в мастерской");
+    sim.tick_n(10); // ходка за материалом плюс дорога к станку (§12.102)
+    assert_eq!(
+        sim.crafter(),
+        Some("b".to_string()),
+        "кто привёз, тот и делает"
+    );
+    assert_eq!(sim.pos_of("b"), (3, 1), "мастер в мастерской");
     assert!(sim.craft_progress().is_some_and(|p| p > 0), "и работает");
 }
 
@@ -89,20 +104,32 @@ fn an_order_repeats_until_the_count_is_done() {
     assert_eq!(sim.item_at(3, 1, PART), 3);
 }
 
-/// Платят **за штуку**, а не за заказ: склад не замораживается под работу,
-/// которая начнётся через полтысячи тиков (§12.30).
+/// Материал везут **на всю партию сразу**, а съедают **по штуке** (§12.102).
+///
+/// До §12.102 склад списывался за штуку и в момент, когда за неё брались.
+/// Теперь платы нет вовсе: носильщики свозят на станок цену всех оставшихся
+/// штук, и мастер вычитает из привезённого ровно одну цену, доделав деталь.
+/// Иначе станок вставал бы после каждой штуки и ждал ходку.
 #[test]
-fn each_item_is_paid_for_separately() {
+fn the_batch_is_hauled_at_once_and_eaten_piece_by_piece() {
     let mut sim = sim_with_shop();
     sim.set_auto_tidy(false);
     sim.put_item(5, 1, SCRAP, 10);
-    let recipe = sim.set_recipe(100, &[(SCRAP, 4)], &[(PART, 1)], &[]);
+    let recipe = sim.set_recipe(400, &[(SCRAP, 4)], &[(PART, 1)], &[]);
     sim.start_craft(recipe, 2);
 
-    sim.tick_n(6);
-    assert_eq!(sim.item_at(5, 1, SCRAP), 6, "снято ровно за первую штуку");
-    sim.tick_n(24);
-    assert_eq!(sim.item_at(5, 1, SCRAP), 2, "и потом ровно за вторую");
+    sim.tick_n(20);
+    assert_eq!(
+        sim.item_at(5, 1, SCRAP),
+        2,
+        "со склада уехала цена обеих штук, а не одной",
+    );
+    assert_eq!(sim.craft_delivered(), Some(8), "и лежит она на станке");
+
+    // Первая штука готова — из привезённого ушла ровно одна цена.
+    sim.tick_n(40);
+    assert_eq!(sim.craft_left(), Some(1), "первая готова");
+    assert_eq!(sim.craft_delivered(), Some(4), "на вторую материал уже тут");
 }
 
 /// Заказ без материала **ждёт**, как чертёж без завезённого лома (§12.15): это
@@ -125,21 +152,24 @@ fn an_order_without_material_waits() {
     );
 }
 
-/// Материал разобрали, пока мастер шёл, — он уходит на другую работу, а не
-/// стоит у верстака (§12.30).
+/// Материала на базе хватило не на всю партию — мастер уходит **после** той
+/// штуки, на которую хватило, а не стоит у верстака (§12.30, §12.102).
+///
+/// До §12.102 материал отбирали «из-под носа» со склада, пока мастер шёл;
+/// теперь отобрать нечего — привезённое лежит на станке. Зато появился случай
+/// честнее: заказ на две штуки при материале на одну. Первую делают, вторую
+/// ждут, и ждёт её заказ, а не занятый кот.
 #[test]
-fn a_crafter_is_released_when_the_material_is_gone() {
+fn a_crafter_is_released_when_the_batch_runs_short() {
     let mut sim = sim_with_shop();
-    sim.put_item(5, 1, SCRAP, 4);
+    sim.set_auto_tidy(false);
+    sim.put_item(5, 1, SCRAP, 4); // цена ровно одной штуки
     let recipe = sim.set_recipe(100, &[(SCRAP, 4)], &[(PART, 1)], &[]);
-    sim.start_craft(recipe, 1);
-    sim.tick_n(1);
-    assert_eq!(sim.crafter(), Some("a".to_string()), "мастер пошёл");
+    sim.start_craft(recipe, 2);
 
-    // Забираем лом со склада «из-под носа» — так делает найм или наука.
-    let pile = sim.item_at(5, 1, SCRAP);
-    sim.put_item(5, 1, SCRAP, -pile);
-    sim.tick_n(10);
+    sim.tick_n(40);
+    assert_eq!(sim.craft_left(), Some(1), "на что хватило — то и сделали");
+    assert_eq!(sim.craft_delivered(), Some(0), "материал кончился");
     assert_eq!(sim.crafter(), None, "заказ отпустил кота");
     assert!(!sim.is_crafting("a"), "и кот свободен для другой работы");
 }
@@ -154,9 +184,9 @@ fn crafting_grows_the_craft_skill() {
     sim.put_item(5, 1, SCRAP, 40);
     let recipe = sim.set_recipe(400, &[(SCRAP, 2)], &[(PART, 1)], &[]);
     sim.start_craft(recipe, 1);
-    sim.tick_n(20);
+    sim.tick_n(40);
 
-    assert!(sim.xp_of("a", craft) > 0, "навык растёт от работы");
+    assert!(sim.xp_of("b", craft) > 0, "навык растёт от работы");
 }
 
 /// Навык — множитель скорости и здесь; допуска у производства нет (§12.30).
@@ -164,11 +194,12 @@ fn crafting_grows_the_craft_skill() {
 fn a_higher_level_crafts_faster() {
     let mut sim = sim_with_shop();
     let craft = sim.set_skill("craft", &[100, 400]);
-    sim.set_xp("a", craft, 400); // второй уровень
+    // Опыт даём `b`: с §12.102 за станок садится тот, кто привёз материал.
+    sim.set_xp("b", craft, 400); // второй уровень
     sim.put_item(5, 1, SCRAP, 40);
     let recipe = sim.set_recipe(1000, &[(SCRAP, 2)], &[(PART, 1)], &[]);
     sim.start_craft(recipe, 1);
-    sim.tick_n(6);
+    sim.tick_n(20);
     let fast = sim.craft_progress().unwrap();
 
     let mut sim = sim_with_shop();
@@ -176,7 +207,7 @@ fn a_higher_level_crafts_faster() {
     sim.put_item(5, 1, SCRAP, 40);
     let recipe = sim.set_recipe(1000, &[(SCRAP, 2)], &[(PART, 1)], &[]);
     sim.start_craft(recipe, 1);
-    sim.tick_n(6);
+    sim.tick_n(20);
     assert!(fast > sim.craft_progress().unwrap(), "уровень ускоряет");
 }
 
@@ -189,9 +220,11 @@ fn crafting_has_no_skill_gate() {
     sim.put_item(5, 1, SCRAP, 10);
     let recipe = sim.set_recipe(100, &[(SCRAP, 2)], &[(PART, 1)], &[]);
     sim.start_craft(recipe, 1);
-    sim.tick_n(10);
+    // Работы тут на 100 очков, то есть на десять тиков (`WORK_RATE`): спросить
+    // надо, пока заказ ещё жив.
+    sim.tick_n(6);
 
-    assert_eq!(sim.crafter(), Some("a".to_string()), "взялся без навыка");
+    assert_eq!(sim.crafter(), Some("b".to_string()), "взялся без навыка");
 }
 
 // --- ворота и отказы --------------------------------------------------------
@@ -262,15 +295,18 @@ fn a_repeat_order_of_the_same_recipe_adds_count() {
 fn two_shops_run_two_orders_at_once() {
     let mut sim = sim_with_two_shops();
     sim.put_item(5, 1, SCRAP, 40);
-    let bolt = sim.set_recipe(100, &[(SCRAP, 2)], &[(PART, 1)], &[]);
-    let nut = sim.set_recipe(100, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+    // Работа длинная нарочно: с §12.102 сперва идут две ходки за материалом, и
+    // на коротком рецепте первый заказ успевал закрыться раньше, чем второй
+    // мастер садился за станок, — тест мерил бы очередь вместо параллельности.
+    let bolt = sim.set_recipe(1000, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+    let nut = sim.set_recipe(1000, &[(SCRAP, 2)], &[(PART, 1)], &[]);
 
     assert!(sim.start_craft(bolt, 1));
     assert!(
         sim.start_craft(nut, 1),
         "второй станок принимает второй заказ"
     );
-    sim.tick_n(6);
+    sim.tick_n(15); // обе ходки за материалом плюс посадка за станки
 
     assert!(sim.crafter_at(3, 1).is_some(), "первый заказ взят");
     assert!(sim.crafter_at(4, 1).is_some(), "и второй тоже");
@@ -328,7 +364,7 @@ fn one_recipe_fills_every_shop() {
         "и пятнадцать штук всего"
     );
 
-    sim.tick_n(10);
+    sim.tick_n(60); // трое возят, потом трое работают (§12.102)
     assert_eq!(
         sim.crafters_busy(),
         3,
@@ -382,10 +418,10 @@ fn an_order_keeps_its_cell_when_its_crafter_is_pulled_away() {
     sim.put_item(5, 1, SCRAP, 10);
     let recipe = sim.set_recipe(1000, &[(SCRAP, 2)], &[(PART, 1)], &[]);
     sim.start_craft(recipe, 1);
-    sim.tick_n(6);
-    assert_eq!(sim.crafter_at(3, 1), Some("a".to_string()));
+    sim.tick_n(15);
+    assert_eq!(sim.crafter_at(3, 1), Some("b".to_string()));
 
-    assert!(sim.set_target("a", 6, 1));
+    assert!(sim.set_target("b", 6, 1));
     assert_eq!(sim.crafter_at(3, 1), None, "мастера увели");
     assert_eq!(sim.craft_left_at(3, 1), Some(1), "а заказ остался в ячейке");
 }
@@ -433,12 +469,17 @@ fn a_crafter_is_not_taken_by_other_work() {
     sim.put_item(5, 1, SCRAP, 10);
     let recipe = sim.set_recipe(1000, &[(SCRAP, 2)], &[(PART, 1)], &[]);
     sim.start_craft(recipe, 1);
-    sim.tick_n(6);
+    sim.tick_n(15);
 
-    sim.add_blueprint(4, 1, 3); // чертёж рядом с мастерской
+    // Чертёж ставим **не вплотную** к станку: строитель работает с соседней
+    // клетки, а соседняя у мастерской — это (4,1) или сама (3,1). Встав туда,
+    // он сгонял бы мастера с верстака (§12.32), и тест мерил бы толкотню, а не
+    // занятость. С §12.102 это стало заметно: мастером теперь оказывается тот,
+    // кто привёз материал, и он стоит в мастерской, а не идёт к ней издалека.
+    sim.add_blueprint(6, 1, 3);
     sim.tick_n(10);
-    assert!(sim.is_crafting("a"), "мастер остался у верстака");
-    assert!(!sim.has_assignment("a"), "и стройку не взял");
+    assert!(sim.is_crafting("b"), "мастер остался у верстака");
+    assert!(!sim.has_assignment("b"), "и стройку не взял");
 }
 
 /// Приказ игрока весомее заказа — и обязан освободить его явно, иначе
@@ -449,11 +490,11 @@ fn an_order_frees_the_craft() {
     sim.put_item(5, 1, SCRAP, 10);
     let recipe = sim.set_recipe(1000, &[(SCRAP, 2)], &[(PART, 1)], &[]);
     sim.start_craft(recipe, 1);
-    sim.tick_n(6);
-    assert_eq!(sim.crafter(), Some("a".to_string()));
+    sim.tick_n(15);
+    assert_eq!(sim.crafter(), Some("b".to_string()));
 
-    assert!(sim.set_target("a", 6, 1));
-    assert!(!sim.is_crafting("a"), "кот снят с заказа");
+    assert!(sim.set_target("b", 6, 1));
+    assert!(!sim.is_crafting("b"), "кот снят с заказа");
     assert_eq!(sim.crafter(), None, "а заказ свободен для другого мастера");
 }
 
@@ -509,22 +550,28 @@ fn cancelling_the_order_frees_the_cat() {
 
 /// **Снесённый станок уносит свой заказ** (§12.96) — как снесённая рация уносит
 /// правило автовылазки (§12.67). До §12.96 заказ искал себе другую комнату и
-/// ждал; теперь ячейка и есть заказ, а другой ячейки у него нет. Материал
-/// начатой штуки не возвращается — та же цена поспешной разметки, что у
-/// отменённого заказа (§12.30).
+/// ждал; теперь ячейка и есть заказ, а другой ячейки у него нет.
+///
+/// **А вот материал уносит не станок, а пол** (§12.102): завезённое падает
+/// кучей на месте, как возвращает сданное отменённая площадка (§12.31).
+/// Материал не исчезает никогда — это инвариант 8, и до §12.102 производство
+/// было единственным местом, где он молча сгорал.
 #[test]
-fn a_demolished_shop_takes_its_order_with_it() {
+fn a_demolished_shop_drops_what_was_hauled_to_it() {
     let mut sim = sim_with_shop();
+    sim.set_auto_tidy(false); // иначе куча тут же уедет обратно на склад
     sim.put_item(5, 1, SCRAP, 10);
     let recipe = sim.set_recipe(1000, &[(SCRAP, 2)], &[(PART, 1)], &[]);
     sim.start_craft(recipe, 1);
-    sim.tick_n(6);
-    assert_eq!(sim.pos_of("a"), (3, 1));
+    sim.tick_n(15);
+    assert_eq!(sim.pos_of("b"), (3, 1));
+    assert_eq!(sim.craft_delivered(), Some(2), "материал на станке");
 
     sim.force_tile(3, 1, 0); // мастерской больше нет
     sim.tick_n(3);
     assert_eq!(sim.craft_left(), None, "заказ ушёл вместе со станком");
-    assert!(!sim.is_crafting("a"), "и мастер свободен");
+    assert!(!sim.is_crafting("b"), "и мастер свободен");
+    assert_eq!(sim.item_at(3, 1, SCRAP), 2, "а материал лёг кучей на месте");
 }
 
 // --- правило-порог (§12.65) -------------------------------------------------
@@ -1040,4 +1087,43 @@ fn a_stock_threshold_needs_its_technology() {
     sim.forget_techs();
     assert!(sim.set_stock(recipe, 0), "снять можно всегда");
     assert_eq!(sim.stock_min(recipe), 0);
+}
+
+/// **Отменённый заказ возвращает завезённое** — кучей на клетку станка (§12.102).
+///
+/// До §12.102 возвращать было нечего: материал списывался со склада мгновенно, и
+/// отмена его молча сжигала. Теперь это тот же случай, что отмена площадки
+/// (§12.31), и подчиняется он инварианту 8: материал не исчезает никогда.
+#[test]
+fn a_cancelled_order_drops_what_was_hauled_to_it() {
+    let mut sim = sim_with_shop();
+    sim.set_auto_tidy(false); // иначе куча тут же уедет обратно на склад
+    sim.put_item(5, 1, SCRAP, 10);
+    let recipe = sim.set_recipe(1000, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+    sim.start_craft(recipe, 1);
+    sim.tick_n(15);
+    assert_eq!(sim.craft_delivered(), Some(2), "материал на станке");
+
+    assert!(sim.cancel_craft(3, 1));
+    assert_eq!(sim.craft_left(), None, "заказа нет");
+    assert_eq!(sim.item_at(3, 1, SCRAP), 2, "а материал лёг кучей на месте");
+}
+
+/// **Станок кормит и пол, а не только склад** (§12.102).
+///
+/// Производство перестало быть «платой складом» и стало стройкой внутри базы, а
+/// §12.69 разрешает неучтённому ровно это: строить внутри можно, отдавать
+/// наружу — нет. Отсюда и разница с торговым постом, к которому по-прежнему
+/// возят только со склада.
+#[test]
+fn a_shop_is_fed_from_the_floor_too() {
+    let mut sim = sim_with_shop();
+    sim.set_auto_tidy(false); // иначе лом уедет на склад прежде, чем понадобится
+    sim.put_item(2, 1, SCRAP, 4); // куча на голом полу, мимо склада
+    let recipe = sim.set_recipe(1000, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+    sim.start_craft(recipe, 1);
+
+    sim.tick_n(15);
+    assert_eq!(sim.craft_delivered(), Some(2), "привезли с пола");
+    assert_eq!(sim.item_at(2, 1, SCRAP), 2, "и взяли ровно сколько нужно");
 }

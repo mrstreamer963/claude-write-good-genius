@@ -755,7 +755,7 @@ impl Sim {
         let mut q = self.world.query::<(Entity, &Craft)>();
         let mut spare: Vec<(Entity, (i32, i32))> = q
             .iter(&self.world)
-            .filter(|(_, c)| c.auto && !c.paid)
+            .filter(|(_, c)| c.auto && c.delivered.is_empty())
             .map(|(e, c)| (e, c.cell))
             .collect();
         spare.sort_unstable_by_key(|&(_, (x, y))| (y, x));
@@ -2122,7 +2122,7 @@ impl Sim {
             def,
             left: count,
             progress: 0,
-            paid: false,
+            delivered: Vec::new(),
             assignee: None,
             cell,
             auto: false,
@@ -2355,7 +2355,21 @@ impl Sim {
                 .entity_mut(cat_e)
                 .remove::<(Crafting, Path, MoveCooldown)>();
         }
+        // Привезённое на станок возвращается кучей на его клетку (§12.102,
+        // §12.31): материал не исчезает никогда, а дальше его увозит обычная
+        // уборка. До §12.102 возвращать было нечего — материал списывался со
+        // склада, и отмена его молча сжигала.
+        let spill = self
+            .world
+            .get::<Craft>(order_e)
+            .map(|o| (o.cell, o.delivered.clone()))
+            .unwrap_or_default();
         self.world.entity_mut(order_e).despawn();
+        for (item, count) in spill.1 {
+            if count > 0 {
+                self.drop_stack(spill.0.0, spill.0.1, item, count);
+            }
+        }
         true
     }
 
@@ -3831,7 +3845,11 @@ impl Sim {
                     left: order.left,
                     progress: order.progress,
                     total: rules.0.get(order.def).map_or(0, |r| r.work),
-                    paid: order.paid,
+                    supplied: craft_supplied(rules, order),
+                    delivered: order.delivered.iter().map(|&(_, n)| n).sum(),
+                    need: rules.0.get(order.def).map_or(0, |r| {
+                        r.cost.iter().map(|&(_, per)| per * order.left.max(0)).sum()
+                    }) + order.delivered.iter().map(|&(_, n)| n).sum::<i32>(),
                     // Ячейка, в которой стоит заказ. С §12.96 она у него есть
                     // всегда — заказ рождается в станке, а не ищет его, — и
                     // заглушки `-1` больше нет. Едет наружу по той же причине,

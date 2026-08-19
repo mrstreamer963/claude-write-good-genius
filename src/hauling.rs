@@ -49,10 +49,32 @@ struct Needy {
     tile: i16,
     /// Чего не хватает — уже за вычетом груза, который сюда везут (§12.48).
     miss: Vec<(usize, i32)>,
-    sale: bool,
+    dest: Dest,
     /// Сколько ещё не обещано: остаток минус ходки тех, кто уже идёт. Дошёл до
     /// нуля — адресат снабжён, и новых котов к нему не зовут.
     budget: i32,
+}
+
+/// Какому адресату везём. Три, и различаются они **только двумя вещами**:
+/// каким `HaulTo` кончится ходка и можно ли брать с пола (§12.69). Всё
+/// остальное — расстояние, наводка, счёт обещанного — у них общее, и отдельной
+/// раздачи ни один не получил (§12.44, §12.102).
+///
+/// Порядок вариантов значим: по нему сортируются адресаты при равной клетке,
+/// а обход ECS недетерминирован (§11).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Dest {
+    Site,
+    Shop,
+    Sale,
+}
+
+impl Dest {
+    /// Брать только со склада — то есть отдавать наружу (§12.69). Внутрь базы
+    /// (площадка, станок) годится и пол.
+    fn storage_only(self) -> bool {
+        matches!(self, Dest::Sale)
+    }
 }
 
 /// Куча-источник в раздаче: сущность (её запоминает наводка), клетка, тип,
@@ -130,6 +152,8 @@ pub(crate) fn assign_hauls(
     mut commands: Commands,
     blueprints: Query<(Entity, &Blueprint)>,
     deals: Query<(Entity, &Deal)>,
+    crafts: Query<(Entity, &Craft)>,
+    recipes: Res<CraftRules>,
     stacks: Query<(Entity, &Position, &Stack)>,
     going: Query<(&UnitId, &Haul, Option<&Carrying>, Option<&Carry>)>,
     free_cats: Query<
@@ -172,7 +196,7 @@ pub(crate) fn assign_hauls(
     let mut aiming: Vec<(&str, Entity, Aim, Option<&Carry>)> = Vec::new();
     for (id, haul, load, carry) in &going {
         let target = match haul.to {
-            HaulTo::Site(e) | HaulTo::Sale(e) => e,
+            HaulTo::Site(e) | HaulTo::Sale(e) | HaulTo::Shop(e) => e,
             HaulTo::Store(_) => continue,
         };
         match (load, haul.aim) {
@@ -204,7 +228,7 @@ pub(crate) fn assign_hauls(
                 at: (bp.x, bp.y),
                 tile: bp.tile,
                 miss,
-                sale: false,
+                dest: Dest::Site,
                 budget: 0,
             })
         })
@@ -227,11 +251,28 @@ pub(crate) fn assign_hauls(
                     at: d.cell,
                     tile: map.tile_at(d.cell.0, d.cell.1),
                     miss,
-                    sale: true,
+                    dest: Dest::Sale,
                     budget: 0,
                 })
             }),
     );
+    // **Заказ мастерской — четвёртый адресат подвоза** (§12.102), и снабжается
+    // он ровно как площадка: игрок разметил работу, а материал несёт любой
+    // свободный кот (§12.16). Отдельной раздачи снова не заводится — только
+    // ветка в общем списке. Разница с продажей одна: станок стоит внутри базы,
+    // значит брать можно и с пола (§12.69).
+    needy.extend(crafts.iter().filter_map(|(e, order)| {
+        let mut miss = craft_missing(&recipes, order);
+        less_incoming(&mut miss, &brought(e));
+        (!miss.is_empty()).then(|| Needy {
+            target: e,
+            at: order.cell,
+            tile: map.tile_at(order.cell.0, order.cell.1),
+            miss,
+            dest: Dest::Shop,
+            budget: 0,
+        })
+    }));
     // Теперь обещания идущих налегке: каждый увезёт не больше лап, не больше
     // необещанного в куче и не больше, чем адресату нужно этого типа (§12.49).
     // Заодно копится, сколько из кучи расписано, — по этому остатку раздача
@@ -275,7 +316,7 @@ pub(crate) fn assign_hauls(
     // кучи нужен потому, что на одной клетке лежат кучи разных типов (§12.21),
     // а флаг продажи — потому, что сделка адресуется шлюзом, на котором может
     // стоять и чертёж.
-    needy.sort_unstable_by_key(|n| (n.at.1, n.at.0, n.sale));
+    needy.sort_unstable_by_key(|n| (n.at.1, n.at.0, n.dest));
 
     let map = &*map;
     let tiles = &*rules;
@@ -333,7 +374,7 @@ pub(crate) fn assign_hauls(
                         // взял, уже не известно, а на складе он не лежит. К
                         // площадке с ним можно, к посту — нет. Случай редкий
                         // (ношу отобрали посреди ходки), но правило одно.
-                        if !wanted(item) || n.sale {
+                        if !wanted(item) || n.dest.storage_only() {
                             return None;
                         }
                         let (spot, steps) = build_spot(map, reach, n.at, n.tile, None)?;
@@ -342,7 +383,7 @@ pub(crate) fn assign_hauls(
                     view.iter()
                         .enumerate()
                         .filter(|(_, (_, _, item, ..))| wanted(*item))
-                        .filter(|(_, (_, pile, ..))| !n.sale || in_store(*pile))
+                        .filter(|(_, (_, pile, ..))| !n.dest.storage_only() || in_store(*pile))
                         .filter_map(|(pi, (_, pile, _, _, from_pile))| {
                             let to_pile = reach.dist_at(pile.0, pile.1)?;
                             let (_, rest) = build_spot(map, from_pile, n.at, n.tile, None)?;
@@ -366,7 +407,7 @@ pub(crate) fn assign_hauls(
         // позовут другие. Учёт ведётся тут же, потому что команды применяются
         // после системы, и `going` только что назначенных ещё не видит.
         let n = &mut needy[ni];
-        let (target_e, sale) = (n.target, n.sale);
+        let (target_e, dest) = (n.target, n.dest);
         let (promise, aim) = match (loaded, pi) {
             (Some((item, count)), _) => {
                 less_incoming(&mut n.miss, &[(item, count)]);
@@ -388,9 +429,10 @@ pub(crate) fn assign_hauls(
             needy.remove(ni);
         }
         piles.retain(|&(_, _, _, left, _)| left > 0);
-        let to = match sale {
-            true => HaulTo::Sale(target_e),
-            false => HaulTo::Site(target_e),
+        let to = match dest {
+            Dest::Sale => HaulTo::Sale(target_e),
+            Dest::Site => HaulTo::Site(target_e),
+            Dest::Shop => HaulTo::Shop(target_e),
         };
         commands
             .entity(cat_e)
@@ -635,6 +677,8 @@ pub(crate) fn work_hauls(
     )>,
     mut blueprints: Query<&mut Blueprint>,
     mut deals: Query<&mut Deal>,
+    mut crafts: Query<&mut Craft>,
+    recipes: Res<CraftRules>,
     mut stacks: Query<(Entity, &Position, &mut Stack)>,
 ) {
     // Что уже везут к каждому адресату. Носильщиков у него теперь несколько
@@ -645,7 +689,7 @@ pub(crate) fn work_hauls(
         .iter()
         .filter_map(|(_, _, haul, load, ..)| {
             let target = match haul.to {
-                HaulTo::Site(e) | HaulTo::Sale(e) => e,
+                HaulTo::Site(e) | HaulTo::Sale(e) | HaulTo::Shop(e) => e,
                 HaulTo::Store(_) => return None,
             };
             load.map(|l| (target, l.item, l.count))
@@ -735,6 +779,82 @@ pub(crate) fn work_hauls(
                         .map_or(0, |&(_, n)| n);
                     let given = load.count.min(need);
                     add_delivered(&mut bp.delivered, load.item, given);
+                    keep_rest(&mut commands, cat_e, load.item, load.count - given);
+                }
+                commands.entity(cat_e).remove::<Haul>();
+            }
+            // Мастерская — зеркало площадки, и отличие ровно одно: недостачу
+            // считает `craft_missing` (цена рецепта на все оставшиеся штуки), а
+            // не цена тайла (§12.102). Даже адрес тот же: `build_spot` ведёт к
+            // соседней клетке, потому что на станке стоять незачем.
+            HaulTo::Shop(order_e) => {
+                // Заказ отменили или станок снесли, пока кот был в пути.
+                let Ok(mut order) = crafts.get_mut(order_e) else {
+                    commands.entity(cat_e).remove::<Haul>();
+                    continue;
+                };
+                if path.is_some() {
+                    continue; // ещё в дороге
+                }
+                let miss = craft_missing(&recipes, &order);
+                let cell = order.cell;
+
+                let Some(load) = load else {
+                    // Пришёл к куче — берём то, чего станку не хватает. Чужой
+                    // груз в пути вычитается (§12.48), забронированное под
+                    // продажу — тоже не наше (§12.50).
+                    let mut left = miss.clone();
+                    less_incoming(&mut left, &brought(order_e));
+                    for slot in left.iter_mut() {
+                        let free = crate::trade::free_to_spend(
+                            stacks.iter().map(|(_, _, s)| s),
+                            deals.iter(),
+                            cats.iter().filter_map(|(_, _, h, l, ..)| l.map(|l| (h, l))),
+                            slot.0,
+                        );
+                        slot.1 = slot.1.min(free.max(0));
+                    }
+                    left.retain(|&(_, n)| n > 0);
+                    let taken =
+                        take_needed(&mut commands, &mut stacks, (pos.x, pos.y), &left, carry);
+                    let Some((item, taken)) = taken else {
+                        commands.entity(cat_e).remove::<Haul>();
+                        continue;
+                    };
+
+                    let reach = Reach::all(&map, (pos.x, pos.y));
+                    let tile = map.tile_at(cell.0, cell.1);
+                    match build_spot(&map, &reach, cell, tile, None) {
+                        Some((spot, _)) => {
+                            let path = reach.path_to(spot.0, spot.1).unwrap_or_default();
+                            commands.entity(cat_e).insert((
+                                Haul {
+                                    to: haul.to,
+                                    aim: None,
+                                },
+                                Carrying { item, count: taken },
+                                Path { steps: path },
+                                MoveCooldown(0),
+                            ));
+                        }
+                        None => {
+                            commands
+                                .entity(cat_e)
+                                .insert(Carrying { item, count: taken })
+                                .remove::<Haul>();
+                        }
+                    }
+                    continue;
+                };
+
+                // Пришёл к станку — сдаём груз (излишек уносит с собой).
+                if (pos.x - cell.0).abs() + (pos.y - cell.1).abs() <= 1 {
+                    let need = miss
+                        .iter()
+                        .find(|&&(i, _)| i == load.item)
+                        .map_or(0, |&(_, n)| n);
+                    let given = load.count.min(need);
+                    add_delivered(&mut order.delivered, load.item, given);
                     keep_rest(&mut commands, cat_e, load.item, load.count - given);
                 }
                 commands.entity(cat_e).remove::<Haul>();

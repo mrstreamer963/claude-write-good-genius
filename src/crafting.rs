@@ -24,7 +24,7 @@
 use bevy_ecs::prelude::*;
 
 use crate::components::*;
-use crate::hauling::{on_base_counts, plan_spend, spill, storage_order};
+use crate::hauling::{on_base_counts, spill};
 use crate::jobs::WORK_RATE;
 use crate::map::BaseMap;
 use crate::path::Reach;
@@ -78,6 +78,24 @@ fn pieces_needed(rule: &CraftRule, have: &[i32], owed: &[(usize, i32)], min: i32
         .max(0)
 }
 
+/// Роняет завезённое на станок кучей на его же клетку (§12.102).
+///
+/// Материал не исчезает **никогда** (инвариант 8), а отмена заказа — это тот же
+/// случай, что отмена площадки (§12.31): сданное возвращается туда, где лежало
+/// бы, не будь заказа. Дальше его увозит обычная уборка.
+pub(crate) fn spill_delivered(
+    commands: &mut Commands,
+    stacks: &mut Query<(Entity, &Position, &mut Stack)>,
+    cell: (i32, i32),
+    delivered: &[(usize, i32)],
+) {
+    for &(item, count) in delivered {
+        if count > 0 {
+            spill(commands, stacks, cell, item, count);
+        }
+    }
+}
+
 /// Сколько штук правило заказывает за раз (§12.97).
 ///
 /// Это **та же пятёрка, что у Shift-клика по кнопке рецепта** (§12.96), и
@@ -109,8 +127,8 @@ const RULE_BATCH: i32 = 5;
 /// Считается **всё добро базы за вычетом обещанного покупателю**, а не склад:
 /// готовое ложится кучей под ноги мастеру (§12.30), и склад узнаёт о нём только
 /// после уборки — порог по складу штамповал бы лишнее всё время, пока носильщик
-/// идёт. Платит при этом по-прежнему склад (`plan_spend` в `work_craft`):
-/// «сколько есть» и «чем заплатить» — разные вопросы (§12.24, §12.53).
+/// идёт. С §12.102 это стало ещё вернее: материал заказа уезжает на станок
+/// ногами и до самой работы лежит в `Craft::delivered`, то есть вне куч.
 ///
 /// **`ordered` — это «сколько уже едет», и без него правило не считается**
 /// (§12.97): сумма `left` по всем заказам рецепта, включая ту штуку, что прямо
@@ -123,8 +141,9 @@ const RULE_BATCH: i32 = 5;
 /// **Пересчитывается каждый тик**, и отсюда вся отмена: порог, снятый в ноль,
 /// снимает заказы сам, и запас, пришедший со стороны, тоже срезает лишнее. Руками
 /// мир при этом не трогает никто — `Sim::set_stock` только пишет число.
-/// Единственная оговорка — **начатую штуку правило не отбирает**: материал за
-/// неё уже списан, и отменить её значило бы сжечь его молча (§12.26).
+/// Единственная оговорка — **снабжённую штуку правило не отбирает** (§12.102):
+/// материал за неё уже привезли ногами, и отменить её значило бы отправить его
+/// назад той же дорогой.
 ///
 /// **Ручной заказ правило не ведёт и не трогает**, но в счёт порога он идёт
 /// (§12.97): штуки, которые игрок заказал сам, — это тот же будущий запас, и не
@@ -140,7 +159,10 @@ pub(crate) fn plan_craft(
     stocking: Res<Stocking>,
     mut commands: Commands,
     mut orders: Query<(Entity, &mut Craft)>,
-    stacks: Query<&Stack>,
+    // Кучи нужны правилу дважды и по-разному: считать, сколько добра на базе, и
+    // ронять привезённое, когда порог срезает свой же заказ (§12.102). Запрос
+    // поэтому изменяемый — двух запросов к `Stack` в одной системе быть не может.
+    mut stacks: Query<(Entity, &Position, &mut Stack)>,
     loads: Query<&Carrying>,
     deals: Query<&Deal>,
 ) {
@@ -151,7 +173,7 @@ pub(crate) fn plan_craft(
     if stocking.0.iter().all(|&min| min <= 0) && !orders.iter().any(|(_, o)| o.auto) {
         return;
     }
-    let have = on_base_counts(stacks.iter(), loads.iter());
+    let have = on_base_counts(stacks.iter().map(|(_, _, s)| s), loads.iter());
     // **`owed`, а не `booked`**: `have` считает и лапы, а из брони они вычтены
     // (§12.50). Со скидкой порог засчитывал бы своим то, что кот уже несёт
     // покупателю, и не дозаказывал взамен проданного.
@@ -205,25 +227,25 @@ pub(crate) fn plan_craft(
 
         if ordered > want {
             // Порог просел — срезаем лишнее с конца, и только **своё**: заказ
-            // игрока правилу не принадлежит. **Оплаченную штуку правило не
-            // отбирает**: материал за неё уже списан, и отменить её значило бы
-            // сжечь его молча (§12.26).
+            // игрока правилу не принадлежит. **Снабжённую штуку правило не
+            // отбирает** (§12.102): материал за неё уже привезли ногами, и
+            // отменить её значило бы отправить его назад той же дорогой.
             //
             // Свои заказы — по клетке: порядок обхода ECS зависит от истории
             // вставок (§11), а срезаем мы именно «с конца».
             let mut mine: Vec<(Entity, (i32, i32), i32, bool)> = orders
                 .iter()
                 .filter(|(_, o)| o.def == def && o.auto)
-                .map(|(e, o)| (e, o.cell, o.left, o.paid))
+                .map(|(e, o)| (e, o.cell, o.left, craft_supplied(&rules, o)))
                 .collect();
             mine.sort_unstable_by_key(|&(_, (x, y), _, _)| (y, x));
 
             let mut cut = ordered - want;
-            for &(order_e, cell, left, paid) in mine.iter().rev() {
+            for &(order_e, cell, left, supplied) in mine.iter().rev() {
                 if cut <= 0 {
                     break;
                 }
-                let keep = (left - cut).max(i32::from(paid));
+                let keep = (left - cut).max(i32::from(supplied));
                 cut -= left - keep;
                 if keep > 0 {
                     if let Ok((_, mut order)) = orders.get_mut(order_e) {
@@ -231,10 +253,16 @@ pub(crate) fn plan_craft(
                     }
                     continue;
                 }
-                if let Some(cat_e) = orders.get(order_e).ok().and_then(|(_, o)| o.assignee) {
-                    commands
-                        .entity(cat_e)
-                        .remove::<(Crafting, Path, MoveCooldown)>();
+                if let Ok((_, order)) = orders.get(order_e) {
+                    if let Some(cat_e) = order.assignee {
+                        commands
+                            .entity(cat_e)
+                            .remove::<(Crafting, Path, MoveCooldown)>();
+                    }
+                    // Привезённое не исчезает вместе с заказом (§12.31,
+                    // инвариант 8): оно ложится кучей на клетку станка, откуда
+                    // его увозит обычная уборка.
+                    spill_delivered(&mut commands, &mut stacks, cell, &order.delivered);
                 }
                 commands.entity(order_e).despawn();
                 taken.retain(|&c| c != cell);
@@ -255,7 +283,7 @@ pub(crate) fn plan_craft(
             def,
             left: if short >= RULE_BATCH { RULE_BATCH } else { 1 },
             progress: 0,
-            paid: false,
+            delivered: Vec::new(),
             assignee: None,
             cell,
             auto: true,
@@ -278,9 +306,10 @@ pub(crate) fn assign_craft(
     rules: Res<CraftRules>,
     mut commands: Commands,
     mut orders: Query<(Entity, &mut Craft)>,
-    stacks: Query<(Entity, &Position, &Stack)>,
-    deals: Query<&Deal>,
-    in_paws: Query<(&Haul, &Carrying)>,
+    // Кучи нужны только затем, чтобы уронить привезённое, когда станок снесли
+    // (§12.102): со складом раздатчик больше не разговаривает вовсе — материал
+    // приезжает ногами, и «есть ли чем платить» здесь уже не вопрос.
+    mut stacks: Query<(Entity, &Position, &mut Stack)>,
     free_cats: Query<
         (Entity, &UnitId, &Position),
         (
@@ -303,24 +332,26 @@ pub(crate) fn assign_craft(
         ),
     >,
 ) {
-    // Забронированное под продажу заказу не принадлежит (§12.50).
-    let booked = crate::trade::booked(deals.iter(), in_paws.iter());
-
     // **Снесённый станок уносит свой заказ** (§12.96). Правило то же, по
     // которому снесённая рация уносит правило автовылазки (§12.67): заказ —
-    // свойство клетки, а клетки больше нет. Материал начатой штуки при этом не
-    // возвращается — та же цена поспешной разметки, что у брошенной темы и у
-    // отменённого заказа (§12.30). Убирает их раздатчик, а не своя система: он
-    // и так обходит заказы каждым тиком.
+    // свойство клетки, а клетки больше нет. **Завезённое при этом падает кучей
+    // на месте** (§12.102): материал не исчезает никогда (инвариант 8), и снос
+    // станка ничем не отличается тут от отмены площадки (§12.31). Убирает
+    // заказы раздатчик, а не своя система: он и так обходит их каждым тиком.
+    let mut razed: Vec<(Entity, (i32, i32), Vec<(usize, i32)>, Option<Entity>)> = Vec::new();
     for (order_e, order) in orders.iter() {
         if tiles.is_shop(map.tile_at(order.cell.0, order.cell.1)) {
             continue;
         }
-        if let Some(cat_e) = order.assignee {
+        razed.push((order_e, order.cell, order.delivered.clone(), order.assignee));
+    }
+    for (order_e, cell, delivered, assignee) in razed {
+        if let Some(cat_e) = assignee {
             commands
                 .entity(cat_e)
                 .remove::<(Crafting, Path, MoveCooldown)>();
         }
+        spill_delivered(&mut commands, &mut stacks, cell, &delivered);
         commands.entity(order_e).despawn();
     }
 
@@ -337,20 +368,12 @@ pub(crate) fn assign_craft(
         if !tiles.is_shop(map.tile_at(order.cell.0, order.cell.1)) {
             continue;
         }
-        let Some(rule) = rules.0.get(order.def) else {
+        // **Материал должен уже лежать на станке** (§12.102): пока носильщики
+        // не завезли цену хотя бы одной штуки, мастера сюда не зовут — ровно
+        // как чертёж не раздаётся, пока на площадку не свезли лом (§12.15).
+        // Ждёт заказ при этом молча: это не отказ, а очередь.
+        if !craft_supplied(&rules, order) {
             continue;
-        };
-        if !order.paid {
-            let piles = storage_order(
-                &map,
-                &tiles,
-                stacks
-                    .iter()
-                    .map(|(e, p, s)| (e, (p.x, p.y), s.item, s.count)),
-            );
-            if plan_spend(&piles, &rule.cost, &booked).is_none() {
-                continue; // склад пуст — заказ ждёт материала, а кот работает
-            }
         }
         open.push((order_e, order.cell));
     }
@@ -405,7 +428,7 @@ pub(crate) fn assign_craft(
     }
 }
 
-/// Мастера у верстака: списывают материал, набивают очки и вываливают готовое.
+/// Мастера у верстака: съедают завезённое, набивают очки и вываливают готовое.
 ///
 /// Готовая штука **ложится кучей под ноги**, а не на склад: работа кончается
 /// там, где стоял работник, — то же правило, что у возврата от сноса (§12.11) и
@@ -423,12 +446,8 @@ pub(crate) fn work_craft(
     cats: Query<(Entity, &Position, &Crafting, Option<&Path>, Option<&Skills>)>,
     mut orders: Query<&mut Craft>,
     mut stacks: Query<(Entity, &Position, &mut Stack)>,
-    deals: Query<&Deal>,
-    in_paws: Query<(&Haul, &Carrying)>,
 ) {
     let craft = skill_rules.index_of(SKILL_CRAFT);
-    // Забронированное под продажу заказу не принадлежит (§12.50).
-    let booked = crate::trade::booked(deals.iter(), in_paws.iter());
     for (cat_e, pos, task, path, skills) in &cats {
         let Ok(mut order) = orders.get_mut(task.0) else {
             commands.entity(cat_e).remove::<Crafting>();
@@ -451,38 +470,17 @@ pub(crate) fn work_craft(
             continue;
         }
 
-        if !order.paid {
-            let piles = storage_order(
-                &map,
-                &tiles,
-                stacks
-                    .iter()
-                    .map(|(e, p, s)| (e, (p.x, p.y), s.item, s.count)),
-            );
-            match plan_spend(&piles, &rule.cost, &booked) {
-                Some(takes) => {
-                    for (pile_e, taken) in takes {
-                        if let Ok((_, _, mut stack)) = stacks.get_mut(pile_e) {
-                            stack.count -= taken;
-                            if stack.count <= 0 {
-                                commands.entity(pile_e).despawn();
-                            }
-                        }
-                    }
-                    order.paid = true;
-                }
-                None => {
-                    // Материал разобрали, пока мастер шёл. Отпускаем его на
-                    // другую работу: стоять у верстака в ожидании — это ровно
-                    // то, чего §12.15 избегает у чертежей. Ячейку заказ при
-                    // этом держит: он ждёт материала, а не исполнителя (§12.96).
-                    order.assignee = None;
-                    commands
-                        .entity(cat_e)
-                        .remove::<(Crafting, Path, MoveCooldown)>();
-                    continue;
-                }
-            }
+        // Материал уже на станке — его завезли ногами (§12.102). Но пока мастер
+        // шёл, штуку мог доделать сосед по заказу, и завезённого стало не
+        // хватать: тогда отпускаем мастера на другую работу — стоять у верстака
+        // в ожидании ровно то, чего §12.15 избегает у чертежей. Ячейку заказ при
+        // этом держит: он ждёт материала, а не исполнителя (§12.96).
+        if !craft_supplied(&rules, &order) {
+            order.assignee = None;
+            commands
+                .entity(cat_e)
+                .remove::<(Crafting, Path, MoveCooldown)>();
+            continue;
         }
 
         let level = craft.map_or(0, |s| level_of(&skill_rules, skills, s));
@@ -505,7 +503,15 @@ pub(crate) fn work_craft(
         }
         order.left -= 1;
         order.progress = 0;
-        order.paid = false;
+        // Съедаем цену **одной** штуки из завезённого: остальное лежит на
+        // станке и ждёт следующей (§12.102). Заказ просит материал на всю
+        // партию, иначе станок вставал бы после каждой штуки.
+        for &(item, per) in &rule.cost {
+            if let Some(slot) = order.delivered.iter_mut().find(|(i, _)| *i == item) {
+                slot.1 -= per;
+            }
+        }
+        order.delivered.retain(|&(_, n)| n > 0);
         // Штука готова — и это единственное место, где заказ кончается сам.
         if order.left <= 0 {
             commands.entity(task.0).despawn();

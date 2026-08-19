@@ -92,7 +92,10 @@ fn state_of(sim: &Sim) -> String {
         if let Some(c) = e.get::<Craft>() {
             p.push(format!(
                 "craft={},{},{},{}",
-                c.def, c.left, c.progress, c.paid
+                c.def,
+                c.left,
+                c.progress,
+                c.delivered.len()
             ));
         }
         if let Some(d) = e.get::<Deal>() {
@@ -374,6 +377,7 @@ fn links_of(sim: &Sim) -> Vec<String> {
                 HaulTo::Sale(t) => {
                     format!("sale {}", w.get::<Deal>(t).map_or(-1, |d| d.item as i32))
                 }
+                HaulTo::Shop(t) => format!("shop {}", spot(t)),
                 HaulTo::Store(t) => format!("store {}", t.map_or("-".into(), name)),
             };
             out.push(format!("haul {who} -> {to}"));

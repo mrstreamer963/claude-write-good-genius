@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 17;
+pub(crate) const FORMAT: u32 = 18;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -391,6 +391,7 @@ pub(crate) struct EntityDto {
 pub(crate) enum HaulDto {
     Site(u32),
     Sale(u32),
+    Shop(u32),
     Store(Option<u32>),
 }
 
@@ -443,7 +444,10 @@ pub(crate) struct CraftDto {
     pub(crate) def: usize,
     pub(crate) left: i32,
     pub(crate) progress: i32,
-    pub(crate) paid: bool,
+    /// Что уже завезли на станок (§12.102). До него здесь был `paid: bool`:
+    /// материал списывался со склада мгновенно, и хранить было нечего.
+    #[serde(default)]
+    pub(crate) delivered: Vec<(usize, i32)>,
     pub(crate) assignee: Option<u32>,
     /// Ячейка станка, в которой стоит заказ (§12.96). Не `Option`: заказ
     /// рождается в ней и держит её до последней штуки, как сделка — ячейку
@@ -532,6 +536,7 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                 haul: e.get::<Haul>().map(|h| match h.to {
                     HaulTo::Site(t) => HaulDto::Site(at(t).unwrap_or(u32::MAX)),
                     HaulTo::Sale(t) => HaulDto::Sale(at(t).unwrap_or(u32::MAX)),
+                    HaulTo::Shop(t) => HaulDto::Shop(at(t).unwrap_or(u32::MAX)),
                     HaulTo::Store(t) => HaulDto::Store(t.and_then(at)),
                 }),
                 aim: e
@@ -586,7 +591,7 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                     def: c.def,
                     left: c.left,
                     progress: c.progress,
-                    paid: c.paid,
+                    delivered: c.delivered.clone(),
                     assignee: c.assignee.and_then(at),
                     cell: c.cell,
                     auto: c.auto,
@@ -787,6 +792,7 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
             let to = match *h {
                 HaulDto::Site(n) => at(n).map(HaulTo::Site),
                 HaulDto::Sale(n) => at(n).map(HaulTo::Sale),
+                HaulDto::Shop(n) => at(n).map(HaulTo::Shop),
                 HaulDto::Store(n) => Some(HaulTo::Store(n.and_then(at))),
             };
             // Наводка без кучи — не беда: кот дойдёт и возьмёт что под ногами,
@@ -886,7 +892,7 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
                 def: c.def,
                 left: c.left,
                 progress: c.progress,
-                paid: c.paid,
+                delivered: c.delivered.clone(),
                 assignee: c.assignee.and_then(at),
                 cell: c.cell,
                 auto: c.auto,
