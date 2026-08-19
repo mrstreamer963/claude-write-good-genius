@@ -57,6 +57,7 @@ const captiveEl = document.getElementById("captive");
 const researchEl = document.getElementById("research");
 const craftEl = document.getElementById("craft");
 const dealEl = document.getElementById("deal");
+const tapeEl = document.getElementById("tickers");
 const noteEl = document.getElementById("note");
 const goalsEl = document.getElementById("goals");
 const goalsToggleEl = document.getElementById("goals-toggle");
@@ -119,7 +120,7 @@ function onPanelClick(el, selector, send) {
 // (§12.57), а не своим `addEventListener` на узле-однодневке. Ключ — «сторона
 // сделки + предмет»: у одной строки две кнопки, и по `data-item` они поделили
 // бы одну.
-onPanelClick(dealEl, ".tick-deal", (node) =>
+onPanelClick(tapeEl, ".tick-deal", (node) =>
   sendAction({
     type: "trade",
     faction: Number(node.dataset.faction),
@@ -134,7 +135,7 @@ onPanelClick(dealEl, ".tick-deal", (node) =>
 // здесь, и гонять его за этим обратно в окно — дорога в один конец. Сторона в
 // команде не нужна, ключ у тикера — предмет, но фасад её принимает: снятие
 // ворот не спрашивает.
-onPanelClick(dealEl, ".tick-off", (node) =>
+onPanelClick(tapeEl, ".tick-off", (node) =>
   sendAction({
     type: "setTicker",
     item: Number(node.dataset.item),
@@ -865,6 +866,7 @@ function renderSnapshot(snap) {
   renderRaidWindow();
   renderResearchPanel(snap.research);
   renderCraftPanel(snap.crafting);
+  renderTickers();
   renderTradePanel(snap.deals);
   syncRecruitButtons(snap.recruits);
   syncTopicButtons(snap.topics);
@@ -2222,8 +2224,10 @@ function dealGroups(deals) {
 // **Сверху — тикеры**: строка на предмет, который игрок сам вынес на главный
 // экран. Ключ здесь предмет, а не фракция, и это снимает ограничение §12.83, а
 // не нарушает его: штуки убрали из карточки потому, что она группировала по
-// фракции и складывала лом с образцами. Строка отвечает «почём это сейчас и
-// сколько его у меня», и по ней же торгуют в один клик.
+// фракции и складывала лом с образцами. Строка отвечает «почём это сейчас», и по
+// ней же торгуют в один клик. Склад и действующее правило в неё не идут: лента
+// стоит на главном экране ради курса, а «сколько у меня» и «сбывать сверх N» —
+// это вопросы к окну «Склад», где они и правятся.
 //
 // **Снизу — плашки сделок**, ровно те, что были до §12.100: группа на сторону и
 // фракцию, и в ней только складываемое (§12.83). Они **не про тикеры**, а про
@@ -2237,18 +2241,24 @@ function dealGroups(deals) {
 // вылазок): это повторение уже принятого решения, а цена написана в той же
 // строке. Там же и «×» — снять тикер: закрепил игрок здесь, снимать его,
 // открывая окно, было бы дорогой в один конец.
-function renderTradePanel(list) {
-  const deals = list ?? [];
+// Лента тикеров — **своя панель и самая верхняя** в правой колонке. С панелью
+// «Торговля» она разошлась не по смыслу, а по поведению: панели ниже (заказы,
+// сделки, миссия) появляются и пропадают сами, и лента, стоявшая под ними,
+// уезжала из-под курсора между двумя кликами — «Продать ×25» второй раз подряд
+// нажать было нельзя. Наверху над ней не всплывает ничто, поэтому кнопка стоит
+// на месте. Порядок панелей здесь — не украшение, а условие того, что по кнопке
+// можно попасть.
+function renderTickers() {
   syncTradeButtons();
-  if ((!tickers.length && !deals.length) || !meta) {
-    dealEl.hidden = true;
+  if (!tickers.length || !meta) {
+    tapeEl.hidden = true;
     return;
   }
   const parts = ['<div class="cat-name">Торговля</div>'];
   const qty = dealSize(shiftHeld);
   // То же правило, что в окне (§12.100): нет поста — кнопок сделки нет вовсе, а
   // причина написана красным **один раз**, а не в каждой строке. Тикеры при этом
-  // остаются: курс и запас читать по-прежнему можно, а пост игрок отстроит.
+  // остаются: курс читать по-прежнему можно, а пост игрок отстроит.
   if (!posts) parts.push('<div class="warewin-warn">Нет «Торгового поста»</div>');
 
   for (const t of tickers) {
@@ -2256,9 +2266,6 @@ function renderTradePanel(list) {
     if (!it) continue;
     const fac = (meta.factions ?? [])[t.faction];
     const q = quoteOf(t.faction, t.item);
-    const st = stock[t.item] ?? { stored: 0, booked: 0 };
-    const free = Math.max(0, st.stored - st.booked);
-    const rule = saleOf(t.item);
 
     // Состояние кнопок считает `tradeState` — то же место, что и в окне
     // (§12.100): второй экземпляр этой арифметики однажды покажет живую кнопку,
@@ -2279,23 +2286,39 @@ function renderTradePanel(list) {
 
     parts.push(
       '<div class="cat-skill tick-row">' +
-        '<div class="cat-row"><span>' +
+        // Три яруса, а не один ряд: колонка узкая и фиксированной ширины, а
+        // «Комбинезон · Синдикат» плюс два курса плюс «×» в неё не влезают
+        // никогда. В одну строку они переносились по словам, и строка ленты
+        // расползалась на четыре высоты, обрезая кнопки сделки по краю окна.
+        '<div class="cat-row"><span class="tick-name">' +
         `<i class="chip" style="background:${it.color}"></i>` +
         `${esc(it.label || it.id)} · ${esc(fac?.label || fac?.id || "—")}</span>` +
-        `<b class="tick-rate">${rateText(q, true)}` +
-        `<span class="ware-sep">·</span>${rateText(q, false)}</b>` +
         // Снять тикер — там же, где он работает. Ключ свой, иначе `onPanelClick`
         // спутал бы его с кнопками сделки той же строки.
         `<button class="tool tick-off" data-key="off@${t.item}" ` +
         `data-item="${t.item}" title="Убрать из ленты">×</button>` +
         "</div>" +
-        `<div class="cat-sub">склад ${free}` +
-        (rule ? ` · сбывают сверх ${rule.keep}` : "") +
-        "</div>" +
+        `<div class="tick-rate">${rateText(q, true)}` +
+        `<span class="ware-sep">·</span>${rateText(q, false)}</div>` +
         (posts ? `<div class="cat-act">${acts}</div>` : "") +
         "</div>",
     );
   }
+
+  tapeEl.innerHTML = parts.join("");
+  tapeEl.hidden = false;
+}
+
+// Панель «Сделки» — то, что едет: группа на сторону и фракцию, и в ней только
+// складываемое (§12.83). Она **не про тикеры**: сделка по незакреплённому
+// товару обязана быть видна, иначе игрок узнаёт о ней, только открыв окно.
+function renderTradePanel(list) {
+  const deals = list ?? [];
+  if (!deals.length || !meta) {
+    dealEl.hidden = true;
+    return;
+  }
+  const parts = [];
 
   for (const g of dealGroups(deals)) {
     const who = (meta.factions ?? [])[g.faction];

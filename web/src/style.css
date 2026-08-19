@@ -1589,9 +1589,28 @@ main#stage.mode-cursor #mode-banner {
   margin-top: 4px;
 }
 .tool.tick-deal {
-  flex: 1 1 auto;
+  flex: 1 1 0;
+  /* Без `min-width: 0` кнопка не сжимается ниже своего текста и вылезает за
+     фиксированную колонку — «×25» уезжает под край окна и не нажимается. */
+  min-width: 0;
   justify-content: center;
-  padding: 2px 6px;
+  gap: 4px;
+  padding: 2px 4px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+/* Название с фракцией — одна строка с многоточием: «Комбинезон · Синдикат» в
+   200 px не влезает, а перенос по словам растил строку ленты вчетверо. */
+.tick-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Курс — своим ярусом под названием: рядом с именем он не помещается, а
+   переносить числа нельзя, они читаются парой «купить · продать». */
+.tick-row .tick-rate {
+  margin-top: 2px;
   font-size: 12px;
 }
 
