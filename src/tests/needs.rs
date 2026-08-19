@@ -493,21 +493,17 @@ fn a_dozing_cat_tops_up_to_full() {
     sim.tick_n(41);
     assert_eq!(sim.job_of("a"), ("nap", false), "панель говорит «дремлет»");
 
-    // Ставка та же, что у сна, минус очко за прожитый тик: кот бодрствует,
-    // просто лёжа.
+    // Ставка ровно та же, что у сна: лежащий не тратит бодрости (§12.99). До
+    // §12.99 отсюда вычиталось очко за прожитый тик — кот считался
+    // бодрствующим, просто лёжа.
     let before = sim.energy_of("a");
     sim.tick_n(10);
-    assert_eq!(sim.energy_of("a") - before, 90, "девять очков за тик");
+    assert_eq!(sim.energy_of("a") - before, 100, "десять очков за тик");
 
-    // Добрал до полной — с точностью до очка: на потолке `tire` снимает своё, а
-    // дремота возвращает следующим тиком, и бодрость колеблется на единицу.
-    // Отдельного списка фильтров в `tire` ради этого не заводим (§12.52).
+    // Добрал до полной **и стоит** на ней: до §12.99 `tire` снимал своё и с
+    // дремлющего, отчего бодрость колебалась на очко (§12.52).
     sim.tick_n(100);
-    assert!(
-        sim.energy_of("a") >= 999,
-        "добрал до полной: {}",
-        sim.energy_of("a")
-    );
+    assert_eq!(sim.energy_of("a"), 1000, "добрал до полной и не тратит");
 }
 
 /// Дремота не задача: раздатчик забирает кота с лежанки первым же чертежом —
@@ -672,7 +668,225 @@ fn without_energy_rules_nobody_sleeps() {
     assert_eq!(sim.tile(1, 2), 0, "работа идёт как раньше");
 }
 
+// --- ставка по занятию (§12.99) --------------------------------------------
+
+/// Зал подлиннее коридора: по нему кот идёт достаточно долго, чтобы ходьбу
+/// было чем померить.
+const HALL: [&str; 3] = [
+    "######################",
+    "#a...................#",
+    "######################",
+];
+
+/// Мир с разведёнными ставками: работа 10, ходьба 6, простой 4. Порога «пора
+/// спать» нет — меряем расход, а не поведение.
+fn sim_with_toil_rates() -> Sim {
+    let mut sim = sim_from(&HALL);
+    sim.set_needs(1000, 0, 1);
+    sim.set_drain(10);
+    sim.set_toil(6, 4);
+    sim
+}
+
+/// Вся лестница разом: работа дороже ходьбы, ходьба дороже простоя.
+///
+/// Три мира, а не три кота в одном: ставку выбирает состояние, и разводить их
+/// надо по-разному — чертежом, приказом и ничем.
+#[test]
+fn the_rate_follows_what_the_cat_is_doing() {
+    let mut working = sim_with_toil_rates();
+    working.add_blueprint(1, 2, 0); // площадка у ног — идти никуда не надо
+    working.tick_n(1);
+    assert!(working.has_assignment("a"), "кот за работой");
+    assert!(!working.has_path("a"), "и не в пути: мерим чистую работу");
+    let before = working.energy_of("a");
+    working.tick_n(5);
+    assert_eq!(
+        before - working.energy_of("a"),
+        50,
+        "работа — по ставке работы"
+    );
+
+    let mut walking = sim_with_toil_rates();
+    walking.set_target("a", 18, 1);
+    walking.tick_n(1);
+    assert!(walking.has_path("a"), "кот в пути");
+    let before = walking.energy_of("a");
+    walking.tick_n(5);
+    assert_eq!(before - walking.energy_of("a"), 30, "ходьба дешевле работы");
+
+    let mut idling = sim_with_toil_rates();
+    idling.tick_n(1);
+    let before = idling.energy_of("a");
+    idling.tick_n(5);
+    assert_eq!(before - idling.energy_of("a"), 20, "простой дешевле ходьбы");
+}
+
+/// Невыполнимый приказ — это простой, а не работа: кот стоит и ничего не
+/// делает. `Busy` знает его как занятие («приказ»), но задачи за ним нет.
+#[test]
+fn a_stalled_order_costs_idle() {
+    let mut sim = sim_from(&["#######", "#a.#.b#", "#######"]);
+    sim.set_needs(1000, 0, 1);
+    sim.set_drain(10);
+    sim.set_toil(6, 4);
+    sim.set_target("a", 5, 1); // за стеной — недостижимо
+
+    sim.tick_n(5);
+    assert!(sim.stuck_of("a"), "приказ висит, дойти некуда");
+    let before = sim.energy_of("a");
+    sim.tick_n(5);
+    assert_eq!(
+        before - sim.energy_of("a"),
+        20,
+        "стоящий кот платит простой"
+    );
+}
+
+/// Спящий не тратит ничего: на лежанке набегает **чистая** ставка места.
+///
+/// До §12.99 расход со спящего и не снимался (`tire` фильтровал `Without<Rest>`),
+/// и тест сторожит, что смена фильтра на строку лестницы этого не сломала.
+#[test]
+fn a_sleeping_cat_burns_nothing() {
+    let mut sim = sim_from(&CORRIDOR);
+    sim.set_rest(1, 5);
+    sim.force_tile(1, 1, 1); // лежанка прямо под котом
+    sim.set_needs(1000, 900, 1);
+    sim.set_drain(10);
+    sim.set_toil(6, 4);
+    sim.set_energy("a", 500);
+
+    sim.tick_n(1);
+    assert!(sim.is_resting("a"), "лёг, идти никуда не пришлось");
+    let before = sim.energy_of("a");
+    sim.tick_n(10);
+    assert_eq!(sim.energy_of("a") - before, 50, "ставка лежанки без вычета");
+}
+
+/// А вот **идущий** спать ещё идёт: дорога в дальнюю спальню стоит ходьбы.
+/// Иначе «лечь пораньше» было бы бесплатным способом остановить расход.
+#[test]
+fn a_cat_walking_to_a_bed_pays_the_walk_rate() {
+    let mut sim = sim_from(&CORRIDOR);
+    sim.set_rest(1, 5);
+    sim.force_tile(7, 1, 1); // лежанка в другом конце коридора
+    sim.set_needs(1000, 900, 1);
+    sim.set_drain(10);
+    sim.set_toil(6, 4);
+    sim.set_energy("a", 200);
+
+    sim.tick_n(1);
+    assert!(sim.is_resting("a"), "лежанка занята");
+    assert!(sim.has_path("a"), "но кот ещё в пути");
+    let before = sim.energy_of("a");
+    sim.tick_n(3);
+    assert_eq!(before - sim.energy_of("a"), 18, "по дороге платит ходьбу");
+}
+
+/// Ставку выбирает **состояние, а не клетка**: кот, работающий стоя на лежанке,
+/// платит работу. Иначе станки строили бы вплотную к спальне, и зона отдыха
+/// стала бы способом не платить за труд.
+#[test]
+fn a_cat_working_on_a_bed_pays_the_work_rate() {
+    let mut sim = sim_from(&CORRIDOR);
+    sim.set_rest(1, 5);
+    sim.force_tile(1, 1, 1); // лежанка прямо под котом
+    sim.set_needs(1000, 0, 1); // спать никто не уходит — мерим расход
+    sim.set_drain(10);
+    sim.set_toil(6, 4);
+    sim.set_energy("a", 500);
+    sim.add_blueprint(1, 2, 0);
+
+    sim.tick_n(1);
+    assert!(sim.has_assignment("a"), "кот за работой, хоть и на кровати");
+    let before = sim.energy_of("a");
+    sim.tick_n(5);
+    assert_eq!(before - sim.energy_of("a"), 50, "работа считается работой");
+}
+
+/// Ноль в ставках значит «как `drain`»: мир, где про них не сказано, ведёт себя
+/// ровно как до §12.99. На этом стоят все тесты чужих механик.
+#[test]
+fn unset_rates_charge_the_drain_for_every_state() {
+    let mut working = sim_from(&HALL);
+    working.set_needs(1000, 0, 1);
+    working.set_drain(10);
+    working.add_blueprint(1, 2, 0);
+    working.tick_n(1);
+    assert!(working.has_assignment("a"), "кот за работой");
+    let before = working.energy_of("a");
+    working.tick_n(5);
+    assert_eq!(
+        before - working.energy_of("a"),
+        50,
+        "работа по базовой ставке"
+    );
+
+    let mut idling = sim_from(&HALL);
+    idling.set_needs(1000, 0, 1);
+    idling.set_drain(10);
+    idling.tick_n(1);
+    let before = idling.energy_of("a");
+    idling.tick_n(5);
+    assert_eq!(before - idling.energy_of("a"), 50, "и простой по ней же");
+}
+
+/// Голод умножает **действующую** ставку, а не единственную (§12.36): пустой
+/// желудок стоит вдвое от того, что кот и так тратит. Лежащему он не стоит
+/// ничего — продолжение «спящего голод не будит».
+#[test]
+fn a_starving_cat_burns_the_rate_of_its_state() {
+    let mut sim = sim_with_toil_rates();
+    sim.set_food(100, 0, 2); // порога нет — за едой никто не идёт
+    sim.set_fed("a", 0);
+
+    sim.tick_n(1);
+    let before = sim.energy_of("a");
+    sim.tick_n(5);
+    assert_eq!(
+        before - sim.energy_of("a"),
+        40,
+        "простой на голодный желудок"
+    );
+
+    let mut lying = sim_from(&CORRIDOR);
+    lying.set_rest(1, 5);
+    lying.force_tile(1, 1, 1);
+    lying.set_needs(1000, 900, 1);
+    lying.set_drain(10);
+    lying.set_toil(6, 4);
+    lying.set_food(100, 0, 2);
+    lying.set_fed("a", 0);
+    lying.set_energy("a", 500);
+
+    lying.tick_n(1);
+    assert!(lying.is_resting("a"), "лёг спать голодным");
+    let before = lying.energy_of("a");
+    lying.tick_n(10);
+    assert_eq!(lying.energy_of("a") - before, 50, "и во сне голод даром");
+}
+
 // --- боевой рулсет ---------------------------------------------------------
+
+/// На настоящем `core.yaml`: лестница ставок идёт по убыванию (§12.99).
+///
+/// Ловит рассогласование контента со смыслом лестницы: ноль в `walk` или `idle`
+/// значит «как работа», то есть механика выключена молча, а ставка выше рабочей
+/// означала бы базу, где выгоднее работать, чем стоять. Ровно та же порода
+/// сторожа, что `the_shipped_ruleset_leaves_no_arbitrage` у рынка.
+#[test]
+fn the_shipped_ruleset_makes_work_the_costliest_state() {
+    let yaml = include_str!("../../assets/rulesets/core.yaml");
+    let sim = Sim::new(yaml).expect("рулсет должен разбираться");
+    let (work, walk, idle) = sim.toil_rates();
+
+    assert!(idle > 0, "простой даром — кот, который не устаёт, не уснёт");
+    assert!(
+        work > walk && walk > idle,
+        "лестница обязана убывать: работа {work}, ходьба {walk}, простой {idle}",
+    );
+}
 
 /// На настоящем `core.yaml`: потолки сна расставлены так, что выспаться можно
 /// только в кровати (§12.52).

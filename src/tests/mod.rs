@@ -977,6 +977,11 @@ impl Sim {
             // выносливость никого не различает, и тесты чужих механик о ней не
             // знают. Разводит котов `set_drain` вместе с `set_stat_steps`.
             drain: 0,
+            // Ставок тоже нет (§12.99): ноль значит «как `drain`», то есть одна
+            // ставка на работу, ходьбу и простой, — поведение до §12.99, на
+            // котором стоят все тесты чужих механик. Разводит их `set_toil`.
+            walk: 0,
+            idle: 0,
             tired,
             critical: 0,
             floor,
@@ -996,6 +1001,14 @@ impl Sim {
         self.world.resource_mut::<NeedRules>().drain = drain;
     }
 
+    /// Ставки расхода за ходьбу и за простой (§12.99). Ноль в любой из них —
+    /// «как `drain`», то есть ставка одна на все состояния, как было до §12.99.
+    fn set_toil(&mut self, walk: i32, idle: i32) {
+        let mut needs = self.world.resource_mut::<NeedRules>();
+        needs.walk = walk;
+        needs.idle = idle;
+    }
+
     /// Порог, ниже которого кот бросает начатое и уходит спать; ноль выключает.
     fn set_critical(&mut self, value: i32) {
         self.world.resource_mut::<NeedRules>().critical = value;
@@ -1005,6 +1018,13 @@ impl Sim {
     fn thresholds(&self) -> (i32, i32) {
         let needs = self.world.resource::<NeedRules>();
         (needs.tired, needs.critical)
+    }
+
+    /// Ставки расхода из правил: `(работа, ходьба, простой)` — как их видит
+    /// лестница §12.99. Ноль в ходьбе или простое значит «как работа».
+    fn toil_rates(&self) -> (i32, i32, i32) {
+        let needs = self.world.resource::<NeedRules>();
+        (needs.drain, needs.walk, needs.idle)
     }
 
     /// Сделать тайл лежанкой: сколько бодрости он возвращает за тик.

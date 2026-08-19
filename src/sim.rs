@@ -1172,6 +1172,8 @@ impl Sim {
         world.insert_resource(NeedRules {
             max: rs.energy.max,
             drain: rs.energy.drain,
+            walk: rs.energy.walk,
+            idle: rs.energy.idle,
             tired: rs.energy.tired,
             critical: rs.energy.critical,
             floor: rs.energy.floor,
