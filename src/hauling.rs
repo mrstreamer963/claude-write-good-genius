@@ -441,6 +441,13 @@ pub(crate) fn mark_loose_scrap(
 /// Сколько из кучи уже обещано идущим, считается по ним самим, как в
 /// `assign_equip` (§12.34), и ограничено ещё и местом на складе: кот, которому
 /// некуда сдать груз, встанет с ломом в лапах, а лапы игроку не видны (§12.16).
+///
+/// **Куча в ячейке торгового поста разбирается вперёд всех прочих** (§12.98):
+/// расстояние решает только внутри очереди. Привезённое покупкой ложится кучей
+/// прямо в ячейку (§12.68), а `free_post_cell` считает ячейку с кучей занятой, —
+/// значит неубранный товар держит торговый слот, за который игрок платил
+/// постройкой поста. У всех остальных куч цена ходки одинакова, и там §12.14
+/// («берём ближайшего») цел целиком.
 pub(crate) fn assign_tidy(
     map: Res<BaseMap>,
     rules: Res<TileRules>,
@@ -543,13 +550,15 @@ pub(crate) fn assign_tidy(
 
     // Пустые коты: жадно разбираем пары (кот, помеченная куча) от ближней.
     // Куча остаётся в списке, пока в ней есть необещанное, — тогда её разбирают
-    // несколько котов разом (§12.48).
-    let mut open: Vec<(Entity, (i32, i32), i32)> = marks
+    // несколько котов разом (§12.48). Четвёртое поле — очередь (§12.98): куча в
+    // ячейке торгового поста разбирается вперёд всех прочих.
+    let mut open: Vec<(Entity, (i32, i32), i32, u8)> = marks
         .iter()
         .filter_map(|(e, p)| {
             let count = stacks.get(e).map_or(0, |(_, _, s)| s.count);
             let left = count - claimed(&promised, e);
-            (left > 0).then_some((e, (p.x, p.y), left))
+            let rank = u8::from(!rules.is_trade_post(map.tile_at(p.x, p.y)));
+            (left > 0).then_some((e, (p.x, p.y), left, rank))
         })
         .collect();
     // Порядок обхода ECS в поведение протекать не должен (§11): при равном
@@ -557,7 +566,7 @@ pub(crate) fn assign_tidy(
     // клетке; помеченных куч разных типов на одной клетке бывает несколько
     // (§12.21), поэтому в ключе ещё и сущность.
     empty.sort_unstable_by_key(|&(id, ..)| id);
-    open.sort_unstable_by_key(|&(e, (x, y), _)| (y, x, e.index()));
+    open.sort_unstable_by_key(|&(e, (x, y), ..)| (y, x, e.index()));
 
     while !empty.is_empty() && !open.is_empty() && room > 0 {
         let chosen = empty
@@ -566,17 +575,17 @@ pub(crate) fn assign_tidy(
             .flat_map(|(ci, (_, _, _, reach))| {
                 open.iter()
                     .enumerate()
-                    .filter_map(move |(oi, &(_, xy, _))| {
-                        reach.dist_at(xy.0, xy.1).map(|d| (d, ci, oi, xy))
+                    .filter_map(move |(oi, &(_, xy, _, rank))| {
+                        reach.dist_at(xy.0, xy.1).map(|d| (rank, d, ci, oi, xy))
                     })
             })
-            .min_by_key(|&(steps, ..)| steps);
-        let Some((_, ci, oi, goal)) = chosen else {
+            .min_by_key(|&(rank, steps, ..)| (rank, steps));
+        let Some((_, _, ci, oi, goal)) = chosen else {
             break;
         };
 
         let (_, cat_e, carry, reach) = empty.remove(ci);
-        let (pile_e, _, left) = open[oi];
+        let (pile_e, _, left, _) = open[oi];
         let trip = portion(carry, left.min(room));
         open[oi].2 -= trip;
         room -= trip;

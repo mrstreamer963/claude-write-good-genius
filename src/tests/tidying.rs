@@ -345,3 +345,65 @@ fn a_shared_pile_leaves_nothing_in_paws() {
         assert_eq!(sim.carrying_of(cat), 0, "и ничего не осталось у {cat}");
     }
 }
+
+// --- очередь: пост вперёд прочих (§12.98) ----------------------------------
+
+/// Куча в ячейке торгового поста разбирается раньше ближней кучи на полу:
+/// она держит торговый слот, а обычный мусор — только место.
+#[test]
+fn a_pile_on_a_trade_post_is_tidied_first() {
+    let mut sim = sim_from(&CORRIDOR);
+    sim.set_capacity(1, 20);
+    sim.force_tile(7, 1, 1);
+    sim.set_trade_post(2, true);
+    sim.force_tile(5, 1, 2);
+    sim.put_scrap(2, 1, 4); // рядом с котом
+    sim.put_scrap(5, 1, 4); // вчетверо дальше, но в ячейке поста
+
+    let mut first = None;
+    for _ in 0..200 {
+        sim.tick_n(1);
+        if sim.scrap_at(5, 1) == 0 {
+            first = Some("post");
+            break;
+        }
+        if sim.scrap_at(2, 1) == 0 {
+            first = Some("floor");
+            break;
+        }
+    }
+    assert_eq!(first, Some("post"), "кот пошёл за постовой кучей");
+    assert_eq!(
+        sim.scrap_at(2, 1),
+        4,
+        "ближняя куча дождалась своей очереди"
+    );
+
+    sim.tick_n(300);
+    assert_eq!(sim.scrap_at(7, 1), 8, "в итоге на складе обе");
+}
+
+/// Внутри одной очереди правило прежнее (§12.14): из двух обычных куч кот
+/// берётся за ближнюю.
+#[test]
+fn among_ordinary_piles_the_nearest_still_wins() {
+    let mut sim = sim_from(&CORRIDOR);
+    sim.set_capacity(1, 20);
+    sim.force_tile(7, 1, 1);
+    sim.put_scrap(2, 1, 4);
+    sim.put_scrap(5, 1, 4);
+
+    let mut first = None;
+    for _ in 0..200 {
+        sim.tick_n(1);
+        if sim.scrap_at(5, 1) == 0 {
+            first = Some("far");
+            break;
+        }
+        if sim.scrap_at(2, 1) == 0 {
+            first = Some("near");
+            break;
+        }
+    }
+    assert_eq!(first, Some("near"), "ближняя куча первой");
+}
