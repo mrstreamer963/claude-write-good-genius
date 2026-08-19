@@ -39,12 +39,32 @@ pub(crate) const WORK_RATE: i32 = 10;
 /// работал бы «из-за» дыры и после сноса остался бы по дальнюю её сторону —
 /// отрезанным от остатка собственной работы. Клетка на шаг ближе к берегу есть
 /// у любой цели (это её родитель в волне) и по определению уйдёт позже неё.
+///
+/// **Занятые рабочие клетки обходим** (§12.103): `held` — это те, на которых кот
+/// стоит и **никуда не идёт**, то есть работает, спит, учится или дежурит.
+/// Встать туда значит согнать его: кот в проходимость не входит (§12.32), и
+/// наложение разбирает `spread_units` уже после факта, а он оставляет на месте
+/// первого по `id`, а не того, кому клетка нужна. Так строитель, вставший на
+/// станок, гонял мастера каждый тик: тот терял `Crafting` (работать можно
+/// только стоя на станке), раздатчик возвращал его обратно, и оба мельтешили.
+///
+/// Признак — **отсутствие маршрута**, а не разбор задач: список задач растёт, и
+/// четырнадцатое место, где его надо не забыть, однажды забудут (инвариант 7).
+/// Заодно идущий мимо кот в `held` не попадает — он и так сейчас уйдёт, а
+/// обходить его значило бы посылать строителя в крюк через полбазы.
+///
+/// **Это предпочтение, а не запрет.** Другой клетки может не быть вовсе
+/// (коридор в одну клетку), и тогда работа важнее вежливости: занятая клетка
+/// берётся последней, но берётся. Ключ двухуровневый — тот же приём, что у
+/// уборки с торгового поста (§12.98). У сноса берег по-прежнему главнее всего:
+/// инвариант 4 не обсуждается.
 pub(crate) fn build_spot(
     map: &BaseMap,
     reach: &Reach,
     bp: (i32, i32),
     bp_tile: i16,
     front: Option<&DemolitionFront>,
+    held: &[(i32, i32)],
 ) -> Option<((i32, i32), i32)> {
     let mut spots = Vec::new();
     if bp_tile >= 0 && map.walkable(bp.0, bp.1) {
@@ -59,10 +79,24 @@ pub(crate) fn build_spot(
     let reachable = spots
         .into_iter()
         .filter_map(|s| reach.dist_at(s.0, s.1).map(|d| (s, d)));
+    // Своя клетка занятой не бывает: нулевой шаг и значит «я уже здесь стою».
+    let busy = |s: (i32, i32), d: i32| i32::from(d > 0 && held.contains(&s));
     match front.filter(|_| bp_tile < 0) {
-        Some(f) => reachable.min_by_key(|&((x, y), d)| (f.depth_at(x, y), d)),
-        None => reachable.min_by_key(|&(_, d)| d),
+        Some(f) => reachable.min_by_key(|&(s, d)| (f.depth_at(s.0, s.1), busy(s, d), d)),
+        None => reachable.min_by_key(|&(s, d)| (busy(s, d), d)),
     }
+}
+
+/// Клетки, которые кто-то держит собой: кот стоит и никуда не идёт (§12.103).
+///
+/// Одно выражение на всех, кто выбирает, где встать (`build_spot`), — иначе
+/// «занято» у стройки и у подвоза однажды разойдётся.
+pub(crate) fn held_cells<'a>(
+    cats: impl Iterator<Item = (&'a Position, Option<&'a Path>)>,
+) -> Vec<(i32, i32)> {
+    cats.filter(|(_, path)| path.is_none())
+        .map(|(p, _)| (p.x, p.y))
+        .collect()
 }
 
 /// Назначает простаивающих котов (без задачи и без маршрута) на ближайшие
@@ -87,7 +121,7 @@ pub(crate) fn assign_jobs(
     rules: Res<TileRules>,
     mut commands: Commands,
     mut blueprints: Query<(Entity, &mut Blueprint)>,
-    cats: Query<&Position, With<UnitId>>,
+    cats: Query<(&Position, Option<&Path>), With<UnitId>>,
     free_cats: Query<
         (Entity, &UnitId, &Position),
         (
@@ -116,9 +150,12 @@ pub(crate) fn assign_jobs(
         .map(|(_, bp)| (bp.x, bp.y))
         .collect();
     let front = (!doomed.is_empty()).then(|| {
-        let positions: Vec<(i32, i32)> = cats.iter().map(|p| (p.x, p.y)).collect();
+        let positions: Vec<(i32, i32)> = cats.iter().map(|(p, _)| (p.x, p.y)).collect();
         DemolitionFront::new(&map, &doomed, &positions)
     });
+    // Кого сгонять нельзя (§12.103). Считаем один раз на систему: список не
+    // меняется, пока раздача идёт, а `commands` всё равно отложены до конца тика.
+    let held = &held_cells(cats.iter())[..];
 
     // Чертежи, которые сейчас можно раздать.
     let mut open: Vec<(Entity, (i32, i32), i16)> = Vec::new();
@@ -170,7 +207,7 @@ pub(crate) fn assign_jobs(
                 open.iter()
                     .enumerate()
                     .filter_map(move |(oi, &(_, bp_xy, bp_tile))| {
-                        build_spot(map, reach, bp_xy, bp_tile, front)
+                        build_spot(map, reach, bp_xy, bp_tile, front, held)
                             .map(|(spot, steps)| (steps, ci, oi, spot))
                     })
             })

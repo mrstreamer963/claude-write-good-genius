@@ -32,7 +32,7 @@
 use bevy_ecs::prelude::*;
 
 use crate::components::*;
-use crate::jobs::build_spot;
+use crate::jobs::{build_spot, held_cells};
 use crate::map::{BaseMap, DIRS};
 use crate::path::Reach;
 
@@ -154,6 +154,9 @@ pub(crate) fn assign_hauls(
     deals: Query<(Entity, &Deal)>,
     crafts: Query<(Entity, &Craft)>,
     recipes: Res<CraftRules>,
+    // Кого сгонять нельзя (§12.103): носильщик выбирает, где встать, тем же
+    // `build_spot`, что и строитель, — значит и обходить занятых обязан так же.
+    standing: Query<(&Position, Option<&Path>), With<UnitId>>,
     stacks: Query<(Entity, &Position, &Stack)>,
     going: Query<(&UnitId, &Haul, Option<&Carrying>, Option<&Carry>)>,
     free_cats: Query<
@@ -320,6 +323,7 @@ pub(crate) fn assign_hauls(
 
     let map = &*map;
     let tiles = &*rules;
+    let held = &held_cells(standing.iter())[..];
     // Учтённое — то, что лежит на клетке с ёмкостью (§12.69). Наружу база
     // отдаёт только его: ворота продажи считают склад, и подвоз к посту обязан
     // брать оттуда же. Иначе правило говорит «с пола нельзя», а коты на глазах
@@ -377,7 +381,7 @@ pub(crate) fn assign_hauls(
                         if !wanted(item) || n.dest.storage_only() {
                             return None;
                         }
-                        let (spot, steps) = build_spot(map, reach, n.at, n.tile, None)?;
+                        let (spot, steps) = build_spot(map, reach, n.at, n.tile, None, held)?;
                         return Some((steps, ci, ni, spot, None));
                     }
                     view.iter()
@@ -386,7 +390,7 @@ pub(crate) fn assign_hauls(
                         .filter(|(_, (_, pile, ..))| !n.dest.storage_only() || in_store(*pile))
                         .filter_map(|(pi, (_, pile, _, _, from_pile))| {
                             let to_pile = reach.dist_at(pile.0, pile.1)?;
-                            let (_, rest) = build_spot(map, from_pile, n.at, n.tile, None)?;
+                            let (_, rest) = build_spot(map, from_pile, n.at, n.tile, None, held)?;
                             Some((to_pile + rest, ci, ni, *pile, Some(pi)))
                         })
                         .min_by_key(|&(steps, ..)| steps)
@@ -679,6 +683,7 @@ pub(crate) fn work_hauls(
     mut deals: Query<&mut Deal>,
     mut crafts: Query<&mut Craft>,
     recipes: Res<CraftRules>,
+    standing: Query<(&Position, Option<&Path>), With<UnitId>>,
     mut stacks: Query<(Entity, &Position, &mut Stack)>,
 ) {
     // Что уже везут к каждому адресату. Носильщиков у него теперь несколько
@@ -702,6 +707,9 @@ pub(crate) fn work_hauls(
             .map(|&(_, item, count)| (item, count))
             .collect()
     };
+    // Кого сгонять нельзя (§12.103): сдающий груз выбирает клетку тем же
+    // `build_spot`, что и строитель.
+    let held = held_cells(standing.iter());
 
     for (cat_e, pos, haul, load, path, carry) in &cats {
         match haul.to {
@@ -744,7 +752,7 @@ pub(crate) fn work_hauls(
                     };
 
                     let reach = Reach::all(&map, (pos.x, pos.y));
-                    match build_spot(&map, &reach, (bp.x, bp.y), bp.tile, None) {
+                    match build_spot(&map, &reach, (bp.x, bp.y), bp.tile, None, &held) {
                         Some((spot, _)) => {
                             let path = reach.path_to(spot.0, spot.1).unwrap_or_default();
                             // Наводка отработала: дальше кота считают по грузу,
@@ -824,7 +832,7 @@ pub(crate) fn work_hauls(
 
                     let reach = Reach::all(&map, (pos.x, pos.y));
                     let tile = map.tile_at(cell.0, cell.1);
-                    match build_spot(&map, &reach, cell, tile, None) {
+                    match build_spot(&map, &reach, cell, tile, None, &held) {
                         Some((spot, _)) => {
                             let path = reach.path_to(spot.0, spot.1).unwrap_or_default();
                             commands.entity(cat_e).insert((
@@ -883,7 +891,7 @@ pub(crate) fn work_hauls(
                     };
                     let reach = Reach::all(&map, (pos.x, pos.y));
                     let tile = map.tile_at(deal.cell.0, deal.cell.1);
-                    match build_spot(&map, &reach, deal.cell, tile, None) {
+                    match build_spot(&map, &reach, deal.cell, tile, None, &held) {
                         Some((spot, _)) => {
                             let path = reach.path_to(spot.0, spot.1).unwrap_or_default();
                             commands.entity(cat_e).insert((
