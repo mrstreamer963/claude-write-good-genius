@@ -287,6 +287,30 @@ fn a_crew_survives_a_save() {
     );
 }
 
+/// Обе закладки окна «Склад» переживают загрузку (§12.100).
+///
+/// Они ничего не делают сами — ни избранное, ни тикер на симуляцию не влияют, —
+/// и ровно поэтому их легко было бы оставить в JS. Цену такого решения §12.96
+/// уже показала на тумблере «Убирать сам»: ресурс в снимке сохраняется, а
+/// переменная в виде начинается заново, и после загрузки зеркало врёт.
+#[test]
+fn bookmarks_survive_a_save() {
+    let mut live = Sim::new(CORE).expect("рулсет");
+    let (faction, item) = live.first_traded_pair().expect("рулсет с рынком");
+    assert!(live.set_ticker(item, faction, true));
+    assert!(live.set_favorite(item, true));
+
+    let json = live.save().expect("снимок");
+    let loaded = Sim::load_from(CORE, &json).expect("загрузка");
+
+    assert_eq!(
+        loaded.ticker_of(item),
+        Some(faction),
+        "загруженная партия забыла тикер",
+    );
+    assert!(loaded.is_favorite(item), "и избранное тоже");
+}
+
 /// Ссылки на сущности переживают загрузку: claim остаётся за тем же котом.
 ///
 /// В снимке `Entity` не сохранишь — это индекс с поколением, у нового мира они

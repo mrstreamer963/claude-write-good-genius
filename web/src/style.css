@@ -1416,3 +1416,204 @@ main#stage.mode-cursor #mode-banner {
   color: #86c06a;
   font-weight: 600;
 }
+
+/* --- окно «Склад» (§12.100) -------------------------------------------------
+   Оверлей и коробка — как у штаба вылазок (§12.71): второе модальное окно в
+   проекте, и выглядеть иначе ему незачем. А вот **внутри** идиома
+   противоположная: штаб перерисовывается целиком, а склад строится один раз и
+   синхронизируется на месте, потому что в нём живут поля порогов. */
+#stockwin {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(14, 15, 19, 0.72);
+  backdrop-filter: blur(3px);
+  z-index: 11;
+}
+#stockwin[hidden] {
+  display: none;
+}
+.warewin-box {
+  display: flex;
+  flex-direction: column;
+  width: min(1000px, calc(100vw - 60px));
+  max-height: calc(100vh - 80px);
+  padding: 16px 18px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+}
+.warewin-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.warewin-title {
+  color: var(--accent);
+  font-size: 17px;
+  font-weight: 600;
+}
+.warewin-close {
+  flex: 0 0 auto;
+}
+/* `flex: 1 1 auto` вместе с `min-height: 0` нужны оба — см. `.raidwin-body`:
+   без первого список растёт по содержимому и вылезает за коробку, без второго
+   флекс-элемент не даёт себя сжать, и прокручиваться нечему. */
+.warewin-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  margin-top: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Сетка, а не флекс: колонки обязаны совпадать от строки к строке — иначе
+   числа и пороги гуляют по горизонтали, и таблицу не прочесть глазом. */
+.ware-row {
+  display: grid;
+  grid-template-columns: auto 150px 84px minmax(190px, 1fr) minmax(300px, auto);
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+}
+.ware-row:first-child {
+  border-top: none;
+}
+.tool.ware-fav {
+  padding: 2px 7px;
+  color: var(--muted);
+}
+.tool.ware-fav.on {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.ware-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.ware-num {
+  text-align: right;
+}
+/* Числа — идиома шапки (§12.53): главное и серое рядом. Второй формы записи
+   тех же трёх чисел в игре быть не должно, поэтому и стиль тот же. */
+.ware-num u {
+  margin-left: 3px;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 11px;
+}
+.ware-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+/* Отступ слева у `.keep` был рассчитан на строку под кнопкой рецепта; здесь
+   порог стоит своей колонкой, и сдвигать его не от чего. */
+.ware-rules .keep {
+  margin: 0;
+  justify-content: flex-start;
+}
+/* В тулбаре подпись тянулась на всю ширину узкой колонки, и «+» прижимался к
+   её краю. Здесь колонка широкая, и то же правило разносит «−» и «+» по разным
+   концам строки — кнопки шага перестают читаться парой. Ширина фиксированная, а
+   не по содержимому: иначе строка дёргается на каждой смене числа, а поле ввода
+   (§12.92) занимает место подписи и схлопнулось бы на пустом значении. */
+.ware-rules .keep .keep-val {
+  flex: 0 0 118px;
+}
+.ware-recipe {
+  color: var(--muted);
+  font-size: 11px;
+}
+.ware-trade {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+.tool.ware-tick {
+  padding: 2px 7px;
+  color: var(--muted);
+}
+.tool.ware-tick.on {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.tool.ware-side {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+.ware-rate,
+.tick-rate {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.ware-sep {
+  margin: 0 4px;
+  color: var(--muted);
+}
+.ware-none {
+  color: var(--muted);
+  font-size: 12px;
+}
+/* Куда шагнул курс с прошлой фазы (§12.100). Не курсивом — это число, а не
+   ремарка; зелёное и красное разведены по смыслу «дороже/дешевле», а не
+   «хорошо/плохо»: одна и та же стрелка выгодна продавцу и невыгодна покупателю. */
+.delta {
+  margin-left: 3px;
+  font-size: 11px;
+  font-style: normal;
+}
+.delta.up {
+  color: #7fd6a0;
+}
+.delta.down {
+  color: var(--bad);
+}
+
+/* Лента тикеров в правой колонке: кнопки сделки идут строкой под состоянием. */
+.cat-act {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+.tool.tick-deal {
+  flex: 1 1 auto;
+  justify-content: center;
+  padding: 2px 6px;
+  font-size: 12px;
+}
+
+/* Красная строка в шапке окна «Склад»: чего базе не хватает, чтобы показанное
+   работало (§12.100). Красным — потому что это не свойство мира, а нехватка,
+   которую чинит стройка; то, чего нет по технологии, не пишется вовсе. */
+.warewin-warn {
+  margin-top: 8px;
+  color: var(--bad);
+  font-size: 12px;
+}
+.warewin-warn[hidden] {
+  display: none;
+}
+/* Снять тикер — в самой строке ленты, справа от курса. Приглушён: это выход, а
+   не действие, ради которого строку открывают. */
+.tool.tick-off {
+  margin-left: 6px;
+  padding: 0 6px;
+  color: var(--muted);
+  line-height: 16px;
+}
+.tick-row .cat-row {
+  align-items: center;
+}

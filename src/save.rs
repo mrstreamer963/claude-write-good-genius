@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 16;
+pub(crate) const FORMAT: u32 = 17;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -127,6 +127,12 @@ pub(crate) const SAVED: &[&str] = &[
     // Автопродажа излишков — третье правило того же рода (§12.87). Забыть его
     // тише всех: партия грузится, база копит лом, и не происходит ничего.
     "Selling",
+    // Закладки игрока в окне «Склад» (§12.100). Не правила — сами по себе они
+    // ничего не делают, — но состояние партии: игрок решил, что держать на
+    // виду, и после загрузки это решение обязано быть на месте. Держать их в JS
+    // уже пробовали с «Убирать сам», и зеркало врало (§12.96).
+    "Favorites",
+    "Tickers",
     "Fame",
     "Money",
     "Standing",
@@ -247,6 +253,13 @@ pub(crate) struct StateDto {
     /// есть тот случай, ради которого `FORMAT` поднимают руками.
     #[serde(default)]
     pub(crate) selling: Vec<(usize, usize, i32)>,
+    /// Избранные предметы: их строки стоят наверху окна «Склад» (§12.100).
+    #[serde(default)]
+    pub(crate) favorites: Vec<usize>,
+    /// Тикеры: предмет и сторона, с которой по нему торгуют в один клик
+    /// (§12.100). Пара, а не тройка: порога у тикера нет — он не правило.
+    #[serde(default)]
+    pub(crate) tickers: Vec<(usize, usize)>,
     pub(crate) fame: i32,
     pub(crate) money: i32,
     pub(crate) standing: Vec<i32>,
@@ -616,6 +629,8 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
             stocking: world.resource::<Stocking>().0.clone(),
             auto_raids: world.resource::<AutoRaids>().0.clone(),
             selling: world.resource::<Selling>().0.clone(),
+            favorites: world.resource::<Favorites>().0.clone(),
+            tickers: world.resource::<Tickers>().0.clone(),
             fame: world.resource::<Fame>().0,
             money: world.resource::<Money>().0,
             standing: world.resource::<Standing>().0.clone(),
@@ -684,6 +699,8 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
     world.resource_mut::<Stocking>().0 = s.stocking.clone();
     world.resource_mut::<AutoRaids>().0 = s.auto_raids.clone();
     world.resource_mut::<Selling>().0 = s.selling.clone();
+    world.resource_mut::<Favorites>().0 = s.favorites.clone();
+    world.resource_mut::<Tickers>().0 = s.tickers.clone();
     world.resource_mut::<Fame>().0 = s.fame;
     world.resource_mut::<Money>().0 = s.money;
     world.resource_mut::<Standing>().0 = s.standing.clone();

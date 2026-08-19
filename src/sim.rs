@@ -49,7 +49,8 @@ use crate::skills::{
 use crate::snapshot::{
     AutoGateNames, BaseMapDto, BlueprintSnap, CraftSnap, DealSnap, DeskSnap, EntitySnap, GoalSnap,
     MapMeta, MissionSnap, NodeSnap, NoteSnap, PriceSnap, RaidGates, RaidSnap, RecipeSnap,
-    RecruitSnap, ResearchSnap, SaleSnap, SkillSnap, Snapshot, StackSnap, StockSnap, TopicSnap,
+    RecruitSnap, ResearchSnap, SaleSnap, SkillSnap, Snapshot, StackSnap, StockSnap, TickerSnap,
+    TopicSnap,
 };
 use crate::timeline::{ready_for, revealed};
 
@@ -351,13 +352,22 @@ impl Sim {
             }
         }
         (0..self.items.len())
-            .map(|item| StockSnap {
-                stored: stored[item],
-                loose: loose[item],
-                booked: booked
+            .map(|item| {
+                let owed = booked
                     .iter()
                     .find(|&&(i, _)| i == item)
-                    .map_or(0, |&(_, n)| n),
+                    .map_or(0, |&(_, n)| n);
+                StockSnap {
+                    stored: stored[item],
+                    loose: loose[item],
+                    booked: owed,
+                    // `stored + loose` — это ровно `on_base_counts`: обе ветки
+                    // выше раскладывают по этим двум числам **все** кучи и
+                    // **все** лапы, а куда именно — решает адресат. Минус
+                    // `owed` — и получается то самое, что меряет порог
+                    // производства (`crafting::pieces_needed`, §12.65).
+                    on_base: stored[item] + loose[item] - owed,
+                }
             })
             .collect()
     }
@@ -1160,6 +1170,11 @@ impl Sim {
         // И автопродажи: база, которая с первого тика сбывает «излишки», сама
         // решала бы, что излишек, — а сделка не отменяется (§12.44, §12.87).
         world.insert_resource(Selling::default());
+        // Закладки игрока в окне «Склад» (§12.100): что стоит наверху списка и
+        // что вынесено лентой на главный экран. Пустые — новая база ничего на
+        // виду не держит, и лента прячется, как любая пустая панель.
+        world.insert_resource(Favorites::default());
+        world.insert_resource(Tickers::default());
         // Ворота автоматики — контент, а не состояние (§12.93): пустое имя
         // технологии значит «правило доступно сразу», и так живут все
         // синтетические миры тестов.
@@ -2515,6 +2530,56 @@ impl Sim {
         true
     }
 
+    /// Избранное: поднять строку предмета наверх списка в окне «Склад»
+    /// (§12.100).
+    ///
+    /// **Ворот нет вовсе**, и это не недосмотр: порядок строк — не механика.
+    /// Закрепить можно и то, чем не торгует никто (аптечку под порогом
+    /// производства), потому что избранное отвечает на «где эта строка», а не
+    /// на «с кем по ней торгуют». За второе отвечает `set_ticker`, и вот у
+    /// него сторона обязательна.
+    pub fn set_favorite(&mut self, item: usize, on: bool) -> bool {
+        note(&mut self.world, format!("favorite {item} {on}"));
+        self.world.resource_mut::<Favorites>().set(item, on);
+        true
+    }
+
+    /// Тикер: вынести предмет лентой на главный экран и назвать сторону, с
+    /// которой по нему торгуют в один клик (§12.100).
+    ///
+    /// **Ворота одни, и те же, что у порога автопродажи** (§12.87): сторона
+    /// обязана торговать этим предметом. Иначе в ленте встала бы строка с
+    /// кнопками, которые фасад отклонит, — а молчащая кнопка читается как
+    /// поломка (§12.53). Ворот автоматики (`AutoRules`) здесь нет: тикер не
+    /// правило, он ничего не делает сам.
+    ///
+    /// Снятие (`on == false`) ворот не спрашивает — по тому же доводу, по
+    /// которому их не спрашивает снятие правила (§12.93): запертая отмена
+    /// оставила бы тикер несбрасываемым.
+    pub fn set_ticker(&mut self, item: usize, faction: usize, on: bool) -> bool {
+        note(&mut self.world, format!("ticker {item} {faction} {on}"));
+        if !on {
+            self.world
+                .resource_mut::<Tickers>()
+                .set(item, faction, false);
+            return true;
+        }
+        if self
+            .world
+            .resource::<FactionRules>()
+            .0
+            .get(faction)
+            .and_then(|rule| rule.price_of(item))
+            .is_none()
+        {
+            return false;
+        }
+        self.world
+            .resource_mut::<Tickers>()
+            .set(item, faction, true);
+        true
+    }
+
     /// Правило автопродажи: повторить за игроком клик по кнопке «Продать»
     /// (§12.87, §12.88).
     ///
@@ -3585,6 +3650,14 @@ impl Sim {
                         crate::trade::quote(factions, standing, f, *item, t, buying).unwrap_or(0)
                     };
                     let next_tick = tick + ahead.unwrap_or(0);
+                    // Прошлая фаза — **шагом вперёд, а не назад** (§12.100):
+                    // назад тик уходит в минус на первых сутках партии, а
+                    // расписание кольцевое, и «на длину цикла минус одна фаза
+                    // вперёд» — это тот же индекс, что «на одну назад».
+                    // Длина цикла своя у каждого предмета: `quote` берёт её из
+                    // его же списка фаз.
+                    let phases = rule.price_of(*item).map_or(1, |ph| ph.len().max(1));
+                    let prev_tick = tick + rule.period * (phases as u64 - 1);
                     out.push(PriceSnap {
                         faction: f,
                         item: *item,
@@ -3593,6 +3666,8 @@ impl Sim {
                         next_buy: at(next_tick, true),
                         next_sell: at(next_tick, false),
                         next_in: ahead.unwrap_or(0),
+                        prev_buy: at(prev_tick, true),
+                        prev_sell: at(prev_tick, false),
                     });
                 }
             }
@@ -3611,6 +3686,17 @@ impl Sim {
                 faction,
                 keep,
             })
+            .collect();
+        // Закладки игрока (§12.100). Порядок держит ядро — оба списка
+        // отсортированы по предмету, — потому что от него зависит порядок строк
+        // на экране, а обход ECS недетерминирован (§11).
+        let favorites: Vec<usize> = self.world.resource::<Favorites>().0.clone();
+        let tickers: Vec<TickerSnap> = self
+            .world
+            .resource::<Tickers>()
+            .0
+            .iter()
+            .map(|&(item, faction)| TickerSnap { item, faction })
             .collect();
         // Постов **сколько есть**, а свободен ли хоть один — считает ядро
         // (§12.26): «сделок меньше, чем постов» второй раз в JS однажды
@@ -3882,6 +3968,8 @@ impl Sim {
             deals,
             prices,
             sales,
+            favorites,
+            tickers,
             posts,
             post_free,
             post_lot,

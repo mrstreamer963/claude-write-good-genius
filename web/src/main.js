@@ -31,6 +31,12 @@ const COLORS = {
 const stageEl = document.getElementById("stage");
 const tickEl = document.getElementById("tick");
 const scrapEl = document.getElementById("scrap");
+// Фишки склада в шапке — дверь в окно «Склад» (§12.100): числа уже стоят здесь,
+// а окно это их подробность. Отдельной кнопки для этого не заводим — она стояла
+// бы вплотную к тому, что и так про склад.
+scrapEl.style.cursor = "pointer";
+scrapEl.title = "Открыть склад";
+scrapEl.addEventListener("click", () => openStockWindow());
 const catEl = document.getElementById("cat");
 const cellEl = document.getElementById("cell");
 // ⚠️ Панель клетки перерисовывается каждым снапшотом целиком, поэтому её
@@ -56,6 +62,7 @@ const goalsEl = document.getElementById("goals");
 const goalsToggleEl = document.getElementById("goals-toggle");
 const finaleEl = document.getElementById("finale");
 const raidWinEl = document.getElementById("raidwin");
+const stockWinEl = document.getElementById("stockwin");
 const toastsEl = document.getElementById("toasts");
 
 // Кнопки внутри панелей вешаются **делегированием, один раз на контейнер**, и
@@ -107,6 +114,34 @@ function onPanelClick(el, selector, send) {
 // списке не различить, — а ячейка различает их полностью. Вторая кнопка панели
 // клетки после «на склад» (§12.95), и по тому же правилу: кнопка стоит там, что
 // она меняет.
+// Быстрая сделка из ленты (§12.100). Панель перерисовывается целиком каждым
+// снапшотом, поэтому кнопка ловится делегированием парой `mousedown`/`mouseup`
+// (§12.57), а не своим `addEventListener` на узле-однодневке. Ключ — «сторона
+// сделки + предмет»: у одной строки две кнопки, и по `data-item` они поделили
+// бы одну.
+onPanelClick(dealEl, ".tick-deal", (node) =>
+  sendAction({
+    type: "trade",
+    faction: Number(node.dataset.faction),
+    item: Number(node.dataset.item),
+    // Размер берётся тем же выражением, что и подпись на кнопке: обещать пять,
+    // а слать двадцать пять — это кнопка, которая врёт (§12.90).
+    count: dealSize(shiftHeld),
+    buying: !!node.dataset.buying,
+  }),
+);
+// Снять тикер прямо из ленты (§12.100): закрепил игрок в окне, а надоел он ему
+// здесь, и гонять его за этим обратно в окно — дорога в один конец. Сторона в
+// команде не нужна, ключ у тикера — предмет, но фасад её принимает: снятие
+// ворот не спрашивает.
+onPanelClick(dealEl, ".tick-off", (node) =>
+  sendAction({
+    type: "setTicker",
+    item: Number(node.dataset.item),
+    faction: 0,
+    on: false,
+  }),
+);
 onPanelClick(cellEl, ".craft-cancel", (node) =>
   sendAction({
     type: "cancelCraft",
@@ -359,7 +394,12 @@ const tradeButtons = []; // кнопки сделок — гасим, когда
 // поле правила. Хранит их ядро и везёт отдельным списком, а не полем в строке
 // курса: строк у предмета столько, сколько сторон им торгует, а правило одно.
 let sales = [];
-const saleRows = []; // строки «сверх N» — по строке на предмет
+// Закладки игрока (§12.100). Обе живут в ядре и переживают загрузку партии:
+// зеркало в JS уже врало после загрузки у тумблера «Убирать сам» (§12.96).
+// Избранное — только предметы (это порядок строк в окне), тикеры — предмет и
+// сторона (это лента на главном экране и кнопки сделки в ней).
+let favorites = [];
+let tickers = [];
 // Кого выберет следующий клик у предмета, на котором правила ещё нет. Это не
 // зеркало правила (его нет), а заготовка выбора: как только порог поставят,
 // сторона уедет в ядро и читаться будет уже оттуда (§12.53).
@@ -379,7 +419,6 @@ const recipeButtons = []; // кнопки рецептов — гасим по �
 // Пороги автопроизводства в порядке палитры рецептов (§12.65). Число хранит
 // ядро; здесь оно нужно кнопкам «−/+», чтобы знать, от чего отсчитывать.
 let stocking = [];
-const stockRows = []; // строки «держать N» — по строке на рецепт
 const tileButtons = []; // кнопки палитры, закрытые технологией (§12.27)
 
 // --- worker ---------------------------------------------------------------
@@ -720,6 +759,8 @@ function renderSnapshot(snap) {
   money = snap.money ?? 0;
   prices = snap.prices ?? [];
   sales = snap.sales ?? [];
+  favorites = snap.favorites ?? [];
+  tickers = snap.tickers ?? [];
   stock = snap.stock ?? [];
   desks = snap.desks ?? [];
   posts = snap.posts ?? 0;
@@ -824,12 +865,11 @@ function renderSnapshot(snap) {
   renderRaidWindow();
   renderResearchPanel(snap.research);
   renderCraftPanel(snap.crafting);
-  renderDealPanel(snap.deals);
+  renderTradePanel(snap.deals);
   syncRecruitButtons(snap.recruits);
   syncTopicButtons(snap.topics);
   syncRecipeButtons(snap.recipes);
-  syncStockRows(snap.stocking, snap.recipes);
-  syncSaleRows();
+  syncStockWindow();
   syncTileButtons(snap.techs);
   renderNotePanel(snap.notes, snap.tick);
   renderGoalsPanel(snap.goals, snap.goals_required, snap);
@@ -1209,8 +1249,13 @@ function tileRoles(def) {
 }
 
 // Раздел тулбара, к которому относится клетка (§12.55). Клик по мастерской
-// раскрывает «Производство», по посту — рынок: игрок попадает откуда надо куда
-// надо, а **управление остаётся в одном месте**.
+// раскрывает «Производство», по парте — «Обучение»: игрок попадает откуда надо
+// куда надо, а **управление остаётся в одном месте**.
+//
+// Пост и склад сюда не входят: они ведут не в раздел, а в окно «Склад»
+// (`cellWindow`, §12.100). До него пост открывал рынок **первой** фракции —
+// наугад, потому что пост это лицензия, а не прилавок, и «чья эта клетка»
+// ответа не имеет. Окно фракционно-нейтрально, и вопрос исчез вместе с догадкой.
 //
 // Кнопки на самой клетке при этом не появляется, и это не осторожность. Ядро не
 // адресует работу месту: `shop_spot` и `lab_spot` берут ближайший **свободный**
@@ -1225,13 +1270,14 @@ function cellSection(def) {
   if (def.lab) return "Наука";
   if (def.teaches) return "Обучение";
   if (def.gate || def.relay) return "Вылазки";
-  // У рынка раздел на фракцию, и какая из них «эта клетка» — неизвестно: пост
-  // лицензия, а не прилавок (§12.44). Открываем первый — он же обычно и один.
-  if (def.trade) {
-    const fac = (meta.factions ?? [])[0];
-    return fac ? `Рынок: ${fac.label || fac.id}` : null;
-  }
   return null;
+}
+
+// Открывает ли клик по этой клетке окно «Склад» (§12.100). Это второе лицо
+// `cellSection`: у поста и склада «своего раздела» больше нет — у них своё окно,
+// и оно отвечает на оба вопроса разом («что у базы есть» и «почём это берут»).
+function cellWindow(def) {
+  return !!def && (!!def.trade || (def.capacity ?? 0) > 0);
 }
 
 // Панель клетки (§12.58). Клетка была единственным, о чём игрок не мог спросить:
@@ -2119,18 +2165,16 @@ function dealCell(snap, x, y) {
   ];
 }
 
-// Ключ группы — **сторона и фракция**, и больше ничего (§12.83). Панель сделок
+// Ключ группы — **сторона и фракция**, и больше ничего (§12.83). Плашка сделок
 // это сводка «с кем и на сколько», а не список заказов: заказов там до двадцати
 // восьми, и любое деление мельче фракции возвращает стену. Сторона из ключа не
 // уходит никогда — деньги входящие и исходящие в одну строку не складываются.
 //
 // Отсюда следует, что́ карточка вправе писать: **только складываемое**. Курс,
-// размер заказа и таймер из неё ушли (§12.81, и здесь же — курс), а «штуки»
-// ушли вместе с ними: у разных товаров они не суммируются. Складываются ровно
-// две вещи — контейнеры и котоденьги, и обе в карточке есть.
-//
-// Товар при этом называется: он не число, его можно просто перечислить, и обычно
-// он один. Потерять его было бы потерей ради симметрии.
+// размер заказа и таймер из неё ушли (§12.81), а «штуки» ушли вместе с ними: у
+// разных товаров они не суммируются. Складываются ровно две вещи — контейнеры и
+// котоденьги, и обе в карточке есть. Ярусом выше, у тикера, ключ уже предмет —
+// там штуки законны, потому что складывать нечего (§12.100).
 //
 // Всё, что перестало помещаться, спрашивают у ячейки (§12.82): там сделка одна,
 // и у неё есть и курс, и точный срок, и своя полоска.
@@ -2173,23 +2217,86 @@ function dealGroups(deals) {
   return [...groups.values()];
 }
 
-// Сделка (§12.44). Показываем **зафиксированный** курс, а не сегодняшний:
-// рассчитаются именно по нему, а расписание за это время могло уйти — в этом и
-// весь риск торговли. Кнопки «Отменить» здесь нет намеренно: деньги за покупку
-// уже ушли, и возврат превратил бы сделку в бесплатный опцион.
-function renderDealPanel(list) {
+// Панель «Торговля» (§12.100) — два яруса, и вопросы у них разные.
+//
+// **Сверху — тикеры**: строка на предмет, который игрок сам вынес на главный
+// экран. Ключ здесь предмет, а не фракция, и это снимает ограничение §12.83, а
+// не нарушает его: штуки убрали из карточки потому, что она группировала по
+// фракции и складывала лом с образцами. Строка отвечает «почём это сейчас и
+// сколько его у меня», и по ней же торгуют в один клик.
+//
+// **Снизу — плашки сделок**, ровно те, что были до §12.100: группа на сторону и
+// фракцию, и в ней только складываемое (§12.83). Они **не про тикеры**, а про
+// всё, что едет: сделка по незакреплённому товару обязана быть видна, иначе
+// игрок узнаёт о ней, только открыв окно.
+//
+// Подробностей про **одну** сделку здесь нет намеренно (§12.82): ни курса, ни
+// срока, ни «расчёт через N» — это вопрос к ячейке поста, где сделка одна.
+//
+// Кнопки сделки в тикере законны по доводу §12.75 («Снять» и «Отозвать» у
+// вылазок): это повторение уже принятого решения, а цена написана в той же
+// строке. Там же и «×» — снять тикер: закрепил игрок здесь, снимать его,
+// открывая окно, было бы дорогой в один конец.
+function renderTradePanel(list) {
   const deals = list ?? [];
   syncTradeButtons();
-  if (!deals.length || !meta) {
+  if ((!tickers.length && !deals.length) || !meta) {
     dealEl.hidden = true;
     return;
   }
-  // Сколько окон занято из скольких: постов теперь может быть несколько, и
-  // «почему кнопка не жмётся» игрок должен читать здесь, а не гадать (§12.55).
-  // Считаются **сделки**, а не карточки: схлопывание — это подача, и слот
-  // занимает каждая (§12.81).
-  const head = posts > 1 ? `Сделки · ${deals.length} из ${posts}` : "Сделка";
-  const parts = [`<div class="cat-name">${head}</div>`];
+  const parts = ['<div class="cat-name">Торговля</div>'];
+  const qty = dealSize(shiftHeld);
+  // То же правило, что в окне (§12.100): нет поста — кнопок сделки нет вовсе, а
+  // причина написана красным **один раз**, а не в каждой строке. Тикеры при этом
+  // остаются: курс и запас читать по-прежнему можно, а пост игрок отстроит.
+  if (!posts) parts.push('<div class="warewin-warn">Нет «Торгового поста»</div>');
+
+  for (const t of tickers) {
+    const it = (meta.items ?? [])[t.item];
+    if (!it) continue;
+    const fac = (meta.factions ?? [])[t.faction];
+    const q = quoteOf(t.faction, t.item);
+    const st = stock[t.item] ?? { stored: 0, booked: 0 };
+    const free = Math.max(0, st.stored - st.booked);
+    const rule = saleOf(t.item);
+
+    // Состояние кнопок считает `tradeState` — то же место, что и в окне
+    // (§12.100): второй экземпляр этой арифметики однажды покажет живую кнопку,
+    // которую фасад отклонит.
+    const acts = [true, false]
+      .map((buying) => {
+        const s = tradeState(t.faction, t.item, buying, qty);
+        return (
+          `<button class="tool tick-deal${s?.ready ? " on" : " off"}" ` +
+          `data-key="${buying ? "buy" : "sell"}@${t.item}" ` +
+          `data-item="${t.item}" data-faction="${t.faction}" ` +
+          `data-buying="${buying ? "1" : ""}" title="${esc(s?.title ?? "")}">` +
+          `<span>${buying ? "Купить" : "Продать"}</span>` +
+          `<b class="qty">×${qty}</b></button>`
+        );
+      })
+      .join("");
+
+    parts.push(
+      '<div class="cat-skill tick-row">' +
+        '<div class="cat-row"><span>' +
+        `<i class="chip" style="background:${it.color}"></i>` +
+        `${esc(it.label || it.id)} · ${esc(fac?.label || fac?.id || "—")}</span>` +
+        `<b class="tick-rate">${rateText(q, true)}` +
+        `<span class="ware-sep">·</span>${rateText(q, false)}</b>` +
+        // Снять тикер — там же, где он работает. Ключ свой, иначе `onPanelClick`
+        // спутал бы его с кнопками сделки той же строки.
+        `<button class="tool tick-off" data-key="off@${t.item}" ` +
+        `data-item="${t.item}" title="Убрать из ленты">×</button>` +
+        "</div>" +
+        `<div class="cat-sub">склад ${free}` +
+        (rule ? ` · сбывают сверх ${rule.keep}` : "") +
+        "</div>" +
+        (posts ? `<div class="cat-act">${acts}</div>` : "") +
+        "</div>",
+    );
+  }
+
   for (const g of dealGroups(deals)) {
     const who = (meta.factions ?? [])[g.faction];
     // Товары — по индексу палитры, а не по порядку встречи: иначе строка
@@ -2199,7 +2306,7 @@ function renderDealPanel(list) {
       .map((i) => esc(itemLabel(i)))
       .join(" · ");
     // «×5 сделок» стоит у заголовка: это ответ на «куда делись пять ячеек» —
-    // счёт слотов и счёт карточек разошлись намеренно (см. шапку).
+    // счёт слотов и счёт карточек разошлись намеренно (§12.81).
     const many = g.deals > 1 ? ` · ×${g.deals}` : "";
     const rows = [
       `<div class="cat-row"><span>${g.buying ? "Покупка" : "Продажа"} · ${esc(who?.label || "—")}${many}</span></div>`,
@@ -2209,8 +2316,7 @@ function renderDealPanel(list) {
       // Покупке нечего показывать, кроме того, что она едет: контейнер набивает
       // продавец, а не коты, и делать с этим нечего. Денег тут тоже нет — за
       // покупку списали сразу, в момент заказа (§12.44), и «на 340¤» рядом со
-      // строкой продажи прочиталось бы как второй доход. Когда приедет —
-      // свойство одной сделки, и стоит оно в её ячейке (§12.82).
+      // строкой продажи прочиталось бы как второй доход.
       rows.push('<div class="cat-sub">в пути</div>');
     } else {
       // Полоска мерит, докуда дошёл **доход**: у отгруженного контейнера
@@ -2236,6 +2342,7 @@ function renderDealPanel(list) {
     }
     parts.push(`<div class="cat-skill">${rows.join("")}</div>`);
   }
+
   dealEl.innerHTML = parts.join("");
   dealEl.hidden = false;
 }
@@ -2761,7 +2868,14 @@ function command(global, add) {
 function revealSection(tx, ty) {
   if (!mapCells || !meta) return;
   const tile = mapCells[ty * meta.width + tx];
-  const section = tile >= 0 ? cellSection(meta.palette[tile]) : null;
+  const def = tile >= 0 ? meta.palette[tile] : null;
+  // У поста и склада раздела нет — у них окно (§12.100), и открывается оно тем
+  // же кликом и по тому же правилу «попади откуда надо куда надо».
+  if (cellWindow(def)) {
+    openStockWindow();
+    return;
+  }
+  const section = def ? cellSection(def) : null;
   // Раздела нет — раскрывать нечего, и уже открытый не трогаем: захлопывать
   // палитру на каждый клик по полу значит отбирать у игрока инструмент.
   if (section && sections.some((s) => s.title === section)) openOnly(section);
@@ -2962,8 +3076,12 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "Shift") setShift(true);
   if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.code === "Escape" || e.key === "Escape") {
-    // Штаб — модальное окно и закрывается первым: он поверх всего, и пока он
-    // открыт, «отменить» может значить только «закрыть его» (§12.71).
+    // Модальные окна закрываются первыми: они поверх всего, и пока открыто
+    // такое окно, «отменить» может значить только «закрыть его» (§12.71).
+    if (stockWinOpen) {
+      closeStockWindow();
+      return;
+    }
     if (raidWinAt) {
       closeRaidWindow();
       return;
@@ -3118,6 +3236,16 @@ function buildToolbar() {
   );
   el.appendChild(cursorBtn);
 
+  // Склад — вне разделов, как и «Курсор», но по другой причине: это не режим, а
+  // дверь в окно (§12.100). Раздел из одной кнопки был бы лишним кликом —
+  // склад на базе один, выбирать в списке нечего.
+  const ware = mkTool(
+    '<span class="sw sw-scrap"></span><span>Склад</span>',
+    () => openStockWindow(),
+  );
+  ware.title = "Что есть на базе, почём его берут и какие правила это двигают";
+  el.appendChild(ware);
+
   const build = mkSection(el, "Постройка");
 
   tileButtons.length = 0;
@@ -3243,7 +3371,6 @@ function buildToolbar() {
     const shop = mkSection(el, "Производство");
 
     recipeButtons.length = 0;
-    stockRows.length = 0;
     recipes.forEach((r, i) => {
       // На кнопке — что выходит, и следом цена: те же фишки, что у тайлов.
       // Свотч и название — одной группой: кнопка рецепта переносит строку
@@ -3264,21 +3391,6 @@ function buildToolbar() {
       b.classList.add("toggle", "recipe");
       recipeButtons.push(b);
       shop.appendChild(b);
-
-      // Порог автопроизводства — **правило рядом с командой** (§12.64): «держать
-      // N» вместо «заказать ещё раз». Живёт здесь, а не в отдельном экране
-      // настроек: иначе игрок ищет причину происходящего не там, где решал.
-      const row = document.createElement("div");
-      row.className = "keep";
-      const key = `stock:${i}`;
-      const read = () => stocking[i] ?? 0;
-      const write = (min) => sendAction({ type: "setStock", recipe: i, min });
-      const minus = mkStep("−", key, read, write);
-      const label = mkKeepLabel(key, read, write);
-      const plus = mkStep("+", key, read, write);
-      row.append(minus, label, plus);
-      shop.appendChild(row);
-      stockRows.push({ row, label, minus, plus, key });
     });
   }
 
@@ -3316,138 +3428,6 @@ function buildToolbar() {
       school.appendChild(b);
     }
     syncTeachButtons();
-  }
-
-  // Торговля (§12.44). Раздел на фракцию: у каждой свой прайс, свой темп и своя
-  // наценка, и это второе лицо развилки §12.43 — сторону выбирают уже не только
-  // по заказам. Кнопок по две на предмет: купить и продать, чтобы направление
-  // не пряталось за модификатором.
-  tradeButtons.length = 0;
-  saleRows.length = 0;
-  (meta.factions ?? []).forEach((fac, fi) => {
-    // Чем фракция торгует, видно из палитры, а не из снапшота: тулбар строится
-    // один раз по `ready`, когда курсов ещё нет. `prices` приезжает `Map`, а не
-    // объектом, — та же идиома, что у цены и добычи (см. `costChips`).
-    const list =
-      fac.prices instanceof Map
-        ? [...fac.prices.keys()]
-        : Object.keys(fac.prices ?? {});
-    const traded = (meta.items ?? [])
-      .map((it, ii) => ({ it, ii }))
-      .filter(({ it }) => list.includes(it.id));
-    if (!traded.length) return;
-    // «Рынок», а не «Торговля»: в одну строку заголовка помещается только он, а
-    // перенос делал бы эти два раздела вдвое выше всех остальных.
-    const sec = mkSection(el, `Рынок: ${fac.label || fac.id}`);
-    for (const { it, ii } of traded) {
-      for (const buying of [true, false]) {
-        const b = mkTool(
-          `<span class="sw" style="background:${it.color}"></span>` +
-            `<span>${buying ? "Купить" : "Продать"} ${esc(it.label || it.id)}</span>` +
-            '<b class="rate">—</b><b class="qty">×5</b>',
-          (ev) => {
-            // Клик — пять штук, Shift — полный контейнер (§12.90): идиом тот
-            // же, что у заказа в мастерской, но верхнее число теперь свойство
-            // поста, а не константа — оно вырастет вместе с контейнером.
-            const count = dealSize(ev.shiftKey);
-            sendAction({ type: "trade", faction: fi, item: ii, count, buying });
-          },
-        );
-        b.classList.add("toggle");
-        b.dataset.faction = fi;
-        b.dataset.item = ii;
-        b.dataset.buying = buying ? "1" : "";
-        tradeButtons.push(b);
-        sec.appendChild(b);
-      }
-    }
-  });
-
-  // Сбыт (§12.88) — пороги автопродажи, **по строке на предмет**. До §12.88 они
-  // стояли под кнопками «Продать», то есть на паре «фракция + предмет», и у
-  // лома строк выходило две: включить можно обе, а излишек молча доставался
-  // первой по палитре. Правило теперь одно на предмет, а покупатель назван в
-  // самой строке и переключается кликом — выбор остаётся за игроком (§12.87),
-  // но разрешать его молча больше нечего.
-  //
-  // Цена переезда: правило больше не стоит там же, где команда (§12.64).
-  // Платим за это подсказкой на самой кнопке «Продать» — она называет
-  // действующее правило (см. `syncTradeButtons`).
-  saleRows.length = 0;
-  {
-    // Кто чем торгует — из палитры, а не из снапшота: тулбар строится по
-    // `ready`, когда курсов ещё нет. `prices` приезжает `Map` (см. `costChips`).
-    const buyers = new Map(); // предмет → фракции, которые его берут
-    (meta.factions ?? []).forEach((fac, fi) => {
-      const list =
-        fac.prices instanceof Map
-          ? [...fac.prices.keys()]
-          : Object.keys(fac.prices ?? {});
-      (meta.items ?? []).forEach((it, ii) => {
-        if (!list.includes(it.id)) return;
-        if (!buyers.has(ii)) buyers.set(ii, []);
-        buyers.get(ii).push(fi);
-      });
-    });
-
-    if (buyers.size) {
-      const sale = mkSection(el, "Сбыт");
-      for (const [ii, sides] of [...buyers.entries()].sort(
-        (a, b) => a[0] - b[0],
-      )) {
-        const it = (meta.items ?? [])[ii];
-        // Заголовок строки — предмет и покупатель. Кнопка перебирает стороны по
-        // кругу; там, где сторона одна, выбирать не из чего — кнопка гаснет
-        // классом `.off` и говорит об этом словом, а не молчит (§12.53).
-        const key = `sale:${ii}`;
-        const head = mkTool("", () => {
-          if (sides.length < 2) return;
-          const now = buyerOf(ii, sides);
-          const next = sides[(sides.indexOf(now) + 1) % sides.length];
-          picked.set(ii, next);
-          // Правило уже стоит — смена стороны это его правка, а не заготовка:
-          // пишем сразу, иначе игрок увидел бы нового покупателя, а сбывали бы
-          // старому. Порог при этом не сбрасывается (§12.88), и **набираемое
-          // число тоже**: оно уезжает вместе со сменой стороны, а не теряется.
-          const keep = stepPending(key) ?? saleOf(ii)?.keep ?? 0;
-          if (stepEdit) clearTimeout(stepEdit.timer);
-          stepEdit = null;
-          if (keep > 0)
-            sendAction({ type: "setSale", faction: next, item: ii, keep });
-          syncSaleRows();
-        });
-        head.classList.add("toggle");
-        sale.appendChild(head);
-
-        const row = document.createElement("div");
-        row.className = "keep";
-        const read = () => saleOf(ii)?.keep ?? 0;
-        const write = (keep) =>
-          sendAction({
-            type: "setSale",
-            faction: buyerOf(ii, sides),
-            item: ii,
-            keep,
-          });
-        const minus = mkStep("−", key, read, write);
-        const label = mkKeepLabel(key, read, write);
-        const plus = mkStep("+", key, read, write);
-        row.append(minus, label, plus);
-        sale.appendChild(row);
-        saleRows.push({
-          head,
-          row,
-          label,
-          minus,
-          plus,
-          item: ii,
-          sides,
-          it,
-          key,
-        });
-      }
-      syncSaleRows();
-    }
   }
 
   // Найм. Кандидаты уникальны (§4.2): каждый приходит один раз, известность
@@ -3605,64 +3585,100 @@ function sellableOf(item) {
 // Размер сделки следует за Shift, а не узнаётся в момент клика: кнопка,
 // одинаково горящая на пять и на двадцать пять, врёт ровно тогда, когда хватает
 // на первое и не хватает на второе.
+// Можно ли эту сделку прямо сейчас — и если нет, то почему словом.
+//
+// **Одно место на оба экрана** (§12.100): кнопки стоят и в окне «Склад», и в
+// ленте тикеров, а лента перерисовывается целиком каждым снапшотом, то есть
+// своими узлами в `tradeButtons` числиться не может. Разведи эту арифметику по
+// двум местам — и один экран однажды покажет живую кнопку, которую фасад
+// отклонит (§12.26, §12.53). Пост считает ядро, деньги и товар — арифметика над
+// уже названными им числами.
+//
+// Размер сделки следует за Shift, а не узнаётся в момент клика: кнопка,
+// одинаково горящая на пять и на двадцать пять, врёт ровно тогда, когда хватает
+// на первое и не хватает на второе.
+function tradeState(fi, ii, buying, qty) {
+  const q = quoteOf(fi, ii);
+  if (!q) return null;
+  const unit = buying ? q.buy : q.sell;
+  const total = unit * qty;
+  const broke = buying && money < total;
+  const free = buying ? 0 : sellableOf(ii);
+  const empty = !buying && free < qty;
+  // Расписание видно вперёд — это и есть разница между планированием и
+  // караулом с секундомером (§12.40). В строку оно не идёт (§12.100): там
+  // стоит дельта к прошлой фазе, а прогноз распирал бы её.
+  const next = buying ? q.next_buy : q.next_sell;
+  const ahead =
+    q.next_in > 0 && next !== unit ? ` · через ${q.next_in} станет ${next}¤` : "";
+  // Правило автопродажи живёт своей строкой (§12.88), и кнопка «Продать»
+  // обязана про него сказать: иначе игрок, у которого излишек уходит сам,
+  // ищет причину не там, где принимал решение (§12.64).
+  const rule = buying ? null : saleOf(ii);
+  const auto = rule
+    ? ` · излишек сверх ${rule.keep} уходит «${
+        (meta.factions ?? [])[rule.faction]?.label ?? "?"
+      }» сам`
+    : "";
+  const title = !posts
+    ? "Нужен «Торговый пост»"
+    : !postFree
+      ? // Ячейка занята либо сделкой, либо непойманным привозом (§12.68):
+        // второй случай игрок чинит сам, и сказать об этом надо здесь.
+        `Свободных ячеек нет: разгрузите пост или постройте ещё один`
+      : broke
+        ? `Нужно ${total}¤ за ${qty}, у вас ${money}¤`
+        : empty
+          ? // Названное число — это «свободно», а не «есть»: под открытой
+            // сделкой товар базе уже не принадлежит (§12.50), и без этой
+            // оговорки отказ спорит с счётчиком в шапке.
+            `Свободно к продаже ${Math.max(0, free)}, нужно ${qty}`
+          : `${unit}¤ за штуку · ${qty} шт. = ${total}¤${
+              shiftHeld ? "" : ` · Shift — полный контейнер (${dealSize(true)})`
+            }${ahead}${auto}`;
+  return { q, unit, ready: postFree && !broke && !empty, title };
+}
+
+// Кнопки сделок в окне «Склад»: состояние на них наводит `tradeState`, а сам
+// список узлов живёт, пока окно открыто (§12.100).
 function syncTradeButtons() {
   const qty = dealSize(shiftHeld);
   for (const b of tradeButtons) {
     const fi = Number(b.dataset.faction);
     const ii = Number(b.dataset.item);
     const buying = !!b.dataset.buying;
-    const q = quoteOf(fi, ii);
-    if (!q) continue;
-    const unit = buying ? q.buy : q.sell;
-    const total = unit * qty;
-    const broke = buying && money < total;
-    const free = buying ? 0 : sellableOf(ii);
-    const empty = !buying && free < qty;
-    const ready = postFree && !broke && !empty;
-    b.disabled = !ready;
-    b.classList.toggle("on", ready);
-    const rate = b.querySelector(".rate");
-    if (rate) rate.textContent = `${unit}¤`;
+    const st = tradeState(fi, ii, buying, qty);
+    if (!st) continue;
+    // ⚠️ Гасим **классом**, а не `disabled` (§12.53, §12.71): по выключенному
+    // элементу браузер не шлёт событий мыши, и причина отказа, которую только
+    // что посчитал `tradeState`, не показалась бы **никогда**. До §12.100 эти
+    // кнопки стояли в тулбаре и гасились `disabled` — то есть молчали ровно
+    // тогда, когда игроку и надо было объяснить, почему сделка не идёт.
+    b.classList.toggle("off", !st.ready);
+    b.classList.toggle("on", st.ready);
     const size = b.querySelector(".qty");
     if (size) {
       size.textContent = `×${qty}`;
       size.classList.toggle("big", shiftHeld);
     }
-    // Расписание видно вперёд — это и есть разница между планированием и
-    // караулом с секундомером (§12.40).
-    const next = buying ? q.next_buy : q.next_sell;
-    const ahead =
-      q.next_in > 0 && next !== unit
-        ? ` · через ${q.next_in} станет ${next}¤`
-        : "";
-    // Правило автопродажи живёт в своём разделе (§12.88), и кнопка «Продать»
-    // обязана про него сказать: иначе игрок, у которого излишек уходит сам,
-    // ищет причину не там, где принимал решение (§12.64).
-    const rule = buying ? null : saleOf(ii);
-    const auto = rule
-      ? ` · излишек сверх ${rule.keep} уходит «${
-          (meta.factions ?? [])[rule.faction]?.label ?? "?"
-        }» сам (раздел «Сбыт»)`
-      : "";
-    b.title = !posts
-      ? "Нужен «Торговый пост»"
-      : !postFree
-        ? // Ячейка занята либо сделкой, либо непойманным привозом (§12.68):
-          // второй случай игрок чинит сам, и сказать об этом надо здесь.
-          `Свободных ячеек нет: разгрузите пост или постройте ещё один`
-        : broke
-          ? `Нужно ${total}¤ за ${qty}, у вас ${money}¤`
-          : empty
-            ? // Названное число — это «свободно», а не «есть»: под открытой
-              // сделкой товар базе уже не принадлежит (§12.50), и без этой
-              // оговорки отказ спорит с счётчиком в шапке.
-              `Свободно к продаже ${Math.max(0, free)}, нужно ${qty}`
-            : `${unit}¤ за штуку · ${qty} шт. = ${total}¤${
-                shiftHeld
-                  ? ""
-                  : ` · Shift — полный контейнер (${dealSize(true)})`
-              }${ahead}${auto}`;
+    b.title = st.title;
   }
+}
+
+// Курс словом: число и то, куда оно шагнуло с прошлой фазы (§12.100).
+//
+// Дельта, а не прогноз вперёд: строка одна, и «через 240 станет 7¤» её
+// распирает. Прогноз при этом не потерян — он в подсказке кнопки (`tradeState`),
+// там же, где жил и до §12.100.
+function rateText(q, buying) {
+  if (!q) return "—";
+  const now = buying ? q.buy : q.sell;
+  const was = buying ? q.prev_buy : q.prev_sell;
+  // `next_in === 0` — расписание не меняется вовсе: сравнивать не с чем, и
+  // стрелка обещала бы движение, которого не будет.
+  if (!q.next_in || was === now) return `${now}¤`;
+  const up = now > was;
+  return `${now}¤ <i class="delta ${up ? "up" : "down"}">${up ? "▲+" : "▼−"}${Math.abs(now - was)}</i>`;
 }
 
 // Чего не хватает складу на этот набор — и что с этим делать (§12.53).
@@ -3970,9 +3986,10 @@ function endNumEdit(commit) {
   write(value);
 }
 
-// Кнопка шага у порога. Живёт в тулбаре, а не в панели, поэтому слушатель
+// Кнопка шага у порога. Живёт в окне «Склад», а не в панели, поэтому слушатель
 // вешается прямо на узел: перерисовка целиком (§12.57) грозит только правым
-// панелям, а тулбар собирается один раз на партию.
+// панелям, а окно собирается один раз на открытие и дальше синхронизируется на
+// месте — ровно ради таких кнопок (§12.100).
 //
 // **Нажатие, а не клик**: работа идёт по `mousedown`, потому что удержание и
 // есть жест, а `click` приходит только на отпускании. Кнопка, погашенная
@@ -4005,125 +4022,11 @@ function mkStep(sign, key, read, write) {
   return b;
 }
 
-// Порог показываем словом, а не пустым нулём: «держать —» читается как «правила
-// нет», а «0» — как «держать ноль», то есть как настройку, которой игрок не
-// делал. Рецепт, закрытый технологией, порога не принимает — ядро его всё равно
-// не исполнит (§12.65).
-function syncStockRows(list, recipes) {
-  stockRows.forEach(({ row, label, minus, plus, key }, i) => {
-    // Пока число набирают, на экране стоит набираемое, а не то, что уже знает
-    // ядро (§12.89): иначе подпись отставала бы от пальца на полсекунды.
-    stocking[i] = (list ?? [])[i] ?? 0;
-    const min = stepPending(key) ?? stocking[i];
-    const open = ((recipes ?? [])[i] ?? {}).unlocked ?? false;
-    // Пока игрок печатает — его текст не трогаем (§12.92): подпись зовётся
-    // каждым кадром и затёрла бы набранное на первом же снапшоте.
-    const typing = numEditing(key);
-    // Ворота автоматики (§12.93, §12.94): до технологии строки нет вовсе — правило
-    // ещё не механика игры, и полоска «держать —» обещала бы то, чего нет.
-    const gate = autoGateHint("crafting");
-    if (!typing) {
-      label.textContent = min > 0 ? `держать ${min}` : "держать —";
-    }
-    row.classList.toggle("on", min > 0 && !gate);
-    row.classList.toggle("off", !!gate);
-    row.hidden = !open || !!gate;
-    minus.disabled = !open || min <= 0;
-    plus.disabled = !open;
-    row.title =
-      gate ??
-      (min > 0
-        ? `Коты сами делают, пока на базе меньше ${min} шт. Клик — на штуку, Shift — на пять, зажать — быстрее`
-        : "Держать запас: коты будут делать сами, когда просядет");
-  });
-}
-
 // Действующее правило по предмету — из снапшота (§12.88). Правило одно, и
 // покупатель приезжает вместе с числом: второго источника ни того, ни другого
 // в JS быть не должно.
 function saleOf(item) {
   return sales.find((s) => s.item === item);
-}
-
-// Кому уйдёт излишек этого предмета: сторона из правила, если оно есть, иначе
-// заготовка выбора, иначе первая, кто этим торгует. Порядок именно такой —
-// правило старше заготовки, иначе игрок правил бы одно, а видел другое.
-function buyerOf(item, sides) {
-  return saleOf(item)?.faction ?? picked.get(item) ?? sides[0];
-}
-
-// Порог продажи показываем словом, а не пустым нулём: «сверх —» читается как
-// «правила нет», а «сверх 0» — как «продавать всё до последнего лома», то есть
-// как настройка, которой игрок не делал (и которой в ядре нет: ноль — снятие).
-//
-// Заголовок строки называет **предмет и покупателя**: правило одно на предмет,
-// и сторона — его поле (§12.88). Там, где сторона одна, выбирать не из чего —
-// кнопка гаснет классом `.off` и объясняется словом, а не молчит (§12.53).
-function syncSaleRows() {
-  for (const {
-    head,
-    row,
-    label,
-    minus,
-    plus,
-    item,
-    sides,
-    it,
-    key,
-  } of saleRows) {
-    // Набираемое число старше того, что знает ядро (§12.89): пока игрок жмёт
-    // «+», на экране обязано стоять то, что у него под пальцем.
-    const keep = stepPending(key) ?? saleOf(item)?.keep ?? 0;
-    const who = buyerOf(item, sides);
-    const name = (meta.factions ?? [])[who];
-    const one = sides.length < 2;
-
-    // ⚠️ Только при изменении (§12.84): `syncSaleRows` зовётся каждым снапшотом,
-    // и безусловный `innerHTML` пересоздавал бы детей кнопки каждые 16 мс —
-    // `mousedown` пришёлся бы на один `<span>`, `mouseup` на другой, уже
-    // мёртвый, и `click` браузер не выдал бы вовсе. Кнопка смены покупателя
-    // выглядела бы живой и молча не работала.
-    const html =
-      `<span class="sw" style="background:${it.color}"></span>` +
-      `<span>${esc(it.label || it.id)}</span>` +
-      `<b class="rate">${esc(name?.label || name?.id || "—")}</b>`;
-    if (head.innerHTML !== html) head.innerHTML = html;
-    head.classList.toggle("on", keep > 0);
-    head.classList.toggle("off", one);
-    head.title = one
-      ? `Этот товар берёт только «${name?.label || name?.id}» — выбирать не из кого`
-      : `Излишек уходит «${name?.label || name?.id}». Клик — другая сторона; порог при этом остаётся`;
-
-    // Пока игрок печатает — его текст не трогаем (§12.92).
-    if (!numEditing(key)) {
-      label.textContent = keep > 0 ? `сверх ${keep}` : "сверх —";
-    }
-    // Раздел «Сбыт» — это целиком правило автопродажи (§12.94), поэтому до технологии
-    // прячется и строка, и её заголовок; пустой раздел уберёт `syncSectionRows`.
-    const gate = autoGateHint("sales");
-    row.hidden = !!gate;
-    head.hidden = !!gate;
-    row.classList.toggle("on", keep > 0 && !gate);
-    row.classList.toggle("off", !!gate);
-    minus.disabled = keep <= 0;
-    plus.disabled = false;
-    // Порог меряет **склад** (§12.91), и сказать это надо прямо: то же число
-    // игрок видит главным в шапке, а лежащее на полу правило своим не считает.
-    // Поста может не быть вовсе — тогда правило стоит, но не сработает ни разу,
-    // и об этом здесь же: молчащее правило читается как поломка (§12.53).
-    row.title =
-      gate ??
-      (keep > 0
-        ? `Коты продают всё, что на складе сверх ${keep} шт. (лежащее на полу не в счёт — сперва уберут).${
-            posts ? "" : " Но торгового поста ещё нет."
-          } Клик — на штуку, Shift — на пять, зажать — быстрее`
-        : "Продавать излишек: всё, что на складе сверх порога, коты отнесут на пост сами");
-  }
-  // Весь раздел — про одно правило, поэтому до технологии он пуст и не нужен.
-  syncSectionRows(
-    "Сбыт",
-    saleRows.map((r) => r.head),
-  );
 }
 
 // Почему рецепт не заказать. «Мастерской нет» и «все станки заняты» — разные
@@ -4500,6 +4403,495 @@ function scaleText(value, field) {
     ...(lastSnap?.entities ?? []).map((e) => e[field] ?? 0),
   );
   return max > 0 ? `${Math.round((value / max) * 100)} %` : `${value}`;
+}
+
+// --- окно «Склад» (§12.100) -------------------------------------------------
+//
+// Всё имущество базы, курсы всех сторон и оба порога — одной таблицей: строка
+// на предмет. До §12.100 это жило в пяти местах (фишка в шапке и её подсказка,
+// «Рынок: <фракция>» по разделу на каждую, «Сбыт», «держать N» в
+// «Производстве»), и ни одно не отвечало на вопрос целиком.
+//
+// ⚠️ **Строится один раз при открытии и дальше синхронизируется на месте.**
+// Идиома тулбара, а не панели, и с соседним модалом (`#raidwin`, §12.71) она
+// **противоположная**: тот перерисовывается целиком каждым снапшотом. Здесь так
+// нельзя — в окне живут поля порогов, а их убивает ровно перерисовка: §12.84
+// (пересозданные дети кнопки съедают клик), §12.87 (удержание считает от числа,
+// снятого на нажатии), §12.89 (набор досылается, когда устоялся), §12.92
+// (подпись на время правки становится `<input>`). Числа здесь меняются каждым
+// кадром, так что спасительное сравнение HTML из штаба не сработало бы ни разу.
+let stockWinOpen = false;
+// Строка красных предупреждений в шапке окна: чего базе не хватает, чтобы
+// показанное вообще работало (§12.100).
+let warnEl = null;
+// Строки предметов, пока окно открыто. Массив живёт от открытия до закрытия:
+// узлы в нём переиспользуются, и на этом держится вся работа порогов.
+const wareRows = [];
+
+function openStockWindow() {
+  if (stockWinOpen) return;
+  stockWinOpen = true;
+  buildStockWindow();
+  syncStockWindow();
+  stockWinEl.hidden = false;
+}
+
+function closeStockWindow() {
+  if (!stockWinOpen) return;
+  // Уход из окна — конец набора (§12.89): и правку в поле, и набранное
+  // кнопками досылаем, иначе число не доедет до ядра и не попадёт в автосейв.
+  endNumEdit(true);
+  flushStep();
+  stockWinOpen = false;
+  wareRows.length = 0;
+  tradeButtons.length = 0;
+  stockWinEl.hidden = true;
+  stockWinEl.innerHTML = "";
+}
+
+// Кто сторона этой строки: **одна на всю строку**, и ей адресованы все её
+// решения — и разовая сделка, и порог автопродажи, и тикер (§12.100).
+//
+// Порядок источников не случаен: сперва то, что игрок уже решил и что хранит
+// ядро, потом заготовка выбора, потом первый торгующий. «Продавать тому, кто в
+// этот тик даёт больше» ядру посчитать нетрудно, и ровно поэтому нельзя
+// (§12.87): правило обыгрывало бы игрока на его же расписании.
+function sideOf(item, sides) {
+  return (
+    saleOf(item)?.faction ??
+    tickers.find((t) => t.item === item)?.faction ??
+    picked.get(item) ??
+    sides[0]
+  );
+}
+
+// Стороны, которые вообще торгуют этим предметом. Из палитры, а не из снапшота:
+// окно может открыться раньше первого курса, а прайс — контент (см. `costChips`,
+// `prices` приезжает `Map`).
+function sidesOf(item) {
+  const id = (meta.items ?? [])[item]?.id;
+  return (meta.factions ?? [])
+    .map((fac, fi) => ({ fac, fi }))
+    .filter(({ fac }) => {
+      const list =
+        fac.prices instanceof Map
+          ? [...fac.prices.keys()]
+          : Object.keys(fac.prices ?? {});
+      return list.includes(id);
+    })
+    .map(({ fi }) => fi);
+}
+
+// Рецепты, которые дают этот предмет. Обычно один; двух хватает, чтобы порог
+// нельзя было повесить на предмет, — на этом и стоит §12.65.
+function recipesGiving(item) {
+  const id = (meta.items ?? [])[item]?.id;
+  return (meta.recipes ?? [])
+    .map((r, i) => ({ r, i }))
+    .filter(({ r }) => {
+      const gives =
+        r.gives instanceof Map
+          ? [...r.gives.keys()]
+          : Object.keys(r.gives ?? {});
+      return gives.includes(id);
+    });
+}
+
+function buildStockWindow() {
+  wareRows.length = 0;
+  tradeButtons.length = 0;
+  stockWinEl.innerHTML = "";
+
+  const box = document.createElement("div");
+  box.className = "warewin-box";
+  const top = document.createElement("div");
+  top.className = "warewin-top";
+  top.innerHTML = '<div class="warewin-title">Склад</div>';
+  const close = mkTool("Закрыть", () => closeStockWindow());
+  close.className = "tool warewin-close";
+  top.appendChild(close);
+  box.appendChild(top);
+
+  // Предупреждения — одной строкой на всё окно, а не по строке на предмет:
+  // «нет торгового поста» шесть раз подряд это не шесть новостей (§12.80).
+  warnEl = document.createElement("div");
+  warnEl.className = "warewin-warn";
+  box.appendChild(warnEl);
+
+  const list = document.createElement("div");
+  list.className = "warewin-list";
+  box.appendChild(list);
+  stockWinEl.appendChild(box);
+
+  (meta.items ?? []).forEach((it, item) => {
+    const sides = sidesOf(item);
+    const row = document.createElement("div");
+    row.className = "ware-row";
+
+    // Избранное — первым в строке: это про саму строку и её место в списке, и
+    // глаз ищет его в одном столбце, а не в конце строк разной длины. Ворот у
+    // него нет вовсе — закрепить можно и то, чем не торгует никто (§12.100).
+    const fav = mkTool("★", () =>
+      sendAction({ type: "setFavorite", item, on: !favorites.includes(item) }),
+    );
+    fav.classList.add("toggle", "ware-fav");
+    row.appendChild(fav);
+
+    const name = document.createElement("div");
+    name.className = "ware-name";
+    name.innerHTML =
+      `<span class="sw" style="background:${it.color}"></span>` +
+      `<span>${esc(it.label || it.id)}</span>`;
+    row.appendChild(name);
+
+    // Числа — идиома шапки: главное и `+22` серым, без подписей. Расклад на три
+    // числа §12.53 живёт в подсказке, где он и стоит сегодня.
+    const num = document.createElement("div");
+    num.className = "ware-num";
+    row.appendChild(num);
+
+    // Правила строки: сперва «делать до» (по рецепту, §12.65), потом «сбывать
+    // сверх» (по предмету, §12.88).
+    const rules = document.createElement("div");
+    rules.className = "ware-rules";
+    row.appendChild(rules);
+
+    const keeps = [];
+    const many = recipesGiving(item).length > 1;
+    for (const { r, i: def } of recipesGiving(item)) {
+      const line = document.createElement("div");
+      line.className = "keep";
+      const key = `stock:${def}`;
+      const read = () => stocking[def] ?? 0;
+      const write = (min) => sendAction({ type: "setStock", recipe: def, min });
+      const minus = mkStep("−", key, read, write);
+      const label = mkKeepLabel(key, read, write);
+      const plus = mkStep("+", key, read, write);
+      // Цена за штуку фишками, теми же, что у тайлов и рецептов: порог «делать
+      // до 20» тратит строку, стоящую выше на этом же экране.
+      const cost = document.createElement("span");
+      cost.innerHTML = costChips(r.cost);
+      line.append(minus, label, plus, cost);
+      // **Имя рецепта — только когда рецептов больше одного** (§12.100): при
+      // единственном оно повторяет то, подо чем стоит, а повторяющая соседа
+      // строка лишняя (§12.80).
+      if (many) {
+        const who = document.createElement("span");
+        who.className = "ware-recipe";
+        who.textContent = r.label || r.id;
+        line.appendChild(who);
+      }
+      rules.appendChild(line);
+      keeps.push({ line, label, minus, plus, key, def });
+    }
+
+    let sale = null;
+    if (sides.length) {
+      const line = document.createElement("div");
+      line.className = "keep";
+      const key = `sale:${item}`;
+      const read = () => saleOf(item)?.keep ?? 0;
+      const write = (keep) =>
+        sendAction({
+          type: "setSale",
+          faction: sideOf(item, sides),
+          item,
+          keep,
+        });
+      const minus = mkStep("−", key, read, write);
+      const label = mkKeepLabel(key, read, write);
+      const plus = mkStep("+", key, read, write);
+      line.append(minus, label, plus);
+      rules.appendChild(line);
+      sale = { line, label, minus, plus, key };
+    }
+
+    // Торговый блок. Тикер стоит здесь, а не рядом с избранным: у него в данных
+    // **сторона**, и переключатель обязан стоять при своём поле — два чекбокса
+    // подряд различались бы только глифом (§12.100).
+    const trade = document.createElement("div");
+    trade.className = "ware-trade";
+    row.appendChild(trade);
+
+    const tick = mkTool("◉", () => {
+      if (tick.classList.contains("off")) return; // причина уже в подсказке
+      sendAction({
+        type: "setTicker",
+        item,
+        faction: sideOf(item, sides),
+        on: !tickers.some((t) => t.item === item),
+      });
+    });
+    tick.classList.add("toggle", "ware-tick");
+    trade.appendChild(tick);
+
+    let side = null;
+    let rate = null;
+    let buy = null;
+    let sell = null;
+    let none = null;
+    if (sides.length) {
+      // Сторона перебирается кликом по кругу — идиома «Сбыта» (§12.88). Колонка
+      // на фракцию растёт вбок и умирает на четвёртой; список сторон не растёт.
+      side = mkTool("", () => {
+        if (sides.length < 2) return;
+        const now = sideOf(item, sides);
+        const next = sides[(sides.indexOf(now) + 1) % sides.length];
+        picked.set(item, next);
+        // Сторона у строки одна, и ей адресованы все её решения: смена стороны
+        // переписывает и правило автопродажи, и тикер — сразу, а не «когда-
+        // нибудь». Иначе игрок видит одну сторону, а торгуют с другой (§12.88).
+        const keep = stepPending(`sale:${item}`) ?? saleOf(item)?.keep ?? 0;
+        if (stepEdit) clearTimeout(stepEdit.timer);
+        stepEdit = null;
+        if (keep > 0)
+          sendAction({ type: "setSale", faction: next, item, keep });
+        if (tickers.some((t) => t.item === item))
+          sendAction({ type: "setTicker", item, faction: next, on: true });
+        syncStockWindow();
+      });
+      side.classList.add("toggle", "ware-side");
+      trade.appendChild(side);
+
+      rate = document.createElement("span");
+      rate.className = "ware-rate";
+      trade.appendChild(rate);
+
+      for (const buying of [true, false]) {
+        const b = mkTool(
+          `<span>${buying ? "Купить" : "Продать"}</span><b class="qty">×5</b>`,
+          (ev) => {
+            // Клик — пять штук, Shift — полный контейнер (§12.90).
+            const count = dealSize(ev.shiftKey);
+            sendAction({
+              type: "trade",
+              faction: sideOf(item, sides),
+              item,
+              count,
+              buying,
+            });
+          },
+        );
+        b.classList.add("toggle");
+        b.dataset.item = item;
+        b.dataset.buying = buying ? "1" : "";
+        trade.appendChild(b);
+        tradeButtons.push(b);
+        if (buying) buy = b;
+        else sell = b;
+      }
+    } else {
+      none = document.createElement("span");
+      none.className = "ware-none";
+      none.textContent = "никто не берёт";
+      trade.appendChild(none);
+    }
+
+    list.appendChild(row);
+    wareRows.push({
+      item,
+      row,
+      fav,
+      num,
+      keeps,
+      sale,
+      tick,
+      side,
+      rate,
+      buy,
+      sell,
+      none,
+      sides,
+      it,
+    });
+  });
+}
+
+function syncStockWindow() {
+  if (!stockWinOpen || !meta) return;
+  const recipeSnaps = lastSnap?.recipes ?? [];
+
+  // **Три состояния, а не два** (§12.100). Технологии нет — не показываем
+  // ничего: правило ещё не механика игры, и полоска «делать до —» обещала бы
+  // то, чего в мире нет (§12.94). Технология есть, а ячейки нет — показываем
+  // красным, **почему**: это чинится стройкой, то есть решением, которое игрок
+  // может принять прямо сейчас. И только когда есть оба — обычная строка.
+  //
+  // Порядок важен: сперва спрашиваем технологию, потом ячейку. Наоборот —
+  // и база без мастерской звала бы строить её, ещё не зная рецептов.
+  const canTrade = posts > 0;
+  const canCraft = shops > 0;
+  const warns = [];
+  if (!canTrade) warns.push("Торговля недоступна: нет «Торгового поста»");
+  // Про мастерскую говорим, только если рецепты уже открыты: иначе это
+  // предупреждение про механику, которой у игрока ещё нет.
+  const anyRecipe = recipeSnaps.some((r) => r?.unlocked);
+  if (!canCraft && anyRecipe) warns.push("Производство недоступно: нет «Мастерской»");
+  const warnHtml = warns.map((w) => `<div>${w}</div>`).join("");
+  if (warnEl.innerHTML !== warnHtml) warnEl.innerHTML = warnHtml;
+  warnEl.hidden = !warns.length;
+
+  for (const r of wareRows) {
+    const st = stock[r.item] ?? {
+      stored: 0,
+      loose: 0,
+      booked: 0,
+      on_base: 0,
+    };
+    const free = Math.max(0, st.stored - st.booked);
+    const name = esc(r.it.label || r.it.id);
+
+    // Числа и их расклад — ровно то же, что в шапке (§12.53): второй формы
+    // записи тех же трёх чисел в игре быть не должно.
+    const nums =
+      `<b>${free}</b>` + (st.loose ? `<u>+${st.loose}</u>` : "");
+    if (r.num.innerHTML !== nums) r.num.innerHTML = nums;
+    r.num.title = [
+      `${name}: на складе ${st.stored}`,
+      st.booked ? `забронировано ${st.booked} под сделку` : "",
+      st.loose
+        ? `валяется ${st.loose} — годится на стройку, но платить и ` +
+          `продавать этим нельзя, пока не убрано`
+        : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+
+    const isFav = favorites.includes(r.item);
+    r.fav.classList.toggle("on", isFav);
+    r.fav.title = isFav
+      ? "Убрать из избранного"
+      : "В избранное: строка встанет наверх списка";
+
+    // Порог производства (§12.65). Число, которое он меряет, — **в подсказке**,
+    // а не в строке: две почти одинаковые цифры рядом читаются как ошибка
+    // вёрстки чаще, чем как разница запасов (§12.100).
+    const craftGate = autoGateHint("crafting");
+    for (const k of r.keeps) {
+      stocking[k.def] = (lastSnap?.stocking ?? [])[k.def] ?? 0;
+      const min = stepPending(k.key) ?? stocking[k.def];
+      const open = (recipeSnaps[k.def] ?? {}).unlocked ?? false;
+      if (!numEditing(k.key)) {
+        k.label.textContent = min > 0 ? `делать до ${min}` : "делать до —";
+      }
+      k.line.classList.toggle("on", min > 0 && !craftGate);
+      k.line.classList.toggle("off", !!craftGate);
+      // Нет станка — строки нет, а причина написана красным в шапке окна:
+      // порог без мастерской не сработает ни разу (§12.100).
+      k.line.hidden = !open || !!craftGate || !canCraft;
+      k.minus.disabled = !open || min <= 0;
+      k.plus.disabled = !open;
+      k.line.title =
+        craftGate ??
+        (min > 0
+          ? `Коты сами делают, пока на базе меньше ${min} шт. Сейчас на базе ` +
+            `${st.on_base} — это склад вместе с полом и лапами, за вычетом ` +
+            `обещанного покупателю. Клик — на штуку, Shift — на пять, зажать — быстрее`
+          : `Держать запас: коты будут делать сами, когда просядет. Считается ` +
+            `не склад, а вся база — сейчас на ней ${st.on_base}`);
+    }
+
+    const who = r.sides.length ? sideOf(r.item, r.sides) : null;
+    const fac = who === null ? null : (meta.factions ?? [])[who];
+
+    // Порог автопродажи (§12.87, §12.88).
+    if (r.sale) {
+      const saleGate = autoGateHint("sales");
+      const keep = stepPending(r.sale.key) ?? saleOf(r.item)?.keep ?? 0;
+      if (!numEditing(r.sale.key)) {
+        r.sale.label.textContent =
+          keep > 0 ? `сбывать сверх ${keep}` : "сбывать сверх —";
+      }
+      r.sale.line.classList.toggle("on", keep > 0 && !saleGate);
+      r.sale.line.classList.toggle("off", !!saleGate);
+      // Без поста прятать так же, как порог производства без станка: правило
+      // стоит, но не сработает, а причина — в шапке окна.
+      r.sale.line.hidden = !!saleGate || !canTrade;
+      r.sale.minus.disabled = keep <= 0;
+      r.sale.line.title =
+        saleGate ??
+        (keep > 0
+          ? `Коты продают «${fac?.label ?? "?"}» всё, что на складе сверх ` +
+            `${keep} шт. (лежащее на полу не в счёт — сперва уберут).${
+              posts ? "" : " Но торгового поста ещё нет."
+            } Клик — на штуку, Shift — на пять, зажать — быстрее`
+          : "Продавать излишек: всё, что на складе сверх порога, коты отнесут " +
+            "на пост сами");
+    }
+
+    // Тикер (§12.100). Сторона обязательна — без неё торговать нечем, — поэтому
+    // у неторгуемого предмета кнопка гаснет классом, а не пропадает: дырка в
+    // столбце читается как поломка (§12.53).
+    // Весь торговый блок — тикер, сторона, курс и кнопки — прячется вместе с
+    // постом: торговать без него нельзя ничем, и шесть строк мёртвых кнопок
+    // говорят меньше, чем одна красная строка наверху.
+    for (const node of [r.tick, r.side, r.rate, r.buy, r.sell, r.none])
+      if (node) node.hidden = !canTrade;
+
+    const onTicker = tickers.some((t) => t.item === r.item);
+    r.tick.classList.toggle("on", onTicker);
+    r.tick.classList.toggle("off", !r.sides.length);
+    r.tick.title = !r.sides.length
+      ? `«${name}» не берёт никто — торговать по нему нечем`
+      : onTicker
+        ? "Убрать из ленты на главном экране"
+        : `В ленту: строка встанет на главный экран, и по ней можно будет ` +
+          `торговать с «${fac?.label ?? "?"}» в один клик`;
+
+    if (r.side) {
+      const one = r.sides.length < 2;
+      const label = esc(fac?.label || fac?.id || "—");
+      if (r.side.textContent !== label) r.side.textContent = label;
+      r.side.classList.toggle("off", one);
+      r.side.title = one
+        ? `Этот товар берёт только «${fac?.label ?? "?"}» — выбирать не из кого`
+        : `Торгуем с «${fac?.label ?? "?"}». Клик — другая сторона; порог и ` +
+          `тикер переезжают вместе с ней`;
+    }
+
+    // Сторона у кнопок сделки — **не своя, а строкина**: её выбирают кликом, и
+    // приколоченная в `dataset` при сборке она осталась бы от первой стороны.
+    // `syncTradeButtons` читает именно `dataset`, поэтому обновляем перед ним.
+    if (who !== null) {
+      for (const b of [r.buy, r.sell]) if (b) b.dataset.faction = who;
+    }
+
+    if (r.rate) {
+      const q = quoteOf(who, r.item);
+      const html = q
+        ? `${rateText(q, true)}<span class="ware-sep">·</span>${rateText(q, false)}`
+        : "—";
+      if (r.rate.innerHTML !== html) r.rate.innerHTML = html;
+      r.rate.title = q
+        ? `Покупка ${q.buy}¤ · продажа ${q.sell}¤ за штуку` +
+          (q.next_in > 0
+            ? ` · через ${q.next_in} станет ${q.next_buy}¤ / ${q.next_sell}¤`
+            : "")
+        : "";
+    }
+  }
+
+  // Состояние кнопок сделки — общим `syncTradeButtons`: считает его `tradeState`,
+  // одно место на окно и на ленту (§12.100).
+  syncTradeButtons();
+
+  orderWareRows();
+}
+
+// Избранные — наверх, остальные по палитре. Переставляем **узлы**, а не
+// разметку: строка переживает переезд вместе со слушателями, набором в поле и
+// удержанием кнопки, а `innerHTML` убил бы всё это (§12.84).
+function orderWareRows() {
+  const list = stockWinEl.querySelector(".warewin-list");
+  if (!list) return;
+  const want = [...wareRows].sort((a, b) => {
+    const fa = favorites.includes(a.item) ? 0 : 1;
+    const fb = favorites.includes(b.item) ? 0 : 1;
+    return fa - fb || a.item - b.item;
+  });
+  const now = [...list.children];
+  if (want.every((r, i) => now[i] === r.row)) return;
+  for (const r of want) list.appendChild(r.row);
 }
 
 function openRaidWindow(x, y) {

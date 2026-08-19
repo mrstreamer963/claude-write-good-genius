@@ -1193,3 +1193,81 @@ fn each_automation_gate_answers_for_itself() {
     sim.set_tech("logistics");
     assert_eq!(sim.auto_gates_open(), (true, true, false), "и сбыт");
 }
+
+// --- закладки склада (§12.100) ---------------------------------------------
+
+/// Избранное **ворот не спрашивает вовсе**.
+///
+/// Порядок строк в окне — не механика: закрепить наверху можно и то, чем не
+/// торгует никто. Ровно этот случай и есть у аптечки в боевом рулсете: под ней
+/// стоит порог производства, следить за её запасом надо, а покупателя у неё
+/// нет. Тикер там не поставить, а избранное — да, и это два разных вопроса.
+#[test]
+fn an_untraded_item_can_be_a_favorite() {
+    let (mut sim, f) = sim_with_market();
+    let untraded = 1; // прайс в `sim_with_market` заведён только на предмет 0
+
+    assert!(sim.set_favorite(untraded, true), "избранное берёт любой");
+    assert!(sim.is_favorite(untraded));
+    assert!(
+        !sim.set_ticker(untraded, f, true),
+        "а тикер — нет: торговать по нему нечем",
+    );
+    assert_eq!(sim.ticker_of(untraded), None);
+}
+
+/// Тикер требует стороны, которая **правда торгует** этим предметом — те же
+/// ворота, что у порога автопродажи (§12.87): иначе в ленте встала бы строка с
+/// кнопками, которые фасад отклонит, а молчащая кнопка читается как поломка.
+#[test]
+fn a_ticker_needs_a_side_that_trades_the_item() {
+    let (mut sim, f) = sim_with_market();
+
+    assert!(sim.set_ticker(0, f, true), "этим предметом сторона торгует");
+    assert_eq!(sim.ticker_of(0), Some(f));
+    assert!(
+        !sim.set_ticker(0, f + 1, true),
+        "а такой фракции в рулсете нет вовсе",
+    );
+    assert_eq!(sim.ticker_of(0), Some(f), "и прежний тикер не тронут");
+}
+
+/// **Тикер на предмет один, и смена стороны — это правка того же решения**, а
+/// не второй тикер (§12.88). На паре «фракция + предмет» их выходило бы по два
+/// на лом, и лента показывала бы одну строку дважды.
+#[test]
+fn a_second_ticker_on_the_same_item_rewrites_the_side() {
+    let (mut sim, f) = sim_with_market();
+    // Вторая сторона с тем же товаром: развилка §12.43 в миниатюре.
+    let other = sim.set_faction(100);
+    sim.set_market(other, 100, 40, 25, 0);
+    sim.set_prices(other, 0, &[7]);
+
+    assert!(sim.set_ticker(0, f, true));
+    assert!(
+        sim.set_ticker(0, other, true),
+        "перевесили на другую сторону"
+    );
+    assert_eq!(sim.ticker_of(0), Some(other));
+    assert_eq!(
+        sim.world.resource::<Tickers>().0.len(),
+        1,
+        "тикеров на предмет по-прежнему один",
+    );
+}
+
+/// **Снятие ворот не спрашивает** — по тому же доводу, по которому их не
+/// спрашивает снятие правила (§12.93): запертая отмена оставила бы тикер
+/// несбрасываемым. Ключ у тикера — предмет, поэтому снимается он по предмету,
+/// какую бы сторону ни назвали.
+#[test]
+fn dropping_a_ticker_needs_no_gate() {
+    let (mut sim, f) = sim_with_market();
+    assert!(sim.set_ticker(0, f, true));
+
+    assert!(
+        sim.set_ticker(0, f + 1, false),
+        "сторона несуществующая, а снять всё равно можно",
+    );
+    assert_eq!(sim.ticker_of(0), None);
+}

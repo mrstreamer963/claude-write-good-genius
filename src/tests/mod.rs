@@ -127,6 +127,11 @@ fn sim_from(rows: &[&str]) -> Sim {
     // И автопродажи: рынка в схеме нет вовсе, а правило — решение игрока
     // (§12.87). Включает `set_sale`, и только вместе с `set_prices`.
     world.insert_resource(Selling::default());
+    // Закладок склада тоже нет (§12.100): ни избранного, ни тикеров — окно
+    // «Склад» и лента на главном экране пусты, пока игрок сам ничего не
+    // закрепил. Заводят их `set_favorite` и `set_ticker`.
+    world.insert_resource(Favorites::default());
+    world.insert_resource(Tickers::default());
     world.insert_resource(Techs::default());
     world.insert_resource(TimelineRules::default());
     world.insert_resource(Chronicle::default());
@@ -1615,6 +1620,19 @@ impl Sim {
     /// а покупатель — его поле.
     fn sale_of(&self, item: usize) -> Option<(usize, i32)> {
         self.world.resource::<Selling>().rule_of(item)
+    }
+
+    /// Лежит ли предмет в избранном: его строка стоит наверху окна «Склад»
+    /// (§12.100). Стороны у избранного нет — это порядок, а не торговля.
+    fn is_favorite(&self, item: usize) -> bool {
+        self.world.resource::<Favorites>().has(item)
+    }
+
+    /// Сторона тикера по предмету; `None` — тикера нет (§12.100). Спрашивают
+    /// по предмету по той же причине, что и правило автопродажи: тикер на нём
+    /// один, а сторона — его поле.
+    fn ticker_of(&self, item: usize) -> Option<usize> {
+        self.world.resource::<Tickers>().side_of(item)
     }
 
     /// Первая пара «фракция + предмет», которой рулсет разрешает торговать, —
