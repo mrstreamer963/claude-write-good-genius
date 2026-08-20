@@ -951,6 +951,29 @@ main#stage.mode-cursor #mode-banner {
 
 /* Уведомления о взятых целях (§12.58). Стопкой сверху по центру — не там, где
    игрок работает (тулбар слева, панели справа), и не там, где карта. */
+/* Живая подсказка (§12.107): свой узел вместо нативного `title`, потому что тот
+   рисуется один раз и врёт над числом, которое тикает каждым кадром. Стоит
+   поверх всего, включая модалы (`#stockwin` — 11), и **сквозная для мыши**:
+   подсказка под курсором, ловящая события, уводила бы курсор с того элемента,
+   ради которого её и показали. */
+#livetip {
+  position: fixed;
+  z-index: 30;
+  max-width: 420px;
+  padding: 6px 9px;
+  background: rgba(21, 23, 31, 0.96);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 16px;
+  white-space: pre-line;
+  pointer-events: none;
+}
+#livetip[hidden] {
+  display: none;
+}
+
 #toasts {
   position: fixed;
   top: 60px;
@@ -1464,6 +1487,7 @@ main#stage.mode-cursor #mode-banner {
   gap: 12px;
 }
 .warewin-title {
+  flex: 0 0 auto;
   color: var(--accent);
   font-size: 17px;
   font-weight: 600;
@@ -1743,6 +1767,23 @@ main#stage.mode-cursor #mode-banner {
   font-size: 12px;
 }
 .warewin-warn[hidden] {
+  display: none;
+}
+/* Что делается прямо сейчас (§12.107) — в одной линии с заголовком, сразу за
+   ним: оранжевым названо само окно, серым рядом — что в нём происходит.
+   `margin-right: auto` держит «Закрыть» у правого края, а не тянет сводку к
+   нему. Одной строкой с многоточием: рецептов бывает шесть, а перенос растил
+   бы шапку и двигал таблицу на каждом закрывшемся заказе. */
+.warewin-busy {
+  min-width: 0;
+  margin-right: auto;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.warewin-busy[hidden] {
   display: none;
 }
 /* Снять тикер — в самой строке ленты, справа от курса. Приглушён: это выход, а

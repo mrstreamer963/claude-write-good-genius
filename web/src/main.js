@@ -65,6 +65,7 @@ const finaleEl = document.getElementById("finale");
 const raidWinEl = document.getElementById("raidwin");
 const stockWinEl = document.getElementById("stockwin");
 const toastsEl = document.getElementById("toasts");
+const liveTipEl = document.getElementById("livetip");
 
 // Кнопки внутри панелей вешаются **делегированием, один раз на контейнер**, и
 // ловятся парой `mousedown`/`mouseup`, а не `click`.
@@ -2025,6 +2026,78 @@ function renderResearchPanel(list) {
 //
 // Полоска у каждого — про **текущую штуку**, а не про весь заказ: работа и
 // оплата идут поштучно, и «40% от пяти» игрок прочтёт неверно (§12.30).
+// Живая подсказка (§12.107). Нативный `title` браузер рисует **один раз**, в
+// момент показа: запись в атрибут открытую подсказку не перерисовывает, и та,
+// что висит над числом, тикающим каждый кадр, показывает вчерашний день (у
+// сводки заказов это видно глазом — в подсказке «осталось 15», а строкой выше
+// уже «×10»). Поэтому у живых чисел подсказка своя: узел переписывается, пока
+// висит.
+//
+// Заводится она **по элементу**, а не по месту вызова: текст ставит тот же код,
+// что рисует строку, и обновляется он тем же кадром. Нативный `title` у такого
+// элемента ставить нельзя — иначе подсказок будет две.
+const liveTips = new WeakMap();
+let liveTipFor = null;
+
+function liveTitle(el, text) {
+  const prev = liveTips.get(el);
+  if (prev === text) return;
+  liveTips.set(el, text);
+  if (liveTipFor === el) showLiveTip(el);
+}
+
+// Подсказку держит один узел на всё приложение: окно «Склад» пересобирается при
+// каждом открытии, и слушатель на каждом элементе копился бы вместе с ним.
+function bindLiveTip(el) {
+  el.addEventListener("mouseenter", () => showLiveTip(el));
+  el.addEventListener("mousemove", moveLiveTip);
+  el.addEventListener("mouseleave", hideLiveTip);
+}
+
+function showLiveTip(el) {
+  const text = liveTips.get(el) ?? "";
+  // Пустой текст и спрятанный элемент — не «подсказка без слов», а её
+  // отсутствие: заказов нет, и говорить не о чем.
+  if (!text || el.hidden) {
+    hideLiveTip();
+    return;
+  }
+  liveTipFor = el;
+  if (liveTipEl.textContent !== text) liveTipEl.textContent = text;
+  liveTipEl.hidden = false;
+}
+
+function moveLiveTip(e) {
+  if (liveTipEl.hidden) return;
+  // Ставим по курсору и зажимаем в окно: подсказка у правого края таблицы
+  // иначе уезжает за экран, а прокрутки у неё нет.
+  const box = liveTipEl.getBoundingClientRect();
+  const vw = document.documentElement.clientWidth;
+  const vh = document.documentElement.clientHeight;
+  const x = Math.min(e.clientX + 14, vw - box.width - 8);
+  const y = Math.min(e.clientY + 18, vh - box.height - 8);
+  liveTipEl.style.left = `${Math.max(8, x)}px`;
+  liveTipEl.style.top = `${Math.max(8, y)}px`;
+}
+
+function hideLiveTip() {
+  liveTipFor = null;
+  liveTipEl.hidden = true;
+}
+
+// Чем занят заказ — **одной формулировкой на оба места**: панель «Заказы» и
+// сводка в окне «Склад» (§12.107) говорят про одно состояние, и два описания
+// одного состояния разойдутся на первой же правке. Возвращает чистый текст:
+// панель его экранирует сама, подсказке экранирование не нужно.
+//
+// Три разных «ничего не происходит», и путать их нельзя: некому взяться,
+// материал ещё едет или работа идёт. С §12.102 второе стало счётным —
+// материал везут ногами, и «сколько уже привезли» видно, как у площадки.
+function craftStateText(c) {
+  if (c.unit) return c.unit;
+  return c.supplied ? "ждёт исполнителя" : `везут ${c.delivered} из ${c.need}`;
+}
+
 // Список приезжает отсортированным по клетке, как сделки (§12.81): рецепт
 // заказы больше не различает, а закрывшийся сосед переставлял бы строки.
 function renderCraftPanel(list) {
@@ -2040,14 +2113,7 @@ function renderCraftPanel(list) {
   for (const c of orders) {
     const def = (meta.recipes ?? [])[c.def];
     const pct = c.total > 0 ? Math.round((c.progress / c.total) * 100) : 0;
-    // Три разных «ничего не происходит», и путать их нельзя: некому взяться,
-    // материал ещё едет или работа идёт. С §12.102 второе стало счётным —
-    // материал везут ногами, и «сколько уже привезли» видно, как у площадки.
-    const state = c.unit
-      ? esc(c.unit)
-      : c.supplied
-        ? "ждёт исполнителя"
-        : `везут ${c.delivered} из ${c.need}`;
+    const state = esc(craftStateText(c));
     parts.push(
       '<div class="cat-skill">' +
         `<div class="cat-row"><span>${esc(def?.label || def?.id || "Заказ")}</span><b>${pct}%</b></div>` +
@@ -4397,6 +4463,7 @@ let stockWinOpen = false;
 // Строка красных предупреждений в шапке окна: чего базе не хватает, чтобы
 // показанное вообще работало (§12.100).
 let warnEl = null;
+let busyEl = null;
 // Строки предметов, пока окно открыто. Массив живёт от открытия до закрытия:
 // узлы в нём переиспользуются, и на этом держится вся работа порогов.
 const wareRows = [];
@@ -4420,6 +4487,10 @@ function closeStockWindow() {
   tradeButtons.length = 0;
   stockWinEl.hidden = true;
   stockWinEl.innerHTML = "";
+  // Узел, над которым висела подсказка, сейчас исчезнет: `mouseleave` по
+  // удалённому элементу браузер не шлёт, и подсказка осталась бы висеть поверх
+  // карты навсегда.
+  hideLiveTip();
 }
 
 // Кто сторона этой строки: **одна на всю строку**, и ей адресованы все её
@@ -4480,6 +4551,24 @@ function buildStockWindow() {
   const top = document.createElement("div");
   top.className = "warewin-top";
   top.innerHTML = '<div class="warewin-title">Склад</div>';
+
+  // Что делается прямо сейчас (§12.107) — **в одну линию с заголовком**: оранжевым
+  // называется само окно, а серым рядом идёт то, что в нём происходит. Своей
+  // строкой сводка занимала место, отвечая на вопрос, который чаще всего звучит
+  // «ничего» (заказов нет — строки нет вовсе).
+  //
+  // Живёт она в окне, а не в панели «Заказы», потому что панель накрыта самим
+  // модалом — то же столкновение, из-за которого §12.101 запретил открывать
+  // окна кликом по карте. Без неё клик по «Произвести» не отвечает ничем:
+  // запас в строке вырастет через сотни тиков.
+  busyEl = document.createElement("div");
+  busyEl.className = "warewin-busy";
+  busyEl.hidden = true;
+  // Подсказка у неё **живая** (`liveTitle`, а не `title`): числа в ней тикают
+  // каждым кадром, а нативную подсказку браузер рисует один раз при показе.
+  bindLiveTip(busyEl);
+  top.appendChild(busyEl);
+
   const close = mkTool("Закрыть", () => closeStockWindow());
   close.className = "tool warewin-close";
   top.appendChild(close);
@@ -4713,6 +4802,68 @@ function buildStockWindow() {
   });
 }
 
+// Сводка «что сейчас делается» в шапке окна (§12.107). Заказы едут в снимке
+// целиком (`crafting`), здесь их только складывают по рецепту — та же
+// арифметика по снимку, что `dealGroups` делает по сделкам, а не второй
+// экземпляр правила.
+//
+// Отвечает она и на «сколько добавил мой клик»: снимок уходит в главный поток
+// каждым кадром **независимо от паузы**, а заказ заводит фасад в момент
+// команды, — число прыгает сразу, даже на ⏸.
+function syncStockBusy() {
+  const orders = lastSnap?.crafting ?? [];
+  // По индексу рецепта в палитре, а не по порядку в снимке: тот отсортирован
+  // по клетке (§12.96), и закрывшийся заказ переставлял бы соседей под
+  // курсором — тот же довод, по которому ядро сортирует `deals`.
+  const byDef = new Map();
+  for (const c of orders) {
+    const g = byDef.get(c.def) ?? { left: 0, list: [] };
+    g.left += c.left;
+    g.list.push(c);
+    byDef.set(c.def, g);
+  }
+  const defs = [...byDef.keys()].sort((a, b) => a - b);
+
+  const parts = [];
+  const tips = [];
+  for (const def of defs) {
+    const g = byDef.get(def);
+    if (g.left <= 0) continue;
+    const name = craftLabel(def);
+    parts.push(`${name} ×${g.left}`);
+    for (const c of g.list) {
+      const pct = c.total > 0 ? Math.round((c.progress / c.total) * 100) : 0;
+      tips.push(
+        `${name}: осталось ${c.left} шт · ${craftStateText(c)} · ${pct} %` +
+          (c.auto ? " · по порогу" : ""),
+      );
+    }
+  }
+
+  const text = parts.length ? `В работе: ${parts.join(" · ")}` : "";
+  if (busyEl.textContent !== text) busyEl.textContent = text;
+  liveTitle(busyEl, tips.join("\n"));
+  busyEl.hidden = !parts.length;
+}
+
+// Как назвать заказ в сводке — **тем же правилом, что и строка предмета**
+// (§12.100): имя рецепта пишется, только когда рецептов на предмет больше
+// одного, иначе оно повторяет то, подо чем стоит. Предмет у рецепта берём
+// первый по палитре: строка окна — это предмет, и сводка обязана указывать на
+// ту же строку.
+function craftLabel(def) {
+  const r = (meta.recipes ?? [])[def];
+  const gives =
+    r?.gives instanceof Map
+      ? [...r.gives.keys()]
+      : Object.keys(r?.gives ?? {});
+  const item = (meta.items ?? []).findIndex((it) => gives.includes(it.id));
+  if (item < 0) return r?.label || r?.id || "Заказ";
+  return recipesGiving(item).length > 1
+    ? r?.label || r?.id || "Заказ"
+    : (meta.items ?? [])[item].label || (meta.items ?? [])[item].id;
+}
+
 function syncStockWindow() {
   if (!stockWinOpen || !meta) return;
   const recipeSnaps = lastSnap?.recipes ?? [];
@@ -4736,6 +4887,8 @@ function syncStockWindow() {
   const warnHtml = warns.map((w) => `<div>${w}</div>`).join("");
   if (warnEl.innerHTML !== warnHtml) warnEl.innerHTML = warnHtml;
   warnEl.hidden = !warns.length;
+
+  syncStockBusy();
 
   for (const r of wareRows) {
     const st = stock[r.item] ?? {
