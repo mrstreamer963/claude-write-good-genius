@@ -571,7 +571,7 @@ fn a_stocking_rule_survives_a_save() {
     let mut live = Sim::new(CORE).expect("рулсет");
     live.without_timeline(); // мир по расписанию тут только шум
     live.set_tech("materials"); // «Материаловедение» открывает и станок, и рецепт
-    live.set_tech("planning"); // а «Наряды» — само правило-порог (§12.93)
+    live.set_tech("planning"); // а «Автопроизводство» — само правило-порог (§12.93)
     assert!(live.add_blueprint(10, 7, 8), "мастерская размечена");
     live.tick_n(600); // коты подвезли лом и построили её
     // Заведомо выше стартового запаса деталей: порог, который база уже держит,

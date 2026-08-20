@@ -1216,7 +1216,7 @@ fn each_automation_gate_answers_for_itself() {
     assert_eq!(
         sim.auto_gates_open(),
         (false, true, false),
-        "изучили «Наряды» — открылось только производство",
+        "изучили «Автопроизводство» — открылось только производство",
     );
 
     sim.set_tech("logistics");

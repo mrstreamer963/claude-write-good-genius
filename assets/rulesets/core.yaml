@@ -628,14 +628,14 @@ research:
     work: 1600
     cost: { sample: 3 }
   - id: logistics
-    label: "Складской учёт"
+    label: "Автопродажа"
     level: 1
     work: 1600
     cost: { sample: 3 }
     requires: [autonomy]
     # открывает порог автопродажи: «продавать всё, что на складе сверх N»
   - id: planning
-    label: "Наряды"
+    label: "Автопроизводство"
     level: 1
     work: 1800
     cost: { sample: 3 }
@@ -644,7 +644,7 @@ research:
   # Второй уровень намеренно: это единственное правило, которое само отправляет
   # котов в поле. Потолок парты по «Науке» равен 2, значит тема достижима.
   - id: callsigns
-    label: "Позывные"
+    label: "Автовылазки"
     level: 2
     work: 2200
     cost: { sample: 4 }
