@@ -2335,9 +2335,14 @@ function renderTradePanel(list) {
     // «×5 сделок» стоит у заголовка: это ответ на «куда делись пять ячеек» —
     // счёт слотов и счёт карточек разошлись намеренно (§12.81).
     const many = g.deals > 1 ? ` · ×${g.deals}` : "";
+    // Заголовок — только сторона сделки и счёт: у карточки он играет ту же роль,
+    // что «Логово рейдеров» у вылазки, — чем это вообще является. **Кто именно
+    // покупает — свойство сделки**, а не её название, и стоит оно строкой ниже,
+    // среди прочих свойств: с двумя-тремя карточками заголовок из трёх частей
+    // читался длиннее, чем всё, что под ним.
     const rows = [
-      `<div class="cat-row"><span>${g.buying ? "Покупка" : "Продажа"} · ${esc(who?.label || "—")}${many}</span></div>`,
-      `<div class="cat-sub">${what}</div>`,
+      `<div class="cat-name">${g.buying ? "Покупка" : "Продажа"}${many}</div>`,
+      `<div class="cat-sub">${esc(who?.label || "—")} · ${what}</div>`,
     ];
     if (g.buying) {
       // Покупке нечего показывать, кроме того, что она едет: контейнер набивает
@@ -4545,8 +4550,7 @@ function buildStockWindow() {
       // повторять то, подо чем стоишь, нельзя (§12.80). В тулбаре кнопка была
       // сама по себе, и «что выходит» ей приходилось называть.
       const make = mkTool(
-        `<span>Заказать</span>${costChips(r.cost)}` +
-          `<b class="qty">×${craftSize(false)}</b>`,
+        `<span>Произвести</span><b class="qty">×${craftSize(false)}</b>`,
         (e) =>
           sendAction({
             type: "craft",
@@ -4555,7 +4559,25 @@ function buildStockWindow() {
           }),
       );
       make.classList.add("toggle", "ware-make");
-      line.append(minus, label, plus, make);
+      // Цена — **под** кнопкой, а не внутри неё: фишек у рецепта бывает одна, а
+      // бывает три, и вшитая в подпись цена делала кнопки разной ширины —
+      // столбец переставал читаться столбцом (тот же довод, по которому
+      // `.ware-rules .keep` вообще сетка).
+      //
+      // Стоит она **в пустой клетке следующей строки** — той, что напротив
+      // «сбывать сверх»: своей строкой цена растила бы каждую строку рецепта на
+      // свою высоту, а колонка заказа у порога сбыта пуста всегда. Держит это
+      // не сетка (строки порога — отдельные гриды, общих колонок у них нет), а
+      // выкладка поверх (`.ware-craft.under`), и включает её `syncStockWindow`,
+      // только если следующая строка видима: у последней строки предмета этого
+      // места нет, и цена там встаёт обычным потоком.
+      const craft = document.createElement("div");
+      craft.className = "ware-craft";
+      const cost = document.createElement("div");
+      cost.className = "ware-cost";
+      cost.innerHTML = costChips(r.cost);
+      craft.append(make, cost);
+      line.append(minus, label, plus, craft);
       // **Имя рецепта — только когда рецептов больше одного** (§12.100): при
       // единственном оно повторяет то, подо чем стоит, а повторяющая соседа
       // строка лишняя (§12.80).
@@ -4566,7 +4588,7 @@ function buildStockWindow() {
         line.appendChild(who);
       }
       rules.appendChild(line);
-      keeps.push({ line, label, minus, plus, make, key, def });
+      keeps.push({ line, label, minus, plus, make, craft, key, def });
     }
 
     let sale = null;
@@ -4779,6 +4801,17 @@ function syncStockWindow() {
       k.plus.hidden = noRule;
       k.minus.disabled = !open || min <= 0;
       k.plus.disabled = !open;
+      // Есть ли под строкой рецепта место для цены: клетка колонки заказа у
+      // следующей видимой строки (обычно «сбывать сверх») пуста. Нет её —
+      // цена встаёт обычным потоком и строку растит.
+      // Занятой она бывает у второго рецепта того же предмета (§12.100): там в
+      // колонке заказа стоит его кнопка, и цена легла бы поверх неё.
+      let next = k.line.nextElementSibling;
+      while (next && next.hidden) next = next.nextElementSibling;
+      k.craft.classList.toggle(
+        "under",
+        !!next && !next.querySelector(".ware-craft"),
+      );
       k.line.title =
         craftGate ??
         (min > 0
@@ -4813,7 +4846,7 @@ function syncStockWindow() {
         : !rs.shop
           ? shopsBusyHint()
           : rs.affordable
-            ? "Заказать: клик — штука, Shift — пять"
+            ? "Произвести: клик — штука, Shift — пять"
             : `На складе нет материала, заказ будет ждать: ${payHint(
                 (meta.recipes ?? [])[k.def]?.cost,
               )}`;
