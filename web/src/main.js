@@ -2,6 +2,7 @@
 // и шлём команды (постройка тайлов, приказы движения).
 
 import { Application, Container, Graphics, Text } from "pixi.js";
+import { ITEM_GLYPHS, TILE_GLYPHS } from "./glyphs.js";
 
 const TILE = 28;
 
@@ -27,6 +28,76 @@ const COLORS = {
   },
   unitDefault: 0xcccccc,
 };
+
+// --- глифы (§12.109) -------------------------------------------------------
+//
+// Предмет и роль клетки рисуются значком, а не цветным квадратиком. Квадратик
+// был честной краской, но пустой формой: `▪60 ▪6 ▪0 ▪0 ▪6 ▪0` в шапке — это
+// шесть абстракций, которые игрок обязан выучить прежде, чем прочтёт хоть одно
+// число. Краска при этом никуда не делась: глиф красится тем же цветом из
+// рулсета (`currentColor`), то есть словарь не заменён, а дополнен формой.
+//
+// Граница у этого одна и держать её надо твёрдо: **глиф заменяет
+// существительное, но никогда — причину**. Отказ кнопки, срок, доля и вилка
+// состава остаются словами (§12.53, §12.71): «готовы идти 0, а нужно 1»
+// пиктограммой не сказать, не соврав.
+//
+// Контуры лежат в `glyphs.js` одним списком на HTML и на карту — второй набор
+// однажды разъедется, и паёк в шапке перестанет быть пайком в лапах у кота.
+
+/// Вставляет `<symbol>`-спрайт в документ. Зовётся один раз при старте: панели
+/// перерисовываются каждым кадром через `innerHTML`, и `<use href="#...">` —
+/// единственная форма, при которой контур не пересобирается по сотне раз в
+/// секунду. Прячем не через `hidden` (его перебивает `display` из вёрстки —
+/// на этом уже попадались), а собственным `display: none`.
+function installGlyphSprite() {
+  const sym = (prefix, table) =>
+    Object.entries(table)
+      .map(
+        ([id, d]) =>
+          `<symbol id="g-${prefix}-${id}" viewBox="0 0 24 24">` +
+          `<path d="${d}"/></symbol>`,
+      )
+      .join("");
+  document.body.insertAdjacentHTML(
+    "afterbegin",
+    '<svg id="glyph-sprite" style="display:none" aria-hidden="true">' +
+      sym("item", ITEM_GLYPHS) +
+      sym("tile", TILE_GLYPHS) +
+      "</svg>",
+  );
+}
+installGlyphSprite();
+
+/// Разметка одного глифа. `color` идёт инлайном, потому что краска у предмета
+/// приезжает из рулсета, а не из темы: контур залит `currentColor`.
+function glyphHtml(sym, color, cls = "") {
+  return (
+    `<svg class="glyph ${cls}" style="color:${color}" aria-hidden="true">` +
+    `<use href="#${sym}"/></svg>`
+  );
+}
+
+/// Глиф предмета по индексу палитры `items:`.
+///
+/// Рулсет — контент, и предмет в нём заводится без спроса у вида: у своего
+/// глифа для него нет, и падать на этом нельзя. Такой предмет остаётся цветным
+/// квадратиком — ровно тем, чем были все шестеро до §12.109.
+function itemGlyph(i, cls = "") {
+  const it = (meta?.items ?? [])[i];
+  if (!it) return "";
+  return ITEM_GLYPHS[it.id]
+    ? glyphHtml(`g-item-${it.id}`, it.color, cls)
+    : `<i class="chip" style="background:${it.color}"></i>`;
+}
+
+/// Глиф тайла по индексу палитры `tiles:`. У «Пола» его нет — это фон, а не
+/// роль, — и пустая строка здесь законный ответ, а не промах.
+function tileGlyphHtml(i, cls = "") {
+  const t = (meta?.palette ?? [])[i];
+  if (!t || !TILE_GLYPHS[t.id]) return "";
+  return glyphHtml(`g-tile-${t.id}`, t.color, cls);
+}
 
 const stageEl = document.getElementById("stage");
 const tickEl = document.getElementById("tick");
@@ -563,6 +634,34 @@ function layout() {
 }
 app.renderer.on("resize", layout);
 
+// Контур глифа тайла — **один `GraphicsContext` на тип**, а не на клетку.
+// Складов на базе десятки, и пересобирать один и тот же контур под каждый — это
+// разбор SVG в цикле по всей карте. Pixi умеет делить контекст между узлами
+// (`new Graphics(ctx)`), чем мы и пользуемся.
+//
+// Цвет запечён в сам контекст, потому что он свойство типа, а не клетки.
+const tileGlyphCache = new Map();
+function tileGlyphContext(i) {
+  if (tileGlyphCache.has(i)) return tileGlyphCache.get(i);
+  const def = (meta?.palette ?? [])[i];
+  const d = def && TILE_GLYPHS[def.id];
+  let ctx = null;
+  if (d) {
+    // Рулсет — контент, и кривой контур в нём не должен ронять карту: тайл
+    // просто останется без значка, как «Пол», у которого его нет и так.
+    try {
+      ctx = new Graphics().svg(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">' +
+          `<path fill="#ffffff" d="${d}"/></svg>`,
+      ).context;
+    } catch (err) {
+      console.warn(`глиф тайла ${def.id} не разобрался:`, err);
+    }
+  }
+  tileGlyphCache.set(i, ctx);
+  return ctx;
+}
+
 function drawMap(map) {
   mapCells = map.cells;
   tileLayer.removeChildren();
@@ -577,6 +676,33 @@ function drawMap(map) {
     }
   }
   tileLayer.addChild(g);
+
+  // Вторым проходом — что клетка делает (§12.109). Заливка отвечает «какая это
+  // комната», глиф — «зачем она». До него роль тайла жила только в цвете, то
+  // есть в том, что игрок обязан выучить: склад от лаборатории отличался
+  // оттенком синего.
+  //
+  // Проход второй, а не в том же цикле, намеренно: заливка и сетка — одна
+  // `Graphics` на всю карту, а глифы делят контексты по типам, и мешать их в
+  // одном узле нельзя. Дорого это не выходит — `drawMap` зовётся только когда
+  // выросла `map_version`, а не каждый кадр (инвариант 3).
+  const size = TILE * 0.62;
+  for (let y = 0; y < meta.height; y++) {
+    for (let x = 0; x < meta.width; x++) {
+      const v = mapCells[y * meta.width + x];
+      if (v < 0) continue;
+      const ctx = tileGlyphContext(v);
+      if (!ctx) continue;
+      const node = new Graphics(ctx);
+      node.scale.set(size / 24);
+      node.x = x * TILE + (TILE - size) / 2;
+      node.y = y * TILE + (TILE - size) / 2;
+      // Приглушённо: глиф — подпись к клетке, а не её содержимое. Кучи лома,
+      // чертежи и коты рисуются поверх и обязаны читаться первыми.
+      node.alpha = 0.3;
+      tileLayer.addChild(node);
+    }
+  }
 }
 
 // Кучи лома на полу. Точное количество — в шапке; здесь только «сколько
@@ -857,7 +983,7 @@ function renderSnapshot(snap) {
           .join(" · ");
         return (
           `<span class="stock" title="${hint}">` +
-          `<i class="chip" style="background:${it.color}"></i><b>${free}</b>` +
+          `${itemGlyph(i)}<b>${free}</b>` +
           (st.loose ? `<u>+${st.loose}</u>` : "") +
           "</span>"
         );
@@ -1445,7 +1571,7 @@ function renderCellPanel(snap) {
     const chips = piles
       .map(
         (s) =>
-          `<i class="chip" style="background:${(meta.items ?? [])[s.item]?.color ?? "#c9a227"}"></i>` +
+          `${itemGlyph(s.item)}` +
           `${esc(itemLabel(s.item))} ${s.count}`,
       )
       .join(" · ");
@@ -2415,7 +2541,7 @@ function renderTickers() {
         // никогда. В одну строку они переносились по словам, и строка ленты
         // расползалась на четыре высоты, обрезая кнопки сделки по краю окна.
         '<div class="cat-row"><span class="tick-name">' +
-        `<i class="chip" style="background:${it.color}"></i>` +
+        `${itemGlyph(t.item)}` +
         `${esc(it.label || it.id)} · ${esc(fac?.label || fac?.id || "—")}</span>` +
         // Снять тикер — там же, где он работает. Ключ свой, иначе `onPanelClick`
         // спутал бы его с кнопками сделки той же строки.
@@ -3299,11 +3425,9 @@ function costChips(cost) {
     cost instanceof Map ? [...cost.entries()] : Object.entries(cost ?? {});
   if (!entries.length) return "";
   const chips = (meta.items ?? [])
-    .map((it) => {
+    .map((it, i) => {
       const found = entries.find(([id]) => id === it.id);
-      return found
-        ? `<i class="chip" style="background:${it.color}"></i>${found[1]}`
-        : "";
+      return found ? `${itemGlyph(i)}${found[1]}` : "";
     })
     .filter(Boolean)
     .join(" ");
@@ -3394,8 +3518,18 @@ function buildToolbar() {
   meta.palette.forEach((p, i) => {
     // Цена набором — рядом с образцом: что и сколько завезти на клетку.
     const cost = costChips(p.cost);
+    // Образец тайла — глиф в цвете тайла, а не голая заливка (§12.109). Обе
+    // вещи в одном месте: краска говорит, каким игрок увидит тайл на карте,
+    // глиф — что клетка делает. Тот же глиф стоит и на самой клетке, поэтому
+    // палитра и карта читаются одним словарём.
+    //
+    // Пол глифа не имеет, и подменять его на этот случай нечем — остаётся
+    // заливка, как было у всех до §12.109.
+    const glyph = TILE_GLYPHS[p.id]
+      ? glyphHtml(`g-tile-${p.id}`, p.color, "sw-glyph")
+      : `<span class="sw" style="background:${p.color}"></span>`;
     const b = mkTool(
-      `<span class="sw" style="background:${p.color}"></span><span>${p.label || p.id}</span>${cost}`,
+      `${glyph}<span>${p.label || p.id}</span>${cost}`,
       () => selectBuild(i, b),
     );
     // Закрытый технологией тайл виден, но не размечается: невидимая цель не
