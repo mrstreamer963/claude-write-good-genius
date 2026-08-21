@@ -643,7 +643,9 @@ function layout() {
   const barBox = document.getElementById("toolbar")?.getBoundingClientRect();
   const sideBox = document.getElementById("side")?.getBoundingClientRect();
   const padLeft = barBox ? Math.max(8, barBox.right - stageBox.left + 12) : 8;
-  const padRight = sideBox ? Math.max(8, stageBox.right - sideBox.left + 12) : 8;
+  const padRight = sideBox
+    ? Math.max(8, stageBox.right - sideBox.left + 12)
+    : 8;
   const availW = Math.max(TILE, app.screen.width - padLeft - padRight);
   const availH = Math.max(TILE, app.screen.height - 16);
   // Не мельчим ниже единицы: `TILE` подобран под самый маленький экран, и на нём
@@ -1194,8 +1196,10 @@ function drawCat(g, fur, geared) {
   // деталь силуэта. Гол кот или нет, теперь видно с карты, а не только из
   // карточки, — а зависит от этого сила отряда на вылазке.
   if (geared) {
-    g.roundRect(-r * 0.66, -r * 0.12, r * 1.32, r * 0.86, r * 0.22)
-      .fill({ color: dark, alpha: 0.85 });
+    g.roundRect(-r * 0.66, -r * 0.12, r * 1.32, r * 0.86, r * 0.22).fill({
+      color: dark,
+      alpha: 0.85,
+    });
     g.rect(-r * 0.66, r * 0.12, r * 1.32, r * 0.16).fill({
       color: 0xd6b26a,
       alpha: 0.9,
@@ -1731,9 +1735,7 @@ function renderCellPanel(snap) {
   if (piles.length) {
     const chips = piles
       .map(
-        (s) =>
-          `${itemGlyph(s.item)}` +
-          `${esc(itemLabel(s.item))} ${s.count}`,
+        (s) => `${itemGlyph(s.item)}` + `${esc(itemLabel(s.item))} ${s.count}`,
       )
       .join(" · ");
     parts.push(`<div class="cat-sub">${chips}</div>`);
@@ -2675,7 +2677,8 @@ function renderTickers() {
   // То же правило, что в окне (§12.100): нет поста — кнопок сделки нет вовсе, а
   // причина написана красным **один раз**, а не в каждой строке. Тикеры при этом
   // остаются: курс читать по-прежнему можно, а пост игрок отстроит.
-  if (!posts) parts.push('<div class="warewin-warn">Нет «Торгового поста»</div>');
+  if (!posts)
+    parts.push('<div class="warewin-warn">Нет «Торгового поста»</div>');
 
   for (const t of tickers) {
     const it = (meta.items ?? [])[t.item];
@@ -3694,9 +3697,8 @@ function buildToolbar() {
     const glyph = TILE_GLYPHS[p.id]
       ? glyphHtml(`g-tile-${p.id}`, p.color, "sw-glyph")
       : `<span class="sw" style="background:${p.color}"></span>`;
-    const b = mkTool(
-      `${glyph}<span>${p.label || p.id}</span>${cost}`,
-      () => selectBuild(i, b),
+    const b = mkTool(`${glyph}<span>${p.label || p.id}</span>${cost}`, () =>
+      selectBuild(i, b),
     );
     // Закрытый технологией тайл виден, но не размечается: невидимая цель не
     // тянет, а ядро такую разметку всё равно отклонит (§12.27, §4.4).
@@ -4030,7 +4032,9 @@ function tradeState(fi, ii, buying, qty) {
   // стоит дельта к прошлой фазе, а прогноз распирал бы её.
   const next = buying ? q.next_buy : q.next_sell;
   const ahead =
-    q.next_in > 0 && next !== unit ? ` · через ${q.next_in} станет ${next}¤` : "";
+    q.next_in > 0 && next !== unit
+      ? ` · через ${q.next_in} станет ${next}¤`
+      : "";
   // Правило автопродажи живёт своей строкой (§12.88), и кнопка «Продать»
   // обязана про него сказать: иначе игрок, у которого излишек уходит сам,
   // ищет причину не там, где принимал решение (§12.64).
@@ -4209,7 +4213,6 @@ function syncTopicButtons(list) {
   });
   syncSectionRows("Наука", topicButtons);
 }
-
 
 // Число порога, которое **правится на месте** (§12.92): клик по нему — и это
 // уже поле ввода, Enter применяет, Escape отменяет. С §12.108 это единственный
@@ -5102,9 +5105,7 @@ function syncStockBusy() {
 function craftLabel(def) {
   const r = (meta.recipes ?? [])[def];
   const gives =
-    r?.gives instanceof Map
-      ? [...r.gives.keys()]
-      : Object.keys(r?.gives ?? {});
+    r?.gives instanceof Map ? [...r.gives.keys()] : Object.keys(r?.gives ?? {});
   const item = (meta.items ?? []).findIndex((it) => gives.includes(it.id));
   if (item < 0) return r?.label || r?.id || "Заказ";
   return recipesGiving(item).length > 1
@@ -5131,7 +5132,8 @@ function syncStockWindow() {
   // Про мастерскую говорим, только если рецепты уже открыты: иначе это
   // предупреждение про механику, которой у игрока ещё нет.
   const anyRecipe = recipeSnaps.some((r) => r?.unlocked);
-  if (!canCraft && anyRecipe) warns.push("Производство недоступно: нет «Мастерской»");
+  if (!canCraft && anyRecipe)
+    warns.push("Производство недоступно: нет «Мастерской»");
   const warnHtml = warns.map((w) => `<div>${w}</div>`).join("");
   if (warnEl.innerHTML !== warnHtml) warnEl.innerHTML = warnHtml;
   warnEl.hidden = !warns.length;
@@ -5150,8 +5152,7 @@ function syncStockWindow() {
 
     // Числа и их расклад — ровно то же, что в шапке (§12.53): второй формы
     // записи тех же трёх чисел в игре быть не должно.
-    const nums =
-      `<b>${free}</b>` + (st.loose ? `<u>+${st.loose}</u>` : "");
+    const nums = `<b>${free}</b>` + (st.loose ? `<u>+${st.loose}</u>` : "");
     if (r.num.innerHTML !== nums) r.num.innerHTML = nums;
     r.num.title = [
       `${name}: на складе ${st.stored}`,
@@ -5609,9 +5610,7 @@ function raidCard(i, node) {
   if (def.fame) facts.push(["награда", `известность +${def.fame}`]);
   rows.push(
     '<div class="raid-facts">' +
-      facts
-        .map(([k, v]) => `<i>${k}</i><span>${v}</span>`)
-        .join("") +
+      facts.map(([k, v]) => `<i>${k}</i><span>${v}</span>`).join("") +
       "</div>",
   );
 
