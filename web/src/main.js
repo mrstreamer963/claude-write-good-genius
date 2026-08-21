@@ -233,7 +233,18 @@ raidWinEl.addEventListener("mousedown", (e) => {
 });
 
 const app = new Application();
-await app.init({ background: COLORS.bg, antialias: true, resizeTo: stageEl });
+// `resolution` + `autoDensity` — иначе на retina канвас рисуется в половину
+// экранного разрешения: backing store совпадает с CSS-размером, и каждый пиксель
+// карты растягивается вдвое самим дисплеем. По умолчанию Pixi берёт `1`, то есть
+// вся карта была мыльной на любом экране с dpr > 1. `autoDensity` при этом
+// держит CSS-размер канваса прежним — растёт только буфер.
+await app.init({
+  background: COLORS.bg,
+  antialias: true,
+  resizeTo: stageEl,
+  resolution: window.devicePixelRatio || 1,
+  autoDensity: true,
+});
 stageEl.appendChild(app.canvas);
 
 // Мир: тайлы -> лом -> чертежи -> юниты -> оверлей (подсветки).
@@ -278,6 +289,10 @@ const unitTiles = new Map(); // id -> { x, y } (в тайлах)
 const orders = new Map(); // id -> { x, y } (заданная цель, для метки)
 
 let meta = null; // { width, height, palette, items, skills, perks }
+// Во сколько раз карта растянута под размер окна (`layout`). Читают двое:
+// само центрирование и текст внутри `world` — тот растеризуется в момент
+// создания и без поправки на масштаб мылится.
+let worldScale = 1;
 let paletteColors = []; // number[]
 let itemColors = []; // number[] — цвет предмета по индексу палитры items
 let mapCells = null; // Int-массив состояния карты
@@ -504,13 +519,47 @@ function hex(s) {
 
 // --- layout / render ------------------------------------------------------
 
+// Карта вписывается в отведённое ей место **масштабом контейнера**, а не
+// пересчётом `TILE`. Довод не в лени: `TILE` ходит по полусотне мест — по
+// позициям тайлов, по радиусам котов, по отступам меток, — и половина из них
+// нарисована один раз при создании узла (`createUnit`, `orderMarker`). Сделай
+// `TILE` переменной — и всё это пришлось бы пересобирать на каждом ресайзе.
+// `world.scale` растит их разом и бесплатно.
+//
+// Ввод от этого не страдает: `tileAt` считает клетку через `world.toLocal()`,
+// который масштаб уже учитывает. Второго места, знающего про масштаб, нет.
+//
+// До этого карта 24×16 занимала треть отведённой площади и стояла крошечным
+// пятном посреди пустоты: `TILE` подобран под самый маленький экран, а растёт
+// окно, а не тайл.
 function layout() {
   if (!meta) return;
-  world.x = Math.max(8, Math.floor((app.screen.width - meta.width * TILE) / 2));
-  world.y = Math.max(
-    8,
-    Math.floor((app.screen.height - meta.height * TILE) / 2),
-  );
+  const w = meta.width * TILE;
+  const h = meta.height * TILE;
+  // Свободная полоса, а не вся сцена: `#stage` растянут во всё окно, а тулбар и
+  // правая колонка стоят `position: fixed` **поверх** него (на этом держится
+  // подсветка режима по периметру карты). Впиши карту в `app.screen` — и её
+  // края уедут под панели.
+  //
+  // Ширины меряем у самих узлов, а не переписываем сюда числами из CSS: колонки
+  // там правятся, а разъехавшийся дубль дал бы карту, наполовину скрытую под
+  // панелью, — то есть ровно то, что чинится этим кодом.
+  //
+  // По вертикали полосу не режем намеренно: тулбар растёт и сжимается, когда
+  // игрок раскрывает разделы, и карта прыгала бы под курсором на каждом клике.
+  const stageBox = stageEl.getBoundingClientRect();
+  const barBox = document.getElementById("toolbar")?.getBoundingClientRect();
+  const sideBox = document.getElementById("side")?.getBoundingClientRect();
+  const padLeft = barBox ? Math.max(8, barBox.right - stageBox.left + 12) : 8;
+  const padRight = sideBox ? Math.max(8, stageBox.right - sideBox.left + 12) : 8;
+  const availW = Math.max(TILE, app.screen.width - padLeft - padRight);
+  const availH = Math.max(TILE, app.screen.height - 16);
+  // Не мельчим ниже единицы: `TILE` подобран под самый маленький экран, и на нём
+  // карта просто уезжает под панели, как уезжала всегда.
+  worldScale = Math.max(1, Math.min(availW / w, availH / h));
+  world.scale.set(worldScale);
+  world.x = padLeft + Math.max(0, Math.floor((availW - w * worldScale) / 2));
+  world.y = 8 + Math.max(0, Math.floor((availH - h * worldScale) / 2));
 }
 app.renderer.on("resize", layout);
 
@@ -603,6 +652,11 @@ function drawDeals(list) {
     const label = new Text({
       text: String(d.left),
       style: { fontFamily: "monospace", fontSize: 10, fill: COLORS.select },
+      // Текст — единственное, что внутри `world` не векторное: он печётся в
+      // текстуру один раз, и растянутый `world.scale` мылит его. Печём сразу в
+      // том разрешении, в каком он окажется на экране. Пересоздаётся он каждым
+      // кадром, так что смену масштаба подхватывает сам.
+      resolution: app.renderer.resolution * worldScale,
     });
     label.anchor.set(0.5);
     label.x = d.x * TILE + TILE / 2;
