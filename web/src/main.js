@@ -662,6 +662,28 @@ function tileGlyphContext(i) {
   return ctx;
 }
 
+// То же для предметов: глиф груза в лапах у кота. Контекст на тип, а не на
+// кота, — носильщиков бывает десяток, а типов шесть.
+const itemGlyphCache = new Map();
+function itemGlyphContext(i) {
+  if (itemGlyphCache.has(i)) return itemGlyphCache.get(i);
+  const def = (meta?.items ?? [])[i];
+  const d = def && ITEM_GLYPHS[def.id];
+  let ctx = null;
+  if (d) {
+    try {
+      ctx = new Graphics().svg(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">' +
+          `<path fill="${def.color}" d="${d}"/></svg>`,
+      ).context;
+    } catch (err) {
+      console.warn(`глиф предмета ${def.id} не разобрался:`, err);
+    }
+  }
+  itemGlyphCache.set(i, ctx);
+  return ctx;
+}
+
 function drawMap(map) {
   mapCells = map.cells;
   tileLayer.removeChildren();
@@ -911,8 +933,43 @@ function renderSnapshot(snap) {
     c.x = e.x * TILE + TILE / 2;
     c.y = e.y * TILE + TILE / 2;
     c.stuckRing.visible = !!e.stuck;
+    // Разворот: куда шагнул, туда и смотрит, — и **остаётся** смотреть, встав.
+    // Прошлая клетка лежит в `unitTiles` до перезаписи ниже, второго источника
+    // для этого не нужно. Зеркалим силуэт, а не весь узел: метки состояний —
+    // соседние дети контейнера, и они бы уехали вместе с ним.
+    const was = unitTiles.get(e.id);
+    if (was && was.x !== e.x) c.body.scale.x = e.x > was.x ? 1 : -1;
+    // Силуэт пересобираем только на смене экипировки: `Graphics` строится
+    // командами рисования, и безусловный `clear()` каждые 16 мс — это разбор
+    // фигуры шестьдесят раз в секунду на каждого кота.
+    const geared = (e.gear ?? []).length > 0;
+    if (geared !== c.geared) {
+      c.geared = geared;
+      c.body.clear();
+      drawCat(c.body, c.fur, geared);
+    }
     c.load.visible = e.carrying > 0;
-    if (e.carrying > 0) c.load.tint = itemColor(e.carrying_item);
+    // Глиф груза — **новый узел** на смене типа, а не подмена контекста у
+    // старого: `Graphics` принимает общий контекст только конструктором
+    // (`new Graphics(ctx)`), а присваивание `.context` живому узлу молча
+    // ничего не рисует — кот носил пустой тёмный кружок. Смена типа редка
+    // (ходка целиком идёт одним предметом, инвариант 12), так что пересоздание
+    // здесь ничего не стоит.
+    if (e.carrying > 0 && e.carrying_item !== c.loadItem) {
+      c.loadItem = e.carrying_item;
+      c.loadGlyph?.destroy();
+      c.loadGlyph = null;
+      const ctx = itemGlyphContext(e.carrying_item);
+      if (ctx) {
+        const size = TILE * 0.34;
+        const gl = new Graphics(ctx);
+        gl.scale.set(size / 24);
+        gl.x = -size / 2;
+        gl.y = -TILE * 0.52 - size / 2;
+        c.load.addChild(gl);
+        c.loadGlyph = gl;
+      }
+    }
     // «Дошёл и делает» против «ещё идёт»: маркер вешается только на первое —
     // кот в пути к лежанке не спит, а идёт (§12.41).
     const asleep = e.job === "rest" && !e.moving;
@@ -1057,25 +1114,87 @@ function renderSnapshot(snap) {
   renderGoalsPanel(snap.goals, snap.goals_required, snap);
 }
 
+// Силуэт кота (§12.109): уши, корпус, хвост — и жилет, когда кот экипирован.
+//
+// До этого кот был кругом, и три кота на базе различались **только заливкой**.
+// Круг честно отвечал на «здесь кто-то есть» и молчал обо всём остальном: куда
+// он идёт, надето ли на нём хоть что-нибудь. Ради этого приходилось кликать, то
+// есть карта не отвечала на вопросы, ради которых на неё и смотрят.
+//
+// Рисуется примитивами, а не спрайтом, по трём причинам: масштабируется вместе
+// с `world.scale` без второго набора картинок под каждый dpr, перекрашивается
+// той же палитрой `COLORS.unit`, что и раньше (цветовой словарь не тронут), и
+// не заводит загрузку ассетов ради фигурки в 24 px. Фотореализм из `mockup/`
+// сюда не влезает вовсе — он ушёл в портреты панелей, где для него есть место.
+//
+// Порядок слоёв значим: хвост уходит **за** корпус, поэтому рисуется первым.
+// Обводка — не `stroke` по общему контуру (он обвёл бы и границы ушей о
+// корпус, превратив силуэт в чертёж), а тёмная копия шире фигуры под ней.
+function drawCat(g, fur, geared) {
+  const r = TILE * 0.3; // тот же радиус, что был у круга: метки над котом не съехали
+  const dark = 0x0b0d12;
+
+  // Хвост: тёмный потолще, поверх — цветной потоньше. Он же единственное, по
+  // чему видно разворот у стоящего кота.
+  for (const [w, col] of [
+    [r * 0.5, dark],
+    [r * 0.3, fur],
+  ]) {
+    g.moveTo(r * 0.5, r * 0.85)
+      .quadraticCurveTo(r * 2.05, r * 1.5, r * 1.85, r * 0.05)
+      .stroke({ color: col, width: w, cap: "round" });
+  }
+
+  // Корпус и уши — одной фигурой в двух размерах: тёмная подложка и мех.
+  for (const [k, col] of [
+    [1.16, dark],
+    [1.0, fur],
+  ]) {
+    for (const sx of [-1, 1]) {
+      g.moveTo(sx * r * 0.72 * k, -r * 0.4 * k)
+        .lineTo(sx * r * 0.46 * k, -r * 1.3 * k)
+        .lineTo(sx * r * 0.04 * k, -r * 0.62 * k)
+        .closePath()
+        .fill(col);
+    }
+    g.circle(0, 0, r * k).fill(col);
+  }
+
+  // Жилет — только на экипированном (§12.34). Это и есть ответ на «коты в
+  // плащах и перчатках», который влезает в тайл: не текстура, а различимая
+  // деталь силуэта. Гол кот или нет, теперь видно с карты, а не только из
+  // карточки, — а зависит от этого сила отряда на вылазке.
+  if (geared) {
+    g.roundRect(-r * 0.66, -r * 0.12, r * 1.32, r * 0.86, r * 0.22)
+      .fill({ color: dark, alpha: 0.85 });
+    g.rect(-r * 0.66, r * 0.12, r * 1.32, r * 0.16).fill({
+      color: 0xd6b26a,
+      alpha: 0.9,
+    });
+  }
+}
+
 function createUnit(e) {
   const c = new Container();
   const body = new Graphics();
-  body
-    .circle(0, 0, TILE * 0.3)
-    .fill(COLORS.unit[e.sprite] ?? COLORS.unitDefault)
-    .stroke({ color: 0x000000, width: 2 });
+  drawCat(body, COLORS.unit[e.sprite] ?? COLORS.unitDefault, false);
   // Кольцо «кот застрял» — шире кольца выбора, чтобы читались вместе.
   const stuckRing = new Graphics();
   stuckRing
     .circle(0, 0, TILE * 0.52)
     .stroke({ color: COLORS.stuck, width: 2, alpha: 0.9 });
   stuckRing.visible = false;
-  // Груз лома — брусок над котом, той же краской, что и кучи на полу.
-  const load = new Graphics();
-  load
-    .rect(-TILE * 0.16, -TILE * 0.5, TILE * 0.32, 4)
-    .fill(0xffffff)
-    .stroke({ color: 0x000000, width: 1 });
+  // Груз — глиф того, что кот несёт (§12.109). Был белый брусок, крашенный в
+  // цвет предмета: он говорил «что-то несёт», но не «что». Теперь это тот же
+  // значок, что стоит в шапке и в ценах, — ради чего единый словарь и заводился.
+  // Тёмный кружок под ним нужен: паёк и лом кот носит над клеткой любого цвета.
+  const load = new Container();
+  const loadDisc = new Graphics();
+  loadDisc.circle(0, -TILE * 0.52, TILE * 0.23).fill({
+    color: 0x0b0d12,
+    alpha: 0.85,
+  });
+  load.addChild(loadDisc);
   load.visible = false;
   // «Зззз» — три пузырька над спящим, выше бруска груза: спать можно и с ломом.
   const sleepMark = new Graphics();
@@ -1126,6 +1245,14 @@ function createUnit(e) {
   c.addChild(medicMark);
   c.stuckRing = stuckRing;
   c.load = load;
+  c.loadGlyph = null;
+  c.body = body;
+  c.fur = COLORS.unit[e.sprite] ?? COLORS.unitDefault;
+  // Что уже нарисовано, помним на самом узле: силуэт пересобирается только
+  // когда кот оделся или разделся, а не каждым кадром (тот же довод, что у
+  // `syncTeachButtons`, §12.84 — безусловная перерисовка каждые 16 мс).
+  c.geared = false;
+  c.loadItem = -1;
   c.sleepMark = sleepMark;
   c.studyMark = studyMark;
   c.woundMark = woundMark;
