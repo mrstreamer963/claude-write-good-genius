@@ -194,6 +194,177 @@ fn the_path_ignores_clutter() {
     );
 }
 
+// --- полке нужен подход (§12.111) -------------------------------------------
+
+/// Полка внутри полок незаконна: подойти к ней негде, а сквозь соседнюю мебель
+/// груз не сдают.
+#[test]
+fn a_rack_needs_an_aisle() {
+    let mut sim = sim_from(&[
+        "#######", "#a....#", "#.....#", "#.....#", "#.....#", "#######",
+    ]);
+    sim.set_solid(RACK, true);
+    for (x, y) in [(3, 1), (2, 2), (4, 2), (3, 3)] {
+        sim.force_tile(x, y, RACK); // полки вокруг клетки (3, 2)
+    }
+
+    assert!(
+        !sim.add_blueprint(3, 2, RACK as i32),
+        "к этой полке не подойти ни с одной стороны",
+    );
+    assert!(
+        sim.add_blueprint(5, 4, RACK as i32),
+        "а полка с проходом рядом размечается как раньше",
+    );
+}
+
+/// Ворота стоят и на соседе: иначе правило снимается за два клика — полки
+/// вдоль прохода, а потом сам проход полкой.
+#[test]
+fn a_rack_cannot_seal_its_neighbour() {
+    let mut sim = sim_from(&[
+        "#######", "#a....#", "#.....#", "#.....#", "#.....#", "#######",
+    ]);
+    sim.set_solid(RACK, true);
+    for (x, y) in [(2, 1), (1, 2), (2, 3)] {
+        sim.force_tile(x, y, RACK); // у полки (2, 2) остался один подход — (3, 2)
+    }
+    sim.force_tile(2, 2, RACK);
+
+    assert!(
+        !sim.add_blueprint(3, 2, RACK as i32),
+        "эта разметка отняла бы у соседней полки последний подход",
+    );
+    assert!(
+        sim.add_blueprint(4, 2, RACK as i32),
+        "клеткой дальше — пожалуйста: проход у соседа остаётся",
+    );
+}
+
+/// Мазок рамкой монолита не собирает: одна клетка остаётся проходом. Какая
+/// именно — решает порядок обхода рамки, и он детерминирован.
+#[test]
+fn a_rect_of_racks_keeps_an_aisle() {
+    let mut sim = sim_from(&[
+        "#######", "#a....#", "#.....#", "#.....#", "#.....#", "#######",
+    ]);
+    sim.set_solid(RACK, true);
+
+    sim.add_blueprint_rect(2, 1, 3, 3, RACK as i32);
+    let planned = (1..4)
+        .flat_map(|y| (2..5).map(move |x| (x, y)))
+        .filter(|&(x, y)| sim.planned_tile(x, y) == Some(RACK))
+        .count();
+    assert_eq!(planned, 8, "восемь полок из девяти, девятая — проход");
+
+    sim.tick_n(600); // коту хватит достроить всё размеченное
+    assert!(
+        sim.solid_without_aisle().is_empty(),
+        "и построенное правилу не противоречит",
+    );
+}
+
+/// Два ряда полок законны целиком: подход у каждой сверху или снизу. Правило
+/// запрещает клетку, у которой полки со **всех четырёх** сторон, а не третий
+/// ряд как таковой.
+#[test]
+fn two_rows_of_racks_are_legal() {
+    let mut sim = sim_from(&[
+        "#######", "#a....#", "#.....#", "#.....#", "#.....#", "#######",
+    ]);
+    sim.set_solid(RACK, true);
+
+    sim.add_blueprint_rect(2, 2, 3, 2, RACK as i32);
+    let planned = (2..4)
+        .flat_map(|y| (2..5).map(move |x| (x, y)))
+        .filter(|&(x, y)| sim.planned_tile(x, y) == Some(RACK))
+        .count();
+    assert_eq!(planned, 6, "блок три на два размечается целиком");
+}
+
+/// Правило висит на `solid`, а не на списке тайлов: комната-склад, лежанки и
+/// гнёзда остаются комнатами (§12.16).
+#[test]
+fn only_solid_tiles_need_an_aisle() {
+    const STORAGE: i16 = 2;
+    let mut sim = sim_from(&[
+        "#######", "#a....#", "#.....#", "#.....#", "#.....#", "#######",
+    ]);
+    sim.set_capacity(STORAGE, 20); // склад, но пройти и стоять на нём можно
+
+    sim.add_blueprint_rect(2, 1, 3, 3, STORAGE as i32);
+    let planned = (1..4)
+        .flat_map(|y| (2..5).map(move |x| (x, y)))
+        .filter(|&(x, y)| sim.planned_tile(x, y) == Some(STORAGE))
+        .count();
+    assert_eq!(planned, 9, "склад размечается целой комнатой");
+}
+
+/// Сноса ворота не касаются (§12.27): он создаёт пустоту, а не полки, и новых
+/// мест хранения от него не прибавляется.
+#[test]
+fn demolition_is_not_gated_by_the_aisle_rule() {
+    let mut sim = sim_from(&["#####", "#a..#", "#####"]);
+    sim.set_solid(RACK, true);
+    sim.force_tile(2, 1, RACK); // единственный подход к ней — (3, 1)
+
+    assert!(sim.plan_demolish(3, 1), "снос прохода планируется");
+}
+
+/// Маску превью считает ядро, и она говорит ровно то же, что ворота: второй
+/// экземпляр правила в JS однажды показал бы клетку, которую фасад отклонит.
+#[test]
+fn the_mask_says_what_the_gate_says() {
+    let mut sim = sim_from(&[
+        "#######", "#a....#", "#.....#", "#.....#", "#.....#", "#######",
+    ]);
+    sim.set_solid(RACK, true);
+    for (x, y) in [(3, 1), (2, 2), (4, 2), (3, 3)] {
+        sim.force_tile(x, y, RACK);
+    }
+
+    assert!(
+        sim.buildable(0, 0, 0, 0, 0).is_empty(),
+        "у обычного пола ограничений нет вовсе — и красить нечего",
+    );
+    let mask = sim.buildable(RACK as i32, 0, 0, 0, 0);
+    assert_eq!(mask.len(), 7 * 6, "по байту на клетку карты");
+    assert_eq!(mask[2 * 7 + 3], 0, "клетка внутри полок закрыта");
+    assert_eq!(mask[4 * 7 + 5], 1, "клетка с проходом открыта");
+    assert_eq!(
+        mask[2 * 7 + 3] == 1,
+        sim.add_blueprint(3, 2, RACK as i32),
+        "маска и ворота отвечают одно",
+    );
+}
+
+/// Маска рамки считает мазок целиком: девять зелёных клеток при восьми
+/// размеченных — это молчаливое расхождение, ради которого маска и заводится.
+#[test]
+fn the_mask_counts_the_whole_stroke() {
+    let mut sim = sim_from(&[
+        "#######", "#a....#", "#.....#", "#.....#", "#.....#", "#######",
+    ]);
+    sim.set_solid(RACK, true);
+
+    let mask = sim.buildable(RACK as i32, 2, 1, 3, 3);
+    let open = (1..4)
+        .flat_map(|y| (2..5).map(move |x| (x, y)))
+        .filter(|&(x, y)| mask[(y * 7 + x) as usize] == 1)
+        .count();
+    assert_eq!(open, 8, "одна клетка мазка уйдёт под проход");
+
+    sim.add_blueprint_rect(2, 1, 3, 3, RACK as i32);
+    let planned = (1..4)
+        .flat_map(|y| (2..5).map(move |x| (x, y)))
+        .filter(|&(x, y)| sim.planned_tile(x, y) == Some(RACK) && mask[(y * 7 + x) as usize] == 1)
+        .count();
+    assert_eq!(
+        planned, 8,
+        "и это ровно та клетка, которую отклонит разметка"
+    );
+}
+
 // --- боевой рулсет ----------------------------------------------------------
 
 /// В `core.yaml` заставленный тайл есть, и это склад: свойство `solid` без
@@ -207,6 +378,19 @@ fn the_shipped_ruleset_has_a_solid_storage_tile() {
     assert!(
         solids.iter().all(|&t| sim.capacity_of(t) > 0),
         "и все они — хранилища: стоять нельзя, но заходить есть зачем",
+    );
+}
+
+/// Стартовая застройка правилу доступа не противоречит. Ловит контент, в
+/// котором полки положены монолитом: игрок видел бы на старте базу, которую
+/// сам построить не может.
+#[test]
+fn the_shipped_ruleset_starts_with_every_shelf_reachable() {
+    let sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
+
+    assert!(
+        sim.solid_without_aisle().is_empty(),
+        "к каждой заставленной клетке стартовой базы можно подойти",
     );
 }
 

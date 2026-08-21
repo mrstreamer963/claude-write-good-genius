@@ -29,6 +29,13 @@ const COLORS = {
   unitDefault: 0xcccccc,
 };
 
+// Правило доступа (§12.111) словом. Живёт одной строкой, потому что говорит его
+// и кнопка палитры, и подсказка: крест на карте отвечает «сюда нельзя», а
+// почему — обязано быть написано (§12.53).
+const ACCESS_HINT =
+  "Полке нужен проход: клетку, у которой полки со всех четырёх сторон, " +
+  "разметить нельзя — к ней не подойти";
+
 // --- глифы (§12.109) -------------------------------------------------------
 //
 // Предмет и роль клетки рисуются значком, а не цветным квадратиком. Квадратик
@@ -390,6 +397,19 @@ let itemColors = []; // number[] — цвет предмета по индекс
 let mapCells = null; // Int-массив состояния карты
 let mode = "cursor"; // 'cursor' | 'build'
 let buildTile = 0; // индекс палитры, или -1 = стереть (в режиме build)
+// Маска правила доступа (§12.111) на текущий инструмент: байт на клетку, `1` —
+// поставить можно. Считает её **ядро** и присылает каждым кадром вместе со
+// снимком; `null` значит «правило к этому тайлу не применимо» (полке проход
+// нужен, полу и лежанке — нет). Второй экземпляр правила в JS однажды разошёлся
+// бы с воротами и показал зелёной клетку, которую фасад отклонит (§12.53).
+let buildMask = null;
+// Что уже заказано у воркера — чтобы не слать одно и то же каждым движением
+// мыши: рамка меняется на каждый `pointermove`, а инструмент почти никогда.
+let maskAsked = "";
+// Где курсор был в последний раз. Маска приезжает **следующим кадром** после
+// того, как рамку заказали, а перерисовывает рамку движение мыши, — то есть без
+// этой позиции крест появлялся бы, только когда игрок дёрнет курсор ещё раз.
+let hoverAt = null;
 let autoTidy = true; // коты сами свозят лом на склад (см. ядро, §12.16)
 let tidyBtn = null; // кнопка «Убирать сам»: подсветку ей ставит снимок (§12.96)
 let autoRest = true; // и сами бросают работу на исходе сил (§12.33)
@@ -568,6 +588,14 @@ worker.onmessage = (e) => {
   } else if (m.type === "map") {
     drawMap(m.map);
   } else if (m.type === "snapshot") {
+    // Перерисовываем рамку только на **изменение** маски: `snapshot` приходит
+    // каждые 16 мс, а безусловный `clear()` живого `Graphics` — это разбор
+    // фигуры шестьдесят раз в секунду на ровном месте (§12.84, §12.109).
+    const mask = m.mask ?? null;
+    if (!sameMask(mask, buildMask)) {
+      buildMask = mask;
+      if (hoverAt) updateHover(hoverAt);
+    }
     renderSnapshot(m.snap);
   } else if (m.type === "saved") {
     if (m.auto) localStorage.setItem(SAVE_KEY, m.json);
@@ -3535,13 +3563,41 @@ function applyModeChrome() {
     : m.label;
 }
 
+// Заказать у ядра маску правила доступа под то, что игрок держит в руке и
+// куда целится. Рамку шлём вместе с тайлом: внутри неё правило считается с
+// накоплением, как при самой разметке, — иначе превью обещало бы девять полок
+// из мазка три на три, а разметилось бы восемь.
+//
+// Шлём только на изменение: `pointermove` частит, а лишнее сообщение заставляет
+// воркер считать маску, которую он уже посчитал.
+function askBuildMask(r) {
+  const tile = mode === "build" ? buildTile : -1;
+  const rect = r ? [r.x, r.y, r.w, r.h] : [0, 0, 0, 0];
+  const key = `${tile}:${rect.join(",")}`;
+  if (key === maskAsked) return;
+  maskAsked = key;
+  if (tile < 0) buildMask = null; // курсор и ластик правилу не подчиняются
+  worker.postMessage({ type: "setBuildTile", tile, rect });
+}
+
+// Та же маска или другая. Байт на клетку — сравнить её дешевле, чем перерисовать
+// рамку, а меняется она редко: только когда игрок ведёт мышь или строят коты.
+function sameMask(a, b) {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
 function updateHover(global) {
+  hoverAt = { x: global.x, y: global.y };
   const t = tileAt(global);
   hoverRect.clear();
   // Во время протяжки показываем всю рамку — даже если курсор ушёл за карту.
   const r = dragFrom
     ? rectOf(dragFrom, dragTo)
     : t && { x: t.tx, y: t.ty, w: 1, h: 1 };
+  askBuildMask(r);
   if (!r) return;
   // Одна клетка с котом под ней подсвечивается как выбор, а не как разметка:
   // отпустив кнопку здесь, игрок выберет кота, и цвет обязан сказать это до
@@ -3554,6 +3610,28 @@ function updateHover(global) {
     .rect(r.x * TILE, r.y * TILE, r.w * TILE, r.h * TILE)
     .fill({ color: col, alpha: 0.28 })
     .stroke({ color: col, width: 3, alpha: 0.9 });
+
+  // Клетки, которых правило доступа не пускает (§12.111), перечёркнуты **до**
+  // жеста. Рамка применяется целиком, и молча не разметившаяся её часть
+  // читается как поломка: отказ обязан быть назван до клика (§12.53).
+  if (!buildMask) return;
+  for (let y = r.y; y < r.y + r.h; y++) {
+    for (let x = r.x; x < r.x + r.w; x++) {
+      if (x < 0 || y < 0 || x >= meta.width || y >= meta.height) continue;
+      if (buildMask[y * meta.width + x]) continue;
+      const px = x * TILE;
+      const py = y * TILE;
+      hoverRect
+        .rect(px + 1, py + 1, TILE - 2, TILE - 2)
+        .fill({ color: COLORS.erase, alpha: 0.3 });
+      hoverRect
+        .moveTo(px + 6, py + 6)
+        .lineTo(px + TILE - 6, py + TILE - 6)
+        .moveTo(px + TILE - 6, py + 6)
+        .lineTo(px + 6, py + TILE - 6)
+        .stroke({ color: COLORS.erase, width: 2, alpha: 0.95 });
+    }
+  }
 }
 
 app.stage.on("pointerdown", (e) => {
@@ -3844,9 +3922,13 @@ function buildToolbar() {
     const b = mkTool(`${glyph}<span>${p.label || p.id}</span>${cost}`, () =>
       selectBuild(i, b),
     );
+    // Правило доступа названо словом на самой кнопке (§12.53, §12.111): на
+    // карте отказ показан крестом, но крест говорит «эту клетку нельзя», а не
+    // «почему». Условие — то же свойство, на котором висит и само правило.
+    if (p.solid) b.title = ACCESS_HINT;
     // Закрытый технологией тайл виден, но не размечается: невидимая цель не
     // тянет, а ядро такую разметку всё равно отклонит (§12.27, §4.4).
-    if (p.tech) tileButtons.push({ btn: b, tech: p.tech });
+    if (p.tech) tileButtons.push({ btn: b, tech: p.tech, hint: b.title });
     build.appendChild(b);
   });
 
@@ -4473,11 +4555,14 @@ function shopsBusyHint() {
 // Название темы берём из палитры тем — второго списка технологий не заводим.
 function syncTileButtons(techs) {
   const known = techs ?? [];
-  for (const { btn, tech } of tileButtons) {
+  for (const { btn, tech, hint } of tileButtons) {
     const open = known.includes(tech);
     btn.disabled = !open;
     const def = (meta.research ?? []).find((r) => r.id === tech);
-    btn.title = open ? "" : `Откроет тема «${def?.label || tech}»`;
+    // Открытая кнопка возвращает свою подсказку, а не пустую: у полки это
+    // правило доступа (§12.111), и оно не перестаёт действовать оттого, что
+    // технологию наконец изучили.
+    btn.title = open ? (hint ?? "") : `Откроет тема «${def?.label || tech}»`;
   }
 }
 
@@ -6062,6 +6147,7 @@ function selectCursor(btn) {
   mode = "cursor";
   activate(btn);
   applyModeChrome();
+  askBuildMask(null);
 }
 
 // Времени выбор инструмента не касается: паузу ставит только игрок (§12.86).
@@ -6070,6 +6156,9 @@ function selectBuild(i, btn) {
   buildTile = i;
   activate(btn);
   applyModeChrome();
+  // Маску заказываем сразу, не дожидаясь движения мыши: игрок выбрал полку и
+  // ведёт курсор на карту уже зная, куда её ставить нельзя.
+  askBuildMask(null);
 }
 
 function showError(message) {

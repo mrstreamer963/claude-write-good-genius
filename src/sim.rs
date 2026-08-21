@@ -6,6 +6,7 @@
 //!   * `base_map()`      — текущее состояние тайлов базы;
 //!   * `add_blueprint()` — поставить чертёж (задачу); выполняют коты, по тикам;
 //!   * `plan_demolish()` — ластик: отменить чертёж либо запланировать снос тайла;
+//!   * `buildable()`     — маска правила доступа для превью рамки (§12.111);
 //!   * `*_rect()`        — те же инструменты на рамку; решение — на всю рамку сразу;
 //!   * `mark_to_store_rect()` — пометить кучи «на склад» (или снять пометку);
 //!   * `set_auto_tidy()` — убирать ли лом с пола без приказа;
@@ -29,7 +30,7 @@ use wasm_bindgen::prelude::*;
 use crate::components::*;
 use crate::goals::{WorldFacts, built_counts, progress_of};
 use crate::hauling::{plan_spend, stored_counts};
-use crate::jobs::BUILD_WORK;
+use crate::jobs::{BUILD_WORK, Plan, access_ok};
 use crate::map::{BaseMap, rect_cells};
 use crate::missions::{
     duration, guide_cut, guide_of, guide_value, outcome, pick_gate, raid_danger,
@@ -515,6 +516,17 @@ impl Sim {
             Path,
             MoveCooldown,
         )>();
+    }
+
+    /// Карта с наложенными чертежами — то, по чему считает правило доступа
+    /// (§12.111): разметка обещает тайл, и обещанное правило видеть обязано.
+    fn plan(&mut self) -> Plan {
+        let mut q = self.world.query::<&Blueprint>();
+        let planned: Vec<(i32, i32, i16)> = q
+            .iter(&self.world)
+            .map(|bp| (bp.x, bp.y, bp.tile))
+            .collect();
+        Plan::of(self.world.resource::<BaseMap>(), planned.into_iter())
     }
 
     /// Открыта ли постройка этого тайла: технология изучена или не нужна.
@@ -1365,6 +1377,56 @@ impl Sim {
         serde_wasm_bindgen::to_value(&dto).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
+    /// Маска правила доступа (§12.111) для превью: по байту на клетку, `1` —
+    /// тайл здесь поставить можно, `0` — нельзя. **Пустой вектор значит
+    /// «правило к этому тайлу не применимо»**, и рендер не красит ничего.
+    ///
+    /// Считает ядро, а не вид: второй экземпляр правила в JS однажды разойдётся
+    /// с этим и покажет клетку, которую фасад отклонит (§12.53). Зовётся маска
+    /// каждым кадром — она зависит от чертежей, а те меняются между кадрами, —
+    /// и стоит это прохода по карте, то есть меньше самого снапшота.
+    ///
+    /// `(rx, ry, rw, rh)` — рамка, которую игрок тянет прямо сейчас; нулевая
+    /// ширина значит «рамки нет». Клетки внутри неё считаются **по порядку и с
+    /// накоплением**, ровно как их разметит `add_blueprint_rect`: каждая
+    /// принятая меняет ответ для следующих. Без этого превью обещало бы девять
+    /// полок из мазка три на три, а разметилось бы восемь — то самое молчаливое
+    /// расхождение, ради которого маска и заводится.
+    pub fn buildable(&mut self, tile: i32, rx: i32, ry: i32, rw: i32, rh: i32) -> Vec<u8> {
+        let t = tile as i16;
+        if !self.world.resource::<TileRules>().is_solid(t) {
+            return Vec::new();
+        }
+        let mut plan = self.plan();
+        let rules = self.world.resource::<TileRules>();
+        let mut mask = vec![0u8; (self.width * self.height) as usize];
+        let mut done = vec![false; mask.len()];
+        for (cx, cy) in rect_cells(rx, ry, rw, rh) {
+            let ok = access_ok(&plan, rules, (cx, cy), t);
+            if ok {
+                plan.set(cx, cy, t);
+            }
+            if let Some(i) = self.cell_index(cx, cy) {
+                mask[i] = u8::from(ok);
+                done[i] = true;
+            }
+        }
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let i = (y * self.width + x) as usize;
+                if !done[i] {
+                    mask[i] = u8::from(access_ok(&plan, rules, (x, y), t));
+                }
+            }
+        }
+        mask
+    }
+
+    /// Номер клетки в маске; `None` — за картой.
+    fn cell_index(&self, x: i32, y: i32) -> Option<usize> {
+        self.in_bounds(x, y).then(|| (y * self.width + x) as usize)
+    }
+
     /// Поставить чертёж (джоб) `tile` на клетку (x, y). Выполняют коты, по тикам.
     /// `tile = -1` — чертёж сноса: кот придёт на соседнюю клетку и уберёт пол.
     /// Вернёт true, если чертёж добавлен/обновлён.
@@ -1379,6 +1441,14 @@ impl Sim {
         // прочтёт как поломку, а не как «сперва изучите». У сноса ворот нет —
         // разбирать можно что угодно и всегда.
         if !self.tech_allows(t) {
+            return false;
+        }
+        // Правило доступа — вторые ворота разметки и по тому же доводу (§12.111):
+        // у полки обязан быть проход, а чертёж, который встанет мебелью посреди
+        // собственной мебели, игрок прочтёт как поломку. Считается по плану, то
+        // есть с учётом уже размеченного, — иначе одна рамка соберёт монолит.
+        let plan = self.plan();
+        if !access_ok(&plan, self.world.resource::<TileRules>(), (x, y), t) {
             return false;
         }
         if self.world.resource::<BaseMap>().tile_at(x, y) == t {

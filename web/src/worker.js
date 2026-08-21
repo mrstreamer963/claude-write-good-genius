@@ -25,13 +25,21 @@ const AUTOSAVE_EVERY = 120; // сим-тиков (20 с на ×1)
 const AUTOSAVE_EVERY_MS = 20000; // и не реже этого по реальным часам
 
 // Команды, которые мир не меняют: после них сохранять нечего.
-const READ_ONLY = new Set(["setSpeed", "save", "trace"]);
+const READ_ONLY = new Set(["setSpeed", "save", "trace", "setBuildTile"]);
 
 let sim = null;
 let speed = 1; // 0 (пауза) | 1 | 5 | 10
 let acc = 0;
 let last = 0;
 let lastMapVersion = -1;
+// Какой тайл игрок держит в руке. Нужен только маске правила доступа (§12.111):
+// она зависит и от карты, и от чертежей, а те меняются между кадрами, поэтому
+// считается каждым кадром заново. -1 = игрок не строит, считать нечего.
+let maskTile = -1;
+// Рамка, которую игрок тянет прямо сейчас; нулевая ширина = рамки нет. Внутри
+// неё правило считается с накоплением, как при самой разметке: иначе превью
+// обещало бы девять полок из мазка три на три, а разметилось бы восемь.
+let maskRect = [0, 0, 0, 0];
 // Текст рулсета нужен и после старта: из него собирается и новая партия, и
 // загруженная — правил в снимке нет и быть не должно (§12.45).
 let yamlText = null;
@@ -98,7 +106,14 @@ function loop() {
       postMessage({ type: "map", map: sim.base_map() });
       lastMapVersion = v;
     }
-    postMessage({ type: "snapshot", snap: sim.snapshot() });
+    // Маска едет вместе со снимком: она про тот же кадр. Пустая (тайл правилу
+    // не подчиняется) — не едет вовсе, и рендер не красит ничего.
+    const mask = maskTile >= 0 ? sim.buildable(maskTile, ...maskRect) : null;
+    postMessage({
+      type: "snapshot",
+      snap: sim.snapshot(),
+      mask: mask && mask.length ? mask : null,
+    });
   }
   setTimeout(loop, 16);
 }
@@ -110,6 +125,11 @@ onmessage = (e) => {
   if (!READ_ONLY.has(m.type)) dirty = true;
   if (m.type === "setSpeed") {
     speed = m.speed;
+  } else if (m.type === "setBuildTile") {
+    // Инструмент в руке игрока — состояние вида, и живёт оно здесь: ядру он не
+    // нужен ни для чего, кроме ответа «где этот тайл поставить можно».
+    maskTile = m.tile;
+    maskRect = m.rect ?? [0, 0, 0, 0];
   } else if (m.type === "build" && sim) {
     // Один жест игрока = одна рамка = один вызов. Ластик не сносит мгновенно:
     // сначала снимает чертежи в рамке, и только если снимать было нечего —

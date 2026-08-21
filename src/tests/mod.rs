@@ -40,7 +40,7 @@ use bevy_ecs::prelude::*;
 
 use crate::components::*;
 use crate::jobs::{BUILD_WORK, WORK_RATE};
-use crate::map::BaseMap;
+use crate::map::{BaseMap, DIRS};
 use crate::movement::{Busy, is_stuck};
 use std::collections::BTreeMap;
 
@@ -365,6 +365,31 @@ impl Sim {
             .map(|i| i as i16)
             .filter(|&t| rules.is_solid(t))
             .collect()
+    }
+
+    /// Полки, у которых нет подхода: построенная клетка со `solid`, вокруг
+    /// которой стоять негде (§12.111). Читается ровно как само правило, и
+    /// поэтому годится и сквозным тестам, и сторожу на боевом рулсете.
+    fn solid_without_aisle(&self) -> Vec<(i32, i32)> {
+        let map = self.world.resource::<BaseMap>();
+        let rules = self.world.resource::<TileRules>();
+        let standable = |x: i32, y: i32| {
+            let t = map.tile_at(x, y);
+            t >= 0 && !rules.is_solid(t)
+        };
+        (0..map.height)
+            .flat_map(|y| (0..map.width).map(move |x| (x, y)))
+            .filter(|&(x, y)| rules.is_solid(map.tile_at(x, y)))
+            .filter(|&(x, y)| !DIRS.iter().any(|&(dx, dy)| standable(x + dx, y + dy)))
+            .collect()
+    }
+
+    /// Что обещано на клетке чертежом; `None` — чертежа нет.
+    fn planned_tile(&mut self, x: i32, y: i32) -> Option<i16> {
+        let mut q = self.world.query::<&Blueprint>();
+        q.iter(&self.world)
+            .find(|bp| bp.x == x && bp.y == y)
+            .map(|bp| bp.tile)
     }
 
     /// Ёмкость тайла палитры.
