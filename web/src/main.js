@@ -91,6 +91,27 @@ function itemGlyph(i, cls = "") {
     : `<i class="chip" style="background:${it.color}"></i>`;
 }
 
+/// Портрет кота (§12.109). Ключ — `sprite` из рулсета, тот же, которым красится
+/// силуэт на карте: коты в списках звались `excellent / sp2 / sp3`, и отряд
+/// набирался из трёх строк текста.
+///
+/// Сюда ушёл концепт-арт из `mockup/`, и это единственное место, где он
+/// работает: на тайле в 40 px фотореализм превращается в пятно, а в панели для
+/// него есть и место, и повод — решение о коте принимают, глядя на его строку.
+///
+/// `<img>` с постоянным `src`, а не инлайн: штаб перерисовывается **целиком
+/// каждым кадром** (§12.71), и всё остальное браузер взял бы из сети шестьдесят
+/// раз в секунду. По тому же адресу файла он отдаёт кэш.
+function portraitHtml(sprite, cls = "") {
+  if (!sprite) return "";
+  return (
+    `<img class="portrait ${cls}" src="/portraits/${encodeURIComponent(sprite)}.png" ` +
+    // Нет файла под этот `sprite` — прячем сам узел: рулсет заводит котов без
+    // спроса у вида, и битая картинка в списке хуже, чем её отсутствие.
+    `alt="" aria-hidden="true" onerror="this.hidden=true">`
+  );
+}
+
 /// Глиф тайла по индексу палитры `tiles:`. У «Пола» его нет — это фон, а не
 /// роль, — и пустая строка здесь законный ответ, а не промах.
 function tileGlyphHtml(i, cls = "") {
@@ -1390,7 +1411,12 @@ function renderCatPanel(entities) {
     return;
   }
   const defs = meta.skills ?? [];
-  const parts = [`<div class="cat-name">${esc(e.id)}</div>`];
+  const parts = [
+    '<div class="cat-head">' +
+      portraitHtml(e.sprite) +
+      `<div class="cat-name">${esc(e.id)}</div>` +
+      "</div>",
+  ];
   if (selectedUnits.length > 1) {
     parts.push(
       `<div class="cat-sub">выбрано ${selectedUnits.length}: ${selectedUnits.map(esc).join(" · ")}</div>`,
@@ -1891,12 +1917,17 @@ function crewList(snap, x, y) {
       ` data-x="${x}" data-y="${y}"${mine ? ' data-in="1"' : ""}${off ? " disabled" : ""}` +
       `${tip ? ` title="${esc(tip)}"` : ""}` +
       ">" +
+      portraitHtml(e.sprite, "crew-face") +
+      // Текст строки — отдельной колонкой рядом с портретом: сама кнопка
+      // выкладывает детей в столбик (имя, поле, причина), и портрет без обёртки
+      // встал бы над ними четвёртой строкой.
+      '<span class="crew-text">' +
       `<span class="crew-id">${esc(e.id)}${where ? `<i class="crew-at">${where}</i>` : ""}</span>` +
       fieldLine(e, led, node) +
       (note
         ? `<i class="crew-note${idle ? " bad" : ""}">${esc(note)}</i>`
         : "") +
-      "</button>";
+      "</span></button>";
     // Дежурство — вторая кнопка той же строки: бонус отряду даёт та же клетка,
     // и разводить эти два решения по разным местам панели незачем. На узле без
     // `comms` дежурить незачем, и кнопки там нет вовсе (§12.60).

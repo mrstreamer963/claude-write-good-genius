@@ -647,14 +647,25 @@ main#stage.mode-cursor #mode-banner {
 /* Имя, поле и занятие — в столбик, а не в строку: колонка штаба всё равно уже
    окна, и в строку они сжимали друг друга до многоточия разом. Имя важнее —
    оно и первое. */
+/* Строка кота в штабе: портрет слева, текст колонкой справа (§12.109). До него
+   отряд набирался из трёх строк вида `excellent / sp2 / sp3`, и решение о том,
+   кого брать в поле, принималось по идентификаторам. */
 .crew-row .crew-pick {
   flex: 1 1 auto;
   min-width: 0;
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+.crew-text {
+  display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 1px;
-  padding: 5px 8px;
-  font-size: 12px;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 .crew-id {
   max-width: 100%;
@@ -761,6 +772,37 @@ main#stage.mode-cursor #mode-banner {
   width: 100%;
   margin-top: 8px;
   justify-content: center;
+}
+
+/* Портрет (§12.109). Круглый и с рамкой — он стоит среди прямоугольных панелей
+   и плашек, и без обрезки читался бы как ещё одна карточка, а не как «вот он».
+   Размер задаёт место применения: 56 в карточке кота, 30 в строке штаба. */
+.portrait {
+  width: 56px;
+  height: 56px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #0b0d12;
+  border: 1px solid var(--line);
+}
+.portrait.crew-face {
+  width: 30px;
+  height: 30px;
+}
+
+/* Шапка карточки: портрет и имя в строку. */
+.cat-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 8px;
+}
+.cat-head .cat-name {
+  margin-bottom: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .cat-name {
