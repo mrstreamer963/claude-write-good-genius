@@ -715,6 +715,66 @@ function itemGlyphContext(i) {
   return ctx;
 }
 
+/// Связные области одного типа тайла (4-связность) — то, что игрок называет
+/// комнатой.
+///
+/// Нужны они ровно для одного: глиф роли ставится **один раз на область**, а не
+/// на каждую клетку (§12.109). По клетке он повторял информацию столько раз,
+/// сколько клеток в комнате: склад в сорок пять ячеек сообщал «склад» сорок пять
+/// раз, и карта превращалась в штриховку, из-под которой не читались ни кучи, ни
+/// коты, ни сделки. Сорок пятый ящик не говорит ничего, чего не сказал первый.
+///
+/// Счётность слотов (§12.55) при этом цела: каждую клетку по-прежнему размечают
+/// заливка и сетка, а считают их по ним, а не по значкам — сорок одинаковых
+/// значков считать как раз труднее, чем сорок пустых квадратов.
+function tileRegions() {
+  const w = meta.width;
+  const h = meta.height;
+  const seen = new Uint8Array(w * h);
+  const out = [];
+  for (let start = 0; start < w * h; start++) {
+    if (seen[start]) continue;
+    seen[start] = 1;
+    const tile = mapCells[start];
+    if (tile < 0) continue;
+    // Обход в ширину от первой невиданной клетки. Помечаем при постановке в
+    // очередь, а не при снятии: иначе клетка с двумя увиденными соседями
+    // попадёт в область дважды и сместит центр.
+    const cells = [];
+    const queue = [start];
+    let minX = w;
+    let maxX = 0;
+    let minY = h;
+    let maxY = 0;
+    while (queue.length) {
+      const at = queue.pop();
+      const x = at % w;
+      const y = (at - x) / w;
+      cells.push(at);
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      for (const [dx, dy] of [
+        [1, 0],
+        [-1, 0],
+        [0, 1],
+        [0, -1],
+      ]) {
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+        const ni = ny * w + nx;
+        if (seen[ni] || mapCells[ni] !== tile) continue;
+        seen[ni] = 1;
+        queue.push(ni);
+      }
+    }
+    out.push({ tile, cells, minX, maxX, minY, maxY });
+  }
+  return out;
+}
+
 function drawMap(map) {
   mapCells = map.cells;
   tileLayer.removeChildren();
@@ -739,22 +799,53 @@ function drawMap(map) {
   // `Graphics` на всю карту, а глифы делят контексты по типам, и мешать их в
   // одном узле нельзя. Дорого это не выходит — `drawMap` зовётся только когда
   // выросла `map_version`, а не каждый кадр (инвариант 3).
-  const size = TILE * 0.62;
-  for (let y = 0; y < meta.height; y++) {
-    for (let x = 0; x < meta.width; x++) {
-      const v = mapCells[y * meta.width + x];
-      if (v < 0) continue;
-      const ctx = tileGlyphContext(v);
-      if (!ctx) continue;
-      const node = new Graphics(ctx);
-      node.scale.set(size / 24);
-      node.x = x * TILE + (TILE - size) / 2;
-      node.y = y * TILE + (TILE - size) / 2;
-      // Приглушённо: глиф — подпись к клетке, а не её содержимое. Кучи лома,
-      // чертежи и коты рисуются поверх и обязаны читаться первыми.
-      node.alpha = 0.3;
-      tileLayer.addChild(node);
+  for (const r of tileRegions()) {
+    const ctx = tileGlyphContext(r.tile);
+    if (!ctx) continue;
+
+    // Размер — по **узкой** стороне области, а не по площади: глиф не должен
+    // вылезать за комнату, а из коридора в одну клетку шириной вылезет любой,
+    // кто мерит себя длиной. Потолок нужен затем же, зачем и пол: зал в
+    // пол-экрана получил бы значок с полэкрана.
+    const span = Math.min(r.maxX - r.minX + 1, r.maxY - r.minY + 1);
+    const size = TILE * Math.min(2.4, Math.max(0.8, span * 0.8));
+
+    // Ставим в клетку, ближайшую к центру тяжести области, а не в центр
+    // описанного прямоугольника: у комнаты буквой «Г» тот лежит снаружи, и
+    // глиф уехал бы на соседнюю комнату. Ничью разбирает номер клетки, а не
+    // порядок обхода: у симметричной комнаты равноудалённых центров бывает
+    // два-четыре, и обход — это история заливки, а не свойство карты.
+    let sx = 0;
+    let sy = 0;
+    for (const at of r.cells) {
+      const x = at % meta.width;
+      sx += x;
+      sy += (at - x) / meta.width;
     }
+    const cx = sx / r.cells.length;
+    const cy = sy / r.cells.length;
+    let best = r.cells[0];
+    let bestD = Infinity;
+    for (const at of r.cells) {
+      const x = at % meta.width;
+      const y = (at - x) / meta.width;
+      const d = (x - cx) * (x - cx) + (y - cy) * (y - cy);
+      if (d < bestD || (d === bestD && at < best)) {
+        bestD = d;
+        best = at;
+      }
+    }
+
+    const bx = best % meta.width;
+    const by = (best - bx) / meta.width;
+    const node = new Graphics(ctx);
+    node.scale.set(size / 24);
+    node.x = bx * TILE + (TILE - size) / 2;
+    node.y = by * TILE + (TILE - size) / 2;
+    // Приглушённо: глиф — подпись комнате, а не её содержимое. Кучи лома,
+    // чертежи, сделки и коты рисуются поверх и обязаны читаться первыми.
+    node.alpha = 0.22;
+    tileLayer.addChild(node);
   }
 }
 
