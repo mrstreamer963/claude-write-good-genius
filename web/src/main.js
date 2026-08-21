@@ -650,8 +650,16 @@ function layout() {
   // карта просто уезжает под панели, как уезжала всегда.
   worldScale = Math.max(1, Math.min(availW / w, availH / h));
   world.scale.set(worldScale);
-  world.x = padLeft + Math.max(0, Math.floor((availW - w * worldScale) / 2));
-  world.y = 8 + Math.max(0, Math.floor((availH - h * worldScale) / 2));
+  // Влезла — центрируем в полосе между панелями; не влезла (окно меньше карты
+  // при `TILE`, подобранном под самый маленький экран) — центрируем во всей
+  // сцене, как было до §12.109. Прижать её к тулбару значило бы свалить весь
+  // излишек под правую колонку, тогда как раньше он делился поровну.
+  const put = (drawn, pad, avail, whole) =>
+    drawn <= avail
+      ? pad + Math.floor((avail - drawn) / 2)
+      : Math.floor((whole - drawn) / 2);
+  world.x = put(w * worldScale, padLeft, availW, app.screen.width);
+  world.y = put(h * worldScale, 8, availH, app.screen.height);
 }
 app.renderer.on("resize", layout);
 
@@ -4836,9 +4844,11 @@ function buildStockWindow() {
 
     const name = document.createElement("div");
     name.className = "ware-name";
+    // Глиф рядом с подписью, а не вместо неё (§12.109): у строки склада имя
+    // есть, и значок здесь опознаёт предмет с той же скоростью, с какой он
+    // опознаётся в шапке и в ценах, — один словарь на все экраны.
     name.innerHTML =
-      `<span class="sw" style="background:${it.color}"></span>` +
-      `<span>${esc(it.label || it.id)}</span>`;
+      itemGlyph(item, "sw-glyph") + `<span>${esc(it.label || it.id)}</span>`;
     row.appendChild(name);
 
     // Числа — идиома шапки: главное и `+22` серым, без подписей. Расклад на три
@@ -5532,6 +5542,12 @@ function raidCard(i, node) {
       }</i></div>`,
   );
 
+  // Факты заказа — парами «о чём» / «что», а не сплошной строкой (§12.109).
+  // Их шесть, и склеенные через `·` они читались одним длинным предложением:
+  // формула срока, вилка состава, две цены и награда стояли в ряд без всякого
+  // признака, где кончается одна мысль и начинается другая. Ни одно слово при
+  // этом не убрано и не заменено значком — цена решения обязана быть названа
+  // словом (§12.53), — переписана только вёрстка.
   const facts = [];
   // Срок — вилкой, а не одним числом, и это ответ на «сколько это займёт» ещё
   // до набора отряда (§12.71). Считается он как «дорога + работа на лапу»,
@@ -5559,33 +5575,45 @@ function raidCard(i, node) {
   const road = `дорога ${def.travel ?? 0}`;
   if (slow != null) {
     if (work === 0) {
-      facts.push(`срок ${spanText(slow)} = ${road}, и только`);
+      facts.push(["срок", `${spanText(slow)} = ${road}, и только`]);
     } else if (empty) {
       // Отряда нет — считать не на кого, поэтому показываем медленный край и
       // помечаем его «до»: число верное (столько выйдет у минимального
       // состава), но без предлога оно читается как обещание, а это потолок.
-      facts.push(
-        `срок до ${spanText(slow)} = ${road} + работа ${work} / ${pawsWord(g.need)}`,
-      );
+      facts.push([
+        "срок",
+        `до ${spanText(slow)} = ${road} + работа ${work} / ${pawsWord(g.need)}`,
+      ]);
     } else {
-      facts.push(
-        `срок ${spanText(g.span)} = ${road} + работа ${work} / ${pawsWord(g.paws)}`,
-      );
+      facts.push([
+        "срок",
+        `${spanText(g.span)} = ${road} + работа ${work} / ${pawsWord(g.paws)}`,
+      ]);
     }
   }
-  facts.push(
+  facts.push([
+    "состав",
     g.need === g.most ? `нужно котов ${g.need}` : `котов ${g.need}—${g.most}`,
-  );
+  ]);
   // Бодрость и здоровье укрупнены вдесятеро ради ступени «Выносливости»
   // (§12.70), и сырые «−12000» не значат для игрока ничего. Долей от полной
   // шкалы — значат: шкалы он видит полосками в карточке кота. Максимум берётся
   // из самого кота, а не из второго экземпляра рулсета в JS.
-  if (def.toll) facts.push(`бодрости −${scaleText(def.toll, "energy_max")}`);
-  if (def.harm) {
-    facts.push(`раны при провале ${scaleText(def.harm, "health_max")}`);
-  }
-  if (def.fame) facts.push(`известность +${def.fame}`);
-  rows.push(`<div class="cat-sub">${facts.join(" · ")}</div>`);
+  // Обе платы — одной строкой: и бодрость, и раны это то, чем база расплатится
+  // за заказ, и разводить их по двум подписям значило бы называть одно дважды.
+  const cost = [
+    def.toll ? `бодрости −${scaleText(def.toll, "energy_max")}` : "",
+    def.harm ? `раны при провале ${scaleText(def.harm, "health_max")}` : "",
+  ].filter(Boolean);
+  if (cost.length) facts.push(["цена", cost.join(" · ")]);
+  if (def.fame) facts.push(["награда", `известность +${def.fame}`]);
+  rows.push(
+    '<div class="raid-facts">' +
+      facts
+        .map(([k, v]) => `<i>${k}</i><span>${v}</span>`)
+        .join("") +
+      "</div>",
+  );
 
   // Добыча целиком, а не обрезанная краем колонки, — ровно то, чего не было
   // видно в тулбаре. Рядом с ней доля: полную получают не всегда.
