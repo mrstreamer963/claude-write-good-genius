@@ -2017,6 +2017,18 @@ impl Sim {
         self.world.resource::<AutoRaids>().is_on(x, y)
     }
 
+    /// Почему правило узла стоит (§12.116) — ровно теми выражениями, какими это
+    /// решает `run_auto_raids`: `(сколько нужно, хватает ли готовых, в сборе
+    /// ли отряд)`. Снапшот на хосте не собрать, а панель говорит именно это.
+    fn auto_hold_at(&mut self, x: i32, y: i32) -> (usize, bool, bool) {
+        let def = self.auto_raid_at(x, y).expect("правило стоит");
+        (
+            self.auto_squad_min(def),
+            self.auto_crew_enough(x, y, def),
+            self.squad_is_fit(x, y),
+        )
+    }
+
     /// Журнал успешных вылазок: индексы миссий.
     fn raids_done(&self) -> Vec<usize> {
         self.world.resource::<Raids>().0.clone()

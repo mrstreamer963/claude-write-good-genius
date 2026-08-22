@@ -1312,3 +1312,75 @@ fn a_stealth_raid_counts_the_best_cat_not_the_sum() {
     );
 }
 
+/// **Почему правило стоит, отвечает ядро — и теми же выражениями, какими само
+/// решает, идти ли** (§12.116).
+///
+/// Правило уводит только полный отряд (§12.113), и до §12.116 это было тишиной:
+/// заказ выбран, правило «включено», а отряд стоит месяцами. Игрок, вычеркнувший
+/// одного кота, читает такое как поломку, а не как своё же решение.
+#[test]
+fn a_rule_says_why_it_holds_the_squad() {
+    let mut sim = sim_with_nodes(1);
+    let def = sim.set_mission(1, 30, &[(0, 5)]);
+    sim.set_squad_range(def, 2, 3); // заказу нужны двое
+    assert!(sim.enlist("a", 1, 2));
+    assert!(sim.enlist("b", 1, 2));
+    assert!(sim.set_auto_raid(def as i32, 1, 2));
+
+    assert_eq!(
+        sim.auto_hold_at(1, 2),
+        (2, true, true),
+        "двое в отряде — правило ничего не ждёт",
+    );
+    sim.tick_n(2);
+    assert_eq!(sim.raid_count(), 1, "и отряд ушёл");
+}
+
+/// Вычеркнули кота — правило молчит по **названной** причине: готовых меньше
+/// минимума. Чинится это решением игрока (вписать кота обратно или отправить
+/// вручную недобором), а не временем, — потому и отделено от «не в сборе».
+#[test]
+fn a_short_squad_is_named_as_the_reason() {
+    let mut sim = sim_with_nodes(1);
+    let def = sim.set_mission(1, 30, &[(0, 5)]);
+    sim.set_squad_range(def, 2, 3);
+    assert!(sim.enlist("a", 1, 2));
+    assert!(sim.set_auto_raid(def as i32, 1, 2));
+
+    assert_eq!(
+        sim.auto_hold_at(1, 2),
+        (2, false, true),
+        "в отряде один: состав в сборе, но его мало",
+    );
+    sim.tick_n(5);
+    assert_eq!(sim.raid_count(), 0, "и правило никого не увело");
+
+    // Вписали второго — и то же выражение отвечает «идём».
+    assert!(sim.enlist("b", 1, 2));
+    assert_eq!(sim.auto_hold_at(1, 2), (2, true, true));
+    sim.tick_n(2);
+    assert_eq!(sim.raid_count(), 1);
+}
+
+/// А спящий кот — это **другая** причина: состав полон, но не в сборе. Она
+/// чинится сама, временем, и путать её с недобором нельзя: игроку нечего
+/// делать, кроме как подождать.
+#[test]
+fn a_sleeping_crew_is_a_different_reason() {
+    let mut sim = sim_with_nodes(1);
+    let def = sim.set_mission(1, 30, &[(0, 5)]);
+    sim.set_squad_range(def, 2, 3);
+    assert!(sim.enlist("a", 1, 2));
+    assert!(sim.enlist("b", 1, 2));
+    assert!(sim.set_auto_raid(def as i32, 1, 2));
+    sim.set_needs(20, 100, 10); // порог усталости есть, и «b» до него дошёл
+    sim.set_energy("b", 5);
+    sim.tick();
+
+    assert_eq!(
+        sim.auto_hold_at(1, 2),
+        (2, true, false),
+        "двое числятся, но один спит",
+    );
+    assert_eq!(sim.raid_count(), 0, "и правило ждёт, а не уводит одного");
+}

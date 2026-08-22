@@ -2452,17 +2452,31 @@ impl Sim {
             // строке отряда до нажатия. Автомат принимал бы его за игрока на
             // каждом круге и гонял бы полупустые отряды — то есть решал бы то,
             // о чём его не просили. Тот же довод, что у «все на базе и целы».
-            let need = self
-                .world
-                .resource::<MissionRules>()
-                .0
-                .get(def)
-                .map_or(0, |r| r.squad);
-            if self.ready_roster_of(x, y).len() < need {
+            if !self.auto_crew_enough(x, y, def) {
                 continue;
             }
             self.launch_node(def, x, y);
         }
+    }
+
+    /// Сколько котов требует заказ — нижний край вилки (§12.70).
+    ///
+    /// Наружу едет числом (`NodeSnap::auto_need`), потому что причину простоя
+    /// правила надо назвать словом, а слово это «правило ждёт троих» (§12.116).
+    pub(crate) fn auto_squad_min(&self, def: usize) -> usize {
+        self.world
+            .resource::<MissionRules>()
+            .0
+            .get(def)
+            .map_or(0, |r| r.squad)
+    }
+
+    /// Хватает ли готовых на минимум вилки (§12.113). **Одно выражение на
+    /// правило и на снимок** (§12.116): игрок видит «ждёт троих, готов один»
+    /// ровно тогда, когда правило и правда стоит из-за этого, — второй
+    /// экземпляр сравнения однажды объяснил бы простой, которого нет.
+    pub(crate) fn auto_crew_enough(&mut self, x: i32, y: i32, def: usize) -> bool {
+        self.ready_roster_of(x, y).len() >= self.auto_squad_min(def)
     }
 
     /// Готов ли отряд узла уйти прямо сейчас: **все** на базе, целы и не спят.
@@ -2478,7 +2492,7 @@ impl Sim {
     /// него на каждом круге и гонял бы полупустые отряды — то есть делал бы
     /// выбор, которого у него не просили. Ровно поэтому правило ждёт полного
     /// состава, хотя кнопка ждать перестала.
-    fn squad_is_fit(&mut self, x: i32, y: i32) -> bool {
+    pub(crate) fn squad_is_fit(&mut self, x: i32, y: i32) -> bool {
         let hurt = self.world.resource::<HealthRules>().hurt;
         let tired = self.world.resource::<NeedRules>().tired;
         let mut q = self.world.query::<(
@@ -4081,6 +4095,14 @@ impl Sim {
                 .map(|(x, y)| {
                     let forces = self.node_forces(x, y);
                     let (shares, fails) = self.node_outcomes(x, y);
+                    // Почему правило стоит (§12.116). Два разных ответа, и
+                    // считает их ядро теми же выражениями, что и сам
+                    // `run_auto_raids`: «состав не в сборе» чинится временем,
+                    // «людей меньше минимума» — решением игрока.
+                    let auto = self.world.resource::<AutoRaids>().of(x, y);
+                    let auto_need = auto.map_or(0, |def| self.auto_squad_min(def) as i32);
+                    let auto_enough = auto.is_none_or(|def| self.auto_crew_enough(x, y, def));
+                    let auto_fit = auto.is_some() && self.squad_is_fit(x, y);
                     NodeSnap {
                         x,
                         y,
@@ -4094,12 +4116,11 @@ impl Sim {
                         fails,
                         guide: self.node_guide(x, y),
                         busy: !self.node_is_free(x, y),
-                        auto: self
-                            .world
-                            .resource::<AutoRaids>()
-                            .of(x, y)
-                            .map_or(-1, |def| def as i32),
+                        auto: auto.map_or(-1, |def| def as i32),
                         auto_on: self.world.resource::<AutoRaids>().is_on(x, y),
+                        auto_need,
+                        auto_enough,
+                        auto_fit,
                         comms: {
                             let map = self.world.resource::<BaseMap>();
                             let tiles = self.world.resource::<TileRules>();
