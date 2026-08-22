@@ -184,6 +184,10 @@ const goalsToggleEl = document.getElementById("goals-toggle");
 const finaleEl = document.getElementById("finale");
 const raidWinEl = document.getElementById("raidwin");
 const stockWinEl = document.getElementById("stockwin");
+// Реестры-окна (§12.118): «Наука» и «Найм» — списки, из которых выбирают одно
+// из многих, и в колонке тулбара они не помещались.
+const sciWinEl = document.getElementById("sciwin");
+const hireWinEl = document.getElementById("hirewin");
 const toastsEl = document.getElementById("toasts");
 const liveTipEl = document.getElementById("livetip");
 
@@ -1292,8 +1296,9 @@ function renderSnapshot(snap) {
   // уже вышел, — а строка отряда обязана гасить именно свою кнопку (§12.59).
   renderRaidsSection();
   // Штаб — после `renderMissionPanel` по той же причине: он читает `running`.
-  // Перерисовывается он каждым кадром намеренно (§12.71): цена решения меняется
+  // Синхронизируется он каждым кадром намеренно (§12.71): цена решения меняется
   // от щелчка по коту, и увидеть это игрок должен сразу, а не после закрытия.
+  // Но **синхронизируется, а не пересобирается** (§12.118) — см. `buildRaidWindow`.
   renderRaidWindow();
   renderResearchPanel(snap.research);
   renderCraftPanel(snap.crafting);
@@ -1810,7 +1815,11 @@ function tileRoles(def) {
 // тогда и вернуться.
 function cellSection(def) {
   if (!def) return null;
-  if (def.lab) return "Наука";
+  // Лаборатории здесь больше нет с §12.118: раздела «Наука» не существует, а
+  // модал по клику на карте не открывается никогда (§12.101) — он накрыл бы и
+  // карту, и саму панель клетки, то есть стёр бы ответ на вопрос, которым его
+  // и вызвали. Клетка от этого не онемела: `cellWork` говорит, какая тема тут
+  // идёт и кто за ней, — тот же исход, что у станка после §12.105.
   if (def.teaches) return "Обучение";
   if (def.gate || def.relay) return "Вылазки";
   return null;
@@ -2301,7 +2310,7 @@ function cellWork(snap, x, y, def) {
     out.push(
       topic
         ? `тема: ${esc(topicLabel(topic.def))}${topic.unit ? `, работает ${esc(topic.unit)}` : ""}`
-        : "тем нет — их берут в разделе «Наука»",
+        : "тем нет — их берут в окне «Наука»",
     );
   }
   if (def.gate) {
@@ -2892,7 +2901,7 @@ function renderTickers() {
   // причина написана красным **один раз**, а не в каждой строке. Тикеры при этом
   // остаются: курс читать по-прежнему можно, а пост игрок отстроит.
   if (!posts)
-    parts.push('<div class="warewin-warn">Нет «Торгового поста»</div>');
+    parts.push('<div class="win-warn">Нет «Торгового поста»</div>');
 
   for (const t of tickers) {
     const it = (meta.items ?? [])[t.item];
@@ -3787,6 +3796,14 @@ window.addEventListener("keydown", (e) => {
       closeStockWindow();
       return;
     }
+    if (sciWinOpen) {
+      closeSciWindow();
+      return;
+    }
+    if (hireWinOpen) {
+      closeHireWindow();
+      return;
+    }
     if (raidWinAt) {
       closeRaidWindow();
       return;
@@ -3945,6 +3962,26 @@ function buildToolbar() {
   ware.title = "Что есть на базе, почём его берут и какие правила это двигают";
   el.appendChild(ware);
 
+  // Ещё две двери, по тому же доводу (§12.118): реестр живёт окном, инструмент
+  // — разделом. Раздел из одной кнопки был бы лишним кликом, а выбирать в нём
+  // нечего: и наука, и найм на базе одни.
+  if ((meta.research ?? []).length) {
+    const sci = mkTool(
+      '<span class="sw sw-lab"></span><span>Наука</span>',
+      () => openSciWindow(),
+    );
+    sci.title = "За какую тему взяться и чего для этого не хватает";
+    el.appendChild(sci);
+  }
+  if ((meta.recruits ?? []).length) {
+    const hire = mkTool(
+      '<span class="sw sw-hire"></span><span>Найм</span>',
+      () => openHireWindow(),
+    );
+    hire.title = "Кто откликнется на известность базы и чего он стоит";
+    el.appendChild(hire);
+  }
+
   const build = mkSection(el, "Постройка");
 
   tileButtons.length = 0;
@@ -4057,24 +4094,10 @@ function buildToolbar() {
     renderRaidsSection();
   }
 
-  // Наука. Тема — разметка работы, как чертёж: кота не выбираем (§12.26).
-  // Цена теми же фишками, что у тайлов и найма: образцы — обычный предмет.
-  const topics = meta.research ?? [];
-  if (topics.length) {
-    const science = mkSection(el, "Наука");
-
-    topicButtons.length = 0;
-    topics.forEach((r, i) => {
-      const b = mkTool(
-        `<span class="sw sw-lab"></span><span>${esc(r.label || r.id)}</span>${costChips(r.cost)}`,
-        () => sendAction({ type: "research", topic: i }),
-      );
-      b.classList.add("toggle");
-      b.dataset.level = r.level ?? 0;
-      topicButtons.push(b);
-      science.appendChild(b);
-    });
-  }
+  // Разделов «Наука» и «Найм» здесь нет с §12.118: оба переехали в окна, как
+  // раздел «Производство» до них (§12.105). Реестр — список, из которого
+  // выбирают одно из многих, и колонка тулбара для него слишком узка: строка
+  // сжимается до многоточия, а метка «вот это новое» уезжает за пределы вида.
 
   // Раздела «Производство» здесь нет с §12.105: заказ переехал в строку предмета
   // окна «Склад», к своему порогу «делать до N». Правило и разовый заказ — одно
@@ -4115,28 +4138,6 @@ function buildToolbar() {
       school.appendChild(b);
     }
     syncTeachButtons();
-  }
-
-  // Найм. Кандидаты уникальны (§4.2): каждый приходит один раз, известность
-  // открывает, а платит склад — цена теми же фишками, что и у тайлов (§12.24).
-  const recruits = meta.recruits ?? [];
-  if (recruits.length) {
-    const hire = mkSection(el, "Найм");
-
-    recruitButtons.length = 0;
-    recruits.forEach((r, i) => {
-      const b = mkTool(
-        `<span class="sw sw-hire"></span><span>${esc(r.label || r.id)}</span>${costChips(r.cost)}`,
-        () => sendAction({ type: "hire", recruit: i }),
-      );
-      b.classList.add("toggle");
-      b.dataset.requires = r.requires ?? 0;
-      // Врождённое кандидата — это и есть то, ради чего на него смотрят
-      // (§12.42): опыт база доберёт работой, а предел даётся раз и навсегда.
-      b.dataset.hint = statsHint(r.stats);
-      recruitButtons.push(b);
-      hire.appendChild(b);
-    });
   }
 
   // Партия (§12.45). Автосохранение идёт само и молча, поэтому здесь только
@@ -4397,14 +4398,6 @@ function payHint(cost) {
   return short.join(" · ");
 }
 
-// Раздел, в котором не осталось ни одной живой кнопки, прячется целиком (§12.94):
-// пустой заголовок обещает выбор, которого нет.
-function syncSectionRows(title, buttons) {
-  const sec = sections.find((s) => s.title === title);
-  if (!sec) return;
-  sec.head.parentElement.hidden = buttons.every((b) => b.hidden);
-}
-
 // Доступность кандидата считает ядро (известность + содержимое склада), здесь
 // только показываем: дублировать правило в JS значит однажды показать кнопку,
 // которую ядро отклонит.
@@ -4437,7 +4430,6 @@ function syncRecruitButtons(list) {
     // «зачем мне этот кот» игрок спрашивает до того, как накопит.
     b.title = [b.dataset.hint, why].filter(Boolean).join(" · ");
   });
-  syncSectionRows("Найм", recruitButtons);
 }
 
 // Кнопка живая, только когда выделено ровно столько котов, сколько уходит:
@@ -4479,7 +4471,6 @@ function syncTopicButtons(list) {
                 ? "Тема уже изучается"
                 : "Взяться за тему";
   });
-  syncSectionRows("Наука", topicButtons);
 }
 
 // Число порога, которое **правится на месте** (§12.92): клик по нему — и это
@@ -4998,6 +4989,121 @@ function scaleText(value, field) {
   return max > 0 ? `${Math.round((value / max) * 100)} %` : `${value}`;
 }
 
+// --- каркас модального окна (§12.118) ---------------------------------------
+//
+// Рамка одна на все реестры: коробка, шапка с заголовком и «Закрыть», тело со
+// своей прокруткой. Обобщена **только рамка** — содержимое у окон разное, и
+// сводить его к общему знаменателю значило бы заводить конструктор окон вместо
+// трёх честных списков.
+//
+// ⚠️ Окно с прокруткой **не перерисовывается** (§12.118): рамка и строки живут
+// от открытия до закрытия, а меняются на месте.
+function mkWindow(el, title, onClose, narrow) {
+  el.innerHTML = "";
+  const box = document.createElement("div");
+  box.className = "win-box" + (narrow ? " narrow" : "");
+  const top = document.createElement("div");
+  top.className = "win-top";
+  top.innerHTML = `<div class="win-title">${esc(title)}</div>`;
+  const close = mkTool("Закрыть", onClose);
+  close.className = "tool win-close";
+  top.appendChild(close);
+  box.appendChild(top);
+  const list = document.createElement("div");
+  list.className = "win-list";
+  box.appendChild(list);
+  el.appendChild(box);
+  // Клик по затемнению — тот же выход, что и Escape: окно модальное, и промах
+  // мимо него это почти всегда «хватит». Вешаем на само окно один раз за
+  // открытие — узел затемнения и есть `el`.
+  el.onmousedown = (e) => {
+    if (e.target === el) onClose();
+  };
+  return { box, top, close, list };
+}
+
+// --- окно «Наука» (§12.118) -------------------------------------------------
+//
+// Тема — разметка работы, как чертёж: кота не выбираем (§12.26). Цена теми же
+// фишками, что у тайлов и найма: образцы — обычный предмет.
+//
+// Разделом тулбара это быть перестало: двадцать пять тем в колонке шириной
+// 190px нечитаемы физически, а у темы есть что показать — цена образцами,
+// допуск по «Науке», нужна ли лаборатория. Прецедент тот же, что у §12.105:
+// раздел «Производство» ушёл целиком, и клетка станка не онемела.
+let sciWinOpen = false;
+
+function openSciWindow() {
+  if (sciWinOpen) return;
+  sciWinOpen = true;
+  buildSciWindow();
+  syncTopicButtons(lastSnap?.topics);
+  sciWinEl.hidden = false;
+}
+
+function closeSciWindow() {
+  if (!sciWinOpen) return;
+  sciWinOpen = false;
+  topicButtons.length = 0;
+  sciWinEl.hidden = true;
+  sciWinEl.innerHTML = "";
+}
+
+function buildSciWindow() {
+  const { list } = mkWindow(sciWinEl, "Наука", () => closeSciWindow(), true);
+  topicButtons.length = 0;
+  (meta.research ?? []).forEach((r, i) => {
+    const b = mkTool(
+      `<span class="sw sw-lab"></span><span>${esc(r.label || r.id)}</span>${costChips(r.cost)}`,
+      () => sendAction({ type: "research", topic: i }),
+    );
+    b.classList.add("toggle");
+    b.dataset.level = r.level ?? 0;
+    topicButtons.push(b);
+    list.appendChild(b);
+  });
+}
+
+// --- окно «Найм» (§12.118) --------------------------------------------------
+//
+// Кандидаты уникальны (§4.2): каждый приходит один раз, известность открывает,
+// а платит склад — цена теми же фишками, что и у тайлов (§12.24).
+let hireWinOpen = false;
+
+function openHireWindow() {
+  if (hireWinOpen) return;
+  hireWinOpen = true;
+  buildHireWindow();
+  syncRecruitButtons(lastSnap?.recruits);
+  hireWinEl.hidden = false;
+}
+
+function closeHireWindow() {
+  if (!hireWinOpen) return;
+  hireWinOpen = false;
+  recruitButtons.length = 0;
+  hireWinEl.hidden = true;
+  hireWinEl.innerHTML = "";
+}
+
+function buildHireWindow() {
+  const { list } = mkWindow(hireWinEl, "Найм", () => closeHireWindow(), true);
+  recruitButtons.length = 0;
+  (meta.recruits ?? []).forEach((r, i) => {
+    const b = mkTool(
+      `<span class="sw sw-hire"></span><span>${esc(r.label || r.id)}</span>${costChips(r.cost)}`,
+      () => sendAction({ type: "hire", recruit: i }),
+    );
+    b.classList.add("toggle");
+    b.dataset.requires = r.requires ?? 0;
+    // Врождённое кандидата — это и есть то, ради чего на него смотрят (§12.42):
+    // опыт база доберёт работой, а предел даётся раз и навсегда.
+    b.dataset.hint = statsHint(r.stats);
+    recruitButtons.push(b);
+    list.appendChild(b);
+  });
+}
+
 // --- окно «Склад» (§12.100) -------------------------------------------------
 //
 // Всё имущество базы, курсы всех сторон и оба порога — одной таблицей: строка
@@ -5114,11 +5220,13 @@ function buildStockWindow() {
   tradeButtons.length = 0;
   stockWinEl.innerHTML = "";
 
-  const box = document.createElement("div");
-  box.className = "warewin-box";
-  const top = document.createElement("div");
-  top.className = "warewin-top";
-  top.innerHTML = '<div class="warewin-title">Склад</div>';
+  // Рамка — общая на все реестры (§12.118); своё у склада начинается со сводки.
+  const { box, top, close, list } = mkWindow(
+    stockWinEl,
+    "Склад",
+    () => closeStockWindow(),
+    false,
+  );
 
   // Что делается прямо сейчас (§12.107) — **в одну линию с заголовком**: оранжевым
   // называется само окно, а серым рядом идёт то, что в нём происходит. Своей
@@ -5130,28 +5238,18 @@ function buildStockWindow() {
   // окна кликом по карте. Без неё клик по «Произвести» не отвечает ничем:
   // запас в строке вырастет через сотни тиков.
   busyEl = document.createElement("div");
-  busyEl.className = "warewin-busy";
+  busyEl.className = "win-busy";
   busyEl.hidden = true;
   // Подсказка у неё **живая** (`liveTitle`, а не `title`): числа в ней тикают
   // каждым кадром, а нативную подсказку браузер рисует один раз при показе.
   bindLiveTip(busyEl);
-  top.appendChild(busyEl);
-
-  const close = mkTool("Закрыть", () => closeStockWindow());
-  close.className = "tool warewin-close";
-  top.appendChild(close);
-  box.appendChild(top);
+  top.insertBefore(busyEl, close);
 
   // Предупреждения — одной строкой на всё окно, а не по строке на предмет:
   // «нет торгового поста» шесть раз подряд это не шесть новостей (§12.80).
   warnEl = document.createElement("div");
-  warnEl.className = "warewin-warn";
-  box.appendChild(warnEl);
-
-  const list = document.createElement("div");
-  list.className = "warewin-list";
-  box.appendChild(list);
-  stockWinEl.appendChild(box);
+  warnEl.className = "win-warn";
+  box.insertBefore(warnEl, list);
 
   (meta.items ?? []).forEach((it, item) => {
     const sides = sidesOf(item);
@@ -5878,7 +5976,7 @@ function syncStockWindow() {
 // разметку: строка переживает переезд вместе со слушателями, набором в поле и
 // удержанием кнопки, а `innerHTML` убил бы всё это (§12.84).
 function orderWareRows() {
-  const list = stockWinEl.querySelector(".warewin-list");
+  const list = stockWinEl.querySelector(".win-list");
   if (!list) return;
   const want = [...wareRows].sort((a, b) => {
     const fa = favorites.includes(a.item) ? 0 : 1;

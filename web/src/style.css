@@ -1580,7 +1580,9 @@ main#stage.mode-cursor #mode-banner {
    проекте, и выглядеть иначе ему незачем. А вот **внутри** идиома
    противоположная: штаб перерисовывается целиком, а склад строится один раз и
    синхронизируется на месте, потому что в нём живут поля порогов. */
-#stockwin {
+#stockwin,
+#sciwin,
+#hirewin {
   position: fixed;
   inset: 0;
   display: flex;
@@ -1590,10 +1592,12 @@ main#stage.mode-cursor #mode-banner {
   backdrop-filter: blur(3px);
   z-index: 11;
 }
-#stockwin[hidden] {
+#stockwin[hidden],
+#sciwin[hidden],
+#hirewin[hidden] {
   display: none;
 }
-.warewin-box {
+.win-box {
   display: flex;
   flex-direction: column;
   width: min(1180px, calc(100vw - 60px));
@@ -1603,25 +1607,37 @@ main#stage.mode-cursor #mode-banner {
   border: 1px solid var(--accent);
   border-radius: 12px;
 }
-.warewin-top {
+.win-top {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
 }
-.warewin-title {
+.win-title {
   flex: 0 0 auto;
   color: var(--accent);
   font-size: 17px;
   font-weight: 600;
 }
-.warewin-close {
+.win-close {
   flex: 0 0 auto;
 }
 /* `flex: 1 1 auto` вместе с `min-height: 0` нужны оба — см. `.raidwin-body`:
    без первого список растёт по содержимому и вылезает за коробку, без второго
    флекс-элемент не даёт себя сжать, и прокручиваться нечему. */
-.warewin-list {
+/* Реестр (§12.118) — список строк-кнопок, а не таблица: колонок в нём нет, и
+   растягивать его на всю ширину склада значило бы разгонять название темы и
+   цену по разным краям экрана. */
+.win-box.narrow {
+  width: min(560px, calc(100vw - 60px));
+}
+.win-box.narrow .win-list {
+  gap: 6px;
+}
+.win-box.narrow .win-list .tool {
+  justify-content: flex-start;
+}
+.win-list {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
@@ -1892,12 +1908,12 @@ main#stage.mode-cursor #mode-banner {
 /* Красная строка в шапке окна «Склад»: чего базе не хватает, чтобы показанное
    работало (§12.100). Красным — потому что это не свойство мира, а нехватка,
    которую чинит стройка; то, чего нет по технологии, не пишется вовсе. */
-.warewin-warn {
+.win-warn {
   margin-top: 8px;
   color: var(--bad);
   font-size: 12px;
 }
-.warewin-warn[hidden] {
+.win-warn[hidden] {
   display: none;
 }
 /* Что делается прямо сейчас (§12.107) — в одной линии с заголовком, сразу за
@@ -1905,7 +1921,7 @@ main#stage.mode-cursor #mode-banner {
    `margin-right: auto` держит «Закрыть» у правого края, а не тянет сводку к
    нему. Одной строкой с многоточием: рецептов бывает шесть, а перенос растил
    бы шапку и двигал таблицу на каждом закрывшемся заказе. */
-.warewin-busy {
+.win-busy {
   min-width: 0;
   margin-right: auto;
   color: var(--muted);
@@ -1914,7 +1930,7 @@ main#stage.mode-cursor #mode-banner {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.warewin-busy[hidden] {
+.win-busy[hidden] {
   display: none;
 }
 /* Снять тикер — в самой строке ленты, справа от курса. Приглушён: это выход, а
