@@ -4606,8 +4606,8 @@ function tearing(item, sides) {
 // Отправить правило излишка выбранному адресату (§12.115). Одна команда на два
 // адресата — потому что и слот в ядре один: `setSalvage` стирает продажу, а
 // `setSale` стирает разбор, как смена покупателя стирает прежнего.
-function sendSurplus(item, sides, keep) {
-  if (tearing(item, sides)) {
+function sendSurplus(item, sides, keep, tear = tearing(item, sides)) {
+  if (tear) {
     sendAction({ type: "setSalvage", item, keep });
   } else {
     sendAction({ type: "setSale", faction: sideOf(item, sides), item, keep });
@@ -5323,9 +5323,16 @@ function buildStockWindow() {
           // правку, не записывая её прежнему.
           const typed = numPending(key);
           endNumEdit(false);
-          surplusMode.set(item, tearing(item, sides) ? "sale" : "salvage");
+          // ⚠️ Куда переключаем, считаем **один раз и явно**, и с этим же
+          // ответом шлём команду. Пересчитать его внутри `sendSurplus` нельзя:
+          // `tearing` спрашивает сперва **действующее правило** (ядро —
+          // источник правды, §12.100), а оно на этот миг ещё старое, — и
+          // команда уходила бы прежнему адресату. Со стоящим правилом это
+          // выглядело как намертво мёртвая кнопка: клик есть, ответа нет.
+          const tear = !tearing(item, sides);
+          surplusMode.set(item, tear ? "salvage" : "sale");
           const keep = typed ?? saleOf(item)?.keep ?? 0;
-          if (keep > 0) sendSurplus(item, sides, keep);
+          if (keep > 0) sendSurplus(item, sides, keep, tear);
           syncStockWindow();
         });
         dest.classList.add("toggle", "ware-dest");
@@ -5760,11 +5767,19 @@ function syncStockWindow() {
       }
       if (r.sale.dest) {
         r.sale.dest.classList.toggle("on", tears);
-        r.sale.dest.title = tears
-          ? `Излишек уходит в мастерскую, на разбор. Клик — отдать его на ` +
-            `продажу «${fac?.label ?? "?"}»`
-          : `Излишек уходит на продажу «${fac?.label ?? "?"}». Клик — отдать ` +
-            `его в мастерскую, на разбор`;
+        // Ворота **другой** стороны: переключение при стоящем правиле — это
+        // команда, и ядро откажет ей по своей технологии (§12.93). Пока правила
+        // нет, переключать можно всегда: это ещё не решение, а прицел.
+        const otherGate = tears ? saleGate : autoGateHint("crafting");
+        const stuck = keep > 0 && !!otherGate;
+        r.sale.dest.classList.toggle("off", stuck);
+        r.sale.dest.title = stuck
+          ? otherGate
+          : tears
+            ? `Излишек уходит в мастерскую, на разбор. Клик — отдать его на ` +
+              `продажу «${fac?.label ?? "?"}»`
+            : `Излишек уходит на продажу «${fac?.label ?? "?"}». Клик — отдать ` +
+              `его в мастерскую, на разбор`;
       }
       const open = tears ? canScrap : canSell;
       r.sale.line.classList.toggle("on", keep > 0 && open);
