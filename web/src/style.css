@@ -106,6 +106,13 @@ header {
   gap: 3px;
 }
 
+/* Ничего не отмечено `★` — на месте чисел стоит причина словом (§12.112).
+   Приглушённо и без глифа: это не ресурс с нулём, а пустой отбор. */
+.stock.off {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .stock u {
   color: var(--muted);
   text-decoration: none;
