@@ -133,9 +133,30 @@ const scrapEl = document.getElementById("scrap");
 // Фишки склада в шапке — дверь в окно «Склад» (§12.100): числа уже стоят здесь,
 // а окно это их подробность. Отдельной кнопки для этого не заводим — она стояла
 // бы вплотную к тому, что и так про склад.
+//
+// ⚠️ Ловится это парой `mousedown`/`mouseup`, а **не** `click`, — пятое лицо тех
+// же граблей, что `onPanelClick` и `syncTeachButtons` (§12.84). Содержимое шапки
+// переписывается `innerHTML` каждым снапшотом (~16 мс), а клик человека длится
+// сотни миллисекунд: нажатие приходится на один `<span>`, отпускание — на
+// другой, уже несуществующий. Chrome в этом случае отдаёт `click` живому предку
+// (самому `#scrap`), Firefox не отдаёт **никому**, и дверь в склад молча
+// исчезала. Семантика клика цела: нажал на числах, увёл курсор, отпустил в
+// стороне — ничего не произошло.
 scrapEl.style.cursor = "pointer";
 scrapEl.title = "Открыть склад";
-scrapEl.addEventListener("click", () => openStockWindow());
+let scrapArmed = false;
+scrapEl.addEventListener("mousedown", () => {
+  scrapArmed = true;
+});
+scrapEl.addEventListener("mouseup", () => {
+  if (scrapArmed) openStockWindow();
+  scrapArmed = false;
+});
+// Отпустили не над шапкой — взвод снимаем: иначе следующее отпускание над ней,
+// уже без нажатия, откроет окно.
+window.addEventListener("mouseup", () => {
+  scrapArmed = false;
+});
 const catEl = document.getElementById("cat");
 const cellEl = document.getElementById("cell");
 // ⚠️ Панель клетки перерисовывается каждым снапшотом целиком, поэтому её
