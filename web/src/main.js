@@ -475,7 +475,7 @@ let nodes = [];
 let raidWinAt = null;
 // Разметка окна с прошлого кадра: заменять её, когда она не изменилась, значит
 // каждым кадром отматывать прокрутку в ноль (§12.71).
-let raidWinHtml = "";
+let raidUi = null;
 // Последний снапшот целиком: штаб перерисовывается каждым кадром и читает из
 // него состав базы (`entities`), как это делает панель клетки.
 let lastSnap = null;
@@ -2138,14 +2138,13 @@ function crewList(snap, x, y) {
     // Дежурство — вторая кнопка той же строки: бонус отряду даёт та же клетка,
     // и разводить эти два решения по разным местам панели незачем. На узле без
     // `comms` дежурить незачем, и кнопки там нет вовсе (§12.60).
-    if (!node?.comms)
-      return { band, html: `<div class="crew-row">${pick}</div>` };
+    if (!node?.comms) return { band, id: e.id, html: pick };
     const on = e.post_x === x && e.post_y === y;
     const duty =
       `<button class="tool crew-duty${on ? " on" : ""}" data-id="${esc(e.id)}"` +
       ` data-x="${x}" data-y="${y}"${on ? ' data-in="1"' : ""}` +
       ` title="${on ? "Снять приписку к рации" : "Приписать к рации: сядет на связь, как освободится"}">📻</button>`;
-    return { band, html: `<div class="crew-row">${pick}${duty}</div>` };
+    return { band, id: e.id, html: pick + duty };
   });
 
   // Четыре группы с подписями. Вопрос «почему сила 0, когда в отряде трое»
@@ -2177,10 +2176,7 @@ function crewList(snap, x, y) {
     if (last?.head === heads[band]) last.rows.push(...group);
     else groups.push({ head: heads[band], rows: [...group] });
   }
-  return groups.flatMap((g) => [
-    `<div class="cat-sub crew-head">${g.head} · ${g.rows.length}</div>`,
-    `<div class="crew-list">${g.rows.map((r) => r.html).join("")}</div>`,
-  ]);
+  return groups;
 }
 
 // Каков кот в поле — одной строкой под именем (§12.71). Строка широкая и живёт
@@ -5896,14 +5892,94 @@ function orderWareRows() {
 
 function openRaidWindow(x, y) {
   raidWinAt = { x, y };
+  raidUi = null;
   renderRaidWindow();
 }
 
 function closeRaidWindow() {
   raidWinAt = null;
-  raidWinHtml = "";
+  raidUi = null;
   raidWinEl.hidden = true;
   raidWinEl.innerHTML = "";
+}
+
+// ⚠️ **Окно строится один раз и дальше синхронизируется на месте** (§12.118) —
+// идиома склада (§12.100), а не та, что была у штаба до неё.
+//
+// До §12.118 окно собиралось одной строкой и целиком присваивалось в
+// `innerHTML` каждым снапшотом. С двумя-тремя заказами это сходило с рук, но
+// колонка заказов **прокручивается**, и на длинном списке вылезло всё сразу:
+//
+// * `innerHTML` заменяет узлы вместе с их `scrollTop` — прокрутку отматывало в
+//   ноль, а захват полосы мышью срывало;
+// * пересозданная карточка съедает клик — третьи грабли §12.84: `mousedown`
+//   пришёлся на одну кнопку, `mouseup` на другую, уже несуществующую, и `click`
+//   браузер не выдаёт **вовсе**.
+//
+// Лечения «сравнить всю разметку и вернуть `scrollTop`» не хватило, и не могло
+// хватить: сравнивалось **окно целиком**, а левая колонка меняется постоянно
+// (коты спят, устают, идут, ранятся) — значит правую перестраивало чужое
+// шевеление; да и позицию оно спасало, а клик нет.
+//
+// Поэтому разметка присваивается **мелкими кусками и только на изменении**
+// (`setHtml`), а прокручиваемые колонки не заменяются никогда: у карточки
+// заказа свой узел на весь срок окна, у строки состава — свой, и переставляются
+// они **узлами**, как `orderWareRows` в складе.
+//
+// Смена вкладки узла — это открытие другого окна: там меняется всё, вплоть до
+// `data-x`/`data-y` на кнопках, и пересборка каркаса законна.
+function buildRaidWindow() {
+  raidWinEl.innerHTML =
+    '<div class="raidwin-box">' +
+    '<div class="raidwin-top">' +
+    '<div class="raidwin-title"></div>' +
+    '<button class="tool raidwin-close" data-key="close">Закрыть</button>' +
+    "</div>" +
+    '<div class="raidwin-tabs" hidden></div>' +
+    '<div class="raidwin-body">' +
+    '<div class="raidwin-col raidwin-crew">' +
+    '<div class="raidwin-h">Кто идёт</div>' +
+    '<div class="raidwin-sum"></div>' +
+    '<div class="crew-groups"></div>' +
+    "</div>" +
+    '<div class="raidwin-col raidwin-jobs">' +
+    '<div class="raidwin-h">Заказы</div>' +
+    '<div class="raid-rules"></div>' +
+    '<div class="raid-cards"></div>' +
+    "</div>" +
+    "</div>" +
+    "</div>";
+  const q = (sel) => raidWinEl.querySelector(sel);
+  raidUi = {
+    at: `${raidWinAt.x},${raidWinAt.y}`,
+    title: q(".raidwin-title"),
+    tabs: q(".raidwin-tabs"),
+    sum: q(".raidwin-sum"),
+    crew: q(".crew-groups"),
+    rule: q(".raid-rules"),
+    cards: q(".raid-cards"),
+    // Ключ карточки — индекс заказа (или `busy` у идущей вылазки), ключ строки
+    // состава — id кота: и то и другое переживает кадр, поэтому кнопка под
+    // курсором остаётся той же кнопкой.
+    cardEls: new Map(),
+    crewEls: new Map(),
+  };
+}
+
+// Присваиваем разметку **только когда она изменилась**. Большую часть кадров
+// карточка заказа совпадает дословно, и тогда её узлы никто не трогает — а
+// значит клик по ней доходит целиком.
+function setHtml(el, html) {
+  if (el && el.innerHTML !== html) el.innerHTML = html;
+}
+
+// Порядок детей — перестановкой **узлов**, а не пересборкой разметки: узел
+// переживает переезд вместе со слушателями и наведённой подсказкой (§12.84).
+// Дословно `orderWareRows` у склада.
+function orderChildren(box, want) {
+  const now = box.children;
+  if (want.length === now.length && want.every((w, i) => now[i] === w)) return;
+  for (const w of want) box.appendChild(w);
 }
 
 function renderRaidWindow() {
@@ -5915,43 +5991,64 @@ function renderRaidWindow() {
     closeRaidWindow();
     return;
   }
+  if (!raidUi || raidUi.at !== `${node.x},${node.y}`) buildRaidWindow();
   const n = nodes.indexOf(node);
-  const defs = meta.missions ?? [];
   const raid = missionsOut.find(
     (m) => m.node_x === node.x && m.node_y === node.y,
+  );
+
+  setHtml(
+    raidUi.title,
+    `Отряд ${n + 1}<span class="cell-at">рация ${node.x}, ${node.y}</span>`,
   );
 
   // Вкладки узлов: перекинуть кота с отряда на отряд — это одно решение, и
   // закрывать ради него окно незачем. При единственном узле вкладок нет.
   const tabs =
     nodes.length > 1
-      ? '<div class="raidwin-tabs">' +
-        nodes
+      ? nodes
           .map(
             (o, i) =>
               `<button class="tool raidwin-tab${o === node ? " on" : ""}"` +
               ` data-key="tab@${o.x},${o.y}" data-x="${o.x}" data-y="${o.y}">` +
               `Отряд ${i + 1}${o.busy ? " · в поле" : ""}</button>`,
           )
-          .join("") +
-        "</div>"
+          .join("")
       : "";
+  raidUi.tabs.hidden = !tabs;
+  setHtml(raidUi.tabs, tabs);
 
-  // Шапка отряда: сила, состав и проводник — те самые числа, которые крутит
-  // список слева. Сила без заказа ничего не значит, поэтому рядом с ней сразу
-  // стоит, из чего она сложилась.
-  const paws = node.ready?.length ?? 0;
-  const parts = node.ready.map(
-    (id, i) => `${esc(id)}&nbsp;+${node.forces?.[i] ?? 0}`,
+  setHtml(raidUi.sum, summaryHtml(raid, node));
+  syncCrewRows(node);
+
+  // Правило узла — строкой **над** списком, а не первой карточкой в нём.
+  // Порядок заказов это лестница сложности (индекс в палитре = ступень), и
+  // вытащенная наверх карточка ломает и её чтение, и позиционную память —
+  // причём ровно та карточка, про которую уже всё решено. Со строкой видно то
+  // же самое, а список цел. У занятого узла её не дублируем: там правило стоит
+  // кнопкой в самой карточке (`busyCard`).
+  setHtml(
+    raidUi.rule,
+    !raid && node.auto >= 0 ? ruleRow(node, `${node.x},${node.y}`) : "",
   );
-  // Пока отряд в поле, узел прогноза не считает: `ready` — это «кто готов идти
-  // **сейчас**», а ушедшие все `away`, и шапка честно показала бы «сила 0, идут
-  // 0 из 3». Честно — и бесполезно: игрок смотрит сюда, чтобы узнать, чем
-  // кончится идущая вылазка, а не сколько лап осталось дома. Поэтому у ушедшего
-  // отряда шапку заполняет сама вылазка (`MissionSnap`) — теми же числами,
-  // какими её считает панель справа, из того же `outcome` (инвариант 14).
-  const summary = raid?.away
-    ? '<div class="raidwin-sum">' +
+
+  syncRaidCards(raid, node);
+  raidWinEl.hidden = false;
+}
+
+// Шапка отряда: сила, состав и проводник — те самые числа, которые крутит
+// список слева. Сила без заказа ничего не значит, поэтому рядом с ней сразу
+// стоит, из чего она сложилась.
+//
+// Пока отряд в поле, узел прогноза не считает: `ready` — это «кто готов идти
+// **сейчас**», а ушедшие все `away`, и шапка честно показала бы «сила 0, идут
+// 0 из 3». Честно — и бесполезно: игрок смотрит сюда, чтобы узнать, чем
+// кончится идущая вылазка, а не сколько лап осталось дома. Поэтому у ушедшего
+// отряда шапку заполняет сама вылазка (`MissionSnap`) — теми же числами,
+// какими её считает панель справа, из того же `outcome` (инвариант 14).
+function summaryHtml(raid, node) {
+  if (raid?.away) {
+    return (
       `<div class="raidwin-force"><b>${raid.strength}</b><span>сила отряда</span></div>` +
       '<div class="raidwin-sumtext">' +
       `<div>в поле · вернутся через ${raid.left}${
@@ -5961,79 +6058,105 @@ function renderRaidWindow() {
         [...raid.squad.map(esc), ...commsPart(raid, node)].join(" · ") ||
         "в отряде никого"
       }</div>` +
-      "</div></div>"
-    : '<div class="raidwin-sum">' +
-      `<div class="raidwin-force"><b>${node.force ?? 0}</b><span>сила отряда</span></div>` +
-      '<div class="raidwin-sumtext">' +
-      `<div>идут ${paws} из ${node.crew.length}${
-        node.guide ? ` · ведёт ${esc(node.guide)}` : " · проводника нет"
-      }</div>` +
-      `<div class="cat-sub">${parts.join(" · ") || "в отряде никого"}</div>` +
-      "</div></div>";
-
-  const left =
-    '<div class="raidwin-col raidwin-crew">' +
-    '<div class="raidwin-h">Кто идёт</div>' +
-    summary +
-    crewList(lastSnap, node.x, node.y).join("") +
-    "</div>";
-
-  // Правило узла — строкой **над** списком, а не первой карточкой в нём.
-  // Порядок заказов это лестница сложности (индекс в палитре = ступень), и
-  // вытащенная наверх карточка ломает и её чтение, и позиционную память —
-  // причём ровно та карточка, про которую уже всё решено. Со строкой видно то
-  // же самое, а список цел. У занятого узла её не дублируем: там правило стоит
-  // кнопкой в самой карточке (`busyCard`).
-  const rule =
-    !raid && node.auto >= 0 ? ruleRow(node, `${node.x},${node.y}`) : "";
-
-  const cards = raid
-    ? busyCard(raid, node)
-    : defs.map((_, i) => (hiddenRaid(i) ? "" : raidCard(i, node))).join("");
-  // Пустая колонка читается как поломка окна, а не как «пока нечего» (§12.79):
-  // с сокрытием по известности список впервые в принципе умеет опустеть. В
-  // боевом рулсете этого не бывает — первая ступень открыта всем (`requires: 0`),
-  // и это стережёт `the_shipped_ruleset_*`, — но синтетический контент такое
-  // допускает, и молчать здесь нельзя.
-  const nothing =
-    '<div class="cat-sub">заказов пока нет — первый откроет известность</div>';
-
-  const right =
-    '<div class="raidwin-col raidwin-jobs">' +
-    '<div class="raidwin-h">Заказы</div>' +
-    rule +
-    (cards || nothing) +
-    "</div>";
-
-  const html =
-    '<div class="raidwin-box">' +
-    '<div class="raidwin-top">' +
-    `<div class="raidwin-title">Отряд ${n + 1}<span class="cell-at">рация ${node.x}, ${node.y}</span></div>` +
-    '<button class="tool raidwin-close" data-key="close">Закрыть</button>' +
-    "</div>" +
-    tabs +
-    `<div class="raidwin-body">${left}${right}</div>` +
-    "</div>";
-
-  // Окно перерисовывается каждым снапшотом, а `innerHTML` заменяет узлы вместе
-  // с их `scrollTop` — то есть шестьдесят раз в секунду отматывает прокрутку в
-  // ноль. Полоса при этом видна и таскается мышью, а колесо «не работает»:
-  // прокрутка происходит и тут же откатывается. Ровно этим списки в панелях
-  // отличаются от списка в окне — те короткие и не прокручиваются вовсе.
-  //
-  // Лечим двумя мерами, и нужны обе. Первая: не трогаем разметку, пока она не
-  // изменилась, — большую часть кадров она совпадает дословно. Вторая: когда
-  // изменилась (у идущей вылазки тикает таймер), возвращаем прокрутку по месту.
-  if (html === raidWinHtml) return;
-  const tops = [...raidWinEl.querySelectorAll(".raidwin-col")].map(
-    (c) => c.scrollTop,
+      "</div>"
+    );
+  }
+  const paws = node.ready?.length ?? 0;
+  const parts = node.ready.map(
+    (id, i) => `${esc(id)}&nbsp;+${node.forces?.[i] ?? 0}`,
   );
-  raidWinHtml = html;
-  raidWinEl.innerHTML = html;
-  raidWinEl.hidden = false;
-  raidWinEl
-    .querySelectorAll(".raidwin-col")
-    .forEach((c, i) => (c.scrollTop = tops[i] ?? 0));
+  return (
+    `<div class="raidwin-force"><b>${node.force ?? 0}</b><span>сила отряда</span></div>` +
+    '<div class="raidwin-sumtext">' +
+    `<div>идут ${paws} из ${node.crew.length}${
+      node.guide ? ` · ведёт ${esc(node.guide)}` : " · проводника нет"
+    }</div>` +
+    `<div class="cat-sub">${parts.join(" · ") || "в отряде никого"}</div>` +
+    "</div>"
+  );
+}
+
+// Состав: заголовок группы и строка кота — свои узлы, а группы (§12.73) — это
+// порядок строк, поэтому кот, сменивший группу, переезжает **своим узлом**, а
+// не пересобирается заново.
+function syncCrewRows(node) {
+  const groups = crewList(lastSnap, node.x, node.y);
+  const els = raidUi.crewEls;
+  const keep = new Set();
+  const mk = (key, cls) => {
+    let el = els.get(key);
+    if (!el) {
+      el = document.createElement("div");
+      el.className = cls;
+      els.set(key, el);
+    }
+    keep.add(key);
+    return el;
+  };
+
+  const order = [];
+  groups.forEach((g, gi) => {
+    const head = mk(`head${gi}`, "cat-sub crew-head");
+    const text = `${g.head} · ${g.rows.length}`;
+    if (head.textContent !== text) head.textContent = text;
+    const list = mk(`list${gi}`, "crew-list");
+    order.push(head, list);
+    const rows = g.rows.map((r) => {
+      const row = mk(`row:${r.id}`, "crew-row");
+      setHtml(row, r.html);
+      return row;
+    });
+    orderChildren(list, rows);
+  });
+  orderChildren(raidUi.crew, order);
+
+  for (const [key, el] of els) {
+    if (keep.has(key)) continue;
+    el.remove();
+    els.delete(key);
+  }
+}
+
+// Карточки заказов. Их число в партии не меняется (палитра миссий), поэтому
+// закрытые известностью **прячем, а не удаляем**: удаление вернуло бы
+// перестройку колонки на ровном месте.
+function syncRaidCards(raid, node) {
+  const nothing =
+    // Пустая колонка читается как поломка окна, а не как «пока нечего»
+    // (§12.79): с сокрытием по известности список впервые в принципе умеет
+    // опустеть. В боевом рулсете этого не бывает — первая ступень открыта всем
+    // (`requires: 0`), и это стережёт `the_shipped_ruleset_*`, — но
+    // синтетический контент такое допускает, и молчать здесь нельзя.
+    '<div class="cat-sub">заказов пока нет — первый откроет известность</div>';
+  const want = raid
+    ? [["busy", busyCard(raid, node)]]
+    : (meta.missions ?? []).map((_, i) => [
+        String(i),
+        hiddenRaid(i) ? "" : raidCard(i, node),
+      ]);
+  if (!raid && want.every(([, html]) => !html)) want.push(["none", nothing]);
+
+  const els = raidUi.cardEls;
+  const keep = new Set();
+  const order = [];
+  for (const [key, html] of want) {
+    let el = els.get(key);
+    if (!el) {
+      el = document.createElement("div");
+      els.set(key, el);
+    }
+    keep.add(key);
+    el.hidden = !html;
+    if (html) setHtml(el, html);
+    order.push(el);
+  }
+  orderChildren(raidUi.cards, order);
+
+  for (const [key, el] of els) {
+    if (keep.has(key)) continue;
+    el.remove();
+    els.delete(key);
+  }
 }
 
 // Одна карточка заказа: что получим, чем рискуем и почему нельзя. Всё, что
