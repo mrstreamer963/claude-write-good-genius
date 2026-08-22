@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 19;
+pub(crate) const FORMAT: u32 = 20;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -142,6 +142,10 @@ pub(crate) const SAVED: &[&str] = &[
     "Raids",
     "Crafted",
     "Earned",
+    // Лента новостей (§12.120). В снимке она ради **базовой линии**: без неё
+    // загруженная партия объявила бы новостью всё, что у базы и так открыто, —
+    // и стопка тикеров встретила бы игрока на первом же тике.
+    "News",
     "Trace",
 ];
 
@@ -282,6 +286,18 @@ pub(crate) struct StateDto {
     pub(crate) crafted: Vec<usize>,
     #[serde(default)]
     pub(crate) earned: i32,
+    /// Лента новостей (§12.120): базовая линия «что было открыто» и сама лента.
+    /// Линия — по виду и записи палитры, в порядке `NewsKind::ALL`.
+    #[serde(default)]
+    pub(crate) news_open: Vec<Vec<bool>>,
+    /// `(вид, запись, открылось ли, тик)`.
+    #[serde(default)]
+    pub(crate) news: Vec<(usize, usize, bool, u64)>,
+    /// Базовая линия уже снята. Отдельным флагом, а не «`news_open` не пуст»:
+    /// мир без заказов, кандидатов и тем — законный (все синтетические такие), и
+    /// без флага он снимал бы линию заново каждый тик.
+    #[serde(default)]
+    pub(crate) news_started: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -665,6 +681,14 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
             raids: world.resource::<Raids>().0.clone(),
             crafted: world.resource::<Crafted>().0.clone(),
             earned: world.resource::<Earned>().0,
+            news_open: world.resource::<News>().open.clone(),
+            news: world
+                .resource::<News>()
+                .feed
+                .iter()
+                .map(|n| (n.kind.index(), n.def, n.opened, n.at))
+                .collect(),
+            news_started: world.resource::<News>().started,
         },
         entities,
         trace: world
@@ -741,6 +765,23 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
     world.resource_mut::<Raids>().0 = s.raids.clone();
     world.resource_mut::<Crafted>().0 = s.crafted.clone();
     world.resource_mut::<Earned>().0 = s.earned;
+    {
+        let mut news = world.resource_mut::<News>();
+        news.open = s.news_open.clone();
+        news.started = s.news_started;
+        news.feed = s
+            .news
+            .iter()
+            .filter_map(|&(kind, def, opened, at)| {
+                NewsKind::from_index(kind).map(|kind| Note {
+                    kind,
+                    def,
+                    opened,
+                    at,
+                })
+            })
+            .collect();
+    }
     world.resource_mut::<Trace>().0 = file
         .trace
         .iter()

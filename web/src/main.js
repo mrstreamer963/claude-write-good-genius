@@ -189,6 +189,7 @@ const stockWinEl = document.getElementById("stockwin");
 const sciWinEl = document.getElementById("sciwin");
 const hireWinEl = document.getElementById("hirewin");
 const toastsEl = document.getElementById("toasts");
+const newsEl = document.getElementById("news");
 const liveTipEl = document.getElementById("livetip");
 
 // Кнопки внутри панелей вешаются **делегированием, один раз на контейнер**, и
@@ -231,7 +232,7 @@ function onPanelClick(el, selector, send) {
   });
   el.addEventListener("mouseup", (e) => {
     const hit = e.target.closest(selector);
-    if (armed !== null && hit && keyOf(hit) === armed) send(hit);
+    if (armed !== null && hit && keyOf(hit) === armed) send(hit, e);
     armed = null;
   });
 }
@@ -569,6 +570,13 @@ const teachButtons = []; // кнопки обучения — живы, когд
 // Нужны здесь ровно за тем же, чем `standing`: назвать отказ словом.
 let desks = [];
 const topicButtons = []; // кнопки тем — гасим по технологиям, складу и допуску
+// Двери реестров в тулбаре (§12.118): на них же стоит метка «внутри есть
+// непрочитанное» (§12.120). Числа рядом с ней нет намеренно — «+3» говорит
+// «загляни», но не говорит, что именно, а это ровно тот отказ без причины,
+// который запрещает §12.53. Что открылось, названо словом в самой стопке, а
+// внутри окна стоит группой.
+let sciDoor = null;
+let hireDoor = null;
 // Пороги автопроизводства в порядке палитры рецептов (§12.65). Число хранит
 // ядро; здесь оно нужно строке окна «Склад» — и подписи, и полю правки, которое
 // открывается **с него** (§12.100, §12.105, §12.108).
@@ -1306,6 +1314,12 @@ function renderSnapshot(snap) {
   renderTradePanel(snap.deals);
   syncRecruitButtons(snap.recruits);
   syncTopicButtons(snap.topics);
+  // Группы «Только что открылись» — после синхронизации самих строк: она
+  // прячет изученные темы и нанятых, а группировать надо живые (§12.120).
+  syncSciWindow();
+  syncHireWindow();
+  renderNews(snap);
+  syncNewsMarks();
   syncStockWindow();
   syncTileButtons(snap.techs);
   renderNotePanel(snap.notes, snap.tick);
@@ -3965,21 +3979,23 @@ function buildToolbar() {
   // Ещё две двери, по тому же доводу (§12.118): реестр живёт окном, инструмент
   // — разделом. Раздел из одной кнопки был бы лишним кликом, а выбирать в нём
   // нечего: и наука, и найм на базе одни.
+  sciDoor = null;
+  hireDoor = null;
   if ((meta.research ?? []).length) {
-    const sci = mkTool(
+    sciDoor = mkTool(
       '<span class="sw sw-lab"></span><span>Наука</span>',
       () => openSciWindow(),
     );
-    sci.title = "За какую тему взяться и чего для этого не хватает";
-    el.appendChild(sci);
+    sciDoor.title = "За какую тему взяться и чего для этого не хватает";
+    el.appendChild(sciDoor);
   }
   if ((meta.recruits ?? []).length) {
-    const hire = mkTool(
+    hireDoor = mkTool(
       '<span class="sw sw-hire"></span><span>Найм</span>',
       () => openHireWindow(),
     );
-    hire.title = "Кто откликнется на известность базы и чего он стоит";
-    el.appendChild(hire);
+    hireDoor.title = "Кто откликнется на известность базы и чего он стоит";
+    el.appendChild(hireDoor);
   }
 
   const build = mkSection(el, "Постройка");
@@ -4152,6 +4168,10 @@ function buildToolbar() {
       // затрёт старую партию через десяток секунд.
       if (!confirm("Начать новую партию? Текущая будет потеряна.")) return;
       localStorage.removeItem(SAVE_KEY);
+      // ...и прочитанные новости: у новой партии своя лента, а старые ключи
+      // гасили бы в ней новости, которых игрок не видел (§12.120).
+      localStorage.removeItem(NEWS_SEEN_KEY);
+      newsSeen = new Set();
       worker.postMessage({ type: "newGame" });
       // Темп сбрасывается вместе с базой: на ×10 первые сутки пролетают, пока
       // игрок читает записку, а на паузе новая партия выглядит сломанной.
@@ -4989,6 +5009,170 @@ function scaleText(value, field) {
   return max > 0 ? `${Math.round((value / max) * 100)} %` : `${value}`;
 }
 
+// --- лента новостей (§12.120) -----------------------------------------------
+//
+// Игрок узнавал о новом заказе, кандидате или теме, только заглянув в список
+// руками. Считает новости ядро (`snap.news`) — вид их только показывает и
+// помнит, какие уже прочитаны.
+//
+// ⚠️ **Возраст новости меряется в тиках, а не в секундах** — в отличие от
+// уведомления о цели (§12.58), которое гаснет по wall-clock. Разница не в
+// небрежности, а в том, что это разные вещи. Цель — свершившийся факт: его
+// читают и забывают, и на ×10 отмеренный тиками он мигнул бы и пропал. Новость
+// — предложение действовать, и игрок вправе поставить паузу и разобрать стопку
+// целиком; по секундам она таяла бы на стоящем мире, то есть пауза
+// останавливала бы игру не до конца. Тот же секундомер, которому отказали
+// §12.40 и §12.86. Само число — подача, и живёт оно в рулсете (`news:`, §12.46).
+//
+// Прочитанное помним **в localStorage, рядом с автосейвом**: перезагрузка
+// страницы — единственный способ продолжить партию (§12.45), и без этого она
+// либо вываливала бы стопку заново каждый раз, либо теряла бы непрочитанные
+// метки. Ключ новости — вид, запись и тик: один и тот же заказ, закрывшийся и
+// открывшийся снова, это две новости.
+const NEWS_SEEN_KEY = "sp-news-seen";
+let newsSeen = new Set(readNewsSeen());
+
+function readNewsSeen() {
+  try {
+    return JSON.parse(localStorage.getItem(NEWS_SEEN_KEY) ?? "[]");
+  } catch {
+    return [];
+  }
+}
+
+function newsKey(n) {
+  return `${n.kind}:${n.def}:${n.at}`;
+}
+
+function markNewsSeen(keys) {
+  let grew = false;
+  for (const k of keys) {
+    if (!newsSeen.has(k)) {
+      newsSeen.add(k);
+      grew = true;
+    }
+  }
+  if (!grew) return;
+  // Список ограничен самой лентой (ядро держит `NEWS_MAX`), но прочитанное
+  // копится дольше: режем по тому же порядку величины, старое с головы.
+  const keep = [...newsSeen].slice(-256);
+  newsSeen = new Set(keep);
+  localStorage.setItem(NEWS_SEEN_KEY, JSON.stringify(keep));
+}
+
+// Непрочитанные новости этого вида. Метка на двери и группа в окне живут
+// именно по ним: тикер гаснет по времени, а «я это ещё не смотрел» — нет.
+function newsPending(kind) {
+  return (lastSnap?.news ?? []).filter(
+    (n) => n.kind === kind && !newsSeen.has(newsKey(n)),
+  );
+}
+
+// Что именно открылось и не прочитано — по этому списку строка реестра встаёт
+// в группу «Только что открылись».
+function newlyOpen(kind) {
+  return new Set(
+    newsPending(kind)
+      .filter((n) => n.opened)
+      .map((n) => n.def),
+  );
+}
+
+// Открыл список — значит прочитал: гасим и метку, и тикеры этого вида. По
+// наведению мыши не гасим: провёл курсором мимо — это не «посмотрел».
+function readNews(kind) {
+  markNewsSeen(newsPending(kind).map(newsKey));
+}
+
+// Слово новости. Существительное со значком не годится (§12.109): «новое» —
+// не вещь, которую таскают по базе, а перемена, и называется она глаголом.
+function newsText(n) {
+  const name = (list, i) => {
+    const def = (list ?? [])[i];
+    return esc(def?.label || def?.id || "?");
+  };
+  if (n.kind === "raid") {
+    const label = name(meta?.missions, n.def);
+    return n.opened
+      ? ["открыт заказ", label]
+      : ["заказ закрылся", label];
+  }
+  if (n.kind === "recruit") {
+    const label = name(meta?.recruits, n.def);
+    return n.opened
+      ? ["на связь вышел кандидат", label]
+      : ["кандидат больше не откликается", label];
+  }
+  const label = name(meta?.research, n.def);
+  return n.opened ? ["лаборатория готова к теме", label] : ["тема закрылась", label];
+}
+
+// Куда ведёт клик. Заказ — в раздел «Вылазки», а не в штаб: узлов бывает
+// несколько, и какой из них игрок имел в виду, вид не знает; строка отряда
+// стоит там же и ведёт дальше (§12.66).
+// Новость гасится **там, где её видно целиком**, а не в момент клика по тикеру:
+// у реестров это закрытие окна (пока оно открыто, группа «Только что открылись»
+// и есть весь ответ), у заказов — штаб. Гасить здесь значило бы стереть метку
+// тем же движением, которым игрок пошёл смотреть.
+function openNewsTarget(kind) {
+  if (kind === "raid") openOnly("Вылазки");
+  else if (kind === "recruit") openHireWindow();
+  else openSciWindow();
+}
+
+// ⚠️ Стопка **строится узлами и только на изменение** (§12.118): она живёт под
+// курсором, и пересозданный кадром узел съел бы клик по «×» (§12.84).
+const newsRows = new Map();
+
+function renderNews(snap) {
+  const span = meta?.news ?? 0;
+  const want = (snap.news ?? []).filter((n) => {
+    if (newsSeen.has(newsKey(n))) return false;
+    // Ноль в рулсете значит «сами не гаснут» — тем же нулём, каким `day`
+    // выключает календарь.
+    return span <= 0 || snap.tick - n.at < span;
+  });
+  const keep = new Set();
+  const order = [];
+  for (const n of want) {
+    const key = newsKey(n);
+    keep.add(key);
+    let row = newsRows.get(key);
+    if (!row) {
+      row = document.createElement("div");
+      row.className = "newsrow";
+      row.dataset.kind = n.kind;
+      row.dataset.key = key;
+      const [kind, label] = newsText(n);
+      row.innerHTML =
+        `<span class="news-kind${n.opened ? "" : " gone"}">${kind}</span>` +
+        `<span class="news-label">${label}</span>` +
+        '<button class="tool news-x" title="Прочитал">×</button>';
+      newsRows.set(key, row);
+    }
+    order.push(row);
+  }
+  orderChildren(newsEl, order);
+  for (const [key, row] of newsRows) {
+    if (keep.has(key)) continue;
+    row.remove();
+    newsRows.delete(key);
+  }
+}
+
+// Клики по стопке — делегированием и парой `mousedown`/`mouseup`, как во всём
+// остальном (§12.84): узел строки живёт дольше кадра, но идиома одна.
+onPanelClick(newsEl, ".news-x", (b) => {
+  markNewsSeen([b.parentElement?.dataset.key].filter(Boolean));
+});
+// «×» лежит внутри строки, и `closest` находит обоих: клик по крестику иначе
+// и гасил бы новость, и открывал бы окно. Отсекаем по самой кнопке, а не по
+// порядку слушателей — на порядок здесь полагаться нельзя.
+onPanelClick(newsEl, ".newsrow", (row, e) => {
+  if (e.target.closest(".news-x")) return;
+  openNewsTarget(row.dataset.kind);
+});
+
 // --- каркас модального окна (§12.118) ---------------------------------------
 //
 // Рамка одна на все реестры: коробка, шапка с заголовком и «Закрыть», тело со
@@ -5022,6 +5206,74 @@ function mkWindow(el, title, onClose, narrow) {
   return { box, top, close, list };
 }
 
+// Группа «Только что открылись» — **первой в списке** (§12.120).
+//
+// Метка у самой строки здесь не работает: тем в поздней партии два десятка, в
+// окно помещается десяток, и точка у строки уезжает за пределы вида — раздел
+// подсвечен, игрок раскрыл, а внутри ничего не мигает. Значит помечать надо не
+// строку, а **место в списке**: идиома та же, что у четырёх групп котов в
+// штабе (§12.73).
+//
+// Переставляем **узлы**, а не разметку, — дословно `orderWareRows`: строка
+// переживает переезд вместе со слушателем и подсказкой (§12.84).
+//
+// Порядок внутри списка задаёт ядро (палитра), поэтому группировать здесь
+// можно. В окне «Склад» так делать нельзя: там порядок принадлежит игроку
+// (`★`, §12.112), и перетасовка отняла бы у закладки её единственный смысл.
+function orderNewFirst(list, buttons, kind, heads) {
+  if (!list) return;
+  const fresh = newlyOpen(kind);
+  const live = buttons.filter((b, i) => !b.hidden && fresh.has(i));
+  const rest = buttons.filter((b, i) => !b.hidden && !fresh.has(i));
+  const order = [];
+  // Заголовков нет, пока нечего отделять: подпись над единственным списком —
+  // это шум ровно там, где всё в порядке (§12.73).
+  heads.fresh.hidden = !live.length;
+  heads.rest.hidden = !live.length;
+  if (live.length) order.push(heads.fresh, ...live, heads.rest);
+  else order.push(heads.fresh, heads.rest);
+  order.push(...rest);
+  // Скрытые строки держим в конце: узел остаётся на месте, а прятать его
+  // удалением значило бы пересобирать список (§12.118).
+  order.push(...buttons.filter((b) => b.hidden));
+  orderChildren(list, order);
+}
+
+function syncSciWindow() {
+  if (sciWinOpen && sciHeads) {
+    orderNewFirst(sciList, topicButtons, "topic", sciHeads);
+  }
+}
+
+function syncHireWindow() {
+  if (hireWinOpen && hireHeads) {
+    orderNewFirst(hireList, recruitButtons, "recruit", hireHeads);
+  }
+}
+
+// Метка на двери: «внутри есть непрочитанное». Без числа — см. `sciDoor`.
+//
+// Заказы вылазок ведут в раздел «Вылазки», а не в окно: узлов бывает несколько,
+// и какой из них игрок имел в виду, вид не знает (§12.66).
+function syncNewsMarks() {
+  sciDoor?.classList.toggle("fresh", newsPending("topic").length > 0);
+  hireDoor?.classList.toggle("fresh", newsPending("recruit").length > 0);
+  const raids = sections.find((sec) => sec.title === "Вылазки");
+  raids?.head.classList.toggle("fresh", newsPending("raid").length > 0);
+}
+
+function mkRegistryHeads(list) {
+  const mk = (text) => {
+    const el = document.createElement("div");
+    el.className = "cat-sub crew-head";
+    el.textContent = text;
+    el.hidden = true;
+    list.appendChild(el);
+    return el;
+  };
+  return { fresh: mk("Только что открылись"), rest: mk("Остальное") };
+}
+
 // --- окно «Наука» (§12.118) -------------------------------------------------
 //
 // Тема — разметка работы, как чертёж: кота не выбираем (§12.26). Цена теми же
@@ -5032,18 +5284,26 @@ function mkWindow(el, title, onClose, narrow) {
 // допуск по «Науке», нужна ли лаборатория. Прецедент тот же, что у §12.105:
 // раздел «Производство» ушёл целиком, и клетка станка не онемела.
 let sciWinOpen = false;
+let sciList = null;
+let sciHeads = null;
 
 function openSciWindow() {
   if (sciWinOpen) return;
   sciWinOpen = true;
   buildSciWindow();
   syncTopicButtons(lastSnap?.topics);
+  syncSciWindow();
   sciWinEl.hidden = false;
+  // Гасим метку **при закрытии**, а не сейчас: пока окно открыто, группа
+  // «Только что открылись» и есть весь ответ на «что нового», и стереть её в
+  // тот же миг, когда игрок на неё посмотрел, значило бы не показать ничего.
 }
 
 function closeSciWindow() {
   if (!sciWinOpen) return;
+  readNews("topic");
   sciWinOpen = false;
+  sciHeads = null;
   topicButtons.length = 0;
   sciWinEl.hidden = true;
   sciWinEl.innerHTML = "";
@@ -5051,6 +5311,8 @@ function closeSciWindow() {
 
 function buildSciWindow() {
   const { list } = mkWindow(sciWinEl, "Наука", () => closeSciWindow(), true);
+  sciList = list;
+  sciHeads = mkRegistryHeads(list);
   topicButtons.length = 0;
   (meta.research ?? []).forEach((r, i) => {
     const b = mkTool(
@@ -5069,18 +5331,23 @@ function buildSciWindow() {
 // Кандидаты уникальны (§4.2): каждый приходит один раз, известность открывает,
 // а платит склад — цена теми же фишками, что и у тайлов (§12.24).
 let hireWinOpen = false;
+let hireList = null;
+let hireHeads = null;
 
 function openHireWindow() {
   if (hireWinOpen) return;
   hireWinOpen = true;
   buildHireWindow();
   syncRecruitButtons(lastSnap?.recruits);
+  syncHireWindow();
   hireWinEl.hidden = false;
 }
 
 function closeHireWindow() {
   if (!hireWinOpen) return;
+  readNews("recruit");
   hireWinOpen = false;
+  hireHeads = null;
   recruitButtons.length = 0;
   hireWinEl.hidden = true;
   hireWinEl.innerHTML = "";
@@ -5088,6 +5355,8 @@ function closeHireWindow() {
 
 function buildHireWindow() {
   const { list } = mkWindow(hireWinEl, "Найм", () => closeHireWindow(), true);
+  hireList = list;
+  hireHeads = mkRegistryHeads(list);
   recruitButtons.length = 0;
   (meta.recruits ?? []).forEach((r, i) => {
     const b = mkTool(
@@ -5989,6 +6258,9 @@ function orderWareRows() {
 }
 
 function openRaidWindow(x, y) {
+  // Штаб и есть то место, куда вела новость об открывшемся заказе (§12.120):
+  // дошёл — значит прочитал, и метка на разделе гаснет.
+  readNews("raid");
   raidWinAt = { x, y };
   raidUi = null;
   renderRaidWindow();

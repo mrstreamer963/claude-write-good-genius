@@ -49,9 +49,9 @@ use crate::skills::{
 };
 use crate::snapshot::{
     AutoGateNames, BaseMapDto, BlueprintSnap, CraftSnap, DealSnap, DeskSnap, EntitySnap, GoalSnap,
-    MapMeta, MissionSnap, NeedSnap, NodeSnap, NoteSnap, PriceSnap, RaidGates, RaidSnap, RecipeSnap,
-    RecruitSnap, ResearchSnap, SaleSnap, SkillSnap, Snapshot, StackSnap, StockSnap, TickerSnap,
-    TopicSnap,
+    MapMeta, MissionSnap, NeedSnap, NewsSnap, NodeSnap, NoteSnap, PriceSnap, RaidGates, RaidSnap,
+    RecipeSnap, RecruitSnap, ResearchSnap, SaleSnap, SkillSnap, Snapshot, StackSnap, StockSnap,
+    TickerSnap, TopicSnap,
 };
 use crate::timeline::{ready_for, revealed};
 
@@ -77,6 +77,9 @@ pub struct Sim {
     /// же причине: это описание мира для вида, а не правило — ни одна система
     /// его не читает.
     pub(crate) day: u64,
+    /// Сколько тиков висит тикер новости (§12.120). Здесь по тому же доводу,
+    /// что и `day`: подача, а не механика.
+    pub(crate) news: u64,
     /// Отпечаток рулсета, на котором собран этот мир (§12.45). Лежит здесь, а
     /// не в ресурсах, ровно потому, что миру он не нужен: он нужен снимку —
     /// чтобы тот не загрузился в мир, собранный по другим правилам.
@@ -237,6 +240,86 @@ impl Sim {
             // отряда ещё нет и считать не на кого.
             span_slow: duration(&rule, rule.squad),
         }
+    }
+
+    /// Открыт ли кандидат — то же выражение, что и в снимке (`RecruitSnap`).
+    ///
+    /// «Открыт» здесь значит **«его можно позвать»**, а не «его можно оплатить»:
+    /// известность и доверие фракции — это ворота, а пустой склад — «пока
+    /// нечем». Ровно так же делит причины и панель, пряча нанятого и запертого и
+    /// оставляя остальных с причиной словом (§12.94).
+    ///
+    /// Нанятый в счёт не идёт **намеренно**: найм закрыл бы кандидата, и лента
+    /// объявила бы новостью то, что игрок только что сделал сам.
+    pub(crate) fn recruit_is_open(&mut self, def: usize) -> bool {
+        let Some(rule) = self.world.resource::<RecruitRules>().0.get(def).cloned() else {
+            return false;
+        };
+        self.world.resource::<Fame>().0 >= rule.requires
+            && self.world.resource::<Standing>().covers(&rule.needs)
+    }
+
+    /// Открыта ли тема — то же выражение, что и `unlocked` в снимке
+    /// (`TopicSnap`): предыдущие технологии на месте.
+    ///
+    /// Изученность в счёт не идёт по тому же доводу, что и найм: тема, доведённая
+    /// до конца, закрылась бы новостью о собственной победе. А `unlocked` только
+    /// растёт (технологии не забываются, §12.18), значит тема умеет открыться и
+    /// не умеет закрыться — и это правда о мире, а не упущение.
+    pub(crate) fn topic_is_open(&mut self, def: usize) -> bool {
+        let Some(rule) = self.world.resource::<ResearchRules>().0.get(def).cloned() else {
+            return false;
+        };
+        self.world.resource::<Techs>().covers(&rule.requires)
+    }
+
+    /// Открыт ли заказ вылазки — те же три флага, что и в `raid_gates`.
+    pub(crate) fn raid_is_open(&mut self, def: usize) -> bool {
+        let g = self.raid_gates(def);
+        g.unlocked && g.welcome && g.possible
+    }
+
+    /// Наблюдатель ленты новостей (§12.120): что открылось и что закрылось за
+    /// этот тик.
+    ///
+    /// Стоит в `Sim::tick` **после** цепочки, а не системой в ней, по той же
+    /// причине, по которой там же стоят автовылазка и автопродажа (§12.67,
+    /// §12.87): ворота считает фасад (`raid_gates`, `recruit_is_open`,
+    /// `topic_is_open`), а второй их экземпляр однажды разойдётся с первым —
+    /// инвариант 14. После цепочки — потому что новость читает **сложившийся**
+    /// тик, дословно `check_goals` (§12.58).
+    ///
+    /// Крючков в местах, где ворота проверяются (`launch`, `hire`,
+    /// `start_research`), нет ни одного и заводить их нельзя: ворота открывает
+    /// не команда игрока, а выросшая шкала, — и десять крючков вместо одного
+    /// наблюдателя это девять мест, где однажды забудут.
+    fn note_news(&mut self) {
+        let at = self.world.resource::<SimTime>().tick;
+        let counts = [
+            self.world.resource::<MissionRules>().0.len(),
+            self.world.resource::<RecruitRules>().0.len(),
+            self.world.resource::<ResearchRules>().0.len(),
+        ];
+        // Базовая линия снимается молча: партия начинается с открытой первой
+        // ступени, и объявлять её новостью не о чем. У загруженной партии линия
+        // приезжает из снимка, поэтому здесь не пересчитывается.
+        let first = !self.world.resource::<News>().started;
+        for kind in NewsKind::ALL {
+            for def in 0..counts[kind.index()] {
+                let open = match kind {
+                    NewsKind::Raid => self.raid_is_open(def),
+                    NewsKind::Recruit => self.recruit_is_open(def),
+                    NewsKind::Topic => self.topic_is_open(def),
+                };
+                let was = self.world.resource::<News>().was_open(kind, def);
+                let mut news = self.world.resource_mut::<News>();
+                if !first && open != was {
+                    news.push(kind, def, open, at);
+                }
+                news.set_open(kind, def, open);
+            }
+        }
+        self.world.resource_mut::<News>().started = true;
     }
 
     /// Отряд миссии: кто в нём и ушёл ли он уже с базы.
@@ -1200,6 +1283,9 @@ impl Sim {
                 .collect(),
         ));
         world.insert_resource(Tickers::default());
+        // Лента новостей (§12.120). Базовой линии у неё пока нет: снимет её
+        // первый же `note_news`, и стартовая доступность новостью не станет.
+        world.insert_resource(News::default());
         // Ворота автоматики — контент, а не состояние (§12.93): пустое имя
         // технологии значит «правило доступно сразу», и так живут все
         // синтетические миры тестов.
@@ -1284,6 +1370,7 @@ impl Sim {
             width: w,
             height: h,
             day: rs.day,
+            news: rs.news,
             ruleset: fingerprint(ruleset_yaml),
         })
     }
@@ -1324,6 +1411,7 @@ impl Sim {
             width: self.width,
             height: self.height,
             day: self.day,
+            news: self.news,
             palette: self.palette.clone(),
             items: self.items.clone(),
             skills: self.skills.clone(),
@@ -3546,6 +3634,9 @@ impl Sim {
         // `assign_hauls` этого же тика — иначе носильщик теряет тик впустую.
         self.run_auto_sales();
         self.schedule.run(&mut self.world);
+        // Лента новостей — **после** цепочки (§12.120): новость читает
+        // сложившийся тик и мир не меняет, дословно `check_goals`.
+        self.note_news();
     }
 
     /// Рендерабельные сущности + чертежи (для PixiJS).
@@ -4348,6 +4439,24 @@ impl Sim {
         };
 
         let goals_required = self.world.resource::<GoalRules>().required();
+        // Лента едет целиком: она ограничена `NEWS_MAX`, а какая новость ещё
+        // свежая — решает вид по `tick` и `news` из `meta` (§12.120).
+        let news: Vec<NewsSnap> = self
+            .world
+            .resource::<News>()
+            .feed
+            .iter()
+            .map(|n| NewsSnap {
+                kind: match n.kind {
+                    NewsKind::Raid => "raid",
+                    NewsKind::Recruit => "recruit",
+                    NewsKind::Topic => "topic",
+                },
+                def: n.def,
+                opened: n.opened,
+                at: n.at,
+            })
+            .collect();
         let goals = self.goals();
 
         serde_wasm_bindgen::to_value(&Snapshot {
@@ -4387,6 +4496,7 @@ impl Sim {
             notes,
             goals,
             goals_required,
+            news,
         })
         .map_err(|e| JsValue::from_str(&e.to_string()))
     }

@@ -21,6 +21,7 @@ mod items;
 mod jobs;
 mod missions;
 mod needs;
+mod news;
 mod orders;
 mod panel;
 mod paths;
@@ -132,6 +133,10 @@ fn sim_from(rows: &[&str]) -> Sim {
     // закрепил. Заводят их `set_favorite` и `set_ticker`.
     world.insert_resource(Favorites::default());
     world.insert_resource(Tickers::default());
+    // Лента новостей (§12.120) заводится всегда, как три журнала целей: она не
+    // контент, а память мира о случившемся, и наблюдатель пишет в неё независимо
+    // от того, смотрит ли на неё хоть один экран.
+    world.insert_resource(News::default());
     world.insert_resource(Techs::default());
     world.insert_resource(TimelineRules::default());
     world.insert_resource(Chronicle::default());
@@ -197,6 +202,10 @@ fn sim_from(rows: &[&str]) -> Sim {
         // Календаря в схеме нет: сутки — контент рулсета (§12.46), а тесты
         // механик о нём не знают. Ноль читается как «календаря нет».
         day: 0,
+        // Срок жизни тикера — тоже подача (§12.120), и в схеме его нет. Ноль
+        // читается как «новости сами не гаснут»: лента при этом работает, а
+        // гасить в тестах нечего — снапшот на хосте не собрать.
+        news: 0,
         // Схема собрана мимо YAML, рулсета за ней нет — отпечатывать нечего.
         // Тесты сохранения работают на боевом `core.yaml`, где он настоящий.
         ruleset: 0,
@@ -1850,6 +1859,18 @@ impl Sim {
 
     fn set_fame(&mut self, value: i32) {
         self.world.resource_mut::<Fame>().0 = value;
+    }
+
+    /// Лента новостей (§12.120): `(вид, запись, открылось ли)` от старого к
+    /// новому. Тик не отдаём — его читает вид, чтобы гасить тикеры, а тестам
+    /// важно, о чём и в каком порядке лента сказала.
+    fn news(&self) -> Vec<(NewsKind, usize, bool)> {
+        self.world
+            .resource::<News>()
+            .feed
+            .iter()
+            .map(|n| (n.kind, n.def, n.opened))
+            .collect()
     }
 
     /// Завести кандидата на найм. Вернёт его индекс — им же зовётся `hire`.

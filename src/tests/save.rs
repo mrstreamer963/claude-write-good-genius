@@ -662,3 +662,27 @@ fn a_selling_rule_survives_a_save() {
         "порог на месте вместе с адресатом",
     );
 }
+
+/// Загруженная партия не встречает игрока стопкой тикеров (§12.120).
+///
+/// Базовая линия «что было открыто» едет в снимке ровно ради этого: без неё
+/// первый же тик после загрузки объявил бы новостью весь список — заказы,
+/// кандидатов и темы, которые у базы открыты давно.
+#[test]
+fn a_loaded_game_announces_nothing_new() {
+    let mut live = Sim::new(CORE).expect("мир");
+    live.without_timeline();
+    live.tick_n(50);
+    let before = live.news().len();
+
+    let json = live.save().expect("снимок");
+    let mut loaded = Sim::load_from(CORE, &json).expect("загрузка");
+    loaded.without_timeline();
+    loaded.tick_n(10);
+    assert_eq!(
+        loaded.news().len(),
+        before,
+        "после загрузки лента пополнилась: {:?}",
+        loaded.news()
+    );
+}

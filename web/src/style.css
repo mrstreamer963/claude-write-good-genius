@@ -1967,3 +1967,76 @@ main#stage.mode-cursor #mode-banner {
   line-height: 16px;
   text-align: center;
 }
+
+/* Лента новостей (§12.120). Стопка снизу по центру, растёт вверх: сверху уже
+   стоят уведомления о целях (#toasts), а сбоку — тулбар и правая колонка.
+   Сквозная для мыши, как и та: пустая часть колонки не смеет съедать клики по
+   карте. */
+#news {
+  position: fixed;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: stretch;
+  gap: 6px;
+  width: min(460px, calc(100vw - 420px));
+  z-index: 9;
+  pointer-events: none;
+}
+/* Строка — не кнопка-переключатель, а сообщение, по которому можно пойти:
+   поэтому она читается слева направо («что случилось» — «с чем»), а «×» стоит
+   у края и означает «прочитал», а не «отменить». */
+.newsrow {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 10px;
+  background: rgba(21, 23, 31, 0.96);
+  border: 1px solid var(--accent);
+  border-left-width: 3px;
+  border-radius: 8px;
+  font-size: 12px;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.news-kind {
+  color: var(--muted);
+  white-space: nowrap;
+}
+/* Закрытие названо тем же словом и тем же размером, что открытие, — разница
+   только в цвете полосы слева: это не тревога, а факт (§12.43). */
+.newsrow:has(.news-kind.gone) {
+  border-color: var(--line);
+}
+.news-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.news-x {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  font-size: 12px;
+  line-height: 1.2;
+}
+/* Метка «внутри есть непрочитанное» — на двери реестра и на заголовке раздела
+   «Вылазки» (§12.120). Точка, а не число: «+3» говорит «загляни», но не
+   говорит, что именно, — тот же отказ без причины, что запрещает §12.53. */
+.tool.fresh::after,
+.sec-head.fresh::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: 0 0 auto;
+}
+.sec-head.fresh::after {
+  margin-left: 6px;
+}
