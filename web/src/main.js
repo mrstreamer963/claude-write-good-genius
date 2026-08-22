@@ -4245,7 +4245,7 @@ function craftSize(shift) {
 function syncCraftSize() {
   const qty = `×${craftSize(shiftHeld)}`;
   for (const r of wareRows) {
-    for (const k of r.keeps) {
+    for (const k of [...r.keeps, ...r.salvages]) {
       const size = k.make.querySelector(".qty");
       if (!size) continue;
       if (size.textContent !== qty) size.textContent = qty;
@@ -4581,10 +4581,37 @@ function endNumEdit(commit) {
 }
 
 // Действующее правило по предмету — из снапшота (§12.88). Правило одно, и
-// покупатель приезжает вместе с числом: второго источника ни того, ни другого
-// в JS быть не должно.
+// адресат приезжает вместе с числом: второго источника ни того, ни другого
+// в JS быть не должно. `faction: null` значит «в разбор» (§12.115).
 function saleOf(item) {
   return sales.find((s) => s.item === item);
+}
+
+// Куда игрок целит излишек, пока правила ещё нет: выбор до нажатия живёт
+// здесь, как `picked` у стороны строки. Поставленное правило перебивает его —
+// адресат тогда приезжает из ядра.
+const surplusMode = new Map();
+
+// Уходит ли излишек этого предмета в разбор. Порядок источников тот же, что у
+// `sideOf`: сперва решённое и сохранённое ядром, потом заготовка выбора, потом
+// то единственное, что предмету доступно.
+function tearing(item, sides) {
+  const rule = saleOf(item);
+  if (rule) return rule.faction === null || rule.faction === undefined;
+  const picked = surplusMode.get(item);
+  if (picked) return picked === "salvage";
+  return !sides.length;
+}
+
+// Отправить правило излишка выбранному адресату (§12.115). Одна команда на два
+// адресата — потому что и слот в ядре один: `setSalvage` стирает продажу, а
+// `setSale` стирает разбор, как смена покупателя стирает прежнего.
+function sendSurplus(item, sides, keep) {
+  if (tearing(item, sides)) {
+    sendAction({ type: "setSalvage", item, keep });
+  } else {
+    sendAction({ type: "setSale", faction: sideOf(item, sides), item, keep });
+  }
 }
 
 // Почему рецепт не заказать. «Мастерской нет» и «все станки заняты» — разные
@@ -5056,19 +5083,34 @@ function sidesOf(item) {
     .map(({ fi }) => fi);
 }
 
+// Набор `{ предмет: сколько }` из рулсета — списком имён. Приезжает `Map`
+// (см. шапку протокола), и `Object.keys` на нём молча вернёт пусто.
+function itemsIn(set) {
+  return set instanceof Map ? [...set.keys()] : Object.keys(set ?? {});
+}
+
 // Рецепты, которые дают этот предмет. Обычно один; двух хватает, чтобы порог
 // нельзя было повесить на предмет, — на этом и стоит §12.65.
+//
+// **Разборы сюда не попадают** (§12.114): их кнопка стоит в строке того, что
+// разбирают, а не того, что выходит. Источников одного сырья бывает много, и
+// строка выхода иначе стала бы столбиком одинаковых «Произвести», названных не
+// тем словом, каким игрок про них думает.
 function recipesGiving(item) {
   const id = (meta.items ?? [])[item]?.id;
   return (meta.recipes ?? [])
     .map((r, i) => ({ r, i }))
-    .filter(({ r }) => {
-      const gives =
-        r.gives instanceof Map
-          ? [...r.gives.keys()]
-          : Object.keys(r.gives ?? {});
-      return gives.includes(id);
-    });
+    .filter(({ r }) => !r.salvage && itemsIn(r.gives).includes(id));
+}
+
+// Разборы, которые **съедают** этот предмет (§12.114). Зеркало `recipesGiving`,
+// и адресуется входом: решение игрока звучит «разобрать комбинезон», а не
+// «получить ткань».
+function salvageOf(item) {
+  const id = (meta.items ?? [])[item]?.id;
+  return (meta.recipes ?? [])
+    .map((r, i) => ({ r, i }))
+    .filter(({ r }) => r.salvage && itemsIn(r.cost).includes(id));
 }
 
 function buildStockWindow() {
@@ -5210,23 +5252,94 @@ function buildStockWindow() {
       keeps.push({ line, label, make, craft, key, def });
     }
 
+    // Разбор (§12.114): кнопка стоит в строке того, что разбирают, и порога у
+    // неё нет — правило «держать ткани до N» рвало бы надетые комбинезоны без
+    // спроса, а решение необратимо (§12.44). Поэтому в колонке порога пусто, а
+    // цена фишками говорит, что **выходит**: здесь это и есть новость, тогда
+    // как у обычного рецепта выход написан именем строки.
+    const salvages = [];
+    const manySalvage = salvageOf(item).length > 1;
+    for (const { r, i: def } of salvageOf(item)) {
+      const line = document.createElement("div");
+      line.className = "keep";
+      const take = mkTool(
+        `<span>Разобрать</span><b class="qty">×${craftSize(false)}</b>`,
+        (e) =>
+          sendAction({
+            type: "craft",
+            recipe: def,
+            count: craftSize(e.shiftKey),
+          }),
+      );
+      take.classList.add("toggle", "ware-make");
+      const craft = document.createElement("div");
+      craft.className = "ware-craft";
+      const out = document.createElement("div");
+      out.className = "ware-cost";
+      // Стрелка не украшение: под «Произвести» такие же фишки означают цену, и
+      // без неё выход разбора читался бы как «столько это стоит» — то есть
+      // ровно наоборот (§12.114).
+      out.innerHTML = `<span class="ware-out">→</span>` + costChips(r.gives);
+      craft.append(take, out);
+      // Колонка порога у разбора пуста и заполнителя не просит: `.ware-craft`
+      // стоит в сетке явным `grid-column: 2` (§12.105), а пустая подпись
+      // `.keep-val` нарисовала бы пунктир поля, которого здесь нет.
+      line.append(craft);
+      if (manySalvage) {
+        const who = document.createElement("span");
+        who.className = "ware-recipe";
+        who.textContent = r.label || r.id;
+        line.appendChild(who);
+      }
+      rules.appendChild(line);
+      salvages.push({ line, make: take, craft, def });
+    }
+
+    // Правило излишка (§12.115): **одно на предмет**, а куда он уходит —
+    // продажа названной стороне или разбор — поле этого правила. Двух правил
+    // тут быть не может: «продавать сверх 10» и «разбирать сверх 5» меряют один
+    // и тот же излишек одного склада, и предмет сверх десяти подходит под оба.
     let sale = null;
-    if (sides.length) {
+    const canTear = salvageOf(item).length > 0;
+    if (sides.length || canTear) {
       const line = document.createElement("div");
       line.className = "keep";
       const key = `sale:${item}`;
       const read = () => saleOf(item)?.keep ?? 0;
-      const write = (keep) =>
-        sendAction({
-          type: "setSale",
-          faction: sideOf(item, sides),
-          item,
-          keep,
-        });
+      const write = (keep) => sendSurplus(item, sides, keep);
       const label = mkKeepLabel(key, read, write);
       line.append(label);
+      // Переключатель адресата — **один глиф** в жёлобе слева от числа, идиома
+      // `★` и `◉` из этой же строки. Он про **это** правило и ни про что
+      // больше: сторона строки по-прежнему одна на сделки и тикер (§12.100), а
+      // правило лишь выбирает, ей излишек или мастерской. Куда он уходит
+      // сейчас, говорит сам глагол в подписи — «сбывать» против «разбирать», —
+      // поэтому второй раз писать это на кнопке незачем (§12.80).
+      let dest = null;
+      if (sides.length && canTear) {
+        dest = mkTool("⇄", () => {
+          // Набранное, но не отданное ядру, едет к **новому** адресату — тем
+          // же приёмом, что и при смене покупателя: `endNumEdit(false)` гасит
+          // правку, не записывая её прежнему.
+          const typed = numPending(key);
+          endNumEdit(false);
+          surplusMode.set(item, tearing(item, sides) ? "sale" : "salvage");
+          const keep = typed ?? saleOf(item)?.keep ?? 0;
+          if (keep > 0) sendSurplus(item, sides, keep);
+          syncStockWindow();
+        });
+        dest.classList.add("toggle", "ware-dest");
+        // Тот же довод, что у кнопки стороны: `blur` пришёл бы раньше `click`
+        // и записал набранное прежнему адресату.
+        dest.addEventListener("mousedown", (e) => e.preventDefault());
+        // **Первым в DOM, а не последним.** Колонку ему задаёт стиль, а строку —
+        // авторазмещение, и оно идёт по порядку детей: поставь его после
+        // подписи, и он уедет во второй ряд, потому что первый курсор уже
+        // прошёл мимо первой колонки.
+        line.prepend(dest);
+      }
       rules.appendChild(line);
-      sale = { line, label, key };
+      sale = { line, label, key, dest };
     }
 
     // Торговый блок. Тикер стоит здесь, а не рядом с избранным: у него в данных
@@ -5324,7 +5437,11 @@ function buildStockWindow() {
       fav,
       num,
       keeps,
+      salvages,
       sale,
+      // Есть ли у предмета разбор вообще: строка правила спрашивает это каждым
+      // кадром, а палитра рецептов за партию не меняется.
+      canTear,
       tick,
       side,
       rate,
@@ -5362,20 +5479,27 @@ function syncStockBusy() {
     byDef.set(c.def, g);
   }
   const made = [];
+  // Разбор идёт **отдельной группой** (§12.114): называется он входом, и в общей
+  // куче «Комбинезон ×1» читалось бы как «делаем комбинезон» — то есть ровно
+  // наоборот. Стороны сделки разведены в этой же сводке по такому же доводу.
+  const torn = [];
   for (const def of [...byDef.keys()].sort((a, b) => a - b)) {
     const g = byDef.get(def);
     if (g.left <= 0) continue;
     const name = craftLabel(def);
-    made.push(`${name} ×${g.left}`);
+    const salvage = !!(meta.recipes ?? [])[def]?.salvage;
+    (salvage ? torn : made).push(`${name} ×${g.left}`);
     for (const c of g.list) {
       const pct = c.total > 0 ? Math.round((c.progress / c.total) * 100) : 0;
       tips.push(
-        `${name}: осталось ${c.left} шт · ${craftStateText(c)} · ${pct} %` +
+        `${salvage ? "Разбор — " : ""}${name}: осталось ${c.left} шт · ` +
+          `${craftStateText(c)} · ${pct} %` +
           (c.auto ? " · по порогу" : ""),
       );
     }
   }
   if (made.length) segments.push(`В работе: ${made.join(" · ")}`);
+  if (torn.length) segments.push(`Разбор: ${torn.join(" · ")}`);
 
   // --- сделки поста (§12.109) ----------------------------------------------
   //
@@ -5431,11 +5555,15 @@ function syncStockBusy() {
 // ту же строку.
 function craftLabel(def) {
   const r = (meta.recipes ?? [])[def];
-  const gives =
-    r?.gives instanceof Map ? [...r.gives.keys()] : Object.keys(r?.gives ?? {});
-  const item = (meta.items ?? []).findIndex((it) => gives.includes(it.id));
+  // Разбор адресуется **входом** (§12.114), и сводка обязана называть его так
+  // же: укажи она на выход, игрок пойдёт искать кнопку в строке, где её нет.
+  const side = r?.salvage ? itemsIn(r.cost) : itemsIn(r?.gives);
+  const item = (meta.items ?? []).findIndex((it) => side.includes(it.id));
   if (item < 0) return r?.label || r?.id || "Заказ";
-  return recipesGiving(item).length > 1
+  const many = r?.salvage
+    ? salvageOf(item).length > 1
+    : recipesGiving(item).length > 1;
+  return many
     ? r?.label || r?.id || "Заказ"
     : (meta.items ?? [])[item].label || (meta.items ?? [])[item].id;
 }
@@ -5576,6 +5704,37 @@ function syncStockWindow() {
               )}`;
     }
 
+    // Разбор (§12.114). Ворота у кнопки те же, что у «Произвести», и считает их
+    // то же ядро — расходиться им нельзя. Порога здесь нет вовсе, поэтому и
+    // видимость одна: нет технологии рецепта — нет строки.
+    for (const k of r.salvages) {
+      const rs = recipeSnaps[k.def] ?? {};
+      const open = rs.unlocked ?? false;
+      k.line.hidden = !open;
+      let next = k.line.nextElementSibling;
+      while (next && next.hidden) next = next.nextElementSibling;
+      k.craft.classList.toggle(
+        "under",
+        !!next && !next.querySelector(".ware-craft"),
+      );
+      // **У разбора нехватка материала — отказ, а не ожидание** (§12.114d):
+      // заказ на пять при одном на базе стал бы правилом «съедать каждый
+      // следующий трофей», которое негде снять. Сколько заявка примет, считает
+      // ядро (`room`) — тем же выражением, которым режет её `start_craft`.
+      const room = rs.room ?? 0;
+      const ready = open && rs.shop && room > 0;
+      k.make.classList.toggle("off", !ready);
+      k.make.classList.toggle("on", ready);
+      k.make.title = !open
+        ? "Нужна технология"
+        : !rs.shop
+          ? shopsBusyHint()
+          : room > 0
+            ? `Разобрать: клик — штука, Shift — пять, но не больше ${room} — ` +
+              `столько сейчас на складе. Обратно не собрать`
+            : "Разбирать нечего: на складе этого нет (валяющееся сперва уберут)";
+    }
+
     const who = r.sides.length ? sideOf(r.item, r.sides) : null;
     const fac = who === null ? null : (meta.factions ?? [])[who];
 
@@ -5583,24 +5742,62 @@ function syncStockWindow() {
     if (r.sale) {
       const saleGate = autoGateHint("sales");
       const keep = saleOf(r.item)?.keep ?? 0;
+      // Куда целит правило — это его же поле (§12.115), и от него зависит
+      // всё остальное в строке: и глагол, и ворота, и причина отказа.
+      const tears = tearing(r.item, r.sides);
+      // Ворота у адресатов разные, и это не мелочь: разбор — заказ мастерской,
+      // значит открывает его технология производства, а не сбыта (§12.93).
+      const gate = tears ? autoGateHint("crafting") : saleGate;
+      // Куда правило вообще может уйти сейчас: технология плюс место работы.
+      // Считаем **обе** дороги, а не только выбранную, потому что от этого
+      // зависит, показывать ли строку целиком (см. ниже).
+      const canSell = !saleGate && canTrade;
+      const canScrap = !autoGateHint("crafting") && canCraft && r.canTear;
       if (!numEditing(r.sale.key)) {
+        const verb = tears ? "разбирать" : "сбывать";
         r.sale.label.textContent =
-          keep > 0 ? `сбывать сверх ${keep}` : "сбывать сверх —";
+          keep > 0 ? `${verb} сверх ${keep}` : `${verb} сверх —`;
       }
-      r.sale.line.classList.toggle("on", keep > 0 && !saleGate);
-      r.sale.line.classList.toggle("off", !!saleGate);
-      // Без поста прятать так же, как порог производства без станка: правило
-      // стоит, но не сработает, а причина — в шапке окна.
-      r.sale.line.hidden = !!saleGate || !canTrade;
+      if (r.sale.dest) {
+        r.sale.dest.classList.toggle("on", tears);
+        r.sale.dest.title = tears
+          ? `Излишек уходит в мастерскую, на разбор. Клик — отдать его на ` +
+            `продажу «${fac?.label ?? "?"}»`
+          : `Излишек уходит на продажу «${fac?.label ?? "?"}». Клик — отдать ` +
+            `его в мастерскую, на разбор`;
+      }
+      const open = tears ? canScrap : canSell;
+      r.sale.line.classList.toggle("on", keep > 0 && open);
+      r.sale.line.classList.toggle("off", !open);
+      // ⚠️ **Строка прячется, только когда закрыты ОБЕ дороги.** Пряталась она
+      // по выбранной — и переключатель адресата убивал сам себя: база без
+      // мастерской, клик по `⇄`, строка уходит в `hidden` вместе с кнопкой, и
+      // вернуть излишек на продажу больше нечем. Отказ, стирающий орган отказа,
+      // — это не «правило пока не работает», а тупик (§12.53, §12.94: «нет
+      // мастерской» это решение, к которому игрок целится, и оно остаётся на
+      // месте с причиной словом). Ни туда, ни сюда — тогда строки и правда нет:
+      // сказать ею нечего.
+      r.sale.line.hidden = !canSell && !canScrap;
       r.sale.line.title =
-        saleGate ??
-        (keep > 0
-          ? `Коты продают «${fac?.label ?? "?"}» всё, что на складе сверх ` +
-            `${keep} шт. (лежащее на полу не в счёт — сперва уберут).${
-              posts ? "" : " Но торгового поста ещё нет."
-            } Клик по числу — ввести другое`
-          : "Продавать излишек: всё, что на складе сверх порога, коты отнесут " +
-            "на пост сами");
+        gate ??
+        (tears && !canCraft
+          ? "Разбирать негде: мастерской нет"
+          : !tears && !canTrade
+            ? "Сбывать некуда: торгового поста нет"
+            : tears
+              ? keep > 0
+                ? `Коты разбирают всё, что на складе сверх ${keep} шт. ` +
+                  `(лежащее на полу не в счёт — сперва уберут; надетое не в счёт ` +
+                  `вовсе). Клик по числу — ввести другое`
+                : "Отдавать излишек в разбор: всё, что на складе сверх порога, " +
+                  "коты сами отнесут в мастерскую"
+              : keep > 0
+                ? `Коты продают «${fac?.label ?? "?"}» всё, что на складе сверх ` +
+                  `${keep} шт. (лежащее на полу не в счёт — сперва уберут).${
+                    posts ? "" : " Но торгового поста ещё нет."
+                  } Клик по числу — ввести другое`
+                : "Продавать излишек: всё, что на складе сверх порога, коты " +
+                  "отнесут на пост сами");
     }
 
     // Тикер (§12.100). Сторона обязательна — без неё торговать нечем, — поэтому

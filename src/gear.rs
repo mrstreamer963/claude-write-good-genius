@@ -48,6 +48,8 @@ use crate::path::Reach;
 pub(crate) fn assign_equip(
     map: Res<BaseMap>,
     loadout: Res<LoadoutRules>,
+    items: Res<ItemRules>,
+    techs: Res<Techs>,
     mut commands: Commands,
     cats: Query<
         (
@@ -88,11 +90,14 @@ pub(crate) fn assign_equip(
         .filter(|(_, _, _, _, path, squad)| path.is_none() || squad.is_some())
         .filter_map(|(cat_e, id, pos, gear, ..)| {
             let worn = gear.map(|g| g.0.as_slice()).unwrap_or(&[]);
+            // Ворота на надевание (§12.114): вещь, которую база ещё не поняла,
+            // из шаблона просто выпадает. Уже надетое не снимаем никогда —
+            // технологии не забываются (§12.18), так что и случая нет.
             let missing: Vec<usize> = loadout
                 .0
                 .iter()
                 .copied()
-                .filter(|item| !worn.contains(item))
+                .filter(|item| !worn.contains(item) && items.wearable(*item, &techs))
                 .collect();
             (!missing.is_empty()).then_some((id.0.as_str(), cat_e, (pos.x, pos.y), missing))
         })

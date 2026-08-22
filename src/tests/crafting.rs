@@ -1125,3 +1125,310 @@ fn a_shop_is_fed_from_the_floor_too() {
     assert_eq!(sim.craft_delivered(), Some(2), "привезли с пола");
     assert_eq!(sim.item_at(2, 1, SCRAP), 2, "и взяли ровно сколько нужно");
 }
+
+// --- разбор (§12.114) --------------------------------------------------------
+
+/// Разбор — обычный заказ: кот везёт на станок то, что разбирают, и кладёт под
+/// ноги то, что вышло. Своей механики у него нет и заводить её незачем — §12.30
+/// уже описал заказом всё, что здесь происходит.
+#[test]
+fn salvage_is_an_ordinary_order() {
+    let mut sim = sim_with_shop();
+    let cloth = 2;
+    sim.set_items(cloth + 1);
+    let def = sim.set_recipe(100, &[(PART, 1)], &[(cloth, 2)], &[]);
+    sim.set_salvage(def);
+    sim.put_item(5, 1, PART, 1);
+
+    assert!(sim.start_craft(def, 1), "заказ принят");
+    sim.tick_n(120);
+    assert_eq!(sim.item_total(PART), 0, "трофей разобран без остатка");
+    assert_eq!(sim.item_total(cloth), 2, "и стал двумя единицами сырья");
+}
+
+/// **Порога у разбора нет** (§12.114): правило «держать ткани до N» рвало бы
+/// надетые комбинезоны без спроса, а решение необратимо (§12.44). Вид такой
+/// полоски не рисует, но отказывает фасад — команда приезжает и из трейса.
+#[test]
+fn a_salvage_recipe_takes_no_threshold() {
+    let mut sim = sim_with_shop();
+    let cloth = 2;
+    sim.set_items(cloth + 1);
+    let def = sim.set_recipe(100, &[(PART, 1)], &[(cloth, 2)], &[]);
+    sim.set_salvage(def);
+
+    assert!(!sim.set_stock(def, 5), "порог на разбор не ставится");
+    sim.put_item(5, 1, PART, 3);
+    sim.tick_n(200);
+    assert_eq!(sim.item_total(cloth), 0, "и сам собой разбор не идёт");
+
+    // А обычному рецепту тот же порог по-прежнему по силам: отказ адресный.
+    let plain = sim.set_recipe(100, &[(PART, 1)], &[(cloth, 2)], &[]);
+    assert!(sim.set_stock(plain, 5), "у обычного рецепта порог есть");
+}
+
+/// Сторож на боевой рулсет: **цикл рецептов не должен быть прибыльным**
+/// (§12.114). Разобрал и сшил обратно — обязан остаться в убытке хотя бы по
+/// одному предмету, иначе мастерская печатает комбинезоны, а вылазка — их
+/// единственный вход в мир — обесценивается. Тот же довод и тот же перебор,
+/// что у `the_shipped_ruleset_leaves_no_arbitrage` на рынке.
+#[test]
+fn the_shipped_ruleset_never_profits_from_salvage() {
+    let sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
+    let recipes = sim.recipe_flows();
+
+    for (a_id, a_cost, a_gives) in &recipes {
+        for (b_id, b_cost, b_gives) in &recipes {
+            if a_id == b_id {
+                continue;
+            }
+            // Замкнутая пара: выход A целиком идёт в цену B и наоборот. Только
+            // такие и образуют круг, который можно крутить бесконечно.
+            let closed = |gives: &Vec<(String, i32)>, cost: &Vec<(String, i32)>| {
+                gives
+                    .iter()
+                    .all(|(it, _)| cost.iter().any(|(c, _)| c == it))
+            };
+            if !closed(a_gives, b_cost) || !closed(b_gives, a_cost) {
+                continue;
+            }
+            // Сколько раз надо повторить A, чтобы хватило на один прогон B, — и
+            // что от круга останется. Убыток обязан быть хотя бы по одному
+            // предмету, входящему в цену A.
+            let per = |set: &Vec<(String, i32)>, id: &str| {
+                set.iter().find(|(i, _)| i == id).map_or(0, |&(_, n)| n)
+            };
+            let runs = b_cost
+                .iter()
+                .map(|(it, need)| {
+                    let out = per(a_gives, it);
+                    if out == 0 {
+                        i32::MAX
+                    } else {
+                        (need + out - 1) / out
+                    }
+                })
+                .max()
+                .unwrap_or(1);
+            let profits = a_cost
+                .iter()
+                .all(|(it, spent)| per(b_gives, it) >= spent * runs);
+            assert!(
+                !profits,
+                "круг «{a_id} → {b_id}» возвращает не меньше, чем съел: \
+                 мастерская печатает то, за чем ходят в поле",
+            );
+        }
+    }
+}
+
+/// Сквозной прогон ветки на боевом рулсете (§12.114): трофей едет на станок,
+/// разбирается в ткань, и из ткани шьётся свой комбинезон.
+///
+/// Порядок ворот здесь и есть содержание: разбор открывает «Материаловедение»
+/// (та же технология, что мастерскую) — рвать вещь ума не надо, — а пошив
+/// закрыт «Разбором комбинезона», темой, которая **платит самим трофеем**.
+#[test]
+fn the_shipped_ruleset_tears_a_trophy_down_and_sews_its_own() {
+    let mut sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
+    sim.without_timeline(); // караван приносит своё — здесь считаем разобранное
+    let suit = 3; // индексы палитры предметов
+    let cloth = 6;
+    let salvage = 1; // «Разбор комбинезона» в `recipes:`
+    let tailoring = 2; // «Пошив комбинезона» — за темой `fabrics`
+    let shop = 8; // индекс `shop` в палитре тайлов
+
+    assert!(!sim.start_craft(salvage, 1), "без мастерской рецепта нет");
+    sim.set_tech("materials");
+    assert!(
+        sim.add_blueprint(10, 7, shop),
+        "технология открыла мастерскую"
+    );
+    sim.tick_n(600);
+    assert_eq!(i32::from(sim.tile(10, 7)), shop, "мастерская готова");
+
+    // Трофей кладём **на склад**: разбор меряет учтённое (§12.114d), и это то
+    // же число, которое игрок видит главным в строке окна. Валяющееся у шлюза
+    // сперва увезёт уборка — а на боевом рулсете ещё и наденет первый же кот,
+    // которому не во что одеться (§12.29).
+    let store = sim.first_storage_cell();
+    sim.put_item(store.0, store.1, suit, 1);
+    assert!(sim.start_craft(salvage, 1), "трофей на складе — разбираем");
+    sim.tick_n(400);
+    assert_eq!(sim.item_total(suit), 0, "трофей разобран");
+    assert_eq!(sim.item_total(cloth), 2, "и стал тканью");
+
+    // А свой сшить пока нечем: тема ещё не изучена, и это не «нет материала».
+    assert!(!sim.start_craft(tailoring, 1), "пошив закрыт «Разбором»");
+    sim.set_tech("fabrics");
+    assert!(sim.start_craft(tailoring, 1), "изучили — шьём своё");
+}
+
+/// **Разобрать можно только то, что есть** (§12.114d). У обычного заказа
+/// нехватка материала — законное ожидание (§12.30), у разбора — отказ: заказ на
+/// пять трофеев при одном на базе стал бы правилом «съедать каждый следующий»,
+/// которого игрок не ставил и нигде не снимет (§12.114c).
+#[test]
+fn salvage_never_orders_more_than_there_is() {
+    let mut sim = sim_with_shop();
+    let cloth = 2;
+    sim.set_items(cloth + 1);
+    let def = sim.set_recipe(100, &[(PART, 1)], &[(cloth, 2)], &[]);
+    sim.set_salvage(def);
+
+    assert!(!sim.start_craft(def, 1), "пустая база — нечего разбирать");
+    sim.put_item(1, 1, PART, 9); // на полу, мимо склада — в счёт не идёт
+    assert!(!sim.start_craft(def, 1), "валяющееся разбору не материал");
+    sim.put_item(5, 1, PART, 2);
+    assert!(sim.start_craft(def, 5), "заявку режем, а не отклоняем");
+    assert_eq!(sim.craft_left(), Some(2), "ровно по числу трофеев");
+    assert!(!sim.start_craft(def, 1), "и второй раз те же не пообещать");
+}
+
+/// Обычный рецепт этой границы не знает: он **ждёт** материала, потому что лом
+/// придёт сам — с уборки и с вылазок (§12.30). Разбор ждёт трофея, которого
+/// игрок ещё не решил отдавать, — и в этом вся разница.
+#[test]
+fn a_plain_order_still_waits_for_material() {
+    let mut sim = sim_with_shop();
+    let def = sim.set_recipe(100, &[(SCRAP, 4)], &[(PART, 1)], &[]);
+
+    assert!(sim.start_craft(def, 5), "заказ без склада принимают");
+    assert_eq!(sim.craft_left(), Some(5), "и целиком");
+}
+
+/// **Надетое разбору не материал** (§12.114d). Считается только то, что лежит
+/// кучами, — а комбинезон на коте это `Gear`, а не куча. Иначе заказ на разбор
+/// раздевал бы отряд перед вылазкой, и «сила отряда» зависела бы от того, что
+/// игрок нажал в окне «Склад» за сотню тиков до кнопки «Отправить».
+///
+/// Сторож нарочный: сегодня это следует из устройства кода (`salvage_room`
+/// смотрит `Stack`), а такие «следует» и отваливаются молча.
+#[test]
+fn a_worn_suit_is_not_salvage_material() {
+    let mut sim = sim_with_shop();
+    let suit = 2;
+    sim.set_items(suit + 1);
+    sim.set_force(suit, 1);
+    sim.set_loadout(&[suit]);
+    let def = sim.set_recipe(100, &[(suit, 1)], &[(PART, 1)], &[]);
+    sim.set_salvage(def);
+    sim.put_item(5, 1, suit, 1);
+
+    // Пока трофей лежит на складе, разобрать его можно.
+    assert_eq!(sim.item_at(5, 1, suit), 1);
+
+    sim.tick_n(20);
+    assert_eq!(sim.gear_of("a"), vec![suit], "кот оделся сам (§12.29)");
+    assert_eq!(
+        sim.item_total(suit),
+        0,
+        "и куч с трофеем на базе не осталось"
+    );
+    assert!(!sim.start_craft(def, 1), "надетое в счёт не идёт");
+    assert_eq!(sim.gear_of("a"), vec![suit], "и с кота его никто не снял");
+
+    // Отказ был именно про надетое, а не про рецепт: второй трофей кучей — и
+    // заказ проходит, а одетый кот так и остаётся одетым.
+    sim.put_item(5, 1, suit, 1);
+    assert!(sim.start_craft(def, 1), "лежащий трофей разбирают");
+    assert_eq!(sim.craft_left(), Some(1), "ровно один — второй на коте");
+    assert_eq!(sim.gear_of("a"), vec![suit]);
+}
+
+// --- правило излишка: разбор (§12.115) ---------------------------------------
+
+/// Мир под правило: мастерская, склад и рецепт разбора. Возвращает индекс
+/// рецепта; предмет-трофей — `PART`, сырьё — `2`.
+fn sim_with_salvage_rule() -> (Sim, usize) {
+    let mut sim = sim_with_shop();
+    let cloth = 2;
+    sim.set_items(cloth + 1);
+    let def = sim.set_recipe(100, &[(PART, 1)], &[(cloth, 2)], &[]);
+    sim.set_salvage(def);
+    (sim, def)
+}
+
+/// Излишек сверх порога уходит в разбор сам — тем же заказом, каким его завёл
+/// бы игрок (§12.115).
+#[test]
+fn the_surplus_rule_sends_leftovers_to_the_shop() {
+    let (mut sim, def) = sim_with_salvage_rule();
+    sim.put_item(5, 1, PART, 5);
+
+    assert!(sim.set_salvage_rule(PART, 2), "правило принято");
+    sim.tick();
+    assert_eq!(
+        sim.craft_left_of(def),
+        Some(3),
+        "в разбор ушло всё сверх двух"
+    );
+
+    sim.tick_n(10);
+    assert_eq!(
+        sim.craft_left_of(def),
+        Some(3),
+        "и второй раз те же три не заказаны: обещанное в счёт идёт",
+    );
+}
+
+/// Порог держит запас, а не сливает склад: ровно по числу трофей остаётся на
+/// месте. Зеркало `the_threshold_measures_storage_not_the_floor` у сбыта.
+#[test]
+fn the_salvage_rule_keeps_what_it_promised() {
+    let (mut sim, def) = sim_with_salvage_rule();
+    sim.put_item(5, 1, PART, 2);
+    assert!(sim.set_salvage_rule(PART, 2));
+
+    sim.tick_n(20);
+    assert_eq!(sim.craft_left_of(def), None, "заказывать нечего");
+    assert_eq!(sim.item_total(PART), 2, "запас цел");
+}
+
+/// **Разбор уступает шаблону снаряжения** (§12.115): комбинезон это ещё и вещь,
+/// за которой кот идёт сам, и два автомата на один дефицит оставили бы отряд
+/// голым. Придерживается по штуке на каждого неодетого кота — числом, а не
+/// запретом: одетой базе правило не мешает ничем.
+#[test]
+fn the_salvage_rule_yields_to_the_loadout() {
+    let (mut sim, def) = sim_with_salvage_rule();
+    sim.set_force(PART, 1);
+    sim.set_loadout(&[PART]);
+    sim.put_item(5, 1, PART, 4); // один по порогу, двое на котов, один лишний
+    assert!(sim.set_salvage_rule(PART, 1), "правило принято");
+
+    sim.tick();
+    assert_eq!(
+        sim.craft_left_of(def),
+        Some(1),
+        "двое неодетых придержаны, в разбор ушёл только лишний",
+    );
+
+    sim.tick_n(60); // коты доходят до склада и одеваются
+    assert!(!sim.gear_of("a").is_empty(), "и одеться им было во что");
+    assert!(!sim.gear_of("b").is_empty());
+}
+
+/// Ворота — технология **производства**, а не сбыта (§12.115): разбор это заказ
+/// мастерской. Снятие проходит и без неё, как у всех правил (§12.93).
+#[test]
+fn a_salvage_rule_needs_the_crafting_technology() {
+    let (mut sim, _) = sim_with_salvage_rule();
+    sim.set_auto_gates("", "planning", "");
+
+    assert!(!sim.set_salvage_rule(PART, 2), "технологии нет");
+    assert_eq!(sim.salvage_rule_of(PART), None);
+
+    sim.set_tech("planning");
+    assert!(sim.set_salvage_rule(PART, 2), "изучили — можно");
+    assert_eq!(sim.salvage_rule_of(PART), Some(2));
+    assert!(sim.set_salvage_rule(PART, 0), "а снять можно всегда");
+}
+
+/// Предмет, который никакой рецепт не разбирает, правила не получает — зеркало
+/// ворот у сбыта («чем сторона не торгует, на то и порога нет», §12.88).
+#[test]
+fn a_rule_needs_a_recipe_that_tears_the_item() {
+    let (mut sim, _) = sim_with_salvage_rule();
+    assert!(!sim.set_salvage_rule(SCRAP, 2), "лом никто не разбирает");
+}

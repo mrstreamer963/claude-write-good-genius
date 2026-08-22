@@ -1317,3 +1317,46 @@ fn dropping_a_ticker_needs_no_gate() {
     );
     assert_eq!(sim.ticker_of(0), None);
 }
+
+/// **Разбор — второй адресат того же правила, а не второе правило** (§12.115).
+///
+/// «Продавать сверх 10» и «разбирать сверх 5» меряют один и тот же излишек
+/// одного склада: предмет сверх десяти удовлетворяет обоим условиям разом, и
+/// кто его заберёт, решал бы порядок вызовов в `Sim::tick` — то есть ничто,
+/// читаемое игроком. Поэтому слот один, и вторая заявка переписывает первую
+/// целиком, ровно как смена покупателя (§12.88).
+#[test]
+fn a_salvage_rule_replaces_the_sale_rule_and_back() {
+    let (mut sim, f) = sim_with_market();
+    // Мастерская и разбор: без рецепта правило на разбор не поставить.
+    sim.set_shop(3, true);
+    sim.force_tile(2, 1, 3);
+    let def = sim.set_recipe(100, &[(0, 1)], &[(1, 2)], &[]);
+    sim.set_salvage(def);
+
+    assert!(sim.set_sale(f, 0, 4), "сперва сбывать");
+    assert!(sim.set_salvage_rule(0, 6), "потом передумали — в разбор");
+    assert_eq!(sim.sale_of(0), None, "продажи по этому предмету больше нет");
+    assert_eq!(sim.salvage_rule_of(0), Some(6));
+
+    assert!(sim.set_sale(f, 0, 4), "и обратно тем же способом");
+    assert_eq!(sim.salvage_rule_of(0), None);
+    assert_eq!(sim.sale_of(0), Some((f, 4)));
+}
+
+/// Тот же слот значит и то, что излишек уходит **одной** дорогой: пока стоит
+/// разбор, автопродажа по этому предмету не заводит сделок.
+#[test]
+fn a_salvaged_item_is_not_sold_at_the_same_time() {
+    let (mut sim, _f) = sim_with_market();
+    sim.set_shop(3, true);
+    sim.force_tile(2, 1, 3);
+    let def = sim.set_recipe(100, &[(0, 1)], &[(1, 2)], &[]);
+    sim.set_salvage(def);
+    sim.put_scrap(6, 1, 10);
+
+    assert!(sim.set_salvage_rule(0, 4));
+    sim.tick_n(3);
+    assert!(sim.sales().is_empty(), "сделок нет — излишек ушёл в разбор");
+    assert!(sim.craft_left_of(def).is_some(), "и заказ на него стоит");
+}

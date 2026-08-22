@@ -460,6 +460,9 @@ impl Sim {
                 // Избранного в синтетическом мире нет, как нет тикеров и
                 // правил сбыта (§12.112): закладку ставит рулсет или игрок.
                 favorite: false,
+                // Ворот на надевание в синтетическом мире тоже нет (§12.114):
+                // предмет надевается сразу — их ставит `set_wear_tech`.
+                requires: Vec::new(),
             });
         }
     }
@@ -663,8 +666,52 @@ impl Sim {
             cost: cost.to_vec(),
             gives: gives.to_vec(),
             requires: requires.iter().map(|t| t.to_string()).collect(),
+            // Разбор — подача, а не механика (§12.114): синтетический рецепт
+            // обычный, а признак ставит `set_salvage`.
+            salvage: false,
         });
         rules.0.len() - 1
+    }
+
+    /// Рецепты боевого рулсета как «из чего → что» именами предметов: сторожу
+    /// круга (§12.114) нужны не индексы, а то, что можно назвать в сообщении.
+    fn recipe_flows(&self) -> Vec<(String, Vec<(String, i32)>, Vec<(String, i32)>)> {
+        let flat = |set: &std::collections::BTreeMap<String, i32>| {
+            set.iter().map(|(k, &v)| (k.clone(), v)).collect::<Vec<_>>()
+        };
+        self.recipes
+            .iter()
+            .map(|r| (r.id.clone(), flat(&r.cost), flat(&r.gives)))
+            .collect()
+    }
+
+    /// Первая складская клетка по обходу карты — куда положить предмет так,
+    /// чтобы он числился **учтённым** (§12.53). На синтетических схемах склад
+    /// ставят руками, а на боевом рулсете его координаты — контент.
+    fn first_storage_cell(&mut self) -> (i32, i32) {
+        let map = self.world.resource::<BaseMap>();
+        let rules = self.world.resource::<TileRules>();
+        (0..map.height)
+            .flat_map(|y| (0..map.width).map(move |x| (x, y)))
+            .find(|&(x, y)| rules.capacity_of(map.tile_at(x, y)) > 0)
+            .expect("на карте есть склад")
+    }
+
+    /// Пометить рецепт разбором (§12.114): для ядра меняется ровно одно —
+    /// порог на него поставить нельзя.
+    fn set_salvage(&mut self, def: usize) {
+        self.world.resource_mut::<CraftRules>().0[def].salvage = true;
+    }
+
+    /// Закрыть надевание предмета технологией (§12.114). Зеркало
+    /// `set_tile_tech`: ворота у вещи те же, что у тайла и у рецепта.
+    fn set_wear_tech(&mut self, item: usize, tech: &str) {
+        self.set_items(item + 1);
+        let mut rules = self.world.resource_mut::<ItemRules>();
+        while rules.0.len() <= item {
+            rules.0.push(ItemRule::default());
+        }
+        rules.0[item].requires = vec![tech.to_string()];
     }
 
     /// Сколько штук осталось в заказе; `None` — заказа нет.
@@ -1673,11 +1720,24 @@ impl Sim {
             .map(|c| c.delivered.iter().map(|&(_, n)| n).sum())
     }
 
-    /// Правило автопродажи по предмету: `(кому, сколько придержать)`; `None` —
-    /// правила нет (§12.88). Спрашивают именно по предмету: правило на нём одно,
-    /// а покупатель — его поле.
+    /// Правило сбыта по предмету: `(кому, сколько придержать)`; `None` — правила
+    /// нет **или оно про разбор** (§12.88, §12.115). Спрашивают именно по
+    /// предмету: правило на нём одно, а адресат — его поле.
     fn sale_of(&self, item: usize) -> Option<(usize, i32)> {
-        self.world.resource::<Selling>().rule_of(item)
+        match self.world.resource::<Selling>().rule_of(item) {
+            Some((Surplus::Sell(faction), keep)) => Some((faction, keep)),
+            _ => None,
+        }
+    }
+
+    /// Правило разбора по предмету: сколько придержать; `None` — правила нет
+    /// или излишек уходит на продажу (§12.115). Зеркало `sale_of`, и оба
+    /// смотрят **в один слот**: два правила на предмет не живут.
+    fn salvage_rule_of(&self, item: usize) -> Option<i32> {
+        match self.world.resource::<Selling>().rule_of(item) {
+            Some((Surplus::Salvage, keep)) => Some(keep),
+            _ => None,
+        }
     }
 
     /// Лежит ли предмет в избранном: его строка стоит наверху окна «Склад»

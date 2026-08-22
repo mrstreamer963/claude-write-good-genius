@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 18;
+pub(crate) const FORMAT: u32 = 19;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -245,14 +245,18 @@ pub(crate) struct StateDto {
     /// загрузка молча возвращает отряд в поле.
     #[serde(default)]
     pub(crate) auto_raids: Vec<(i32, i32, usize, bool)>,
-    /// Автопродажа: предмет, кому его сбывать и сколько штук база придерживает
-    /// (§12.87, §12.88).
+    /// Правило излишка: предмет, **куда** его девать и сколько штук база
+    /// придерживает (§12.87, §12.88, §12.115).
     ///
-    /// Порядок полей менялся (было «фракция, предмет»), а тип — нет: старый
-    /// снимок разобрался бы **молча и наизнанку**, продавая лом не тому. Это и
-    /// есть тот случай, ради которого `FORMAT` поднимают руками.
+    /// Адресат едет как `Option<фракция>`: `None` — разбор. Не число со
+    /// значением-маркером (`usize::MAX`) намеренно — маркер разобрался бы у
+    /// старого снимка молча и продал бы лом несуществующей стороне.
+    ///
+    /// Порядок полей уже менялся (было «фракция, предмет»), а теперь сменился и
+    /// тип: старый снимок разобрался бы **молча и наизнанку**. Это и есть тот
+    /// случай, ради которого `FORMAT` поднимают руками.
     #[serde(default)]
-    pub(crate) selling: Vec<(usize, usize, i32)>,
+    pub(crate) selling: Vec<(usize, Option<usize>, i32)>,
     /// Избранные предметы: их строки стоят наверху окна «Склад» (§12.100).
     #[serde(default)]
     pub(crate) favorites: Vec<usize>,
@@ -633,7 +637,18 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
             auto_rest: world.resource::<AutoRest>().0,
             stocking: world.resource::<Stocking>().0.clone(),
             auto_raids: world.resource::<AutoRaids>().0.clone(),
-            selling: world.resource::<Selling>().0.clone(),
+            selling: world
+                .resource::<Selling>()
+                .0
+                .iter()
+                .map(|&(item, dest, keep)| {
+                    let side = match dest {
+                        Surplus::Sell(faction) => Some(faction),
+                        Surplus::Salvage => None,
+                    };
+                    (item, side, keep)
+                })
+                .collect(),
             favorites: world.resource::<Favorites>().0.clone(),
             tickers: world.resource::<Tickers>().0.clone(),
             fame: world.resource::<Fame>().0,
@@ -703,7 +718,14 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
     world.resource_mut::<AutoRest>().0 = s.auto_rest;
     world.resource_mut::<Stocking>().0 = s.stocking.clone();
     world.resource_mut::<AutoRaids>().0 = s.auto_raids.clone();
-    world.resource_mut::<Selling>().0 = s.selling.clone();
+    world.resource_mut::<Selling>().0 = s
+        .selling
+        .iter()
+        .map(|&(item, side, keep)| {
+            let dest = side.map_or(Surplus::Salvage, Surplus::Sell);
+            (item, dest, keep)
+        })
+        .collect();
     world.resource_mut::<Favorites>().0 = s.favorites.clone();
     world.resource_mut::<Tickers>().0 = s.tickers.clone();
     world.resource_mut::<Fame>().0 = s.fame;

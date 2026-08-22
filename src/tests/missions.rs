@@ -1311,3 +1311,4 @@ fn a_stealth_raid_counts_the_best_cat_not_the_sum() {
         "втроём та же сила, но втрое больше заметности",
     );
 }
+

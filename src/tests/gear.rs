@@ -316,3 +316,36 @@ fn the_shipped_ruleset_equips_its_cats_from_loot() {
         "бригада оделась сама, без команды игрока — и добыча впервые ушла не внутрь базы",
     );
 }
+
+// --- ворота на надевание (§12.114) ------------------------------------------
+
+/// Трофей, которого база ещё не поняла, надеть нельзя: `requires` у предмета —
+/// те же ворота технологии, что у тайла и у рецепта, только на третьем месте.
+/// Кот к такой куче не идёт вовсе — задача не заводится, а не бросается на
+/// полпути: отказ живёт в раздатчике (§12.114).
+#[test]
+fn an_ununderstood_item_is_not_worn() {
+    let mut sim = sim_with_store_and_gate();
+    sim.set_wear_tech(SUIT, "xenotech");
+    sim.put_item(5, 1, SUIT, 1);
+
+    sim.tick_n(20);
+    assert!(!sim.is_equipping("a"), "за непонятной вещью никто не пошёл");
+    assert!(sim.gear_of("a").is_empty(), "и никто её не надел");
+    assert_eq!(sim.item_at(5, 1, SUIT), 1, "трофей так и лежит на складе");
+}
+
+/// А как только тема изучена, тот же кот идёт за тем же трофеем — без второй
+/// команды игрока: шаблон не менялся, менялось знание базы.
+#[test]
+fn understanding_opens_the_trophy() {
+    let mut sim = sim_with_store_and_gate();
+    sim.set_wear_tech(SUIT, "xenotech");
+    sim.put_item(5, 1, SUIT, 1);
+    sim.tick_n(20);
+    assert!(sim.gear_of("a").is_empty(), "пока не поняли — не носим");
+
+    sim.set_tech("xenotech");
+    sim.tick_n(20);
+    assert_eq!(sim.gear_of("a"), vec![SUIT], "поняли — надели");
+}

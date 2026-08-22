@@ -295,6 +295,11 @@ pub(crate) struct RecipeSnap {
     pub(crate) affordable: bool,
     /// И есть мастерская, в которой работать.
     pub(crate) shop: bool,
+    /// Сколько штук примет заявка **на разбор** прямо сейчас (§12.114d): у
+    /// разбора нехватка материала это не ожидание, а отказ, — и считает его
+    /// ядро тем же выражением, каким режет заявку `start_craft`. У обычного
+    /// рецепта поля нет (`None`): он законно ждёт склада.
+    pub(crate) room: Option<i32>,
 }
 
 /// Тема в работе: сколько сделано и кто этим занят.
@@ -396,7 +401,10 @@ pub(crate) struct PriceSnap {
 #[derive(Serialize)]
 pub(crate) struct SaleSnap {
     pub(crate) item: usize,
-    pub(crate) faction: usize,
+    /// Куда уходит излишек: сторона — или `null`, то есть **в разбор**
+    /// (§12.115). Одно поле, потому что и решение одно: два правила на один
+    /// излишек спорили бы за один и тот же предмет.
+    pub(crate) faction: Option<usize>,
     pub(crate) keep: i32,
 }
 
