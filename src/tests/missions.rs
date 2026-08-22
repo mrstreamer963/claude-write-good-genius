@@ -1071,17 +1071,23 @@ fn a_rule_on_a_demolished_node_disappears() {
     assert!(sim.auto_raid_at(1, 2).is_none(), "и правило не осталось");
 }
 
-/// Неполный состав правило тоже ждёт: сколько нужно котов, знает заказ, и
-/// решает это `launch_node` — второго экземпляра проверки у правила нет.
+/// Правило ждёт не состава, а **исхода** (§12.117): на заказе, который одному
+/// не по силам, отряд стоит, пока не наберётся полная доля.
+///
+/// До §12.117 здесь стоял счёт лап («одного на двухместный заказ мало»), и он
+/// мерил не то: число в вилке — про срок, а справится ли отряд, считает
+/// `outcome`. На безопасном заказе тот же одиночка теперь уходит сам — это
+/// проверяет `the_gate_measures_the_outcome_not_the_headcount`.
 #[test]
-fn the_rule_waits_for_a_full_squad() {
+fn the_rule_waits_until_the_odds_are_full() {
     let mut sim = sim_with_nodes(1);
-    let def = sim.set_mission(2, 30, &[(0, 5)]);
+    let def = sim.set_risky_mission(2, 30, 2, 0, &[(0, 5)]);
+    sim.set_squad_range(def, 1, 3);
     sim.enlist("a", 1, 2);
     sim.set_auto_raid(def as i32, 1, 2);
 
     sim.tick_n(20);
-    assert_eq!(sim.raid_count(), 0, "одного на двухместный заказ мало");
+    assert_eq!(sim.raid_count(), 0, "одному сложность 2 не поднять целиком");
 
     sim.enlist("b", 1, 2);
     sim.tick_n(20);
@@ -1313,63 +1319,98 @@ fn a_stealth_raid_counts_the_best_cat_not_the_sum() {
 }
 
 /// **Почему правило стоит, отвечает ядро — и теми же выражениями, какими само
-/// решает, идти ли** (§12.116).
+/// решает, идти ли** (§12.116, §12.117).
 ///
-/// Правило уводит только полный отряд (§12.113), и до §12.116 это было тишиной:
+/// Правило уводит отряд только на полной доле, и до §12.116 это было тишиной:
 /// заказ выбран, правило «включено», а отряд стоит месяцами. Игрок, вычеркнувший
-/// одного кота, читает такое как поломку, а не как своё же решение.
+/// кота, читает такое как поломку, а не как своё же решение.
 #[test]
 fn a_rule_says_why_it_holds_the_squad() {
     let mut sim = sim_with_nodes(1);
-    let def = sim.set_mission(1, 30, &[(0, 5)]);
-    sim.set_squad_range(def, 2, 3); // заказу нужны двое
+    let def = sim.set_risky_mission(1, 30, 2, 0, &[(0, 5)]);
+    sim.set_squad_range(def, 1, 3);
     assert!(sim.enlist("a", 1, 2));
     assert!(sim.enlist("b", 1, 2));
     assert!(sim.set_auto_raid(def as i32, 1, 2));
 
     assert_eq!(
         sim.auto_hold_at(1, 2),
-        (2, true, true),
-        "двое в отряде — правило ничего не ждёт",
+        (100, false, true),
+        "двоих на сложность 2 хватает — правило ничего не ждёт",
     );
     sim.tick_n(2);
     assert_eq!(sim.raid_count(), 1, "и отряд ушёл");
 }
 
-/// Вычеркнули кота — правило молчит по **названной** причине: готовых меньше
-/// минимума. Чинится это решением игрока (вписать кота обратно или отправить
-/// вручную недобором), а не временем, — потому и отделено от «не в сборе».
+/// **Полная доля, а не «не провал»** (§12.117): правило повторяет решение без
+/// присмотра, и частичная добыча тут не риск, на который игрок согласился, а
+/// тихая утечка каждый круг. Отправить как есть можно руками — из штаба, где
+/// доля написана до нажатия.
 #[test]
-fn a_short_squad_is_named_as_the_reason() {
+fn a_partial_share_holds_the_rule() {
     let mut sim = sim_with_nodes(1);
-    let def = sim.set_mission(1, 30, &[(0, 5)]);
-    sim.set_squad_range(def, 2, 3);
+    let def = sim.set_risky_mission(1, 30, 2, 0, &[(0, 5)]);
+    sim.set_squad_range(def, 1, 3);
     assert!(sim.enlist("a", 1, 2));
     assert!(sim.set_auto_raid(def as i32, 1, 2));
 
-    assert_eq!(
-        sim.auto_hold_at(1, 2),
-        (2, false, true),
-        "в отряде один: состав в сборе, но его мало",
-    );
+    let (share, failed, fit) = sim.auto_hold_at(1, 2);
+    assert!(!failed && (1..100).contains(&share), "доля есть, но не вся");
+    assert!(fit, "и это не про сбор: кот дома, цел и не спит");
     sim.tick_n(5);
-    assert_eq!(sim.raid_count(), 0, "и правило никого не увело");
+    assert_eq!(sim.raid_count(), 0, "правило стоит");
 
-    // Вписали второго — и то же выражение отвечает «идём».
+    // Взяли второго — доля полная, и правило пошло само.
     assert!(sim.enlist("b", 1, 2));
-    assert_eq!(sim.auto_hold_at(1, 2), (2, true, true));
+    assert_eq!(sim.auto_hold_at(1, 2), (100, false, true));
     sim.tick_n(2);
     assert_eq!(sim.raid_count(), 1);
 }
 
-/// А спящий кот — это **другая** причина: состав полон, но не в сборе. Она
-/// чинится сама, временем, и путать её с недобором нельзя: игроку нечего
-/// делать, кроме как подождать.
+/// **Ворота мерят исход, а не число лап** (§12.117), и видно это на двух краях
+/// сразу: одиночка, которому заказ по силам, уходит сам, хотя вилка просит
+/// троих, — а трое слабых на тяжёлый заказ не уходят, хотя вилку набирают.
+///
+/// До §12.117 воротами был минимум вилки, и оба случая он решал наоборот:
+/// запрещал заведомо удачное и пускал заведомо провальное — с потерей
+/// снаряжения и пленом, каждый круг.
+#[test]
+fn the_gate_measures_the_outcome_not_the_headcount() {
+    let mut sim = sim_with_nodes(2);
+    let easy = sim.set_risky_mission(1, 30, 1, 0, &[(0, 5)]);
+    let hard = sim.set_risky_mission(1, 30, 9, 0, &[(0, 5)]);
+    sim.set_squad_range(easy, 3, 5); // вилка просит троих
+    sim.set_squad_range(hard, 1, 5); // а эта — хоть одного
+
+    // Узел с одиночкой на лёгком заказе.
+    assert!(sim.enlist("a", 1, 2));
+    assert!(sim.set_auto_raid(easy as i32, 1, 2));
+    // Узел с тройкой на неподъёмном.
+    assert!(sim.enlist("b", 2, 2));
+    assert!(sim.enlist("c", 2, 2));
+    assert!(sim.set_auto_raid(hard as i32, 2, 2));
+
+    sim.tick_n(3);
+    assert_eq!(
+        sim.mission_node(easy),
+        Some((1, 2)),
+        "одиночка ушёл: заказ ему по силам, а вилка про срок, а не про силу",
+    );
+    assert_eq!(
+        sim.mission_node(hard),
+        None,
+        "а бригада на неподъёмный заказ осталась дома",
+    );
+}
+
+/// А спящий кот — это **другая** причина: прогноз хорош, но состав не в сборе.
+/// Она чинится сама, временем, и путать её со слабым прогнозом нельзя: игроку
+/// нечего делать, кроме как подождать.
 #[test]
 fn a_sleeping_crew_is_a_different_reason() {
     let mut sim = sim_with_nodes(1);
-    let def = sim.set_mission(1, 30, &[(0, 5)]);
-    sim.set_squad_range(def, 2, 3);
+    let def = sim.set_risky_mission(1, 30, 1, 0, &[(0, 5)]);
+    sim.set_squad_range(def, 1, 3);
     assert!(sim.enlist("a", 1, 2));
     assert!(sim.enlist("b", 1, 2));
     assert!(sim.set_auto_raid(def as i32, 1, 2));
@@ -1379,8 +1420,8 @@ fn a_sleeping_crew_is_a_different_reason() {
 
     assert_eq!(
         sim.auto_hold_at(1, 2),
-        (2, true, false),
-        "двое числятся, но один спит",
+        (100, false, false),
+        "прогноз полный, но один из двоих спит",
     );
     assert_eq!(sim.raid_count(), 0, "и правило ждёт, а не уводит одного");
 }
