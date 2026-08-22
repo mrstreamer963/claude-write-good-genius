@@ -33,7 +33,7 @@ use crate::hauling::{plan_spend, stored_counts};
 use crate::jobs::{BUILD_WORK, Plan, access_ok};
 use crate::map::{BaseMap, rect_cells};
 use crate::missions::{
-    duration, guide_cut, guide_of, guide_value, outcome, pick_gate, raid_danger,
+    crew_danger, crew_force, duration, guide_cut, guide_of, guide_value, outcome, pick_gate,
 };
 use crate::movement::{Busy, is_stuck};
 use crate::path::find_path;
@@ -1099,6 +1099,7 @@ impl Sim {
                 .map(|m| MissionRule {
                     squad: m.squad.bounds().0,
                     squad_max: m.squad.bounds().1,
+                    stealth: m.stealth,
                     travel: m.travel,
                     work: m.work,
                     danger: m.danger,
@@ -1618,8 +1619,9 @@ impl Sim {
     ///
     /// **Отряд выбирает игрок, поимённо** — единственная работа, где исполнитель
     /// не раздаётся симуляцией (§12.23). Причина одна: от состава зависит исход.
-    /// Требуется ровно `squad` котов: недобор — это не «пойдут вдвоём вместо
-    /// троих», а неполная заявка, и молча дополнять её симуляция не станет.
+    /// Недокомплект разрешён (§12.113): минимум вилки — рекомендация, а не
+    /// допуск, и платит за него сам игрок — долей добычи и сроком. Безусловный
+    /// минимум остался у вылазки за своим: им меряется обратимость плена.
     ///
     /// Заявка снимает с выбранных текущие задачи — как приказ игрока (§12.15):
     /// решение отправить кота в поле весомее начатой им стройки. **Кроме сна**
@@ -1752,11 +1754,14 @@ impl Sim {
     /// проводником, тем же выражением, что и на возвращении.
     fn node_dangers(&mut self, x: i32, y: i32) -> Vec<i32> {
         let guide = self.node_guide_step(x, y);
+        // Число лап нужно разведке (§12.113): у неё опасность растёт с составом,
+        // и прогноз обязан показать этот рост до нажатия.
+        let paws = self.ready_roster_of(x, y).len();
         let rules = self.world.resource::<MissionRules>();
         rules
             .0
             .iter()
-            .map(|r| raid_danger(r.danger, guide))
+            .map(|r| crew_danger(r, guide, paws))
             .collect()
     }
 
@@ -1784,10 +1789,17 @@ impl Sim {
     /// на возвращении. Связь в силу здесь не входит намеренно: она копится за
     /// время вылазки и на уходе равна нулю (§12.60).
     fn node_outcomes(&mut self, x: i32, y: i32) -> (Vec<i32>, Vec<bool>) {
-        let force: i32 = self.node_forces(x, y).iter().sum();
+        let forces = self.node_forces(x, y);
         let dangers = self.node_dangers(x, y);
-        let out: Vec<crate::missions::Outcome> =
-            dangers.iter().map(|&d| outcome(d, force)).collect();
+        // Свёртка вкладов — по заказу, а не по отряду (§12.113): на разведке
+        // сила это лучший, а не сумма, и заказы стоят в одном списке.
+        let rules = self.world.resource::<MissionRules>();
+        let out: Vec<crate::missions::Outcome> = rules
+            .0
+            .iter()
+            .zip(&dangers)
+            .map(|(r, &d)| outcome(d, crew_force(r, forces.iter().copied())))
+            .collect();
         (
             out.iter().map(|o| o.share).collect(),
             out.iter().map(|o| o.failed).collect(),
@@ -1892,9 +1904,17 @@ impl Sim {
         // Дубликаты в списке отсекаются по сущности: «три раза excellent» — это
         // один кот, а не отряд.
         let crew = self.ready_crew(&units);
-        // Минимум — единственное, что вылазка требует безусловно: меньшим
-        // составом её не выполнить вовсе, а не «выполнить хуже».
-        if crew.len() < rule.squad {
+        // **Недокомплект — решение игрока, а не отказ** (§12.113). Минимум вилки
+        // перестал быть допуском: цена меньшего состава уже посчитана дважды —
+        // линейной силой в `outcome` и делением срока на лапы в `duration`, — а
+        // третьим её считать значило бы завести пятую арифметику исхода
+        // (инвариант 14) поверх уже посчитанного.
+        //
+        // Исключение одно: **вылазка за своим**. Её минимумом меряется
+        // обратимость плена (`rescue_is_possible`), и отпустить туда кого
+        // угодно значило бы обещать возврат, не проверив его.
+        let need = if rule.rescue { rule.squad } else { 1 };
+        if crew.len() < need {
             return false;
         }
 
@@ -2355,6 +2375,20 @@ impl Sim {
             if !self.node_is_free(x, y) || !self.squad_is_fit(x, y) {
                 continue;
             }
+            // Минимум вилки правило спрашивает, хотя кнопка перестала (§12.113).
+            // Недокомплект — осознанное разовое решение игрока: он видит цену в
+            // строке отряда до нажатия. Автомат принимал бы его за игрока на
+            // каждом круге и гонял бы полупустые отряды — то есть решал бы то,
+            // о чём его не просили. Тот же довод, что у «все на базе и целы».
+            let need = self
+                .world
+                .resource::<MissionRules>()
+                .0
+                .get(def)
+                .map_or(0, |r| r.squad);
+            if self.ready_roster_of(x, y).len() < need {
+                continue;
+            }
             self.launch_node(def, x, y);
         }
     }
@@ -2364,7 +2398,9 @@ impl Sim {
     /// Состав здесь **не считается** — его длину сверит `launch_node`: «сколько
     /// нужно» знает заказ, а правило про заказ ничего не решает.
     ///
-    /// «Все» — это и есть запрет некомплекта у автовылазки (§12.70). Игрок,
+    /// «Все» — это половина запрета некомплекта у автовылазки (§12.70, §12.113);
+    /// вторая половина — минимум вилки, который `run_auto_raids` спрашивает сам,
+    /// потому что `launch_node` спрашивать перестал. Игрок,
     /// нажимая кнопку, соглашается на просевшую долю осознанно и разово: он
     /// видит цену в строке отряда до нажатия. Автомат принимал бы это решение за
     /// него на каждом круге и гонял бы полупустые отряды — то есть делал бы
@@ -3655,7 +3691,8 @@ impl Sim {
                 // панель по `danger_base`.
                 let base = rule.map_or(0, |r| r.danger);
                 let guide = mine().map(|&(.., g, _)| g).max().unwrap_or(0);
-                let danger = raid_danger(base, guide);
+                let paws = mine().count();
+                let danger = rule.map_or(0, |r| crew_danger(r, guide, paws));
                 // Связь входит в **ту же** силу, что и отряд, и считается тем же
                 // выражением, что на возвращении (§12.60, инвариант 14). Число
                 // это «что будет, если связь оборвётся прямо сейчас»: она копится
@@ -3663,13 +3700,16 @@ impl Sim {
                 // Полный срок до ухода ещё не посчитан (`span` = 0): прогноз
                 // берёт его по тому составу, который сейчас в отряде, — тем же
                 // выражением, каким срок замёрзнет на уходе (§12.70).
-                let paws = mine().count();
                 let span = match m.span {
                     0 => rule.map_or(0, |r| duration(r, paws)),
                     frozen => frozen,
                 };
                 let comms = relay_force(m.covered, span);
-                let force: i32 = mine().map(|&(.., force, _, _, _)| force).sum::<i32>() + comms;
+                let raw = mine().map(|&(.., force, _, _, _)| force);
+                let force: i32 = match rule {
+                    Some(r) => crew_force(r, raw),
+                    None => raw.sum(),
+                } + comms;
                 let out = outcome(danger, force);
                 missions.push(MissionSnap {
                     def: m.def,

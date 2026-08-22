@@ -1437,6 +1437,26 @@ impl Sim {
         }
     }
 
+    /// Срок заказа для отряда из `paws` лап — тем же выражением, каким он
+    /// замёрзнет на уходе (§12.70). Нужен там, где цена недокомплекта меряется
+    /// сроком, а не долей (§12.113).
+    fn mission_span_of(&self, mission: usize, paws: usize) -> i32 {
+        self.world
+            .resource::<MissionRules>()
+            .0
+            .get(mission)
+            .map_or(0, |r| crate::missions::duration(r, paws))
+    }
+
+    /// Разведка (§12.113): сила отряда считается по лучшему, а опасность растёт
+    /// с числом лап. В схеме `sim_from` таких заказов нет, как нет и вылазок.
+    fn set_stealth_mission(&mut self, mission: usize) {
+        let mut rules = self.world.resource_mut::<MissionRules>();
+        if let Some(rule) = rules.0.get_mut(mission) {
+            rule.stealth = true;
+        }
+    }
+
     /// Работа на месте в очках: её отряд вырабатывает сообща (§12.70).
     fn set_mission_work(&mut self, mission: usize, work: i32) {
         let mut rules = self.world.resource_mut::<MissionRules>();

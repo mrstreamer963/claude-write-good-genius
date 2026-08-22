@@ -259,19 +259,37 @@ fn the_player_picks_the_squad() {
     assert!(!sim.is_away("c"));
 }
 
-/// Недобор — это неполная заявка, а не «пойдут вдвоём вместо троих»: молча
-/// дополнять состав симуляция не станет.
+/// Больше предела бригада не уводит, а несуществующий кот отрядом не считается.
+/// Недобор в этот список **не входит** (§12.113): он разрешён, см. соседний тест.
 #[test]
-fn an_incomplete_squad_is_refused() {
+fn an_oversized_or_bogus_squad_is_refused() {
     let (mut sim, m) = sim_with_gate(&["#######", "#a.c.b#", "#######"], (3, 1), 2, 50);
-    assert!(!sim.launch(m, squad(&["a"])), "меньше нужного");
-    assert!(!sim.launch(m, squad(&["a", "b", "c"])), "больше нужного");
-    assert!(
-        !sim.launch(m, squad(&["a", "a"])),
-        "один кот дважды — не отряд"
-    );
-    assert!(!sim.launch(m, squad(&["a", "ghost"])), "кота нет в мире");
-    assert_eq!(sim.mission_left(), None, "ни одна заявка не прошла");
+    assert!(!sim.launch(m, squad(&["a", "b", "c"])), "больше предела");
+    assert_eq!(sim.mission_left(), None, "заявка не прошла");
+
+    // Дубликат и призрак состав не надувают: «три раза a» — это один кот. До
+    // §12.113 такая заявка отклонялась минимумом, теперь она уходит недоборем,
+    // и проверять надо именно длину отряда, а не факт отказа.
+    assert!(sim.launch(m, squad(&["a", "a"])), "уходит, но один");
+    assert!(sim.in_squad("a"), "и это он");
+    assert!(!sim.in_squad("b") && !sim.in_squad("c"), "больше никого");
+}
+
+/// Недокомплект разрешён (§12.113): минимум вилки — рекомендация, а не допуск.
+/// Отдельного штрафа за него нет и быть не должно — цена уже посчитана дважды:
+/// доля добычи считается по силе отряда, а срок делится на число лап.
+#[test]
+fn an_undermanned_squad_goes_and_pays_for_it() {
+    let (mut sim, m) = sim_with_gate(&["#######", "#a.c.b#", "#######"], (3, 1), 2, 50);
+    sim.set_mission_work(m, 40);
+    let alone = sim.mission_span_of(m, 1);
+    let full = sim.mission_span_of(m, 2);
+    assert!(alone > full, "один в поле дольше: {alone} против {full}");
+
+    assert!(sim.launch(m, squad(&["a"])), "заявка на одного принята");
+    sim.tick_n(80);
+    assert!(sim.is_away("a"), "и он ушёл один");
+    assert!(!sim.is_away("b") && !sim.is_away("c"), "остальные дома");
 }
 
 /// Заявка снимает начатую работу — как приказ игрока (§12.15): решение послать
@@ -511,16 +529,20 @@ fn a_sleeping_cat_is_left_at_home() {
     assert!(sim.is_away("a"), "а вылазка ушла без него");
 }
 
-/// Минимум — единственное, что вылазка требует безусловно: если готовых меньше,
-/// заявка не принимается вовсе (§12.70).
+/// Спящий не держит вылазку и после §12.113: заявка уходит тем составом,
+/// который готов, — даже если готовых меньше минимума вилки.
 #[test]
-fn a_raid_below_its_minimum_is_refused() {
-    let (mut sim, m, _) = sim_with_a_sleeping_cat(true);
+fn a_raid_below_its_minimum_leaves_without_the_sleeper() {
+    let (mut sim, m, bed) = sim_with_a_sleeping_cat(true);
     assert!(
-        !sim.launch(m, squad(&["a", "b"])),
-        "готов один, а нужно двое"
+        sim.launch(m, squad(&["a", "b"])),
+        "готов один из двух, и этого довольно (§12.113)",
     );
-    assert_eq!(sim.mission_left(), None, "миссии не завелось");
+    assert!(sim.in_squad("a") && !sim.in_squad("b"), "спящего не взяли");
+
+    sim.tick_n(25);
+    assert!(sim.is_away("a"), "вылазка ушла недокомплектом");
+    assert_eq!(sim.pos_of("b"), bed, "а спящий досыпает своё");
 }
 
 /// Выключенное «Беречь себя» — это решение игрока не жалеть котов, и вылазка
@@ -1194,4 +1216,98 @@ fn an_auto_raid_rule_needs_its_technology() {
     sim.forget_techs();
     assert!(sim.set_auto_raid(-1, 1, 2), "снять можно всегда");
     assert_eq!(sim.auto_raid_at(1, 2), None);
+}
+
+// --- разведка: лишний кот мешает (§12.113) ----------------------------------
+
+/// Мир для разведки: коридор со шлюзом, три кота и один заказ, у которого
+/// вилка от одного до трёх. Опасность задаётся тестом.
+fn sim_with_stealth(danger: i32, stealth: bool) -> (Sim, usize) {
+    let mut sim = sim_from(&["#######", "#a.c.b#", "#######"]);
+    sim.set_gate(1, true);
+    sim.set_relay(1, true);
+    sim.force_tile(3, 1, 1);
+    let m = sim.set_risky_mission(1, 10, danger, 0, &[(0, 10)]);
+    sim.set_squad_range(m, 1, 3);
+    if stealth {
+        sim.set_stealth_mission(m);
+    }
+    (sim, m)
+}
+
+/// Разведка меняет знак решения о составе: **соло приносит добычу, а пара
+/// проваливается** (§12.113). Работают тут обе половины правила разом — сила по
+/// лучшему (пара не сильнее одного) и опасность, умноженная на число лап.
+#[test]
+fn a_stealth_raid_is_better_alone_than_in_a_pair() {
+    let (mut sim, m) = sim_with_stealth(2, true);
+    assert!(sim.launch(m, squad(&["a"])));
+    sim.tick_n(40);
+    let alone = sim.scrap_total();
+    assert!(alone > 0, "один принёс долю добычи: {alone}");
+
+    let (mut sim, m) = sim_with_stealth(2, true);
+    assert!(sim.launch(m, squad(&["a", "b"])));
+    sim.tick_n(40);
+    assert_eq!(sim.scrap_total(), 0, "вдвоём заметили — провал");
+}
+
+/// Контроль: без флага тот же заказ ведёт себя ровно наоборот — вдвоём лучше.
+/// Значит дело в `stealth`, а не в сроке, добыче или числе тиков.
+#[test]
+fn an_ordinary_raid_is_better_in_a_pair_than_alone() {
+    let (mut sim, m) = sim_with_stealth(2, false);
+    assert!(sim.launch(m, squad(&["a"])));
+    sim.tick_n(40);
+    let alone = sim.scrap_total();
+
+    let (mut sim, m) = sim_with_stealth(2, false);
+    assert!(sim.launch(m, squad(&["a", "b"])));
+    sim.tick_n(40);
+    assert!(
+        sim.scrap_total() > alone,
+        "сумма сил берёт заказ целиком: {} против {alone}",
+        sim.scrap_total(),
+    );
+}
+
+/// Нулевая опасность разведке безразлична — общее правило нулей в рулсете
+/// (§12.113): множитель ничего не множит, и втроём заказ удаётся целиком.
+#[test]
+fn stealth_means_nothing_at_zero_danger() {
+    let (mut sim, m) = sim_with_stealth(0, true);
+    assert!(sim.launch(m, squad(&["a", "b", "c"])));
+    sim.tick_n(40);
+    assert_eq!(sim.scrap_total(), 10, "вся добыча, сколько бы лап ни шло");
+}
+
+/// Сила разведотряда — **лучший**, а не сумма (§12.113). Кот с уровнем
+/// «Вылазки» тащит заказ, который троим новичкам не по зубам, — и он же не
+/// становится сильнее оттого, что рядом идут двое.
+#[test]
+fn a_stealth_raid_counts_the_best_cat_not_the_sum() {
+    let (mut sim, m) = sim_with_stealth(4, true);
+    let raid = sim.set_skill("raid", &[10]);
+    sim.set_xp("a", raid, 10); // уровень 1: сила 2 против единицы у новичка
+
+    assert!(sim.launch(m, squad(&["a"])));
+    sim.tick_n(40);
+    assert!(sim.scrap_total() > 0, "мастер прошёл в одиночку");
+
+    // Контроль: дело в навыке, а не в том, что заказ берётся кем угодно.
+    let (mut sim, m) = sim_with_stealth(4, true);
+    assert!(sim.launch(m, squad(&["b"])));
+    sim.tick_n(40);
+    assert_eq!(sim.scrap_total(), 0, "новичку тот же заказ не по силам");
+
+    let (mut sim, m) = sim_with_stealth(4, true);
+    let raid = sim.set_skill("raid", &[10]);
+    sim.set_xp("a", raid, 10);
+    assert!(sim.launch(m, squad(&["a", "b", "c"])));
+    sim.tick_n(40);
+    assert_eq!(
+        sim.scrap_total(),
+        0,
+        "втроём та же сила, но втрое больше заметности",
+    );
 }

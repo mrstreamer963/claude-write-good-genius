@@ -125,14 +125,11 @@ fn a_wounded_cat_is_not_taken_on_a_raid() {
     sim.set_health("a", 10);
 
     assert!(
-        !sim.launch(m, vec!["a".to_string(), "b".to_string()]),
-        "отряд с раненым не собрать"
-    );
-    sim.set_health("a", 100);
-    assert!(
         sim.launch(m, vec!["a".to_string(), "b".to_string()]),
-        "а целым — да"
+        "вылазка уходит недокомплектом (§12.113)",
     );
+    assert!(!sim.in_squad("a"), "но раненого в отряд не взяли");
+    assert!(sim.in_squad("b"), "ушёл целый");
 }
 
 /// Раны затягиваются и без лазарета — просто медленно; на полной шкале кот
