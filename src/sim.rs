@@ -49,7 +49,7 @@ use crate::skills::{
 };
 use crate::snapshot::{
     AutoGateNames, BaseMapDto, BlueprintSnap, CraftSnap, DealSnap, DeskSnap, EntitySnap, GoalSnap,
-    MapMeta, MissionSnap, NodeSnap, NoteSnap, PriceSnap, RaidGates, RaidSnap, RecipeSnap,
+    MapMeta, MissionSnap, NeedSnap, NodeSnap, NoteSnap, PriceSnap, RaidGates, RaidSnap, RecipeSnap,
     RecruitSnap, ResearchSnap, SaleSnap, SkillSnap, Snapshot, StackSnap, StockSnap, TickerSnap,
     TopicSnap,
 };
@@ -3559,6 +3559,25 @@ impl Sim {
                     // штук нужно и сколько уже лежит на площадке.
                     need: rules.cost_of(bp.tile).iter().map(|&(_, n)| n).sum(),
                     delivered: bp.delivered.iter().map(|&(_, n)| n).sum(),
+                    // А панель клетки называет недостачу поимённо: цена
+                    // упорядочена по имени предмета (инвариант 12), значит и
+                    // список детерминирован.
+                    missing: rules
+                        .cost_of(bp.tile)
+                        .iter()
+                        .filter_map(|&(item, n)| {
+                            let got = bp
+                                .delivered
+                                .iter()
+                                .find(|&&(i, _)| i == item)
+                                .map(|&(_, c)| c)
+                                .unwrap_or(0);
+                            (n - got > 0).then_some(NeedSnap {
+                                item,
+                                left: n - got,
+                            })
+                        })
+                        .collect(),
                 });
             }
         }

@@ -1976,6 +1976,18 @@ function renderCellPanel(snap) {
         `<div class="cat-row"><span>${what}</span><b>${pct}%</b></div>` +
         `<div class="bar"><i style="width:${pct}%"></i></div>` +
         `<div class="cat-sub">${supplied ? "материал на месте" : `завезено ${bp.delivered} из ${bp.need}`}</div>` +
+        // Чего именно ждёт площадка — глифом на предмет и остатком числом
+        // (§12.109: глиф заменяет существительное, но не причину). Одно общее
+        // «3 из 5» не отличает «лома довезти» от «детали нет ни одной», а
+        // отвечает на это как раз панель клетки. Считает разность ядро
+        // (`missing`), здесь только порядок палитры — тот же, что в шапке.
+        (supplied
+          ? ""
+          : `<div class="cat-sub">не хватает: ${(bp.missing ?? [])
+              .slice()
+              .sort((a, b) => a.item - b.item)
+              .map((m) => `${itemGlyph(m.item)}${m.left}`)
+              .join(" ")}</div>`) +
         "</div>",
     );
   }
