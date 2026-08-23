@@ -143,7 +143,7 @@ const scrapEl = document.getElementById("scrap");
 // исчезала. Семантика клика цела: нажал на числах, увёл курсор, отпустил в
 // стороне — ничего не произошло.
 scrapEl.style.cursor = "pointer";
-scrapEl.title = "Открыть склад";
+scrapEl.dataset.tip = "Открыть склад";
 let scrapArmed = false;
 scrapEl.addEventListener("mousedown", () => {
   scrapArmed = true;
@@ -1120,7 +1120,7 @@ function renderSnapshot(snap) {
   // тестами, которые меряют время тиками и ничем другим мерить не могут.
   const day = dayOf(snap.tick);
   tickEl.textContent = day ? `${day}, ${clockOf(snap.tick)}` : snap.tick;
-  tickEl.parentElement.title = `тик ${snap.tick}`;
+  liveTitle(tickEl.parentElement, `тик ${snap.tick}`);
   drawScrap(snap.stacks);
   drawBlueprints(snap.blueprints);
   drawDeals(snap.deals);
@@ -1241,41 +1241,41 @@ function renderSnapshot(snap) {
   // пуст», а показанная взамен палитра целиком — как «отбор не работает». Тот
   // же довод, по которому отказ кнопки называют, а не гасят (§12.53).
   const pinned = (meta.items ?? [])
-      .map((it, i) => {
-        if (!favorites.includes(i)) return "";
-        // Главное число — **учтённое**: склад минус бронь (§12.53). С §12.69 у
-        // него один смысл на всё, что база делает наружу, — им и платят, и
-        // торгуют. Валяющееся приписано отдельно и приглушённо: оно у базы есть,
-        // но годится только на стройку внутри, и одно общее число ровно этим и
-        // обманывало.
-        const st = (snap.stock ?? [])[i] ?? { stored: 0, loose: 0, booked: 0 };
-        const free = Math.max(0, st.stored - st.booked);
-        const name = esc(it.label || it.id);
-        const hint = [
-          `${name}: на складе ${st.stored}`,
-          st.booked ? `забронировано ${st.booked} под сделку` : "",
-          st.loose
-            ? `валяется ${st.loose} — годится на стройку, но платить и ` +
-              `продавать этим нельзя, пока не убрано`
-            : "",
-        ]
-          .filter(Boolean)
-          .join(" · ");
-        return (
-          `<span class="stock" title="${hint}">` +
-          `${itemGlyph(i)}<b>${free}</b>` +
-          (st.loose ? `<u>+${st.loose}</u>` : "") +
-          "</span>"
-        );
-      })
-      .filter(Boolean)
-      .join(" ");
+    .map((it, i) => {
+      if (!favorites.includes(i)) return "";
+      // Главное число — **учтённое**: склад минус бронь (§12.53). С §12.69 у
+      // него один смысл на всё, что база делает наружу, — им и платят, и
+      // торгуют. Валяющееся приписано отдельно и приглушённо: оно у базы есть,
+      // но годится только на стройку внутри, и одно общее число ровно этим и
+      // обманывало.
+      const st = (snap.stock ?? [])[i] ?? { stored: 0, loose: 0, booked: 0 };
+      const free = Math.max(0, st.stored - st.booked);
+      const name = esc(it.label || it.id);
+      const hint = [
+        `${name}: на складе ${st.stored}`,
+        st.booked ? `забронировано ${st.booked} под сделку` : "",
+        st.loose
+          ? `валяется ${st.loose} — годится на стройку, но платить и ` +
+            `продавать этим нельзя, пока не убрано`
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      return (
+        `<span class="stock" data-tip="${hint}">` +
+        `${itemGlyph(i)}<b>${free}</b>` +
+        (st.loose ? `<u>+${st.loose}</u>` : "") +
+        "</span>"
+      );
+    })
+    .filter(Boolean)
+    .join(" ");
   scrapEl.innerHTML =
     (pinned ||
-      `<span class="stock off" title="Ресурсы в шапку не выбраны: ` +
+      `<span class="stock off" data-tip="Ресурсы в шапку не выбраны: ` +
         `отметьте нужные звёздочкой в окне «Склад»">` +
         `ресурсы не выбраны</span>`) +
-    `<span class="fame" title="Известность">★<b>${fame}</b></span>` +
+    `<span class="fame" data-tip="Известность">★<b>${fame}</b></span>` +
     // Репутация рядом с известностью, но врозь: та отвечает «насколько высоко»
     // и только копится, эта — «от кого» и ходит в обе стороны (§12.43). Знак
     // пишем всегда: «0» и «−0» читаются одинаково, а «+20» и «−20» — нет.
@@ -1284,14 +1284,14 @@ function renderSnapshot(snap) {
         const v = standing[i] ?? 0;
         const sign = v > 0 ? `+${v}` : `${v}`;
         return (
-          `<span class="standing${v < 0 ? " bad" : ""}" title="${esc(f.label || f.id)}">` +
+          `<span class="standing${v < 0 ? " bad" : ""}" data-tip="${esc(f.label || f.id)}">` +
           `<i class="chip" style="background:${f.color}"></i><b>${sign}</b></span>`
         );
       })
       .join("") +
     // Деньги — единственная величина, которая и копится, и тратится: это счёт,
     // а не ворота (§12.44). Потому и стоят отдельно от известности.
-    `<span class="money" title="Котоденьги">¤<b>${money}</b></span>`;
+    `<span class="money" data-tip="Котоденьги">¤<b>${money}</b></span>`;
   for (const [id, c] of units) {
     if (!seen.has(id)) {
       c.destroy({ children: true });
@@ -1349,6 +1349,9 @@ function renderSnapshot(snap) {
   syncTileButtons(snap.techs);
   renderNotePanel(snap.notes, snap.tick);
   renderGoalsPanel(snap.goals, snap.goals_required, snap);
+  // Последней — подсказка: она читает то, что нарисовали выше, и переприцелится,
+  // если её узел уехал вместе с перерисованной лентой.
+  refreshLiveTip();
 }
 
 // Силуэт кота (§12.109): уши, корпус, хвост — и жилет, когда кот экипирован.
@@ -2181,7 +2184,7 @@ function crewList(snap, x, y) {
     const pick =
       `<button class="tool crew-pick${mine ? " on" : ""}${idle ? " idle" : ""}${off ? " off" : ""}" data-id="${esc(e.id)}"` +
       ` data-x="${x}" data-y="${y}"${mine ? ' data-in="1"' : ""}` +
-      `${tip ? ` title="${esc(tip)}"` : ""}` +
+      `${tip ? ` data-tip="${esc(tip)}"` : ""}` +
       ">" +
       portraitHtml(e.sprite, "crew-face") +
       // Текст строки — отдельной колонкой рядом с портретом: сама кнопка
@@ -2202,7 +2205,7 @@ function crewList(snap, x, y) {
     const duty =
       `<button class="tool crew-duty${on ? " on" : ""}" data-id="${esc(e.id)}"` +
       ` data-x="${x}" data-y="${y}"${on ? ' data-in="1"' : ""}` +
-      ` title="${on ? "Снять приписку к рации" : "Приписать к рации: сядет на связь, как освободится"}">📻</button>`;
+      ` data-tip="${on ? "Снять приписку к рации" : "Приписать к рации: сядет на связь, как освободится"}">📻</button>`;
     return { band, id: e.id, html: pick + duty };
   });
 
@@ -2254,7 +2257,7 @@ function crewList(snap, x, y) {
 // какой параметр делает проводника — знание ядра, а не JS.
 function fieldLine(e, led, node) {
   const parts = [
-    `<b title="${esc(forceSplit(e))}">+${e.raid_force ?? 0}</b> сила`,
+    `<b data-tip="${esc(forceSplit(e))}">+${e.raid_force ?? 0}</b> сила`,
   ];
   // Проводник помечается в двух видах, и оба нужны: кто ведёт **сейчас** (это
   // говорит ядро — `node.guide`, там же разрешается ничья) и кто поведёт, если
@@ -2512,7 +2515,7 @@ function missionCard(m) {
       m.squad
         .map((n) =>
           n === m.guide
-            ? `<u title="ведёт отряд: режет сложность">${esc(n)}</u>`
+            ? `<u data-tip="ведёт отряд: режет сложность">${esc(n)}</u>`
             : esc(n),
         )
         .join(" · ") || "—"
@@ -2636,26 +2639,73 @@ function renderResearchPanel(list) {
 // Заводится она **по элементу**, а не по месту вызова: текст ставит тот же код,
 // что рисует строку, и обновляется он тем же кадром. Нативный `title` у такого
 // элемента ставить нельзя — иначе подсказок будет две.
-const liveTips = new WeakMap();
+// ⚠️ **Нативного `title` в живых панелях быть не должно вовсе.** Запись в
+// атрибут — даже той же строкой — сбрасывает браузеру таймер всплытия, а панели
+// и окна зовут свои `sync*` каждым кадром (~16 мс): подсказка не успевает
+// показаться **ни разу**. А в ленте тикеров хуже: узел кнопки живёт один кадр,
+// и всплывать нечему в принципе. Так молчали все кнопки, у которых причина
+// отказа названа словом (§12.53, §12.71), — в том числе закрытый кандидат в
+// «Найме». Пятое лицо тех же граблей, что `onPanelClick` и `syncTeachButtons`
+// (§12.84): узел выглядит живым, а событие браузер не выдаёт.
+//
+// Поэтому подсказка в проекте одна и своя: узел `#livetip`, текст — в
+// `data-tip` у элемента. Атрибут переживает и покадровую запись (ставим только
+// на изменении), и пересборку узла (`innerHTML` несёт его с собой), а висящая
+// подсказка перерисовывается на месте — числа в ней тикают.
+//
+// Ловится она **делегированием на документ**, а не слушателем на каждом узле:
+// половина адресатов пересоздаётся кадром, и вешать на них по три слушателя
+// значит вешать их шестьдесят раз в секунду. Это тот же довод, по которому
+// кнопки панелей идут через `onPanelClick`.
 let liveTipFor = null;
 
 function liveTitle(el, text) {
-  const prev = liveTips.get(el);
-  if (prev === text) return;
-  liveTips.set(el, text);
+  const s = text ?? "";
+  if ((el.dataset.tip ?? "") === s) return;
+  if (s) el.dataset.tip = s;
+  else delete el.dataset.tip;
   if (liveTipFor === el) showLiveTip(el);
 }
 
-// Подсказку держит один узел на всё приложение: окно «Склад» пересобирается при
-// каждом открытии, и слушатель на каждом элементе копился бы вместе с ним.
-function bindLiveTip(el) {
-  el.addEventListener("mouseenter", () => showLiveTip(el));
-  el.addEventListener("mousemove", moveLiveTip);
-  el.addEventListener("mouseleave", hideLiveTip);
+let lastPointer = null;
+
+document.addEventListener("mouseover", (e) => {
+  lastPointer = { x: e.clientX, y: e.clientY };
+  aimLiveTip();
+});
+document.addEventListener("mousemove", (e) => {
+  lastPointer = { x: e.clientX, y: e.clientY };
+  if (liveTipFor && !liveTipFor.isConnected) aimLiveTip();
+  moveLiveTip(e);
+});
+document.addEventListener("mouseleave", () => {
+  lastPointer = null;
+  hideLiveTip();
+});
+
+// ⚠️ **Прицел берётся с точки, а не с события.** Половина адресатов
+// пересоздаётся кадром (лента тикеров переписывается вся, §12.100), и узел, над
+// которым висит подсказка, исчезает **не двигая мышь**: `mouseleave` по нему не
+// придёт, `mouseover` по новому — тоже. Поэтому цель переспрашиваем у точки под
+// курсором, и делает это тот же кадр, что и перерисовал ленту (`refreshLiveTip`
+// в конце снапшота). Без этого подсказка над «Продать ×5» либо гасла на первом
+// же кадре, либо навсегда замирала на вчерашнем числе.
+function aimLiveTip() {
+  if (!lastPointer) return hideLiveTip();
+  const at = document.elementFromPoint(lastPointer.x, lastPointer.y);
+  const el = at?.closest?.("[data-tip]");
+  if (el) showLiveTip(el);
+  else hideLiveTip();
+}
+
+function refreshLiveTip() {
+  if (!lastPointer) return;
+  if (!liveTipFor || !liveTipFor.isConnected) aimLiveTip();
+  else showLiveTip(liveTipFor);
 }
 
 function showLiveTip(el) {
-  const text = liveTips.get(el) ?? "";
+  const text = el.dataset.tip ?? "";
   // Пустой текст и спрятанный элемент — не «подсказка без слов», а её
   // отсутствие: заказов нет, и говорить не о чем.
   if (!text || el.hidden) {
@@ -2975,8 +3025,7 @@ function renderTickers() {
   // То же правило, что в окне (§12.100): нет поста — кнопок сделки нет вовсе, а
   // причина написана красным **один раз**, а не в каждой строке. Тикеры при этом
   // остаются: курс читать по-прежнему можно, а пост игрок отстроит.
-  if (!posts)
-    parts.push('<div class="win-warn">Нет «Торгового поста»</div>');
+  if (!posts) parts.push('<div class="win-warn">Нет «Торгового поста»</div>');
 
   for (const t of tickers) {
     const it = (meta.items ?? [])[t.item];
@@ -2994,7 +3043,7 @@ function renderTickers() {
           `<button class="tool tick-deal${s?.ready ? " on" : " off"}" ` +
           `data-key="${buying ? "buy" : "sell"}@${t.item}" ` +
           `data-item="${t.item}" data-faction="${t.faction}" ` +
-          `data-buying="${buying ? "1" : ""}" title="${esc(s?.title ?? "")}">` +
+          `data-buying="${buying ? "1" : ""}" data-tip="${esc(s?.title ?? "")}">` +
           `<span>${buying ? "Купить" : "Продать"}</span>` +
           `<b class="qty">×${qty}</b></button>`
         );
@@ -3013,7 +3062,7 @@ function renderTickers() {
         // Снять тикер — там же, где он работает. Ключ свой, иначе `onPanelClick`
         // спутал бы его с кнопками сделки той же строки.
         `<button class="tool tick-off" data-key="off@${t.item}" ` +
-        `data-item="${t.item}" title="Убрать из ленты">×</button>` +
+        `data-item="${t.item}" data-tip="Убрать из ленты">×</button>` +
         "</div>" +
         `<div class="tick-rate">${rateText(q, true)}` +
         `<span class="ware-sep">·</span>${rateText(q, false)}</div>` +
@@ -4034,7 +4083,10 @@ function buildToolbar() {
     '<span class="sw sw-scrap"></span><span>Склад</span>',
     () => openStockWindow(),
   );
-  ware.title = "Что есть на базе, почём его берут и какие правила это двигают";
+  liveTitle(
+    ware,
+    "Что есть на базе, почём его берут и какие правила это двигают",
+  );
   stockDoor = ware;
   el.appendChild(ware);
 
@@ -4054,15 +4106,14 @@ function buildToolbar() {
         openSciWindow();
       },
     );
-    sciDoor.title = "За какую тему взяться и чего для этого не хватает";
+    liveTitle(sciDoor, "За какую тему взяться и чего для этого не хватает");
     el.appendChild(sciDoor);
   }
   if ((meta.recruits ?? []).length) {
-    hireDoor = mkTool(
-      '<span class="sw sw-hire"></span><span>Найм</span>',
-      () => openHireWindow(),
+    hireDoor = mkTool('<span class="sw sw-hire"></span><span>Найм</span>', () =>
+      openHireWindow(),
     );
-    hireDoor.title = "Кто откликнется на известность базы и чего он стоит";
+    liveTitle(hireDoor, "Кто откликнется на известность базы и чего он стоит");
     el.appendChild(hireDoor);
   }
 
@@ -4092,10 +4143,11 @@ function buildToolbar() {
     // Правило доступа названо словом на самой кнопке (§12.53, §12.111): на
     // карте отказ показан крестом, но крест говорит «эту клетку нельзя», а не
     // «почему». Условие — то же свойство, на котором висит и само правило.
-    if (p.solid) b.title = ACCESS_HINT;
+    if (p.solid) liveTitle(b, ACCESS_HINT);
     // Закрытый технологией тайл виден, но не размечается: невидимая цель не
     // тянет, а ядро такую разметку всё равно отклонит (§12.27, §4.4).
-    if (p.tech) tileButtons.push({ btn: b, tech: p.tech, hint: b.title });
+    if (p.tech)
+      tileButtons.push({ btn: b, tech: p.tech, hint: b.dataset.tip ?? "" });
     build.appendChild(b);
   });
 
@@ -4116,7 +4168,7 @@ function buildToolbar() {
     () => worker.postMessage({ type: "setAutoTidy", on: !autoTidy }),
   );
   auto.classList.add("toggle", "on");
-  auto.title = "Коты свозят лом на склад без разметки";
+  liveTitle(auto, "Коты свозят лом на склад без разметки");
   rules.appendChild(auto);
   tidyBtn = auto;
 
@@ -4131,7 +4183,7 @@ function buildToolbar() {
     },
   );
   care.classList.add("toggle", "on");
-  care.title = "На исходе сил кот бросает работу и уходит спать";
+  liveTitle(care, "На исходе сил кот бросает работу и уходит спать");
   rules.appendChild(care);
 
   // Вылазки. Не режим ввода: клик — это сразу заявка (§12.22). Поэтому кнопки
@@ -4250,14 +4302,14 @@ function buildToolbar() {
       setSpeed(1);
     },
   );
-  fresh.title = "Сбросить базу к началу";
+  liveTitle(fresh, "Сбросить базу к началу");
   game.appendChild(fresh);
 
   const dump = mkTool(
     '<span class="sw sw-scrap"></span><span>Сохранить в файл</span>',
     () => worker.postMessage({ type: "save" }),
   );
-  dump.title = "Скачать снимок партии";
+  liveTitle(dump, "Скачать снимок партии");
   game.appendChild(dump);
 
   const picker = document.createElement("input");
@@ -4274,7 +4326,7 @@ function buildToolbar() {
     '<span class="sw sw-scrap"></span><span>Загрузить файл</span>',
     () => picker.click(),
   );
-  restore.title = "Открыть снимок партии";
+  liveTitle(restore, "Открыть снимок партии");
   game.appendChild(restore);
   game.appendChild(picker);
 
@@ -4282,7 +4334,7 @@ function buildToolbar() {
     '<span class="sw sw-hire"></span><span>Скачать трейс</span>',
     () => worker.postMessage({ type: "trace" }),
   );
-  trace.title = "Журнал команд: как партия пришла в это состояние";
+  liveTitle(trace, "Журнал команд: как партия пришла в это состояние");
   game.appendChild(trace);
 
   // Раскрыт тот раздел, что был открыт до перестройки; на первом кадре не
@@ -4446,7 +4498,7 @@ function syncTradeButtons() {
       size.textContent = `×${qty}`;
       size.classList.toggle("big", shiftHeld);
     }
-    b.title = st.title;
+    liveTitle(b, st.title);
   }
 }
 
@@ -4525,7 +4577,7 @@ function syncRecruitButtons(list) {
             : "Нанять";
     // Параметры называем и у закрытого кандидата: к нему идут заранее, и
     // «зачем мне этот кот» игрок спрашивает до того, как накопит.
-    b.title = [b.dataset.hint, why].filter(Boolean).join(" · ");
+    liveTitle(b, [b.dataset.hint, why].filter(Boolean).join(" · "));
   });
 }
 
@@ -4556,19 +4608,22 @@ function syncTopicButtons(list) {
     // из `title` («Нужен кот с „Наукой“ 1 уровня») не видна ни разу.
     b.classList.toggle("off", !ready);
     b.classList.toggle("on", ready);
-    b.title = t.known
-      ? "Уже изучено"
-      : !t.unlocked
-        ? "Нужны предыдущие технологии"
-        : !t.lab
-          ? "Нет лаборатории"
-          : !t.staffed
-            ? `Нужен кот с «Наукой» ${b.dataset.level} уровня`
-            : !t.affordable
-              ? `На складе нет образцов: ${payHint((meta.research ?? [])[i]?.cost)}`
-              : researchRunning
-                ? "Тема уже изучается"
-                : "Взяться за тему";
+    liveTitle(
+      b,
+      t.known
+        ? "Уже изучено"
+        : !t.unlocked
+          ? "Нужны предыдущие технологии"
+          : !t.lab
+            ? "Нет лаборатории"
+            : !t.staffed
+              ? `Нужен кот с «Наукой» ${b.dataset.level} уровня`
+              : !t.affordable
+                ? `На складе нет образцов: ${payHint((meta.research ?? [])[i]?.cost)}`
+                : researchRunning
+                  ? "Тема уже изучается"
+                  : "Взяться за тему",
+    );
   });
 }
 
@@ -4591,7 +4646,7 @@ let numEdit = null;
 function mkKeepLabel(key, read, write) {
   const label = document.createElement("span");
   label.className = "keep-val";
-  label.title = "Клик — ввести число";
+  liveTitle(label, "Клик — ввести число");
   label.addEventListener("mousedown", (e) => {
     if (e.button !== 0) return;
     e.preventDefault(); // иначе начинается выделение текста, а не правка
@@ -4725,7 +4780,10 @@ function syncTileButtons(techs) {
     // Открытая кнопка возвращает свою подсказку, а не пустую: у полки это
     // правило доступа (§12.111), и оно не перестаёт действовать оттого, что
     // технологию наконец изучили.
-    btn.title = open ? (hint ?? "") : `Откроет тема «${def?.label || tech}»`;
+    liveTitle(
+      btn,
+      open ? (hint ?? "") : `Откроет тема «${def?.label || tech}»`,
+    );
   }
 }
 
@@ -4777,11 +4835,13 @@ function syncTeachButtons() {
     if (b.innerHTML !== html) b.innerHTML = html;
     b.classList.toggle("off", !!why);
     b.classList.toggle("on", !why);
-    b.title =
+    liveTitle(
+      b,
       why ??
-      (on
-        ? `${cat.id} учится: после сна и еды вернётся за парту сам`
-        : `${cat.id} — ${b.dataset.hint}`);
+        (on
+          ? `${cat.id} учится: после сна и еды вернётся за парту сам`
+          : `${cat.id} — ${b.dataset.hint}`),
+    );
   }
 }
 
@@ -5017,39 +5077,39 @@ function raidGate(i, node) {
   const title = busyWhy
     ? `${hint} · ${busyWhy}`
     : taken
-    ? "Эта вылазка уже идёт другим отрядом"
-    : !known
-      ? `${hint} · нужна известность ${def.requires ?? 0}`
-      : distrust
-        ? `${hint} · ${distrust}`
-        : nobody
-          ? `${hint} · все дома, спасать некого`
-          : paws < least
-            ? `${hint} · готовых ${paws}, нужно ${need}` +
-              (home.length ? ` · дома остаются: ${home.join(", ")}` : "")
-            : paws > most
-              ? `${hint} · в отряде ${paws}, а больше ${most} этот заказ не уводит`
-              : home.length
-                ? `${hint} · дома остаются: ${home.join(", ")}`
-                : hint;
+      ? "Эта вылазка уже идёт другим отрядом"
+      : !known
+        ? `${hint} · нужна известность ${def.requires ?? 0}`
+        : distrust
+          ? `${hint} · ${distrust}`
+          : nobody
+            ? `${hint} · все дома, спасать некого`
+            : paws < least
+              ? `${hint} · готовых ${paws}, нужно ${need}` +
+                (home.length ? ` · дома остаются: ${home.join(", ")}` : "")
+              : paws > most
+                ? `${hint} · в отряде ${paws}, а больше ${most} этот заказ не уводит`
+                : home.length
+                  ? `${hint} · дома остаются: ${home.join(", ")}`
+                  : hint;
   // Причина отказа отдельной строкой от подсказки: тулбар склеивает их в один
   // `title`, а штаб (§12.71) печатает причину словом под заказом — там она и
   // должна читаться, не наводя мышь.
   const reason = busyWhy
     ? busyWhy
     : taken
-    ? "эту вылазку уже ведёт другой отряд"
-    : !known
-      ? `нужна известность ${def.requires ?? 0}, у базы ${fame}`
-      : distrust
-        ? distrust
-        : nobody
-          ? "все дома — спасать некого"
-          : paws < least
-            ? `готовы идти ${paws}, а нужно ${need}`
-            : paws > most
-              ? `в отряде ${paws}, а больше ${most} этот заказ не уводит`
-              : null;
+      ? "эту вылазку уже ведёт другой отряд"
+      : !known
+        ? `нужна известность ${def.requires ?? 0}, у базы ${fame}`
+        : distrust
+          ? distrust
+          : nobody
+            ? "все дома — спасать некого"
+            : paws < least
+              ? `готовы идти ${paws}, а нужно ${need}`
+              : paws > most
+                ? `в отряде ${paws}, а больше ${most} этот заказ не уводит`
+                : null;
   return {
     ready,
     title,
@@ -5205,9 +5265,7 @@ function newsText(n) {
   };
   if (n.kind === "raid") {
     const label = name(meta?.missions, n.def);
-    return n.opened
-      ? ["открыт заказ", label]
-      : ["заказ закрылся", label];
+    return n.opened ? ["открыт заказ", label] : ["заказ закрылся", label];
   }
   if (n.kind === "recruit") {
     const label = name(meta?.recruits, n.def);
@@ -5224,7 +5282,9 @@ function newsText(n) {
       : ["рецепт закрылся", label];
   }
   const label = name(meta?.research, n.def);
-  return n.opened ? ["лаборатория готова к теме", label] : ["тема закрылась", label];
+  return n.opened
+    ? ["лаборатория готова к теме", label]
+    : ["тема закрылась", label];
 }
 
 // Куда ведёт клик. Заказ — в раздел «Вылазки», а не в штаб: узлов бывает
@@ -5277,7 +5337,7 @@ function renderNews(snap) {
       row.innerHTML =
         `<span class="news-kind${n.opened ? "" : " gone"}">${kind}</span>` +
         `<span class="news-label">${label}</span>` +
-        '<button class="tool news-x" title="Прочитал">×</button>';
+        '<button class="tool news-x" data-tip="Прочитал">×</button>';
       newsRows.set(key, row);
     }
     order.push(row);
@@ -5429,10 +5489,13 @@ function syncDoors(snap) {
     const need = Math.min(
       ...open.map((i) => (meta.research ?? [])[i]?.level ?? 1),
     );
-    sciDoor.title = staffed
-      ? "За какую тему взяться и чего для этого не хватает"
-      : `Некому взяться: нужен кот с «Наукой» ${need} уровня — ` +
-        "учат за партой, раздел «Обучение»";
+    liveTitle(
+      sciDoor,
+      staffed
+        ? "За какую тему взяться и чего для этого не хватает"
+        : `Некому взяться: нужен кот с «Наукой» ${need} уровня — ` +
+            "учат за партой, раздел «Обучение»",
+    );
   }
   if (hireDoor) hireDoor.hidden = !recruits.some((r) => !r.hired);
 }
@@ -5741,7 +5804,6 @@ function buildStockWindow() {
   busyEl.hidden = true;
   // Подсказка у неё **живая** (`liveTitle`, а не `title`): числа в ней тикают
   // каждым кадром, а нативную подсказку браузер рисует один раз при показе.
-  bindLiveTip(busyEl);
   top.insertBefore(busyEl, close);
 
   // Предупреждения — одной строкой на всё окно, а не по строке на предмет:
@@ -6239,22 +6301,28 @@ function syncStockWindow() {
     // записи тех же трёх чисел в игре быть не должно.
     const nums = `<b>${free}</b>` + (st.loose ? `<u>+${st.loose}</u>` : "");
     if (r.num.innerHTML !== nums) r.num.innerHTML = nums;
-    r.num.title = [
-      `${name}: на складе ${st.stored}`,
-      st.booked ? `забронировано ${st.booked} под сделку` : "",
-      st.loose
-        ? `валяется ${st.loose} — годится на стройку, но платить и ` +
-          `продавать этим нельзя, пока не убрано`
-        : "",
-    ]
-      .filter(Boolean)
-      .join(" · ");
+    liveTitle(
+      r.num,
+      [
+        `${name}: на складе ${st.stored}`,
+        st.booked ? `забронировано ${st.booked} под сделку` : "",
+        st.loose
+          ? `валяется ${st.loose} — годится на стройку, но платить и ` +
+            `продавать этим нельзя, пока не убрано`
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+    );
 
     const isFav = favorites.includes(r.item);
     r.fav.classList.toggle("on", isFav);
-    r.fav.title = isFav
-      ? "Убрать из избранного"
-      : "В избранное: строка встанет наверх списка";
+    liveTitle(
+      r.fav,
+      isFav
+        ? "Убрать из избранного"
+        : "В избранное: строка встанет наверх списка",
+    );
 
     // Производство (§12.65, §12.105). Число, которое меряет порог, — **в
     // подсказке**, а не в строке: две почти одинаковые цифры рядом читаются как
@@ -6297,14 +6365,16 @@ function syncStockWindow() {
       // Подсвечиваем **кнопку**, а не строку целиком (§12.120): строка и вчера
       // отвечала за курс и запас, новое здесь — умение её заказать.
       k.make.classList.toggle("fresh", freshRecipes.has(k.def));
-      k.line.title =
+      liveTitle(
+        k.line,
         craftGate ??
-        (min > 0
-          ? `Коты сами делают, пока на базе меньше ${min} шт. Сейчас на базе ` +
-            `${st.on_base} — это склад вместе с полом и лапами, за вычетом ` +
-            `обещанного покупателю. Клик по числу — ввести другое`
-          : `Держать запас: коты будут делать сами, когда просядет. Считается ` +
-            `не склад, а вся база — сейчас на ней ${st.on_base}`);
+          (min > 0
+            ? `Коты сами делают, пока на базе меньше ${min} шт. Сейчас на базе ` +
+              `${st.on_base} — это склад вместе с полом и лапами, за вычетом ` +
+              `обещанного покупателю. Клик по числу — ввести другое`
+            : `Держать запас: коты будут делать сами, когда просядет. Считается ` +
+              `не склад, а вся база — сейчас на ней ${st.on_base}`),
+      );
 
       // Доступность рецепта считает ядро (технологии, мастерская, склад), здесь
       // только показываем. `shop` значит «есть куда поставить»: ячейка станка —
@@ -6326,15 +6396,18 @@ function syncStockWindow() {
       const ready = open && rs.shop;
       k.make.classList.toggle("off", !ready);
       k.make.classList.toggle("on", ready && rs.affordable);
-      k.make.title = !open
-        ? "Нужна технология"
-        : !rs.shop
-          ? shopsBusyHint()
-          : rs.affordable
-            ? "Произвести: клик — штука, Shift — пять"
-            : `На складе нет материала, заказ будет ждать: ${payHint(
-                (meta.recipes ?? [])[k.def]?.cost,
-              )}`;
+      liveTitle(
+        k.make,
+        !open
+          ? "Нужна технология"
+          : !rs.shop
+            ? shopsBusyHint()
+            : rs.affordable
+              ? "Произвести: клик — штука, Shift — пять"
+              : `На складе нет материала, заказ будет ждать: ${payHint(
+                  (meta.recipes ?? [])[k.def]?.cost,
+                )}`,
+      );
     }
 
     // Разбор (§12.114). Ворота у кнопки те же, что у «Произвести», и считает их
@@ -6361,14 +6434,17 @@ function syncStockWindow() {
       // Разбор — такой же освоенный рецепт, и новость о нём та же (§12.120);
       // кнопка только называется иначе и стоит в строке **входа** (§12.114).
       k.make.classList.toggle("fresh", freshRecipes.has(k.def));
-      k.make.title = !open
-        ? "Нужна технология"
-        : !rs.shop
-          ? shopsBusyHint()
-          : room > 0
-            ? `Разобрать: клик — штука, Shift — пять, но не больше ${room} — ` +
-              `столько сейчас на складе. Обратно не собрать`
-            : "Разбирать нечего: на складе этого нет (валяющееся сперва уберут)";
+      liveTitle(
+        k.make,
+        !open
+          ? "Нужна технология"
+          : !rs.shop
+            ? shopsBusyHint()
+            : room > 0
+              ? `Разобрать: клик — штука, Shift — пять, но не больше ${room} — ` +
+                `столько сейчас на складе. Обратно не собрать`
+              : "Разбирать нечего: на складе этого нет (валяющееся сперва уберут)",
+      );
     }
 
     const who = r.sides.length ? sideOf(r.item, r.sides) : null;
@@ -6402,13 +6478,16 @@ function syncStockWindow() {
         const otherGate = tears ? saleGate : autoGateHint("crafting");
         const stuck = keep > 0 && !!otherGate;
         r.sale.dest.classList.toggle("off", stuck);
-        r.sale.dest.title = stuck
-          ? otherGate
-          : tears
-            ? `Излишек уходит в мастерскую, на разбор. Клик — отдать его на ` +
-              `продажу «${fac?.label ?? "?"}»`
-            : `Излишек уходит на продажу «${fac?.label ?? "?"}». Клик — отдать ` +
-              `его в мастерскую, на разбор`;
+        liveTitle(
+          r.sale.dest,
+          stuck
+            ? otherGate
+            : tears
+              ? `Излишек уходит в мастерскую, на разбор. Клик — отдать его на ` +
+                `продажу «${fac?.label ?? "?"}»`
+              : `Излишек уходит на продажу «${fac?.label ?? "?"}». Клик — отдать ` +
+                `его в мастерскую, на разбор`,
+        );
       }
       const open = tears ? canScrap : canSell;
       r.sale.line.classList.toggle("on", keep > 0 && open);
@@ -6422,26 +6501,28 @@ function syncStockWindow() {
       // месте с причиной словом). Ни туда, ни сюда — тогда строки и правда нет:
       // сказать ею нечего.
       r.sale.line.hidden = !canSell && !canScrap;
-      r.sale.line.title =
+      liveTitle(
+        r.sale.line,
         gate ??
-        (tears && !canCraft
-          ? "Разбирать негде: мастерской нет"
-          : !tears && !canTrade
-            ? "Сбывать некуда: торгового поста нет"
-            : tears
-              ? keep > 0
-                ? `Коты разбирают всё, что на складе сверх ${keep} шт. ` +
-                  `(лежащее на полу не в счёт — сперва уберут; надетое не в счёт ` +
-                  `вовсе). Клик по числу — ввести другое`
-                : "Отдавать излишек в разбор: всё, что на складе сверх порога, " +
-                  "коты сами отнесут в мастерскую"
-              : keep > 0
-                ? `Коты продают «${fac?.label ?? "?"}» всё, что на складе сверх ` +
-                  `${keep} шт. (лежащее на полу не в счёт — сперва уберут).${
-                    posts ? "" : " Но торгового поста ещё нет."
-                  } Клик по числу — ввести другое`
-                : "Продавать излишек: всё, что на складе сверх порога, коты " +
-                  "отнесут на пост сами");
+          (tears && !canCraft
+            ? "Разбирать негде: мастерской нет"
+            : !tears && !canTrade
+              ? "Сбывать некуда: торгового поста нет"
+              : tears
+                ? keep > 0
+                  ? `Коты разбирают всё, что на складе сверх ${keep} шт. ` +
+                    `(лежащее на полу не в счёт — сперва уберут; надетое не в счёт ` +
+                    `вовсе). Клик по числу — ввести другое`
+                  : "Отдавать излишек в разбор: всё, что на складе сверх порога, " +
+                    "коты сами отнесут в мастерскую"
+                : keep > 0
+                  ? `Коты продают «${fac?.label ?? "?"}» всё, что на складе сверх ` +
+                    `${keep} шт. (лежащее на полу не в счёт — сперва уберут).${
+                      posts ? "" : " Но торгового поста ещё нет."
+                    } Клик по числу — ввести другое`
+                  : "Продавать излишек: всё, что на складе сверх порога, коты " +
+                    "отнесут на пост сами"),
+      );
     }
 
     // Тикер (§12.100). Сторона обязательна — без неё торговать нечем, — поэтому
@@ -6456,22 +6537,28 @@ function syncStockWindow() {
     const onTicker = tickers.some((t) => t.item === r.item);
     r.tick.classList.toggle("on", onTicker);
     r.tick.classList.toggle("off", !r.sides.length);
-    r.tick.title = !r.sides.length
-      ? `«${name}» не берёт никто — торговать по нему нечем`
-      : onTicker
-        ? "Убрать из ленты на главном экране"
-        : `В ленту: строка встанет на главный экран, и по ней можно будет ` +
-          `торговать с «${fac?.label ?? "?"}» в один клик`;
+    liveTitle(
+      r.tick,
+      !r.sides.length
+        ? `«${name}» не берёт никто — торговать по нему нечем`
+        : onTicker
+          ? "Убрать из ленты на главном экране"
+          : `В ленту: строка встанет на главный экран, и по ней можно будет ` +
+            `торговать с «${fac?.label ?? "?"}» в один клик`,
+    );
 
     if (r.side) {
       const one = r.sides.length < 2;
       const label = esc(fac?.label || fac?.id || "—");
       if (r.side.textContent !== label) r.side.textContent = label;
       r.side.classList.toggle("off", one);
-      r.side.title = one
-        ? `Этот товар берёт только «${fac?.label ?? "?"}» — выбирать не из кого`
-        : `Торгуем с «${fac?.label ?? "?"}». Клик — другая сторона; порог и ` +
-          `тикер переезжают вместе с ней`;
+      liveTitle(
+        r.side,
+        one
+          ? `Этот товар берёт только «${fac?.label ?? "?"}» — выбирать не из кого`
+          : `Торгуем с «${fac?.label ?? "?"}». Клик — другая сторона; порог и ` +
+              `тикер переезжают вместе с ней`,
+      );
     }
 
     // Сторона у кнопок сделки — **не своя, а строкина**: её выбирают кликом, и
@@ -6487,12 +6574,15 @@ function syncStockWindow() {
         ? `${rateText(q, true)}<span class="ware-sep">·</span>${rateText(q, false)}`
         : "—";
       if (r.rate.innerHTML !== html) r.rate.innerHTML = html;
-      r.rate.title = q
-        ? `Покупка ${q.buy}¤ · продажа ${q.sell}¤ за штуку` +
-          (q.next_in > 0
-            ? ` · через ${q.next_in} станет ${q.next_buy}¤ / ${q.next_sell}¤`
-            : "")
-        : "";
+      liveTitle(
+        r.rate,
+        q
+          ? `Покупка ${q.buy}¤ · продажа ${q.sell}¤ за штуку` +
+              (q.next_in > 0
+                ? ` · через ${q.next_in} станет ${q.next_buy}¤ / ${q.next_sell}¤`
+                : "")
+          : "",
+      );
     }
   }
 
@@ -7023,12 +7113,12 @@ function raidCard(i, node) {
     : paused
       ? `<button class="tool raid-pause" data-key="auto${i}@${at}" data-on="1"` +
         ` data-x="${node.x}" data-y="${node.y}"` +
-        ' title="Правило стоит на паузе — вернуть отряд на этот круг">' +
+        ' data-tip="Правило стоит на паузе — вернуть отряд на этот круг">' +
         "↻ неактивно</button>"
       : `<button class="tool raid-auto${on ? " on" : ""}"` +
         ` data-key="auto${i}@${at}" data-def="${on ? -1 : i}"` +
         ` data-x="${node.x}" data-y="${node.y}"` +
-        ` title="${on ? "Отряд ходит сюда сам — снять правило" : "Ходить сюда самому, как только отряд готов"}">` +
+        ` data-tip="${on ? "Отряд ходит сюда сам — снять правило" : "Ходить сюда самому, как только отряд готов"}">` +
         (on ? "↻ автовылазка" : "↻") +
         "</button>";
 
@@ -7120,7 +7210,7 @@ function busyCard(raid, node) {
       `<button class="tool raid-pause${node.auto_on ? " on" : ""}"` +
         ` data-key="pause@${at}" data-on="${node.auto_on ? "" : "1"}"` +
         ` data-x="${node.x}" data-y="${node.y}"` +
-        ` title="${
+        ` data-tip="${
           node.auto_on
             ? "Отряд ходит сюда сам — приостановить правило"
             : "Правило на паузе — вернуть отряд на этот круг"
@@ -7134,7 +7224,7 @@ function busyCard(raid, node) {
         "</button>",
       `<button class="tool raid-auto" data-key="off@${at}" data-def="-1"` +
         ` data-x="${node.x}" data-y="${node.y}"` +
-        ' title="Забыть правило совсем">Снять</button>',
+        ' data-tip="Забыть правило совсем">Снять</button>',
     );
   }
   if (act.length) rows.push(`<div class="raidwin-act">${act.join("")}</div>`);
@@ -7205,15 +7295,15 @@ function ruleRow(node, at) {
     }${hold ? " holding" : ""}">` +
     `<span${
       blocked
-        ? ' title="Заказ сейчас недоступен — почему, написано в штабе вылазок"'
+        ? ' data-tip="Заказ сейчас недоступен — почему, написано в штабе вылазок"'
         : hold
-          ? ` title="${hold}"`
+          ? ` data-tip="${hold}"`
           : ""
     }>${state}: «${label}»</span>` +
     `<button class="tool raid-pause${node.auto_on ? " on" : ""}"` +
     ` data-key="pause@${at}" data-on="${node.auto_on ? "" : "1"}"` +
     ` data-x="${node.x}" data-y="${node.y}"` +
-    ` title="${
+    ` data-tip="${
       node.auto_on
         ? "Приостановить: заказ узел запомнит, но отряд по нему не уйдёт"
         : "Вернуть отряд на этот круг"
@@ -7222,7 +7312,7 @@ function ruleRow(node, at) {
     "</button>" +
     `<button class="tool raid-auto" data-key="off@${at}" data-def="-1"` +
     ` data-x="${node.x}" data-y="${node.y}"` +
-    ' title="Забыть правило совсем">Снять</button>' +
+    ' data-tip="Забыть правило совсем">Снять</button>' +
     "</div>"
   );
 }

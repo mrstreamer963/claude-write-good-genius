@@ -14,17 +14,17 @@
       <span class="clock">день <b id="tick">0</b></span>
       <!-- Цель партии обязана быть на виду: она и есть ответ на «зачем я это
            делаю» (§12.58). Список разворачивается панелью справа. -->
-      <button class="clock goals-toggle" id="goals-toggle" title="Цели партии"></button>
+      <button class="clock goals-toggle" id="goals-toggle" data-tip="Цели партии"></button>
       <div class="speeds">
-        <button class="speed" data-speed="0" title="Пауза (пробел)">⏸</button>
-        <button class="speed" data-speed="1" title="×1 (клавиша 1)">×1</button>
-        <button class="speed" data-speed="5" title="×5 (клавиша 2)">×5</button>
-        <button class="speed" data-speed="10" title="×10 (клавиша 3)">×10</button>
+        <button class="speed" data-speed="0" data-tip="Пауза (пробел)">⏸</button>
+        <button class="speed" data-speed="1" data-tip="×1 (клавиша 1)">×1</button>
+        <button class="speed" data-speed="5" data-tip="×5 (клавиша 2)">×5</button>
+        <button class="speed" data-speed="10" data-tip="×10 (клавиша 3)">×10</button>
       </div>
       <!-- Подсказка выросла вместе с механиками и закрывает четверть карты.
            Прятать её насовсем нельзя (иначе управление негде прочитать), но
            убирать с глаз — можно. -->
-      <button class="hint-toggle" id="hint-toggle" title="Подсказка по управлению">?</button>
+      <button class="hint-toggle" id="hint-toggle" data-tip="Подсказка по управлению">?</button>
     </header>
     <!-- Плашка активного режима разметки (§12.62). Инструмент липкий: выбрав
          «Стереть», игрок остаётся в нём и после мазка, — и, забыв переключиться,
