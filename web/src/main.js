@@ -4055,6 +4055,11 @@ function mkSection(el, title) {
 //
 // Времени раздел не касается: разметка идёт при любом темпе (§12.86).
 function openOnly(title) {
+  // Уходя из «Постройки», игрок список уже видел (§12.120, §12.126): гасим
+  // метку на **выходе**, а не на входе, — иначе она стирается тем же
+  // движением, которым он пошёл смотреть. Дверь наружу здесь одна на все
+  // способы уйти: клик по заголовку, другой раздел, клик по клетке.
+  if (openSection === "Постройка" && title !== "Постройка") readNews("tile");
   openSection = title;
   for (const s of sections) {
     const on = s.title === title;
@@ -4144,10 +4149,16 @@ function buildToolbar() {
     // карте отказ показан крестом, но крест говорит «эту клетку нельзя», а не
     // «почему». Условие — то же свойство, на котором висит и само правило.
     if (p.solid) liveTitle(b, ACCESS_HINT);
-    // Закрытый технологией тайл виден, но не размечается: невидимая цель не
-    // тянет, а ядро такую разметку всё равно отклонит (§12.27, §4.4).
+    // Закрытый технологией тайл в палитре не показывается вовсе (§12.126), а
+    // его появление объявляет лента новостей — иначе список молча становится
+    // длиннее. Номер записи нужен ровно для этого: новость адресуется им.
     if (p.tech)
-      tileButtons.push({ btn: b, tech: p.tech, hint: b.dataset.tip ?? "" });
+      tileButtons.push({
+        btn: b,
+        def: i,
+        tech: p.tech,
+        hint: b.dataset.tip ?? "",
+      });
     build.appendChild(b);
   });
 
@@ -5283,6 +5294,14 @@ function newsText(n) {
       ? ["мастерская освоила", label]
       : ["рецепт закрылся", label];
   }
+  if (n.kind === "tile") {
+    // Закрытий у постройки не бывает по тому же доводу, что у рецепта (§12.18),
+    // — но ветку пишем: молчаливое «?» объяснить было бы нечем.
+    const label = name(meta?.palette, n.def);
+    return n.opened
+      ? ["в палитре появилась постройка", label]
+      : ["постройка закрылась", label];
+  }
   const label = name(meta?.research, n.def);
   return n.opened
     ? ["лаборатория готова к теме", label]
@@ -5309,6 +5328,10 @@ function openNewsTarget(kind) {
     else openOnly("Вылазки");
   } else if (kind === "recruit") openHireWindow();
   else if (kind === "recipe") openStockWindow();
+  // Постройка живёт не в окне, а в палитре (§12.126), поэтому и ведёт новость в
+  // раздел тулбара — единственное место, где новую кнопку видно вместе с
+  // соседями и где ею тут же можно размечать.
+  else if (kind === "tile") openOnly("Постройка");
   else openSciWindow();
 }
 
@@ -5508,6 +5531,15 @@ function syncNewsMarks() {
   hireDoor?.classList.toggle("fresh", newsPending("recruit").length > 0);
   const raids = sections.find((sec) => sec.title === "Вылазки");
   raids?.head.classList.toggle("fresh", newsPending("raid").length > 0);
+  // У палитры окна нет, метку носит заголовок раздела — и гаснет она на
+  // **закрытии** раздела, как у окон (§12.120): пока раздел раскрыт,
+  // подсвеченная кнопка и есть весь ответ на «что нового».
+  const build = sections.find((sec) => sec.title === "Постройка");
+  build?.head.classList.toggle("fresh", newsPending("tile").length > 0);
+  const fresh = newlyOpen("tile");
+  for (const { btn, def } of tileButtons) {
+    btn.classList.toggle("fresh", fresh.has(def));
+  }
 }
 
 function mkRegistryHeads(list) {

@@ -91,6 +91,34 @@ fn a_recipe_opens_with_its_technology() {
 }
 
 #[test]
+fn a_tile_opens_with_its_technology() {
+    let mut sim = sim_bare();
+    // Второй тайл палитры за технологией: первый — пол самой схемы.
+    sim.set_tile_tech(1, "masonry");
+    sim.tick_n(2);
+    assert!(sim.news().is_empty(), "без технологии постройки нет вовсе");
+
+    // С §12.126 закрытая постройка из палитры пропадает совсем, и её появление
+    // видно только лентой: молча удлинившийся список игрок не заметит.
+    sim.set_tech("masonry");
+    sim.tick_n(1);
+    assert_eq!(sim.news(), vec![(NewsKind::Tile, 1, true)]);
+}
+
+#[test]
+fn a_tile_never_closes() {
+    let mut sim = sim_bare();
+    sim.set_tile_tech(1, "masonry");
+    sim.set_tech("masonry");
+    sim.tick_n(2);
+    let after_open = sim.news().len();
+    sim.tick_n(50);
+    // Технологии не забываются (§12.18): постройка умеет появиться и не умеет
+    // исчезнуть — ровно на этом свойстве и держится право её прятать.
+    assert_eq!(sim.news().len(), after_open, "постройка закрыться не может");
+}
+
+#[test]
 fn a_recipe_never_closes() {
     let mut sim = sim_bare();
     sim.set_recipe(10, &[(0, 2)], &[(0, 1)], &["fabrics"]);

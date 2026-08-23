@@ -299,6 +299,20 @@ impl Sim {
         self.world.resource::<Techs>().covers(&rule.requires)
     }
 
+    /// Открыт ли тайл палитры — то же выражение, что и ворота разметки
+    /// (`tech_allows`, §12.27), и то же, по которому вид решает, показывать ли
+    /// кнопку (§12.126).
+    ///
+    /// Цена и место в счёт не идут по тому же доводу, что мастерская у рецепта:
+    /// «нечем платить» — это «пока нечем», а не «пока нельзя». Закрыться тайл
+    /// не умеет: технологии не забываются (§12.18). См. шапку `NewsKind`.
+    pub(crate) fn tile_is_open(&mut self, def: usize) -> bool {
+        if def >= self.world.resource::<TileRules>().0.len() {
+            return false;
+        }
+        self.tech_allows(def as i16)
+    }
+
     /// Открыт ли заказ вылазки **для ленты** — то есть виден ли он игроку в
     /// штабе. Ровно те же ворота, по которым решает `hiddenRaid` в виде: рост
     /// известности (§12.79) и «есть ли кого спасать» у вылазки за своим.
@@ -347,6 +361,7 @@ impl Sim {
             self.world.resource::<RecruitRules>().0.len(),
             self.world.resource::<ResearchRules>().0.len(),
             self.world.resource::<CraftRules>().0.len(),
+            self.world.resource::<TileRules>().0.len(),
         ];
         // Базовая линия снимается молча: партия начинается с открытой первой
         // ступени, и объявлять её новостью не о чем. У загруженной партии линия
@@ -371,6 +386,7 @@ impl Sim {
                     NewsKind::Recruit => self.recruit_is_open(def),
                     NewsKind::Topic => self.topic_is_open(def),
                     NewsKind::Recipe => self.recipe_is_open(def),
+                    NewsKind::Tile => self.tile_is_open(def),
                 };
                 let was = self.world.resource::<News>().was_open(kind, def);
                 let mut news = self.world.resource_mut::<News>();
@@ -4513,6 +4529,7 @@ impl Sim {
                     NewsKind::Recruit => "recruit",
                     NewsKind::Topic => "topic",
                     NewsKind::Recipe => "recipe",
+                    NewsKind::Tile => "tile",
                 },
                 def: n.def,
                 opened: n.opened,
