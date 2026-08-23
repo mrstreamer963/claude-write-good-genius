@@ -5398,7 +5398,17 @@ function setEmptyLine(heads, buttons, text) {
 function syncDoors(snap) {
   const topics = snap.topics ?? [];
   const recruits = snap.recruits ?? [];
-  if (sciDoor) sciDoor.hidden = !topics.some((t) => !t.known && t.unlocked);
+  // **Дверь «Науки» держит не тема, а тот, кто её потянет** (§12.124): к
+  // «взяться не за что» (всё изучено, §12.94) добавилось «взяться некому» —
+  // ни одного кота, проходящего допуск хоть одной открытой темы. База без
+  // учёного открывала окно, где каждая строка гаснет с одной и той же
+  // припиской «Нужен кот с „Наукой“ N уровня», то есть дверь вела в тупик.
+  //
+  // Считает допуск **ядро** (`TopicSnap::staffed`, §12.18): второй экземпляр
+  // «кто может взяться» в JS разошёлся бы с `assign_research` — тот же довод,
+  // что у инварианта 14. Вырос кот за партой — дверь возвращается сама.
+  if (sciDoor)
+    sciDoor.hidden = !topics.some((t) => !t.known && t.unlocked && t.staffed);
   if (hireDoor) hireDoor.hidden = !recruits.some((r) => !r.hired);
 }
 
