@@ -3643,7 +3643,11 @@ function command(global, add) {
     else updateSelectionOverlay();
     return;
   }
-  if (!same) {
+  // Повторный клик по клетке с котом, когда никто не выбран, снова выбирает
+  // его: снятие выделения (второй клик) оставляет клетку выбранной, и без этой
+  // оговорки третий клик уходил бы в приказ пустому списку — то есть молча не
+  // делал бы ничего.
+  if (!same || (hit && !selectedUnits.length)) {
     if (hit) selectUnit(hit);
     else updateSelectionOverlay();
     return;
