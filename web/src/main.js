@@ -269,13 +269,17 @@ onPanelClick(tapeEl, ".tick-off", (node) =>
     on: false,
   }),
 );
-onPanelClick(cellEl, ".craft-cancel", (node) =>
+const cancelCraftAt = (node) =>
   sendAction({
     type: "cancelCraft",
     x: Number(node.dataset.x),
     y: Number(node.dataset.y),
-  }),
-);
+  });
+onPanelClick(cellEl, ".craft-cancel", cancelCraftAt);
+// Та же кнопка в панели «Заказы»: обработчик один, ключ один (`craft@x, y`),
+// адресат один — ячейка станка. Два `onPanelClick` здесь не дубль правила, а
+// две панели: слушатель у каждой свой, и делить его нельзя.
+onPanelClick(craftEl, ".craft-cancel", cancelCraftAt);
 onPanelClick(researchEl, ".research-cancel", () =>
   sendAction({ type: "cancelResearch" }),
 );
@@ -907,10 +911,22 @@ function drawMap(map) {
 
     const bx = best % meta.width;
     const by = (best - bx) / meta.width;
+
+    // Стоит глиф в **центре тяжести**, а не в середине выбранной клетки: у
+    // области чётной ширины (стеллаж в два ряда) центр лежит на границе клеток,
+    // и привязка к клетке уводит значок на полтайла вбок — он читается как
+    // съехавший. Клетка нужна только затем, чтобы не улететь наружу у комнаты
+    // буквой «Г», поэтому центр тяжести берётся, лишь когда он **внутри**
+    // области; иначе остаётся прежняя привязка.
+    const inside = r.cells.includes(
+      Math.round(cy) * meta.width + Math.round(cx),
+    );
+    const px = inside ? cx : bx;
+    const py = inside ? cy : by;
     const node = new Graphics(ctx);
     node.scale.set(size / 24);
-    node.x = bx * TILE + (TILE - size) / 2;
-    node.y = by * TILE + (TILE - size) / 2;
+    node.x = px * TILE + (TILE - size) / 2;
+    node.y = py * TILE + (TILE - size) / 2;
     // Приглушённо: глиф — подпись комнате, а не её содержимое. Кучи лома,
     // чертежи, сделки и коты рисуются поверх и обязаны читаться первыми.
     node.alpha = 0.22;
@@ -2684,6 +2700,21 @@ function craftStateText(c) {
 
 // Список приезжает отсортированным по клетке, как сделки (§12.81): рецепт
 // заказы больше не различает, а закрывшийся сосед переставлял бы строки.
+//
+// **Отмена стоит и здесь, а не только у клетки станка (§12.96).** Довод §12.96
+// («три строки „Деталь“ подряд не различить, целиться не во что») снимается
+// самой клеткой в строке: заказ адресуется ячейкой, и раз ячейка написана, то
+// строки различимы полностью — а ключ у кнопки тот же `craft@x, y`, что и в
+// панели клетки. Без неё единственная дорога к отмене шла через клик по нужному
+// станку на карте, и игрок, заказавший вдесятеро больше, чем хотел, вставал в
+// клинч: заказы держат все мастерские, а отменить их нечем — то есть отказ без
+// причины ровно там, где §12.53 требует слово. §12.80 при этом цел по тому же
+// доводу, что у кнопок сделки в ленте тикеров (§12.75): это отмена уже
+// принятого решения, и вся его цена — что делают, сколько осталось и докуда
+// дошла оплаченная штука — написана в тех же двух строках над кнопкой.
+//
+// У заказа правила кнопки нет и здесь (§12.65): правило завело бы его обратно
+// тем же тиком. Вместо неё — причина словом, как у клетки.
 function renderCraftPanel(list) {
   const orders = list ?? [];
 
@@ -2698,11 +2729,21 @@ function renderCraftPanel(list) {
     const def = (meta.recipes ?? [])[c.def];
     const pct = c.total > 0 ? Math.round((c.progress / c.total) * 100) : 0;
     const state = esc(craftStateText(c));
+    // Клетка в заголовке строки — та же форма, что у имени клетки в её панели.
+    // Она здесь не украшение: заказов на один рецепт бывает несколько, и без
+    // неё четыре «Пошива комбинезона» подряд неразличимы, а кнопка под ними
+    // целилась бы вслепую.
+    const foot = c.auto
+      ? '<div class="cat-sub">по порогу — снимается в окне «Склад»</div>'
+      : `<button class="tool craft-cancel" data-key="craft@${c.x}, ${c.y}" ` +
+        `data-x="${c.x}" data-y="${c.y}"><span>Отменить</span></button>`;
     parts.push(
       '<div class="cat-skill">' +
-        `<div class="cat-row"><span>${esc(def?.label || def?.id || "Заказ")}</span><b>${pct}%</b></div>` +
+        `<div class="cat-row"><span>${esc(def?.label || def?.id || "Заказ")} ` +
+        `<span class="cell-at">${c.x}, ${c.y}</span></span><b>${pct}%</b></div>` +
         `<div class="bar"><i style="width:${pct}%"></i></div>` +
-        `<div class="cat-sub">осталось ${c.left} шт · ${state}${c.auto ? " · по порогу" : ""}</div>` +
+        `<div class="cat-sub">осталось ${c.left} шт · ${state}</div>` +
+        foot +
         "</div>",
     );
   }
