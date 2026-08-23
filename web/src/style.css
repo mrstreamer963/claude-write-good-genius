@@ -2029,10 +2029,44 @@ main#stage.mode-cursor #mode-banner {
   font-size: 12px;
   line-height: 1.2;
 }
+/* Указатель «Новое: Комбинезон, Аптечка» в шапке окна «Склад» (§12.120).
+   Строкой, а не группой сверху: порядок строк в этом окне принадлежит игроку
+   (`★`, §12.112), и перетасовка отняла бы у закладки её смысл. Стоит рядом с
+   красными предупреждениями и намеренно не красным: это не нехватка, а
+   прибавление. */
+.win-fresh {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.win-fresh-go {
+  padding: 1px 7px;
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+/* Подсвечена сама кнопка заказа, а не строка: новое здесь — умение сделать
+   предмет, а строка и вчера отвечала за курс и запас. */
+.tool.fresh,
+.ware-craft .tool.fresh {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
 /* Метка «внутри есть непрочитанное» — на двери реестра и на заголовке раздела
    «Вылазки» (§12.120). Точка, а не число: «+3» говорит «загляни», но не
    говорит, что именно, — тот же отказ без причины, что запрещает §12.53. */
-.tool.fresh::after,
+/* Точка — только у дверей в тулбаре: внутри окна «фрэш» значит другое (рамка
+   на кнопке заказа), и второй значок там читался бы как ещё одно состояние. */
+#toolbar > .tool.fresh::after,
 .sec-head.fresh::after {
   content: "";
   width: 6px;

@@ -273,6 +273,22 @@ impl Sim {
         self.world.resource::<Techs>().covers(&rule.requires)
     }
 
+    /// Открыт ли рецепт — то же выражение, что и `unlocked` в снимке
+    /// (`RecipeSnap`): технология изучена.
+    ///
+    /// Мастерская и склад в счёт не идут по тому же доводу, что лаборатория у
+    /// темы: это «пока нечем», а не «пока нельзя» — и чинится оно стройкой,
+    /// про которую окно «Склад» и так говорит красной строкой (§12.100).
+    ///
+    /// Закрыться рецепт не умеет: технологии не забываются (§12.18). См. шапку
+    /// `NewsKind`.
+    pub(crate) fn recipe_is_open(&mut self, def: usize) -> bool {
+        let Some(rule) = self.world.resource::<CraftRules>().0.get(def).cloned() else {
+            return false;
+        };
+        self.world.resource::<Techs>().covers(&rule.requires)
+    }
+
     /// Открыт ли заказ вылазки — те же три флага, что и в `raid_gates`.
     pub(crate) fn raid_is_open(&mut self, def: usize) -> bool {
         let g = self.raid_gates(def);
@@ -299,6 +315,7 @@ impl Sim {
             self.world.resource::<MissionRules>().0.len(),
             self.world.resource::<RecruitRules>().0.len(),
             self.world.resource::<ResearchRules>().0.len(),
+            self.world.resource::<CraftRules>().0.len(),
         ];
         // Базовая линия снимается молча: партия начинается с открытой первой
         // ступени, и объявлять её новостью не о чем. У загруженной партии линия
@@ -310,6 +327,7 @@ impl Sim {
                     NewsKind::Raid => self.raid_is_open(def),
                     NewsKind::Recruit => self.recruit_is_open(def),
                     NewsKind::Topic => self.topic_is_open(def),
+                    NewsKind::Recipe => self.recipe_is_open(def),
                 };
                 let was = self.world.resource::<News>().was_open(kind, def);
                 let mut news = self.world.resource_mut::<News>();
@@ -4451,6 +4469,7 @@ impl Sim {
                     NewsKind::Raid => "raid",
                     NewsKind::Recruit => "recruit",
                     NewsKind::Topic => "topic",
+                    NewsKind::Recipe => "recipe",
                 },
                 def: n.def,
                 opened: n.opened,

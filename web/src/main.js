@@ -577,6 +577,7 @@ const topicButtons = []; // кнопки тем — гасим по технол
 // внутри окна стоит группой.
 let sciDoor = null;
 let hireDoor = null;
+let stockDoor = null;
 // Пороги автопроизводства в порядке палитры рецептов (§12.65). Число хранит
 // ядро; здесь оно нужно строке окна «Склад» — и подписи, и полю правки, которое
 // открывается **с него** (§12.100, §12.105, §12.108).
@@ -3974,6 +3975,7 @@ function buildToolbar() {
     () => openStockWindow(),
   );
   ware.title = "Что есть на базе, почём его берут и какие правила это двигают";
+  stockDoor = ware;
   el.appendChild(ware);
 
   // Ещё две двери, по тому же доводу (§12.118): реестр живёт окном, инструмент
@@ -5118,6 +5120,14 @@ function newsText(n) {
       ? ["на связь вышел кандидат", label]
       : ["кандидат больше не откликается", label];
   }
+  if (n.kind === "recipe") {
+    // Закрытий у рецепта не бывает (§12.18), но ветку пишем: молчаливое «?» на
+    // экране объяснить было бы нечем.
+    const label = name(meta?.recipes, n.def);
+    return n.opened
+      ? ["мастерская освоила", label]
+      : ["рецепт закрылся", label];
+  }
   const label = name(meta?.research, n.def);
   return n.opened ? ["лаборатория готова к теме", label] : ["тема закрылась", label];
 }
@@ -5132,6 +5142,7 @@ function newsText(n) {
 function openNewsTarget(kind) {
   if (kind === "raid") openOnly("Вылазки");
   else if (kind === "recruit") openHireWindow();
+  else if (kind === "recipe") openStockWindow();
   else openSciWindow();
 }
 
@@ -5271,6 +5282,7 @@ function syncHireWindow() {
 // Заказы вылазок ведут в раздел «Вылазки», а не в окно: узлов бывает несколько,
 // и какой из них игрок имел в виду, вид не знает (§12.66).
 function syncNewsMarks() {
+  stockDoor?.classList.toggle("fresh", newsPending("recipe").length > 0);
   sciDoor?.classList.toggle("fresh", newsPending("topic").length > 0);
   hireDoor?.classList.toggle("fresh", newsPending("recruit").length > 0);
   const raids = sections.find((sec) => sec.title === "Вылазки");
@@ -5304,6 +5316,7 @@ let sciHeads = null;
 
 function openSciWindow() {
   if (sciWinOpen) return;
+  closeOtherWindows("sci");
   sciWinOpen = true;
   buildSciWindow();
   syncTopicButtons(lastSnap?.topics);
@@ -5354,6 +5367,7 @@ let hireHeads = null;
 
 function openHireWindow() {
   if (hireWinOpen) return;
+  closeOtherWindows("hire");
   hireWinOpen = true;
   buildHireWindow();
   syncRecruitButtons(lastSnap?.recruits);
@@ -5416,21 +5430,49 @@ let stockWinOpen = false;
 // Строка красных предупреждений в шапке окна: чего базе не хватает, чтобы
 // показанное вообще работало (§12.100).
 let warnEl = null;
+// Указатель «Новое: …» в шапке окна «Склад» (§12.120).
+let freshEl = null;
 let busyEl = null;
 // Строки предметов, пока окно открыто. Массив живёт от открытия до закрытия:
 // узлы в нём переиспользуются, и на этом держится вся работа порогов.
 const wareRows = [];
 
+// Окно модальное, значит второго рядом не бывает. До §12.120 столкнуться им
+// было негде — в каждое вёл свой вход, — а теперь в окно ведёт ещё и тикер, и
+// клик по нему из открытого «Склада» положил бы «Найм» поверх него. Закрываем
+// соседей, а не запрещаем открытие: игрок нажал именно то, что хотел увидеть.
+function closeOtherWindows(keep) {
+  if (keep !== "stock") closeStockWindow();
+  if (keep !== "sci") closeSciWindow();
+  if (keep !== "hire") closeHireWindow();
+  if (keep !== "raid") closeRaidWindow();
+}
+
 function openStockWindow() {
   if (stockWinOpen) return;
+  closeOtherWindows("stock");
   stockWinOpen = true;
   buildStockWindow();
   syncStockWindow();
   stockWinEl.hidden = false;
 }
 
+// Клик по имени в указателе — прокрутка к строке этого предмета. Делегированием
+// и парой `mousedown`/`mouseup`, как всё в окнах (§12.84).
+onPanelClick(stockWinEl, ".win-fresh-go", (b) => {
+  const def = Number(b.dataset.def);
+  // Ищем и среди разборов: у `salvage`-рецепта кнопка стоит в строке **входа**,
+  // а не выхода (§12.114), и по `keeps` он не нашёлся бы вовсе.
+  const has = (list) => list.some((k) => k.def === def);
+  const row = wareRows.find((r) => has(r.keeps) || has(r.salvages));
+  row?.row.scrollIntoView({ block: "center", behavior: "smooth" });
+});
+
 function closeStockWindow() {
   if (!stockWinOpen) return;
+  // Новость гаснет там, где её видно целиком (§12.120): пока окно открыто,
+  // указатель в шапке и есть весь ответ на «что нового».
+  readNews("recipe");
   // Уход из окна — конец набора (§12.89): открытую правку досылаем, иначе
   // число не доедет до ядра и не попадёт в автосейв.
   endNumEdit(true);
@@ -5543,6 +5585,21 @@ function buildStockWindow() {
   warnEl = document.createElement("div");
   warnEl.className = "win-warn";
   box.insertBefore(warnEl, list);
+
+  // Указатель «Новое: …» (§12.120). Группой сверху, как в «Науке» и «Найме»,
+  // здесь нельзя: порядок строк в этом окне принадлежит игроку — его решает
+  // `★` (§12.112), — и перетасовка отняла бы у закладки её единственный смысл.
+  // Поэтому строки не двигаются, а новое **называется по имени** и по клику
+  // прокручивает к себе. Прокрутка законна ровно потому, что окно строится один
+  // раз при открытии (§12.118): узел строки живёт всё время, пока оно открыто, —
+  // в перерисовываемой панели тот же приём умер бы через 16 мс.
+  //
+  // Строка одна на окно, перечислением, а не по строке на предмет: «нет
+  // торгового поста» шесть раз подряд — не шесть новостей (§12.80).
+  freshEl = document.createElement("div");
+  freshEl.className = "win-fresh";
+  freshEl.hidden = true;
+  box.insertBefore(freshEl, list);
 
   (meta.items ?? []).forEach((it, item) => {
     const sides = sidesOf(item);
@@ -5987,6 +6044,21 @@ function syncStockWindow() {
   if (warnEl.innerHTML !== warnHtml) warnEl.innerHTML = warnHtml;
   warnEl.hidden = !warns.length;
 
+  // Новое в этом окне — не строка, а **умение**: «Комбинезон» и вчера стоял в
+  // списке со своим курсом и запасом, а появилась у него кнопка «Произвести».
+  // Поэтому указатель называет предмет, а подсвечивается сама кнопка.
+  const freshRecipes = newlyOpen("recipe");
+  const named = [...freshRecipes]
+    .filter((def) => recipeSnaps[def]?.unlocked)
+    .map(
+      (def) =>
+        `<button class="win-fresh-go" data-key="fresh${def}" data-def="${def}">` +
+        `${esc(recipeLabel(def))}</button>`,
+    );
+  const freshHtml = named.length ? `<span>Новое:</span>${named.join("")}` : "";
+  if (freshEl.innerHTML !== freshHtml) freshEl.innerHTML = freshHtml;
+  freshEl.hidden = !named.length;
+
   syncStockBusy();
 
   for (const r of wareRows) {
@@ -6058,6 +6130,9 @@ function syncStockWindow() {
         "under",
         !!next && !next.querySelector(".ware-craft"),
       );
+      // Подсвечиваем **кнопку**, а не строку целиком (§12.120): строка и вчера
+      // отвечала за курс и запас, новое здесь — умение её заказать.
+      k.make.classList.toggle("fresh", freshRecipes.has(k.def));
       k.line.title =
         craftGate ??
         (min > 0
@@ -6119,6 +6194,9 @@ function syncStockWindow() {
       const ready = open && rs.shop && room > 0;
       k.make.classList.toggle("off", !ready);
       k.make.classList.toggle("on", ready);
+      // Разбор — такой же освоенный рецепт, и новость о нём та же (§12.120);
+      // кнопка только называется иначе и стоит в строке **входа** (§12.114).
+      k.make.classList.toggle("fresh", freshRecipes.has(k.def));
       k.make.title = !open
         ? "Нужна технология"
         : !rs.shop
@@ -6282,6 +6360,7 @@ function orderWareRows() {
 }
 
 function openRaidWindow(x, y) {
+  closeOtherWindows("raid");
   // Штаб и есть то место, куда вела новость об открывшемся заказе (§12.120):
   // дошёл — значит прочитал, и метка на разделе гаснет.
   readNews("raid");

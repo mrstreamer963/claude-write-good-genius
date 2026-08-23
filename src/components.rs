@@ -1687,18 +1687,30 @@ pub(crate) struct News {
 /// кадр ехали бы в снимок.
 pub(crate) const NEWS_MAX: usize = 64;
 
-/// Три реестра, о которых говорит лента. Ровно те, что открываются
+/// Четыре реестра, о которых говорит лента. Ровно те, что открываются
 /// шкалами-воротами (инвариант 18) и стоят списком: заказ вылазки, кандидат,
-/// тема. Порядок значим — он же индекс в `News::open`.
+/// тема, рецепт. Порядок значим — он же индекс в `News::open`.
+///
+/// ⚠️ **У рецепта закрытий не бывает.** Его ворота — одна технология, а
+/// технологии не забываются (§12.18), значит `recipe_is_open` только растёт.
+/// Это не забытая ветка, а правда о мире: «Комбинезон разучились делать» —
+/// событие, которого в игре нет. Тем же свойством обладает и тема; у заказа и
+/// кандидата вторые ворота — репутация, и она умеет падать (§12.43).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum NewsKind {
     Raid,
     Recruit,
     Topic,
+    Recipe,
 }
 
 impl NewsKind {
-    pub(crate) const ALL: [NewsKind; 3] = [NewsKind::Raid, NewsKind::Recruit, NewsKind::Topic];
+    pub(crate) const ALL: [NewsKind; 4] = [
+        NewsKind::Raid,
+        NewsKind::Recruit,
+        NewsKind::Topic,
+        NewsKind::Recipe,
+    ];
 
     /// Индекс вида в `News::open` и число, которым он едет в снимок.
     pub(crate) fn index(self) -> usize {
@@ -1706,6 +1718,7 @@ impl NewsKind {
             NewsKind::Raid => 0,
             NewsKind::Recruit => 1,
             NewsKind::Topic => 2,
+            NewsKind::Recipe => 3,
         }
     }
 

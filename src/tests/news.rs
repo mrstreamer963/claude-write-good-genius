@@ -79,6 +79,38 @@ fn learning_a_topic_is_not_news() {
 }
 
 #[test]
+fn a_recipe_opens_with_its_technology() {
+    let mut sim = sim_bare();
+    let suit = sim.set_recipe(10, &[(0, 2)], &[(0, 1)], &["fabrics"]);
+    sim.tick_n(2);
+    assert!(sim.news().is_empty(), "без технологии рецепта нет вовсе");
+
+    sim.set_tech("fabrics");
+    sim.tick_n(1);
+    assert_eq!(sim.news(), vec![(NewsKind::Recipe, suit, true)]);
+}
+
+#[test]
+fn a_recipe_never_closes() {
+    let mut sim = sim_bare();
+    sim.set_recipe(10, &[(0, 2)], &[(0, 1)], &["fabrics"]);
+    sim.set_tech("fabrics");
+    sim.tick_n(2);
+    let after_open = sim.news().len();
+
+    // Мастерскую снесли, склад опустел — рецепт от этого не закрывается: его
+    // ворота это одна технология, а технологии не забываются (§12.18). «Пока
+    // нечем» новостью не считается ровно так же, как у темы без лаборатории.
+    sim.tick_n(20);
+    assert_eq!(
+        sim.news().len(),
+        after_open,
+        "у рецепта закрытий не бывает: {:?}",
+        sim.news()
+    );
+}
+
+#[test]
 fn hiring_a_recruit_is_not_news() {
     let mut sim = sim_bare();
     sim.set_recruit("nail", 0, &[], &[]);
