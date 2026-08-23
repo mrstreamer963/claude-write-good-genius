@@ -1531,6 +1531,18 @@ impl Sim {
         m
     }
 
+    /// Посадить кота в плен или вернуть домой руками — чтобы не гонять ради
+    /// этого целую провальную вылазку. Плен это `Away` **без** `Squad`
+    /// (§12.40), и снимаются оба вместе.
+    fn set_captive(&mut self, unit: &str, on: bool) {
+        let cat = self.entity_of(unit);
+        if on {
+            self.world.entity_mut(cat).insert((Captive, Away));
+        } else {
+            self.world.entity_mut(cat).remove::<(Captive, Away)>();
+        }
+    }
+
     /// Кот остался в плену: провал не смог унести его домой (§12.40).
     fn is_captive(&mut self, unit: &str) -> bool {
         let cat = self.entity_of(unit);

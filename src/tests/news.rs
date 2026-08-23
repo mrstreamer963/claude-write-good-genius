@@ -129,7 +129,23 @@ fn hiring_a_recruit_is_not_news() {
 }
 
 #[test]
-fn a_raid_closes_when_the_patron_turns_away() {
+fn a_raid_opens_when_fame_grows() {
+    let mut sim = sim_bare();
+    let job = sim.set_mission(1, 10, &[]);
+    sim.set_mission_fame(job, 0, 60);
+    sim.tick_n(2);
+    assert!(sim.news().is_empty(), "до порога заказа в списке нет вовсе");
+
+    // Известность открывает — и ровно в этот тик заказ появляется карточкой в
+    // штабе (§12.79). Лента говорит о появлении, потому что говорит о том же,
+    // что видно на экране.
+    sim.set_fame(60);
+    sim.tick_n(1);
+    assert_eq!(sim.news(), vec![(NewsKind::Raid, job, true)]);
+}
+
+#[test]
+fn a_patron_turning_away_is_not_news() {
     let mut sim = sim_bare();
     let faction = sim.set_faction(100);
     let job = sim.set_mission(1, 10, &[]);
@@ -138,35 +154,57 @@ fn a_raid_closes_when_the_patron_turns_away() {
     sim.tick_n(2);
     assert!(sim.news().is_empty(), "открыт с начала — молчим");
 
-    // Репутация — единственная знаковая шкала (§12.43), и заказ умеет
-    // закрыться. Молчать об этом хуже, чем об открытии: заказ, который вчера
-    // был в списке, игрок помнит.
+    // Репутация — единственная знаковая шкала (§12.43), но заказ она из списка
+    // **не убирает**: карточка остаётся с причиной словом, «нужна Полиция +20»
+    // (§12.79). Объявить тут «больше не откликается» значило бы сказать про то,
+    // что у игрока на экране, — та же ошибка, что новость про нанятого кота.
     sim.set_standing(faction, -10);
-    sim.tick_n(1);
-    assert_eq!(sim.news(), vec![(NewsKind::Raid, job, false)]);
+    sim.tick_n(2);
+    assert!(
+        sim.news().is_empty(),
+        "недоверие — причина на карточке, а не новость: {:?}",
+        sim.news()
+    );
 
-    // И открывается обратно, когда с базой снова говорят.
+    // И обратно: вернувшееся доверие тоже не новость — заказ никуда не девался.
     sim.set_standing(faction, 40);
+    sim.tick_n(2);
+    assert!(sim.news().is_empty(), "и обратно молчим: {:?}", sim.news());
+}
+
+#[test]
+fn a_rescue_raid_closes_when_the_captive_comes_home() {
+    let mut sim = sim_bare();
+    let job = sim.set_rescue_mission(1, 10, 0);
+    sim.tick_n(2);
+    assert!(sim.news().is_empty(), "спасать некого — и карточки нет");
+
+    // Вылазка за своим — единственная, которая и правда **пропадает** из
+    // списка: без пленных у неё нет цели (§12.40). Появление и пропажа — это и
+    // есть то, о чём лента говорит.
+    sim.set_captive("a", true);
+    sim.tick_n(1);
+    assert_eq!(sim.news(), vec![(NewsKind::Raid, job, true)]);
+
+    sim.set_captive("a", false);
     sim.tick_n(1);
     assert_eq!(
         sim.news(),
-        vec![(NewsKind::Raid, job, false), (NewsKind::Raid, job, true)]
+        vec![(NewsKind::Raid, job, true), (NewsKind::Raid, job, false)]
     );
 }
 
 #[test]
 fn the_feed_never_grows_past_its_cap() {
     let mut sim = sim_bare();
-    let faction = sim.set_faction(100);
     let job = sim.set_mission(1, 10, &[]);
-    sim.set_mission_needs(job, &[(faction, 20)]);
-    sim.set_standing(faction, 30);
+    sim.set_mission_fame(job, 0, 60);
     sim.tick_n(2);
 
     // Лента — не журнал §12.58: на неё смотрит человек, и прочитанная новость
     // ценности не имеет. Поэтому старое вытесняется, а не копится.
     for i in 0..NEWS_MAX + 10 {
-        sim.set_standing(faction, if i % 2 == 0 { -10 } else { 40 });
+        sim.set_fame(if i % 2 == 0 { 0 } else { 60 });
         sim.tick_n(1);
     }
     assert_eq!(sim.news().len(), NEWS_MAX);
@@ -192,6 +230,32 @@ fn the_shipped_ruleset_announces_the_next_rung() {
             .iter()
             .any(|&(k, _, o)| k == NewsKind::Recruit && o),
         "кандидат не объявлен: {:?}",
+        sim.news()
+    );
+}
+
+#[test]
+fn a_hired_recruit_never_makes_news() {
+    let mut sim = sim_bare();
+    let faction = sim.set_faction(100);
+    sim.set_recruit("nail", 0, &[], &[]);
+    sim.set_recruit_needs(0, &[(faction, 20)]);
+    sim.set_standing(faction, 30);
+    sim.set_gate(1, true);
+    sim.force_tile(2, 1, 1);
+    sim.tick_n(2);
+    assert!(sim.hire(0), "нанять открытого кандидата можно");
+    sim.tick_n(2);
+
+    // Репутация пострадавшего просела (§12.43), и ворота кандидата закрылись —
+    // но кот уже на базе, и «больше не откликается» про него это новость о том,
+    // кого нет. Игроку она ничего не предлагает: в списке найма нанятый не
+    // виден вовсе (§12.94).
+    sim.set_standing(faction, 10);
+    sim.tick_n(2);
+    assert!(
+        sim.news().is_empty(),
+        "про нанятого лента молчит в обе стороны: {:?}",
         sim.news()
     );
 }
