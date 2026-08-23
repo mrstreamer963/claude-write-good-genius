@@ -4767,23 +4767,25 @@ function shopsBusyHint() {
 
 // Палитра, закрытая технологией: кнопка видна и объясняет, чем открывается.
 // Название темы берём из палитры тем — второго списка технологий не заводим.
+// Закрытый технологией тайл в палитре **не показывается вовсе** (§12.126).
+//
+// До этого он стоял погашенным с подсказкой «Откроет тема „…“» — по §12.27 и
+// §4.4: невидимая цель не тянет. Но палитра — это инструмент, а не витрина: в
+// ней ищут, чем строить сейчас, и половина списка, отвечающая «не этим»,
+// удлиняет каждый такой поиск. Куда ведёт изучение темы, называет само окно
+// «Наука»: там у темы написано, что она открывает, — и это ответ на «ради чего
+// учить», заданный там, где решение и принимается.
+//
+// Технологии не забываются (§12.18), значит кнопка умеет только появиться:
+// спрятать выбранный игроком инструмент этот код не может никогда.
 function syncTileButtons(techs) {
   const known = techs ?? [];
   for (const { btn, tech, hint } of tileButtons) {
     const open = known.includes(tech);
-    // ⚠️ Классом, а не `disabled` (§12.53): по выключенному элементу браузер не
-    // шлёт событий мыши, и подсказка «Откроет тема …» — весь смысл этой
-    // кнопки — не показывалась **никогда**. Кнопка была видна и молчала о том,
-    // ради чего её оставили видимой.
-    btn.classList.toggle("off", !open);
-    const def = (meta.research ?? []).find((r) => r.id === tech);
-    // Открытая кнопка возвращает свою подсказку, а не пустую: у полки это
-    // правило доступа (§12.111), и оно не перестаёт действовать оттого, что
-    // технологию наконец изучили.
-    liveTitle(
-      btn,
-      open ? (hint ?? "") : `Откроет тема «${def?.label || tech}»`,
-    );
+    btn.hidden = !open;
+    // Подсказка у открытой — своя: у полки это правило доступа (§12.111), и оно
+    // не перестаёт действовать оттого, что технологию наконец изучили.
+    liveTitle(btn, hint ?? "");
   }
 }
 
@@ -5564,20 +5566,71 @@ function closeSciWindow() {
   sciWinEl.innerHTML = "";
 }
 
+// Что тема открывает — **строкой в самой теме** (§12.126). Пока закрытые тайлы
+// стояли в палитре погашенными, на вопрос «ради чего это учить» отвечала она:
+// игрок видел стеллаж и подпись «Откроет тема „…“». Спрятав их, ответ надо
+// вернуть — и место у него ровно одно: строка темы, там же, где принимается
+// решение взяться. Иначе выбор темы становится покупкой кота в мешке.
+//
+// Считается **перекличкой палитр**, а не вторым списком в рулсете: ворота уже
+// записаны у самих вещей (`tech` у тайла, `requires` у рецепта, предмета и
+// темы, `auto_gates` у правил), и отдельное поле «что я открываю» разошлось бы
+// с ними на первой же правке контента. Инварианта 14 это не касается: здесь не
+// исход, а имена — ядро о них ничего не решает.
+function opensOf(topic) {
+  const id = topic.id;
+  // ⚠️ `auto_gates` везёт **ярлык** темы, а не её `id` (так его читает
+  // `autoGateHint`), — сверяем с обоими: у тем без `label` они совпадают.
+  const gateNames = [id, topic.label].filter(Boolean);
+  const names = (xs, pick) =>
+    (xs ?? []).filter(pick).map((x) => x.label || x.id);
+  const groups = [
+    ["постройки", names(meta.palette, (t) => t.tech === id)],
+    // Разбор — тот же рецепт (§12.114), и называется он входом, а не выходом.
+    ["рецепты", names(meta.recipes, (r) => (r.requires ?? []).includes(id))],
+    ["носить", names(meta.items, (it) => (it.requires ?? []).includes(id))],
+    ["темы", names(meta.research, (r) => (r.requires ?? []).includes(id))],
+    [
+      "правила",
+      Object.entries(meta.auto_gates ?? {})
+        .filter(([, tech]) => gateNames.includes(tech))
+        .map(([kind]) => AUTO_LABEL[kind] ?? kind),
+    ],
+  ];
+  return groups
+    .filter(([, xs]) => xs.length)
+    .map(([kind, xs]) => `${kind} ${xs.join(", ")}`)
+    .join(" · ");
+}
+
+const AUTO_LABEL = {
+  crafting: "запас в мастерской",
+  sales: "сбыт излишков",
+  raids: "автовылазки",
+};
+
 function buildSciWindow() {
   const { list } = mkWindow(sciWinEl, "Наука", () => closeSciWindow(), true);
   sciList = list;
   sciHeads = mkRegistryHeads(list);
   topicButtons.length = 0;
   (meta.research ?? []).forEach((r, i) => {
+    const opens = opensOf(r);
     const b = mkTool(
-      `<span class="sw sw-lab"></span><span>${esc(r.label || r.id)}</span>${costChips(r.cost)}`,
+      '<span class="topic-main">' +
+        `<span class="sw sw-lab"></span><span>${esc(r.label || r.id)}</span>` +
+        `${costChips(r.cost)}</span>` +
+        // Тема, за которой ничего не стоит, строки не получает: пустое
+        // «Открывает:» читалось бы как «ничего не даёт» (§12.53).
+        (opens
+          ? `<span class="topic-opens">Открывает: ${esc(opens)}</span>`
+          : ""),
       () => {
         if (b.classList.contains("off")) return;
         sendAction({ type: "research", topic: i });
       },
     );
-    b.classList.add("toggle");
+    b.classList.add("toggle", "topic");
     b.dataset.level = r.level ?? 0;
     topicButtons.push(b);
     list.appendChild(b);
