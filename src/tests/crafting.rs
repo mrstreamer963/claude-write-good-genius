@@ -897,24 +897,29 @@ fn clearing_the_threshold_ends_its_order() {
     );
 }
 
-/// Но **начатую штуку правило не отбирает**: материал за неё уже списан, и
-/// отменить её значило бы сжечь его молча (§12.26).
+/// **Снабжённую штуку правило отбирает тоже** (§12.123). До §12.102 материал за
+/// неё был списан со складa, и отмена сожгла бы его молча (§12.26); с тех пор он
+/// лежит на станке и при отмене возвращается кучей на его клетку — то есть цена
+/// отмены это ходка носильщика, а не потеря.
 #[test]
-fn a_paid_piece_survives_the_threshold_being_dropped() {
+fn a_supplied_piece_is_cancelled_with_the_threshold() {
     let mut sim = sim_with_shop();
     sim.set_auto_tidy(false);
     sim.put_item(5, 1, SCRAP, 4);
     let recipe = sim.set_recipe(400, &[(SCRAP, 4)], &[(PART, 1)], &[]);
     sim.set_stock(recipe, 1);
     sim.tick_n(6);
-    assert_eq!(sim.item_at(5, 1, SCRAP), 0, "материал списан");
+    assert_eq!(sim.craft_delivered(), Some(4), "материал завезли на станок");
 
     sim.set_stock(recipe, 0);
     sim.tick_n(1);
-    assert_eq!(sim.craft_left_of(recipe), Some(1), "штука доделывается");
-    sim.tick_n(60);
-    assert_eq!(sim.item_total(PART), 1, "и материал не сгорел зря");
-    assert_eq!(sim.craft_left_of(recipe), None, "а дальше заказ закрылся");
+    assert_eq!(
+        sim.craft_left_of(recipe),
+        None,
+        "заказ ушёл вместе с порогом"
+    );
+    assert_eq!(sim.item_total(SCRAP), 4, "а материал вернулся, весь");
+    assert_eq!(sim.item_total(PART), 0, "деталь не начата");
 }
 
 /// Поднятый порог **не доращивает бегущий заказ, а кладёт следующую порцию на
@@ -1431,4 +1436,57 @@ fn a_salvage_rule_needs_the_crafting_technology() {
 fn a_rule_needs_a_recipe_that_tears_the_item() {
     let (mut sim, _) = sim_with_salvage_rule();
     assert!(!sim.set_salvage_rule(SCRAP, 2), "лом никто не разбирает");
+}
+
+/// Порог, снятый в ноль, снимает и **снабжённый** заказ правила (§12.123).
+///
+/// Просадку порога снабжённая штука переживает (§12.102) — материал за неё уже
+/// привезли ногами. Но ноль это не просадка, а отмена: у заказа правила кнопки
+/// нет ни в панели, ни у клетки, и оставленная штука держала бы станок, снять
+/// который игроку нечем. Реальная партия вставала так шестью заказами на шести
+/// станках при пороге в ноль.
+#[test]
+fn zeroing_a_threshold_cancels_even_a_supplied_order() {
+    let mut sim = sim_with_shop();
+    sim.set_auto_tidy(false);
+    sim.put_item(5, 1, SCRAP, 20);
+    let recipe = sim.set_recipe(100, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+
+    sim.set_stock(recipe, 1);
+    // Ждём, пока материал доедет до станка, но не дольше: доделанная штука
+    // закрыла бы заказ сама, и проверять было бы нечего.
+    sim.tick_n(6);
+    assert_eq!(sim.craft_delivered(), Some(2), "материал на станке");
+
+    // Снятие порога — ноль и есть отмена.
+    assert!(sim.set_stock(recipe, 0));
+    sim.tick_n(1);
+    assert_eq!(sim.craft_left_of(recipe), None, "заказ снят");
+    // Материал не исчез (инвариант 8): он лёг кучей на клетку станка.
+    assert_eq!(sim.item_total(SCRAP), 20, "лом на месте, весь");
+}
+
+/// Порог, опущенный **ниже уже накопленного**, снимает лишние заказы целиком —
+/// включая снабжённые (§12.123). Это тот же срез, что и ноль: правило меряет
+/// недостачу, а её нет.
+#[test]
+fn lowering_a_threshold_below_the_stock_trims_supplied_orders() {
+    let mut sim = sim_with_three_shops();
+    sim.set_auto_tidy(false);
+    sim.put_item(6, 1, SCRAP, 40);
+    let recipe = sim.set_recipe(400, &[(SCRAP, 2)], &[(PART, 1)], &[]);
+
+    // Высокий порог занимает все три станка и завозит на них материал.
+    sim.set_stock(recipe, 10);
+    sim.tick_n(10);
+    assert!(sim.orders_count() >= 2, "правило заняло станки");
+    assert!(sim.craft_delivered().is_some(), "и материал уже на станке");
+
+    // На базе деталей нет, но и порог опускается ниже накопленного лома:
+    // недостачи не осталось, значит и заказам стоять не на чем.
+    sim.put_item(6, 1, PART, 3);
+    sim.set_stock(recipe, 2);
+    sim.tick_n(1);
+    assert_eq!(sim.orders_count(), 0, "лишние заказы сняты");
+    assert_eq!(sim.item_total(SCRAP), 40, "материал вернулся весь");
 }
