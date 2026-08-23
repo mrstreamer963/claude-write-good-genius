@@ -295,14 +295,17 @@ onPanelClick(missionEl, ".mission-cancel", (b) =>
 // заведено, — и без ключа две строки поделили бы один взвод. `data-in` —
 // «числится ли здесь»: одна кнопка на два состояния, потому что и вопрос один —
 // про этого кота и этот узел.
-onPanelClick(raidWinEl, ".crew-pick", (b) =>
+onPanelClick(raidWinEl, ".crew-pick", (b) => {
+  // Погашенная классом строка события мыши шлёт — тем и ценна (§12.121), —
+  // поэтому отказ проверяем сами; причина написана в подсказке.
+  if (b.classList.contains("off")) return;
   sendAction({
     type: b.dataset.in ? "dismiss" : "enlist",
     id: b.dataset.id,
     x: Number(b.dataset.x),
     y: Number(b.dataset.y),
-  }),
-);
+  });
+});
 onPanelClick(raidWinEl, ".crew-duty", (b) =>
   sendAction({
     type: b.dataset.in ? "unpostRelay" : "postRelay",
@@ -311,14 +314,18 @@ onPanelClick(raidWinEl, ".crew-duty", (b) =>
     y: Number(b.dataset.y),
   }),
 );
-onPanelClick(raidWinEl, ".raid-go", (b) =>
+onPanelClick(raidWinEl, ".raid-go", (b) => {
+  // Классом, а не `disabled` (§12.121). Причина отказа у заказа написана
+  // строкой `.raidwin-why` прямо над кнопкой — но правило сплошное, без
+  // оговорок «здесь и так видно»: ровно этот довод оставил три кнопки немыми.
+  if (b.classList.contains("off")) return;
   sendAction({
     type: "launch",
     mission: Number(b.dataset.def),
     x: Number(b.dataset.x),
     y: Number(b.dataset.y),
-  }),
-);
+  });
+});
 // Отзыв из штаба — та же команда, что и в панели вылазки: по `def`, а не по
 // номеру строки (§12.59). Свой обработчик нужен потому, что делегирование
 // привязано к контейнеру, а окно — отдельный контейнер от панелей.
@@ -1320,6 +1327,7 @@ function renderSnapshot(snap) {
   syncSciWindow();
   syncHireWindow();
   renderNews(snap);
+  syncDoors(snap);
   syncNewsMarks();
   syncStockWindow();
   syncTileButtons(snap.techs);
@@ -2138,14 +2146,25 @@ function crewList(snap, x, y) {
     // чужим — что клик их **заберёт**: перенос стоит один клик и молча снимает
     // прежнюю приписку (см. шапку функции), и это ровно то, что игрок делает не
     // глядя, набирая отряд из общего списка.
-    const tip = idle
-      ? `Сейчас не пойдёт: ${note || "занят"}`
-      : no
-        ? `Сейчас в Отряде ${no}: зачислить сюда — значит забрать оттуда`
-        : "";
+    // ⚠️ Причина, по которой строка не нажимается, — тоже словом (§12.53,
+    // §12.121). До неё у раненого и у ушедшего отряда подсказки не было вовсе:
+    // считалось, что «ранен» в самой строке и «в поле» в шапке отвечают за них.
+    // Отвечали они на «что с котом», а не на «почему клик ничего не делает», —
+    // и это разные вопросы, второй из которых оставался без ответа.
+    const tip = hurt
+      ? "Ранен — в отряд не берут, пока не заживёт"
+      : node?.busy
+        ? "Отряд уже в поле: состав менять нечем, есть только отзыв"
+        : idle
+          ? `Сейчас не пойдёт: ${note || "занят"}`
+          : no
+            ? `Сейчас в Отряде ${no}: зачислить сюда — значит забрать оттуда`
+            : "";
+    // Гасим классом, а не `disabled` (§12.121): по выключенному элементу
+    // браузер не шлёт событий мыши, и подсказка выше не показалась бы никогда.
     const pick =
-      `<button class="tool crew-pick${mine ? " on" : ""}${idle ? " idle" : ""}" data-id="${esc(e.id)}"` +
-      ` data-x="${x}" data-y="${y}"${mine ? ' data-in="1"' : ""}${off ? " disabled" : ""}` +
+      `<button class="tool crew-pick${mine ? " on" : ""}${idle ? " idle" : ""}${off ? " off" : ""}" data-id="${esc(e.id)}"` +
+      ` data-x="${x}" data-y="${y}"${mine ? ' data-in="1"' : ""}` +
       `${tip ? ` title="${esc(tip)}"` : ""}` +
       ">" +
       portraitHtml(e.sprite, "crew-face") +
@@ -5266,21 +5285,44 @@ function orderNewFirst(list, buttons, kind, heads) {
 }
 
 function syncSciWindow() {
-  if (sciWinOpen && sciHeads) {
-    orderNewFirst(sciList, topicButtons, "topic", sciHeads);
-  }
+  if (!sciWinOpen || !sciHeads) return;
+  orderNewFirst(sciList, topicButtons, "topic", sciHeads);
+  setEmptyLine(sciHeads, topicButtons, "Все темы изучены");
 }
 
 function syncHireWindow() {
-  if (hireWinOpen && hireHeads) {
-    orderNewFirst(hireList, recruitButtons, "recruit", hireHeads);
-  }
+  if (!hireWinOpen || !hireHeads) return;
+  orderNewFirst(hireList, recruitButtons, "recruit", hireHeads);
+  setEmptyLine(hireHeads, recruitButtons, "Все кандидаты уже на базе");
+}
+
+function setEmptyLine(heads, buttons, text) {
+  const empty = buttons.every((b) => b.hidden);
+  if (empty && heads.empty.textContent !== text) heads.empty.textContent = text;
+  heads.empty.hidden = !empty;
 }
 
 // Метка на двери: «внутри есть непрочитанное». Без числа — см. `sciDoor`.
 //
 // Заказы вылазок ведут в раздел «Вылазки», а не в окно: узлов бывает несколько,
 // и какой из них игрок имел в виду, вид не знает (§12.66).
+// Дверь реестра, которому нечего сказать, прячется целиком (§12.94, §12.119):
+// пустое окно обещает выбор, которого нет. Это то же правило, по которому до
+// §12.119 прятался раздел тулбара (`syncSectionRows`), — переехало вместе со
+// списками.
+//
+// Считаем **по снимку, а не по кнопкам**: кнопок не существует, пока окно
+// закрыто, а дверь обязана знать ответ всегда. Условия те же, по которым
+// прячется сама строка: изученная тема и нанятый кот — уже не решение (§12.94),
+// а запертая технологией тема ещё и не выбор. Закрытый известностью кандидат
+// строку сохраняет — про него написано, чего ждать, — значит и дверь тоже.
+function syncDoors(snap) {
+  const topics = snap.topics ?? [];
+  const recruits = snap.recruits ?? [];
+  if (sciDoor) sciDoor.hidden = !topics.some((t) => !t.known && t.unlocked);
+  if (hireDoor) hireDoor.hidden = !recruits.some((r) => !r.hired);
+}
+
 function syncNewsMarks() {
   stockDoor?.classList.toggle("fresh", newsPending("recipe").length > 0);
   sciDoor?.classList.toggle("fresh", newsPending("topic").length > 0);
@@ -5290,15 +5332,23 @@ function syncNewsMarks() {
 }
 
 function mkRegistryHeads(list) {
-  const mk = (text) => {
+  const mk = (text, cls) => {
     const el = document.createElement("div");
-    el.className = "cat-sub crew-head";
+    el.className = cls;
     el.textContent = text;
     el.hidden = true;
     list.appendChild(el);
     return el;
   };
-  return { fresh: mk("Только что открылись"), rest: mk("Остальное") };
+  return {
+    fresh: mk("Только что открылись", "cat-sub crew-head"),
+    rest: mk("Остальное", "cat-sub crew-head"),
+    // Пустой список читается как поломка окна, а не как «всё сделано»
+    // (§12.79). Дверь к этому моменту уже спрятана (§12.94), так что попасть
+    // сюда можно ровно одним путём: последняя строка исчезла, пока окно
+    // открыто, — тема доучилась, кандидат нанялся.
+    empty: mk("", "cat-sub"),
+  };
 }
 
 // --- окно «Наука» (§12.118) -------------------------------------------------
@@ -6802,8 +6852,7 @@ function raidCard(i, node) {
   }
 
   const go =
-    `<button class="tool raid-go${g.ready ? " on" : ""}"` +
-    `${g.ready ? "" : " disabled"}` +
+    `<button class="tool raid-go${g.ready ? " on" : " off"}"` +
     ` data-key="go${i}@${at}" data-def="${i}" data-x="${node.x}" data-y="${node.y}">` +
     (g.ready ? "Отправить" : "Нельзя") +
     "</button>";
