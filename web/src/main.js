@@ -4014,9 +4014,13 @@ function buildToolbar() {
     const glyph = TILE_GLYPHS[p.id]
       ? glyphHtml(`g-tile-${p.id}`, p.color, "sw-glyph")
       : `<span class="sw" style="background:${p.color}"></span>`;
-    const b = mkTool(`${glyph}<span>${p.label || p.id}</span>${cost}`, () =>
-      selectBuild(i, b),
-    );
+    const b = mkTool(`${glyph}<span>${p.label || p.id}</span>${cost}`, () => {
+      // Закрытый технологией тайл гасится классом, а не `disabled` (§12.53),
+      // поэтому клик по нему сюда доходит — и отсекается здесь. Причина
+      // («Откроет тема „Материаловедение“») написана в подсказке.
+      if (b.classList.contains("off")) return;
+      selectBuild(i, b);
+    });
     // Правило доступа названо словом на самой кнопке (§12.53, §12.111): на
     // карте отказ показан крестом, но крест говорит «эту клетку нельзя», а не
     // «почему». Условие — то же свойство, на котором висит и само правило.
@@ -4430,7 +4434,12 @@ function syncRecruitButtons(list) {
     // ещё можно позвать.
     b.hidden = !!r.hired;
     const ready = !r.hired && r.unlocked && r.welcome && r.affordable;
-    b.disabled = !ready;
+    // ⚠️ Гасим **классом**, а не `disabled` (§12.53, §12.71): по выключенному
+    // элементу браузер не шлёт событий мыши, и причина отказа — та самая, что
+    // считает ядро и что пишется ниже в `title`, — не показалась бы **никогда**.
+    // Кнопка выглядела закрытой и молчала ровно тогда, когда объяснить и надо.
+    // Тот же образец, что у кнопок сделки (`syncTradeButtons`, §12.100).
+    b.classList.toggle("off", !ready);
     b.classList.toggle("on", ready);
     // Своего присылают тем, кому доверяют (§12.43), и репутацией за него не
     // платят — платит склад. Поэтому причин отказа три и они разные.
@@ -4475,7 +4484,9 @@ function syncTopicButtons(list) {
       t.staffed &&
       t.lab &&
       !researchRunning;
-    b.disabled = !ready;
+    // Классом, а не `disabled`, — см. `syncRecruitButtons` выше: иначе причина
+    // из `title` («Нужен кот с „Наукой“ 1 уровня») не видна ни разу.
+    b.classList.toggle("off", !ready);
     b.classList.toggle("on", ready);
     b.title = t.known
       ? "Уже изучено"
@@ -4637,7 +4648,11 @@ function syncTileButtons(techs) {
   const known = techs ?? [];
   for (const { btn, tech, hint } of tileButtons) {
     const open = known.includes(tech);
-    btn.disabled = !open;
+    // ⚠️ Классом, а не `disabled` (§12.53): по выключенному элементу браузер не
+    // шлёт событий мыши, и подсказка «Откроет тема …» — весь смысл этой
+    // кнопки — не показывалась **никогда**. Кнопка была видна и молчала о том,
+    // ради чего её оставили видимой.
+    btn.classList.toggle("off", !open);
     const def = (meta.research ?? []).find((r) => r.id === tech);
     // Открытая кнопка возвращает свою подсказку, а не пустую: у полки это
     // правило доступа (§12.111), и оно не перестаёт действовать оттого, что
@@ -5317,7 +5332,10 @@ function buildSciWindow() {
   (meta.research ?? []).forEach((r, i) => {
     const b = mkTool(
       `<span class="sw sw-lab"></span><span>${esc(r.label || r.id)}</span>${costChips(r.cost)}`,
-      () => sendAction({ type: "research", topic: i }),
+      () => {
+        if (b.classList.contains("off")) return;
+        sendAction({ type: "research", topic: i });
+      },
     );
     b.classList.add("toggle");
     b.dataset.level = r.level ?? 0;
@@ -5361,7 +5379,13 @@ function buildHireWindow() {
   (meta.recruits ?? []).forEach((r, i) => {
     const b = mkTool(
       `<span class="sw sw-hire"></span><span>${esc(r.label || r.id)}</span>${costChips(r.cost)}`,
-      () => sendAction({ type: "hire", recruit: i }),
+      // Погашенная классом кнопка события мыши шлёт — тем и ценна (§12.53), —
+      // поэтому отказ проверяем сами: причина уже написана в подсказке, а
+      // команда, которую ядро всё равно отклонит, только замусорила бы трейс.
+      () => {
+        if (b.classList.contains("off")) return;
+        sendAction({ type: "hire", recruit: i });
+      },
     );
     b.classList.add("toggle");
     b.dataset.requires = r.requires ?? 0;
