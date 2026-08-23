@@ -1241,6 +1241,7 @@ function renderSnapshot(snap) {
   // пуст», а показанная взамен палитра целиком — как «отбор не работает». Тот
   // же довод, по которому отказ кнопки называют, а не гасят (§12.53).
   const soon = incomingByItem(snap);
+  const owed = owedByItem(snap);
   const pinned = (meta.items ?? [])
     .map((it, i) => {
       if (!favorites.includes(i)) return "";
@@ -1252,6 +1253,7 @@ function renderSnapshot(snap) {
       const st = (snap.stock ?? [])[i] ?? { stored: 0, loose: 0, booked: 0 };
       const free = Math.max(0, st.stored - st.booked);
       const made = soon.get(i) ?? 0;
+      const spent = owed.get(i) ?? 0;
       const name = esc(it.label || it.id);
       const hint = [
         `${name}: на складе ${st.stored}`,
@@ -1261,6 +1263,7 @@ function renderSnapshot(snap) {
             `продавать этим нельзя, пока не убрано`
           : "",
         made ? `${made} делается в мастерской` : "",
+        spent ? `${spent} расписано заказам — уедет на станки` : "",
       ]
         .filter(Boolean)
         .join(" · ");
@@ -1269,6 +1272,7 @@ function renderSnapshot(snap) {
         `${itemGlyph(i)}<b>${free}</b>` +
         (st.loose ? `<u>+${st.loose}</u>` : "") +
         (made ? `<i>+${made}</i>` : "") +
+        (spent ? `<s>−${spent}</s>` : "") +
         "</span>"
       );
     })
@@ -5874,6 +5878,29 @@ function incomingByItem(snap) {
   return out;
 }
 
+// Зеркало предыдущего: сколько каждого предмета **расписано открытым заказам** —
+// серебряное «−N» рядом с запасом (§12.128). Разбор попал сюда наравне с
+// производством: у обоих это вход заказа, и уезжает он со склада одинаково.
+//
+// ⚠️ Мгновенного списания у заказа **нет** (§12.102): материал возят ногами, и
+// запас падает ходками, а не в момент клика. Поэтому число и названо
+// «расписано», а не «списано»: оно отвечает на «сколько из этого уже не моё»,
+// и убывает по мере того, как лом доезжает до станка.
+//
+// Считает его **ядро** (`CraftSnap::owed`) тем же `craft_missing`, каким подвоз
+// решает, что нести: цена рецепта и уже завезённое живут там, и второй
+// экземпляр вычитания в JS обещал бы не то, что уедет со склада.
+function owedByItem(snap) {
+  const out = new Map();
+  for (const c of snap?.crafting ?? []) {
+    for (const n of c.owed ?? []) {
+      if (n.left <= 0) continue;
+      out.set(n.item, (out.get(n.item) ?? 0) + n.left);
+    }
+  }
+  return out;
+}
+
 // Рецепты, которые дают этот предмет. Обычно один; двух хватает, чтобы порог
 // нельзя было повесить на предмет, — на этом и стоит §12.65.
 //
@@ -6409,6 +6436,7 @@ function syncStockWindow() {
   syncStockBusy();
 
   const soon = incomingByItem(lastSnap);
+  const owed = owedByItem(lastSnap);
   for (const r of wareRows) {
     const st = stock[r.item] ?? {
       stored: 0,
@@ -6422,10 +6450,12 @@ function syncStockWindow() {
     // Числа и их расклад — ровно то же, что в шапке (§12.53): второй формы
     // записи тех же трёх чисел в игре быть не должно.
     const made = soon.get(r.item) ?? 0;
+    const spent = owed.get(r.item) ?? 0;
     const nums =
       `<b>${free}</b>` +
       (st.loose ? `<u>+${st.loose}</u>` : "") +
-      (made ? `<i>+${made}</i>` : "");
+      (made ? `<i>+${made}</i>` : "") +
+      (spent ? `<s>−${spent}</s>` : "");
     if (r.num.innerHTML !== nums) r.num.innerHTML = nums;
     liveTitle(
       r.num,
@@ -6437,6 +6467,7 @@ function syncStockWindow() {
             `продавать этим нельзя, пока не убрано`
           : "",
         made ? `${made} делается в мастерской` : "",
+        spent ? `${spent} расписано заказам — уедет на станки` : "",
       ]
         .filter(Boolean)
         .join(" · "),
