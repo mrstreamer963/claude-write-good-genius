@@ -1240,6 +1240,7 @@ function renderSnapshot(snap) {
   // стоит **причина словом** (§12.112): пустое место читалось бы как «склад
   // пуст», а показанная взамен палитра целиком — как «отбор не работает». Тот
   // же довод, по которому отказ кнопки называют, а не гасят (§12.53).
+  const soon = incomingByItem(snap);
   const pinned = (meta.items ?? [])
     .map((it, i) => {
       if (!favorites.includes(i)) return "";
@@ -1250,6 +1251,7 @@ function renderSnapshot(snap) {
       // обманывало.
       const st = (snap.stock ?? [])[i] ?? { stored: 0, loose: 0, booked: 0 };
       const free = Math.max(0, st.stored - st.booked);
+      const made = soon.get(i) ?? 0;
       const name = esc(it.label || it.id);
       const hint = [
         `${name}: на складе ${st.stored}`,
@@ -1258,6 +1260,7 @@ function renderSnapshot(snap) {
           ? `валяется ${st.loose} — годится на стройку, но платить и ` +
             `продавать этим нельзя, пока не убрано`
           : "",
+        made ? `${made} делается в мастерской` : "",
       ]
         .filter(Boolean)
         .join(" · ");
@@ -1265,6 +1268,7 @@ function renderSnapshot(snap) {
         `<span class="stock" data-tip="${hint}">` +
         `${itemGlyph(i)}<b>${free}</b>` +
         (st.loose ? `<u>+${st.loose}</u>` : "") +
+        (made ? `<i>+${made}</i>` : "") +
         "</span>"
       );
     })
@@ -5838,6 +5842,38 @@ function itemsIn(set) {
   return set instanceof Map ? [...set.keys()] : Object.keys(set ?? {});
 }
 
+// Тот же набор парами: сколько чего. Форма одна на обоих потребителей —
+// наборы `{имя: сколько}` приезжают из воркера как `Map`, и `Object.entries`
+// на них молча вернёт пусто.
+function pairsIn(set) {
+  return set instanceof Map ? [...set.entries()] : Object.entries(set ?? {});
+}
+
+// Сколько каждого предмета **уже делается** — «+3» оранжевым рядом с запасом
+// (§12.107). Строка сводки в шапке окна на этот вопрос отвечала, но её не
+// читают: игрок смотрит на число склада, а не на заголовок, и заказывал одно и
+// то же по второму разу. Число поэтому стоит там же, где запас, той же
+// идиомой, что серое «валяется» (§12.53).
+//
+// Считается по тому же снимку заказов, что и сама сводка (`crafting`), — то
+// есть второго источника у него нет. Разбор идёт наравне с производством: на
+// склад ляжет его выход, а чем он назван в сводке, к числу отношения не имеет.
+function incomingByItem(snap) {
+  const out = new Map();
+  const items = meta.items ?? [];
+  for (const c of snap?.crafting ?? []) {
+    if (c.left <= 0) continue;
+    const r = (meta.recipes ?? [])[c.def];
+    if (!r) continue;
+    for (const [id, n] of pairsIn(r.gives)) {
+      const i = items.findIndex((it) => it.id === id);
+      if (i < 0) continue;
+      out.set(i, (out.get(i) ?? 0) + n * c.left);
+    }
+  }
+  return out;
+}
+
 // Рецепты, которые дают этот предмет. Обычно один; двух хватает, чтобы порог
 // нельзя было повесить на предмет, — на этом и стоит §12.65.
 //
@@ -6372,6 +6408,7 @@ function syncStockWindow() {
 
   syncStockBusy();
 
+  const soon = incomingByItem(lastSnap);
   for (const r of wareRows) {
     const st = stock[r.item] ?? {
       stored: 0,
@@ -6384,7 +6421,11 @@ function syncStockWindow() {
 
     // Числа и их расклад — ровно то же, что в шапке (§12.53): второй формы
     // записи тех же трёх чисел в игре быть не должно.
-    const nums = `<b>${free}</b>` + (st.loose ? `<u>+${st.loose}</u>` : "");
+    const made = soon.get(r.item) ?? 0;
+    const nums =
+      `<b>${free}</b>` +
+      (st.loose ? `<u>+${st.loose}</u>` : "") +
+      (made ? `<i>+${made}</i>` : "");
     if (r.num.innerHTML !== nums) r.num.innerHTML = nums;
     liveTitle(
       r.num,
@@ -6395,6 +6436,7 @@ function syncStockWindow() {
           ? `валяется ${st.loose} — годится на стройку, но платить и ` +
             `продавать этим нельзя, пока не убрано`
           : "",
+        made ? `${made} делается в мастерской` : "",
       ]
         .filter(Boolean)
         .join(" · "),
