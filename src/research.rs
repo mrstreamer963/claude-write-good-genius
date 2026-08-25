@@ -85,7 +85,14 @@ pub(crate) fn assign_research(
     >,
 ) {
     let science = skill_rules.index_of(SKILL_SCIENCE);
-    for (topic_e, mut topic) in &mut topics {
+
+    // Первый проход — только про сами темы: снесённая лаборатория уносит свою,
+    // остальные встают в список открытых. Раздача идёт **списками**, дословно
+    // `assign_craft` (§12.96): `commands` отложены до конца тика, и на втором
+    // витке цикла уже занятый кот выглядел бы свободным — так одному учёному
+    // доставались две темы разом, а вторая вставала навсегда (§12.132).
+    let mut open: Vec<(Entity, (i32, i32), i32)> = Vec::new();
+    for (topic_e, topic) in &mut topics {
         // Лабораторию снесли — тема уходит вместе с ней (§12.132), дословно как
         // заказ уходит со станком. Завезённый образец при этом **роняем кучей**
         // на клетку (§12.31, инвариант 8): материал не горит.
@@ -110,34 +117,52 @@ pub(crate) fn assign_research(
         if !topic_supplied(&rules, &topic) {
             continue;
         }
+        open.push((topic_e, topic.cell, rule.level));
+    }
+    if open.is_empty() {
+        return;
+    }
+    // Порядок обхода ECS зависит от истории вставок (§11), поэтому темы
+    // сортируются по клетке, а коты — по `id`: ничью решает ключ, а не история.
+    open.sort_unstable_by_key(|&(_, (x, y), _)| (y, x));
 
-        // Допуск отсекает исполнителей, расстояние выбирает из оставшихся.
-        // При равном расстоянии — по `id` кота, а не по порядку сущностей:
-        // обход ECS зависит от истории вставок (§11), и та же пара котов после
-        // загрузки сохранения решилась бы иначе.
-        //
-        // Идёт кот **на клетку своей темы**, а не на ближайшую лабораторию:
-        // комнату выбрала сама тема (§12.132), и второй выбор здесь развёл бы
-        // ячейку, которую тема держит, с той, где стоит учёный.
-        let spot = topic.cell;
-        let chosen = free_cats
+    let mut idle: Vec<(&str, Entity, i32, Reach)> = free_cats
+        .iter()
+        .map(|(e, id, p, skills)| {
+            let level = science.map_or(0, |s| level_of(&skill_rules, skills, s));
+            (id.0.as_str(), e, level, Reach::all(&map, (p.x, p.y)))
+        })
+        .collect();
+    idle.sort_unstable_by_key(|&(id, ..)| id);
+
+    // Допуск отсекает исполнителей, расстояние выбирает из оставшихся (§12.18,
+    // §12.14): навык решает «можно ли», а не «кто лучше». Идёт кот **на клетку
+    // своей темы**, а не на ближайшую лабораторию: комнату выбрала сама тема.
+    while !idle.is_empty() && !open.is_empty() {
+        let chosen = idle
             .iter()
-            .filter(|(_, _, _, skills)| {
-                science.map_or(0, |s| level_of(&skill_rules, *skills, s)) >= rule.level
+            .enumerate()
+            .flat_map(|(ci, (_, _, level, reach))| {
+                open.iter()
+                    .enumerate()
+                    .filter(move |&(_, &(_, _, need))| *level >= need)
+                    .filter_map(move |(ti, &(_, cell, _))| {
+                        reach
+                            .dist_at(cell.0, cell.1)
+                            .map(|steps| (steps, ci, ti, cell))
+                    })
             })
-            .filter_map(|(cat_e, id, pos, _)| {
-                let reach = Reach::all(&map, (pos.x, pos.y));
-                reach
-                    .dist_at(spot.0, spot.1)
-                    .map(|steps| (steps, id.0.as_str(), cat_e, reach))
-            })
-            .min_by_key(|&(steps, id, ..)| (steps, id));
-        let Some((_, _, cat_e, reach)) = chosen else {
-            continue; // некому взяться или до лаборатории не дойти
+            .min_by_key(|&(steps, ci, ti, _)| (steps, ci, ti));
+        let Some((_, ci, ti, cell)) = chosen else {
+            break; // некому взяться или до лаборатории не дойти
         };
 
-        topic.assignee = Some(cat_e);
-        let path = reach.path_to(spot.0, spot.1).unwrap_or_default();
+        let (_, cat_e, _, reach) = idle.remove(ci);
+        let (topic_e, _, _) = open.remove(ti);
+        if let Ok((_, mut topic)) = topics.get_mut(topic_e) {
+            topic.assignee = Some(cat_e);
+        }
+        let path = reach.path_to(cell.0, cell.1).unwrap_or_default();
         commands.entity(cat_e).insert((
             Researching(topic_e),
             Path { steps: path },

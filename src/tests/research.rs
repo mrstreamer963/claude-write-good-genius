@@ -627,6 +627,32 @@ fn two_labs_run_two_topics_at_once() {
     assert_eq!(sim.researchers_busy(), 2, "и обе с исполнителями");
 }
 
+/// Одного кота на две темы не хватает, и это не значит «обе стоят»: раздатчик
+/// откладывает `commands` до конца тика, поэтому на втором витке цикла занятый
+/// учёный выглядел бы свободным и получил бы вторую тему разом с первой — та
+/// навсегда осталась бы «с исполнителем», который к ней не придёт (§12.132,
+/// дословно грабли `assign_craft`, §12.96).
+#[test]
+fn one_scientist_is_never_seated_at_two_topics_at_once() {
+    let mut sim = sim_from(&["########", "#a.....#", "########"]);
+    sim.set_skill("science", &[100, 400]);
+    sim.set_lab(1, true);
+    sim.force_tile(3, 1, 1);
+    sim.force_tile(4, 1, 1);
+    let first = sim.set_topic("materials", 0, 4000, &[], &[]);
+    let second = sim.set_topic("comfort", 0, 4000, &[], &[]);
+
+    assert!(sim.start_research(first));
+    assert!(sim.start_research(second));
+    sim.tick_n(10);
+
+    assert_eq!(sim.researchers_busy(), 1, "кот один — и тема у него одна");
+    assert!(
+        sim.research_progress().is_some_and(|p| p > 0),
+        "и он над ней работает, а не стоит между двумя"
+    );
+}
+
 /// Свободной ячейки нет — заявка **отклоняется**, а не встаёт в очередь, и
 /// склад при этом не трогают: очередь тем была бы вторым планировщиком рядом с
 /// раздатчиком (§12.16).
