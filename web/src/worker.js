@@ -174,7 +174,7 @@ onmessage = (e) => {
     // хватает «Науки» (см. `start_research` в ядре, §12.26). Платит склад.
     sim.start_research(m.topic);
   } else if (m.type === "cancelResearch" && sim) {
-    sim.cancel_research();
+    sim.cancel_research(m.topic);
   } else if (m.type === "craft" && sim) {
     // Заказ — разметка работы со счётчиком штук: кота не выбираем, к верстаку
     // встанет ближайший свободный (см. `start_craft` в ядре, §12.30). Склад

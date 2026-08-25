@@ -53,6 +53,7 @@ const HUNGER_PER_TICK: i32 = 1;
 pub(crate) fn assign_eat(
     map: Res<BaseMap>,
     items: Res<ItemRules>,
+    techs: Res<Techs>,
     food: Res<FoodRules>,
     mut commands: Commands,
     cats: Query<
@@ -113,7 +114,7 @@ pub(crate) fn assign_eat(
         // Обход строим только когда есть за чем идти: база без единого пайка
         // иначе гоняла бы BFS на каждого голодного кота каждый тик.
         let anything = stacks.iter().any(|(pile_e, _, stack)| {
-            items.nutrition_of(stack.item) > 0
+            items.nutrition_of(stack.item, &techs) > 0
                 && free(stack.item)
                 && stack.count > claimed(&taken, pile_e)
         });
@@ -125,7 +126,7 @@ pub(crate) fn assign_eat(
         let found = stacks
             .iter()
             .filter(|(pile_e, _, stack)| {
-                items.nutrition_of(stack.item) > 0
+                items.nutrition_of(stack.item, &techs) > 0
                     && free(stack.item)
                     && stack.count > claimed(&taken, *pile_e)
             })
@@ -176,6 +177,7 @@ fn claimed(taken: &[(Entity, i32)], pile: Entity) -> i32 {
 /// это не запас на будущее.
 pub(crate) fn work_eat(
     items: Res<ItemRules>,
+    techs: Res<Techs>,
     food: Res<FoodRules>,
     mut commands: Commands,
     mut cats: Query<(Entity, &Position, &Eating, &mut Fed), Without<Path>>,
@@ -204,7 +206,7 @@ pub(crate) fn work_eat(
         if stack.count <= 0 {
             commands.entity(job.pile).despawn();
         }
-        fed.0 = (fed.0 + items.nutrition_of(job.item)).min(food.max);
+        fed.0 = (fed.0 + items.nutrition_of(job.item, &techs)).min(food.max);
     }
 }
 

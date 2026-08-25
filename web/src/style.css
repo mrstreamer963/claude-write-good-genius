@@ -1724,6 +1724,45 @@ main#stage.mode-cursor #mode-banner {
   gap: 6px;
   min-width: 0;
 }
+/* Тема-витрина (§12.137): артефакт со склада, до которого база ещё не доросла.
+   Приглушена, но не погашена в цвет отказа — она не сломана, она обещание.
+   Строка причины идёт вторым рядом, как `.topic-opens` у обычной темы. */
+.tool.topic.locked {
+  opacity: 0.75;
+}
+.topic-locked {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+  font-style: italic;
+  line-height: 1.3;
+  white-space: normal;
+}
+
+/* Незнакомый игроку предмет в добыче заказа (§12.131): «??» на месте глифа.
+   Той же ширины, что и глиф, — иначе строка добычи прыгает, когда предмет
+   впервые опознан. */
+.chip.veiled {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  background: none;
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+  vertical-align: middle;
+}
+
+/* Предмет, которого база ещё не поняла (§12.131): «Ткань(?)». Приглушён, но
+   не погашен — он у базы есть и его можно продать, просто в дело он пока не
+   идёт. Гасить его в цвет отказа значило бы обещать, что строка сломана. */
+.ware-name.unknown {
+  color: var(--muted);
+  font-style: italic;
+}
 .ware-num {
   text-align: right;
 }

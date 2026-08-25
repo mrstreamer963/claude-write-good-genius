@@ -55,10 +55,10 @@ struct Needy {
     budget: i32,
 }
 
-/// Какому адресату везём. Три, и различаются они **только двумя вещами**:
+/// Какому адресату везём. Четыре, и различаются они **только двумя вещами**:
 /// каким `HaulTo` кончится ходка и можно ли брать с пола (§12.69). Всё
 /// остальное — расстояние, наводка, счёт обещанного — у них общее, и отдельной
-/// раздачи ни один не получил (§12.44, §12.102).
+/// раздачи ни один не получил (§12.44, §12.102, §12.133).
 ///
 /// Порядок вариантов значим: по нему сортируются адресаты при равной клетке,
 /// а обход ECS недетерминирован (§11).
@@ -66,6 +66,7 @@ struct Needy {
 enum Dest {
     Site,
     Shop,
+    Lab,
     Sale,
 }
 
@@ -76,7 +77,7 @@ impl Dest {
     /// снабжается одна площадка чертежа — стройка и есть то единственное, на
     /// что неучтённое годится.
     fn storage_only(self) -> bool {
-        matches!(self, Dest::Sale | Dest::Shop)
+        matches!(self, Dest::Sale | Dest::Shop | Dest::Lab)
     }
 }
 
@@ -157,6 +158,8 @@ pub(crate) fn assign_hauls(
     deals: Query<(Entity, &Deal)>,
     crafts: Query<(Entity, &Craft)>,
     recipes: Res<CraftRules>,
+    topics: Query<(Entity, &Research)>,
+    topics_rules: Res<ResearchRules>,
     // Кого сгонять нельзя (§12.103): носильщик выбирает, где встать, тем же
     // `build_spot`, что и строитель, — значит и обходить занятых обязан так же.
     standing: Query<(&Position, Option<&Path>), With<UnitId>>,
@@ -202,7 +205,7 @@ pub(crate) fn assign_hauls(
     let mut aiming: Vec<(&str, Entity, Aim, Option<&Carry>)> = Vec::new();
     for (id, haul, load, carry) in &going {
         let target = match haul.to {
-            HaulTo::Site(e) | HaulTo::Sale(e) | HaulTo::Shop(e) => e,
+            HaulTo::Site(e) | HaulTo::Sale(e) | HaulTo::Shop(e) | HaulTo::Lab(e) => e,
             HaulTo::Store(_) => continue,
         };
         match (load, haul.aim) {
@@ -277,6 +280,22 @@ pub(crate) fn assign_hauls(
             tile: map.tile_at(order.cell.0, order.cell.1),
             miss,
             dest: Dest::Shop,
+            budget: 0,
+        })
+    }));
+    // **Тема-вскрытие — пятый адресат подвоза** (§12.133), и снабжается она
+    // ровно как заказ мастерской: образец везут со склада ногами, а до его
+    // приезда тема просто ждёт. Отдельной раздачи снова не заводится — только
+    // ветка в общем списке.
+    needy.extend(topics.iter().filter_map(|(e, topic)| {
+        let mut miss = topic_missing(&topics_rules, topic);
+        less_incoming(&mut miss, &brought(e));
+        (!miss.is_empty()).then(|| Needy {
+            target: e,
+            at: topic.cell,
+            tile: map.tile_at(topic.cell.0, topic.cell.1),
+            miss,
+            dest: Dest::Lab,
             budget: 0,
         })
     }));
@@ -471,6 +490,7 @@ pub(crate) fn assign_hauls(
             Dest::Sale => HaulTo::Sale(target_e),
             Dest::Site => HaulTo::Site(target_e),
             Dest::Shop => HaulTo::Shop(target_e),
+            Dest::Lab => HaulTo::Lab(target_e),
         };
         commands
             .entity(cat_e)
@@ -717,6 +737,8 @@ pub(crate) fn work_hauls(
     mut deals: Query<&mut Deal>,
     mut crafts: Query<&mut Craft>,
     recipes: Res<CraftRules>,
+    mut topics: Query<&mut Research>,
+    topics_rules: Res<ResearchRules>,
     standing: Query<(&Position, Option<&Path>), With<UnitId>>,
     mut stacks: Query<(Entity, &Position, &mut Stack)>,
 ) {
@@ -728,7 +750,7 @@ pub(crate) fn work_hauls(
         .iter()
         .filter_map(|(_, _, haul, load, ..)| {
             let target = match haul.to {
-                HaulTo::Site(e) | HaulTo::Sale(e) | HaulTo::Shop(e) => e,
+                HaulTo::Site(e) | HaulTo::Sale(e) | HaulTo::Shop(e) | HaulTo::Lab(e) => e,
                 HaulTo::Store(_) => return None,
             };
             load.map(|l| (target, l.item, l.count))
@@ -897,6 +919,81 @@ pub(crate) fn work_hauls(
                         .map_or(0, |&(_, n)| n);
                     let given = load.count.min(need);
                     add_delivered(&mut order.delivered, load.item, given);
+                    keep_rest(&mut commands, cat_e, load.item, load.count - given);
+                }
+                commands.entity(cat_e).remove::<Haul>();
+            }
+            // Лаборатория — зеркало мастерской (§12.133), и отличие ровно
+            // одно: недостачу считает `topic_missing` (образец темы), а не
+            // цена рецепта. Тема одноразова, поэтому множителя штук у неё нет.
+            HaulTo::Lab(topic_e) => {
+                // Тему бросили или лабораторию снесли, пока кот был в пути.
+                let Ok(mut topic) = topics.get_mut(topic_e) else {
+                    commands.entity(cat_e).remove::<Haul>();
+                    continue;
+                };
+                if path.is_some() {
+                    continue; // ещё в дороге
+                }
+                let miss = topic_missing(&topics_rules, &topic);
+                let cell = topic.cell;
+
+                let Some(load) = load else {
+                    // Пришёл к куче — берём то, чего теме не хватает. Чужой
+                    // груз в пути вычитается (§12.48), забронированное под
+                    // продажу — тоже не наше (§12.50).
+                    let mut left = miss.clone();
+                    less_incoming(&mut left, &brought(topic_e));
+                    for slot in left.iter_mut() {
+                        let free = crate::trade::free_to_spend(
+                            stacks.iter().map(|(_, _, s)| s),
+                            deals.iter(),
+                            cats.iter().filter_map(|(_, _, h, l, ..)| l.map(|l| (h, l))),
+                            slot.0,
+                        );
+                        slot.1 = slot.1.min(free.max(0));
+                    }
+                    left.retain(|&(_, n)| n > 0);
+                    let taken =
+                        take_needed(&mut commands, &mut stacks, (pos.x, pos.y), &left, carry);
+                    let Some((item, taken)) = taken else {
+                        commands.entity(cat_e).remove::<Haul>();
+                        continue;
+                    };
+
+                    let reach = Reach::all(&map, (pos.x, pos.y));
+                    let tile = map.tile_at(cell.0, cell.1);
+                    match build_spot(&map, &reach, cell, tile, None, &held) {
+                        Some((spot, _)) => {
+                            let path = reach.path_to(spot.0, spot.1).unwrap_or_default();
+                            commands.entity(cat_e).insert((
+                                Haul {
+                                    to: haul.to,
+                                    aim: None,
+                                },
+                                Carrying { item, count: taken },
+                                Path { steps: path },
+                                MoveCooldown(0),
+                            ));
+                        }
+                        None => {
+                            commands
+                                .entity(cat_e)
+                                .insert(Carrying { item, count: taken })
+                                .remove::<Haul>();
+                        }
+                    }
+                    continue;
+                };
+
+                // Пришёл в лабораторию — сдаём образец (излишек уносит с собой).
+                if (pos.x - cell.0).abs() + (pos.y - cell.1).abs() <= 1 {
+                    let need = miss
+                        .iter()
+                        .find(|&&(i, _)| i == load.item)
+                        .map_or(0, |&(_, n)| n);
+                    let given = load.count.min(need);
+                    add_delivered(&mut topic.delivered, load.item, given);
                     keep_rest(&mut commands, cat_e, load.item, load.count - given);
                 }
                 commands.entity(cat_e).remove::<Haul>();

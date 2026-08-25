@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 21;
+pub(crate) const FORMAT: u32 = 24;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -137,6 +137,10 @@ pub(crate) const SAVED: &[&str] = &[
     "Money",
     "Standing",
     "Techs",
+    // Что база уже видела своими глазами (§12.131). Без этого загруженная
+    // партия спрятала бы строки склада, которые игрок уже читал, — то есть
+    // забыла бы половину своей истории тише, чем любой другой пропуск.
+    "Seen",
     "Chronicle",
     "Goals",
     "Raids",
@@ -272,6 +276,13 @@ pub(crate) struct StateDto {
     pub(crate) money: i32,
     pub(crate) standing: Vec<i32>,
     pub(crate) techs: Vec<String>,
+    /// Что база уже видела (§12.131). Позиционно по палитре `items:`.
+    ///
+    /// `default` тут безопасен ровно потому, что `restore` не доверяет ему
+    /// молча: пустую линию он тут же добирает по самому миру и по закладкам —
+    /// иначе старый снимок спрятал бы весь склад до первого `note_seen`.
+    #[serde(default)]
+    pub(crate) seen: Vec<bool>,
     /// Журнал сработавших событий: `(индекс события, была ли база готова)`.
     pub(crate) chronicle: Vec<(usize, bool)>,
     /// Взятые цели: `(индекс цели, тик взятия)` (§12.58).
@@ -290,7 +301,7 @@ pub(crate) struct StateDto {
     /// Линия — по виду и записи палитры, в порядке `NewsKind::ALL`.
     ///
     /// ⚠️ **Новый вид новости — это подъём `FORMAT`** (так `Tile` довела его до
-    /// 21, §12.126): состав строк здесь позиционный, и снимок с четырьмя видами
+    /// 21 — §12.126, а `Item` до 24 — §12.136): состав строк здесь позиционный, и снимок с четырьмя видами
     /// разобрался бы молча, объявив новостью всю палитру разом.
     #[serde(default)]
     pub(crate) news_open: Vec<Vec<bool>>,
@@ -416,6 +427,7 @@ pub(crate) enum HaulDto {
     Site(u32),
     Sale(u32),
     Shop(u32),
+    Lab(u32),
     Store(Option<u32>),
 }
 
@@ -460,7 +472,17 @@ pub(crate) struct ResearchDto {
     pub(crate) def: usize,
     pub(crate) progress: i32,
     pub(crate) assignee: Option<u32>,
-    pub(crate) spot: Option<(i32, i32)>,
+    /// Ячейка лаборатории, в которой стоит тема (§12.132).
+    ///
+    /// ⚠️ **`#[serde(default)]` тут ставить нельзя.** Снимок формата до §12.132
+    /// разобрался бы молча, положив все темы в (0, 0) — клетку, которая почти
+    /// наверняка не лаборатория, — и раздатчик снёс бы их первым же тиком как
+    /// «лабораторию снесли». Оплаченная тема пропадала бы без единого слова.
+    /// Отсутствие `default` даёт честный отказ разбора, а `FORMAT` — причину.
+    pub(crate) cell: (i32, i32),
+    /// Что уже привезли на вскрытие (§12.133).
+    #[serde(default)]
+    pub(crate) delivered: Vec<(usize, i32)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -561,6 +583,7 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                     HaulTo::Site(t) => HaulDto::Site(at(t).unwrap_or(u32::MAX)),
                     HaulTo::Sale(t) => HaulDto::Sale(at(t).unwrap_or(u32::MAX)),
                     HaulTo::Shop(t) => HaulDto::Shop(at(t).unwrap_or(u32::MAX)),
+                    HaulTo::Lab(t) => HaulDto::Lab(at(t).unwrap_or(u32::MAX)),
                     HaulTo::Store(t) => HaulDto::Store(t.and_then(at)),
                 }),
                 aim: e
@@ -609,7 +632,8 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                     def: r.def,
                     progress: r.progress,
                     assignee: r.assignee.and_then(at),
-                    spot: r.spot,
+                    cell: r.cell,
+                    delivered: r.delivered.clone(),
                 }),
                 craft: e.get::<Craft>().map(|c| CraftDto {
                     def: c.def,
@@ -675,6 +699,7 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
             money: world.resource::<Money>().0,
             standing: world.resource::<Standing>().0.clone(),
             techs: world.resource::<Techs>().0.clone(),
+            seen: world.resource::<Seen>().0.clone(),
             chronicle: chronicle.0.iter().map(|h| (h.def, h.ready)).collect(),
             goals: world
                 .resource::<Goals>()
@@ -717,6 +742,53 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
 /// Загрузка в два прохода. Сначала сущности создаются пустыми, чтобы номер из
 /// файла получил свой `Entity`; только потом вставляются компоненты, потому что
 /// ссылаться они могут на кого угодно, в том числе вперёд.
+/// Поднять шкалу «что база видела» (§12.131).
+///
+/// Читает не только `state.seen`, но и сам снимок — кучи, лапы и надетое, — а
+/// заодно закладки игрока. Причина в том, что `default` у поля снисходителен:
+/// снимок формата до §12.131 везёт пустую линию, и партия, у которой в шапке
+/// закреплён паёк, а на складе лежат тонны лома, встретила бы игрока пустым
+/// складом. Добор по миру делает это невозможным: то, что база держит в лапах,
+/// она заведомо видела.
+///
+/// Из `file`, а не из мира: компоненты сущностей вставляются **после** этого
+/// места, и мир на момент вызова ещё пуст.
+///
+/// Закладка — второй источник и не менее надёжный: закрепить строку можно
+/// только у предмета, чья строка была на экране.
+fn restore_seen(world: &mut World, file: &SaveFile) {
+    let s = &file.state;
+    let mut seen = world.resource_mut::<Seen>();
+    for (item, &saw) in s.seen.iter().enumerate() {
+        if saw {
+            seen.mark(item);
+        }
+    }
+    for dto in &file.entities {
+        if let Some((item, count)) = dto.stack {
+            if count > 0 {
+                seen.mark(item);
+            }
+        }
+        if let Some((item, count)) = dto.carrying {
+            if count > 0 {
+                seen.mark(item);
+            }
+        }
+        if let Some(gear) = &dto.gear {
+            for &item in gear {
+                seen.mark(item);
+            }
+        }
+    }
+    for &item in &s.favorites {
+        seen.mark(item);
+    }
+    for &(item, _) in &s.tickers {
+        seen.mark(item);
+    }
+}
+
 pub(crate) fn restore(world: &mut World, file: &SaveFile) {
     let old: Vec<Entity> = world.iter_entities().map(|e| e.id()).collect();
     for id in old {
@@ -760,6 +832,7 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
     world.resource_mut::<Money>().0 = s.money;
     world.resource_mut::<Standing>().0 = s.standing.clone();
     world.resource_mut::<Techs>().0 = s.techs.clone();
+    restore_seen(world, file);
     world.resource_mut::<Chronicle>().0 = s
         .chronicle
         .iter()
@@ -860,6 +933,7 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
                 HaulDto::Site(n) => at(n).map(HaulTo::Site),
                 HaulDto::Sale(n) => at(n).map(HaulTo::Sale),
                 HaulDto::Shop(n) => at(n).map(HaulTo::Shop),
+                HaulDto::Lab(n) => at(n).map(HaulTo::Lab),
                 HaulDto::Store(n) => Some(HaulTo::Store(n.and_then(at))),
             };
             // Наводка без кучи — не беда: кот дойдёт и возьмёт что под ногами,
@@ -951,7 +1025,8 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
                 def: r.def,
                 progress: r.progress,
                 assignee: r.assignee.and_then(at),
-                spot: r.spot,
+                cell: r.cell,
+                delivered: r.delivered.clone(),
             });
         }
         if let Some(c) = &dto.craft {

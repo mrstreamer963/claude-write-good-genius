@@ -28,6 +28,7 @@ fn state_of(sim: &Sim) -> String {
         format!("money={}", w.resource::<Money>().0),
         format!("standing={:?}", w.resource::<Standing>().0),
         format!("techs={:?}", w.resource::<Techs>().0),
+        format!("seen={:?}", w.resource::<Seen>().0),
         format!(
             "chronicle={:?}",
             w.resource::<Chronicle>()
@@ -378,6 +379,7 @@ fn links_of(sim: &Sim) -> Vec<String> {
                     format!("sale {}", w.get::<Deal>(t).map_or(-1, |d| d.item as i32))
                 }
                 HaulTo::Shop(t) => format!("shop {}", spot(t)),
+                HaulTo::Lab(t) => format!("lab {}", spot(t)),
                 HaulTo::Store(t) => format!("store {}", t.map_or("-".into(), name)),
             };
             out.push(format!("haul {who} -> {to}"));
@@ -684,5 +686,71 @@ fn a_loaded_game_announces_nothing_new() {
         before,
         "после загрузки лента пополнилась: {:?}",
         loaded.news()
+    );
+}
+
+/// Что база видела, она помнит и после загрузки (§12.131) — **включая то, чего
+/// у неё больше нет**.
+///
+/// Именно этот случай шкала и заводилась держать: строка «Ткань — 0» обязана
+/// пережить и то, что ткань кончилась, и перезагрузку. Считай мы видимость по
+/// запасу — тест был бы зелёным и ничего не проверял.
+#[test]
+fn a_saved_world_remembers_what_it_saw() {
+    let mut live = Sim::new(CORE).expect("рулсет");
+    live.without_timeline();
+    let cloth = live.item_index("cloth").expect("предмет `cloth`");
+
+    // Кладём кучу, даём наблюдателю её заметить и тут же убираем.
+    live.put_item(1, 1, cloth, 3);
+    live.tick();
+    assert!(
+        live.seen(cloth),
+        "куча пролежала тик, а база её не заметила"
+    );
+    live.take_item(1, 1, cloth);
+    live.tick();
+    assert_eq!(live.item_total(cloth), 0, "ткани в мире остаться не должно");
+
+    let json = live.save().expect("снимок");
+    let loaded = Sim::load_from(CORE, &json).expect("загрузка");
+
+    assert!(
+        loaded.seen(cloth),
+        "после загрузки строка «Ткань — 0» пропала: база забыла предмет, \
+         который держала в лапах, — и игрок прочтёт это как исчезнувшую механику",
+    );
+}
+
+/// Снимок без шкалы (формат до §12.131) не прячет склад: `restore` добирает
+/// линию по самому миру и по закладкам игрока.
+///
+/// `#[serde(default)]` тут снисходителен намеренно — старые партии должны
+/// грузиться, — но снисходительность без добора означала бы пустой склад у
+/// базы, которая ходит в комбинезонах и держит паёк в шапке.
+#[test]
+fn an_old_snapshot_does_not_hide_the_shelves() {
+    let mut live = Sim::new(CORE).expect("рулсет");
+    live.without_timeline();
+    live.tick();
+    let scrap = live.item_index("scrap").expect("предмет `scrap`");
+    assert!(live.seen(scrap));
+
+    // Вырезаем шкалу из снимка — ровно так он выглядел до §12.131.
+    let json = live.save().expect("снимок");
+    let mut file: serde_json::Value = serde_json::from_str(&json).expect("разбор");
+    file["state"]
+        .as_object_mut()
+        .expect("state")
+        .remove("seen")
+        .expect("поле `seen` в снимке");
+    let older = serde_json::to_string(&file).expect("сборка");
+
+    let loaded = Sim::load_from(CORE, &older).expect("загрузка");
+
+    assert!(
+        loaded.seen(scrap),
+        "старый снимок спрятал строку лома: линию надо добирать по миру, \
+         а не доверять пустому полю",
     );
 }

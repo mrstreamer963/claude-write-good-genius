@@ -287,3 +287,86 @@ fn a_hired_recruit_never_makes_news() {
         sim.news()
     );
 }
+
+// --- новый ресурс (§12.136) --------------------------------------------------
+
+/// Предмет, впервые попавший на базу, становится новостью — иначе его появление
+/// невидимо (§12.131: до этого строки на складе не было вовсе).
+///
+/// Это отмена решения §12.131, где шестой вид был отвергнут доводом «приезд
+/// кучи — и так самое заметное событие в игре». Довод оказался неверным на
+/// живой партии: куча у шлюза среди других куч не читается как «в мире появился
+/// новый вид вещей», а окно «Склад» в этот момент закрыто.
+#[test]
+fn a_first_time_item_is_news() {
+    let mut sim = sim_from(&["#####", "#a..#", "#####"]);
+    sim.set_items(3);
+    // Базовую линию снимает первый тик: что база держит с самого начала,
+    // новостью не становится.
+    sim.tick_n(1);
+    assert!(sim.news().is_empty(), "стартовый мир новостей не даёт");
+
+    sim.put_item(3, 1, 2, 4);
+    sim.tick_n(1);
+
+    assert_eq!(
+        sim.news(),
+        vec![(NewsKind::Item, 2, true)],
+        "новый ресурс обязан подать голос",
+    );
+}
+
+/// Второй раз тот же предмет новостью не становится: шкала `Seen` только
+/// растёт, и «открылось» у неё случается ровно однажды.
+#[test]
+fn a_known_item_never_repeats_itself() {
+    let mut sim = sim_from(&["#####", "#a..#", "#####"]);
+    sim.set_items(3);
+    sim.set_auto_tidy(false);
+    // Тик до кучи — чтобы базовая линия снялась по пустому миру: предмет,
+    // лежавший там с самого начала, новостью не бывает по определению.
+    sim.tick_n(1);
+    sim.put_item(3, 1, 2, 1);
+    sim.tick_n(2);
+    assert_eq!(sim.news().len(), 1);
+
+    sim.take_item(3, 1, 2);
+    sim.tick_n(2);
+    sim.put_item(3, 1, 2, 5);
+    sim.tick_n(2);
+
+    assert_eq!(
+        sim.news().len(),
+        1,
+        "закрытий и повторов у ресурса не бывает"
+    );
+}
+
+/// Стартовый склад боевого рулсета в ленту не идёт, а добыча первой вылазки —
+/// идёт: ровно то, что игрок и должен заметить.
+#[test]
+fn the_shipped_ruleset_announces_only_what_is_new() {
+    let mut sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
+    sim.without_timeline();
+    sim.tick_n(1);
+
+    let items: Vec<usize> = sim
+        .news()
+        .iter()
+        .filter(|(kind, ..)| *kind == NewsKind::Item)
+        .map(|&(_, def, _)| def)
+        .collect();
+    assert!(
+        items.is_empty(),
+        "стартовый склад новостью не бывает: {items:?}"
+    );
+
+    let suit = sim.item_index("suit").expect("предмет `suit`");
+    sim.put_item(1, 1, suit, 1);
+    sim.tick_n(1);
+
+    assert!(
+        sim.news().contains(&(NewsKind::Item, suit, true)),
+        "первый комбинезон обязан подать голос",
+    );
+}

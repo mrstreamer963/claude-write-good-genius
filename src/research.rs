@@ -17,21 +17,35 @@
 use bevy_ecs::prelude::*;
 
 use crate::components::*;
+use crate::crafting::spill_delivered;
+use crate::hauling::spill;
 use crate::jobs::WORK_RATE;
 use crate::map::BaseMap;
 use crate::path::Reach;
 use crate::skills::{SKILL_SCIENCE, level_of};
 
-/// Ближайшая к коту клетка лаборатории и её цена в шагах.
+/// Первая свободная клетка лаборатории по обходу карты; `None` — свободных нет.
 ///
-/// Работать кот будет **стоя на ней**, а не с соседней: лаборатория — комната,
-/// а не стройплощадка, и правило соседства (§12.12) здесь ничего не спасает.
-fn lab_spot(map: &BaseMap, tiles: &TileRules, reach: &Reach) -> Option<((i32, i32), i32)> {
+/// Близнец `crafting::free_shop` (§12.96, §12.132): с §12.132 тема, как заказ и
+/// сделка, рождается **в ячейке** и держит её до последнего очка работы. Обход
+/// карты фиксирован, значит выбор детерминирован (§11).
+///
+/// Свободная функция, а не метод фасада, потому что зовут её двое —
+/// `Sim::start_research` и снапшот. Правила-порога у науки нет и быть не может
+/// (тема одноразова, «изучать до N» бессмысленно), так что третьего зова, как у
+/// `free_shop`, здесь не появится.
+///
+/// Работает кот **стоя на клетке темы**, а не с соседней: лаборатория —
+/// комната, а не стройплощадка, и правило соседства (§12.12) тут ни при чём.
+pub(crate) fn free_lab(
+    map: &BaseMap,
+    tiles: &TileRules,
+    taken: &[(i32, i32)],
+) -> Option<(i32, i32)> {
     (0..map.height)
         .flat_map(|y| (0..map.width).map(move |x| (x, y)))
         .filter(|&(x, y)| tiles.is_lab(map.tile_at(x, y)))
-        .filter_map(|(x, y)| reach.dist_at(x, y).map(|d| ((x, y), d)))
-        .min_by_key(|&(_, d)| d)
+        .find(|xy| !taken.contains(xy))
 }
 
 /// Сажает за тему ближайшего свободного кота, которому хватает «Науки».
@@ -47,6 +61,7 @@ pub(crate) fn assign_research(
     skill_rules: Res<SkillRules>,
     mut commands: Commands,
     mut topics: Query<(Entity, &mut Research)>,
+    mut stacks: Query<(Entity, &Position, &mut Stack)>,
     free_cats: Query<
         (Entity, &UnitId, &Position, Option<&Skills>),
         (
@@ -71,17 +86,40 @@ pub(crate) fn assign_research(
 ) {
     let science = skill_rules.index_of(SKILL_SCIENCE);
     for (topic_e, mut topic) in &mut topics {
+        // Лабораторию снесли — тема уходит вместе с ней (§12.132), дословно как
+        // заказ уходит со станком. Завезённый образец при этом **роняем кучей**
+        // на клетку (§12.31, инвариант 8): материал не горит.
+        if !tiles.is_lab(map.tile_at(topic.cell.0, topic.cell.1)) {
+            spill_delivered(&mut commands, &mut stacks, topic.cell, &topic.delivered);
+            if let Some(cat_e) = topic.assignee {
+                commands
+                    .entity(cat_e)
+                    .remove::<(Researching, Path, MoveCooldown)>();
+            }
+            commands.entity(topic_e).despawn();
+            continue;
+        }
         if topic.assignee.is_some() {
             continue;
         }
         let Some(rule) = rules.0.get(topic.def) else {
             continue;
         };
+        // Образец ещё везут — учёного не зовём (§12.133). Зеркало
+        // `craft_supplied`: сперва носильщик, потом мастер (§12.15).
+        if !topic_supplied(&rules, &topic) {
+            continue;
+        }
 
         // Допуск отсекает исполнителей, расстояние выбирает из оставшихся.
         // При равном расстоянии — по `id` кота, а не по порядку сущностей:
         // обход ECS зависит от истории вставок (§11), и та же пара котов после
         // загрузки сохранения решилась бы иначе.
+        //
+        // Идёт кот **на клетку своей темы**, а не на ближайшую лабораторию:
+        // комнату выбрала сама тема (§12.132), и второй выбор здесь развёл бы
+        // ячейку, которую тема держит, с той, где стоит учёный.
+        let spot = topic.cell;
         let chosen = free_cats
             .iter()
             .filter(|(_, _, _, skills)| {
@@ -89,16 +127,16 @@ pub(crate) fn assign_research(
             })
             .filter_map(|(cat_e, id, pos, _)| {
                 let reach = Reach::all(&map, (pos.x, pos.y));
-                lab_spot(&map, &tiles, &reach)
-                    .map(|(spot, steps)| (steps, id.0.as_str(), cat_e, spot, reach))
+                reach
+                    .dist_at(spot.0, spot.1)
+                    .map(|steps| (steps, id.0.as_str(), cat_e, reach))
             })
             .min_by_key(|&(steps, id, ..)| (steps, id));
-        let Some((_, _, cat_e, spot, reach)) = chosen else {
+        let Some((_, _, cat_e, reach)) = chosen else {
             continue; // некому взяться или до лаборатории не дойти
         };
 
         topic.assignee = Some(cat_e);
-        topic.spot = Some(spot);
         let path = reach.path_to(spot.0, spot.1).unwrap_or_default();
         commands.entity(cat_e).insert((
             Researching(topic_e),
@@ -115,8 +153,6 @@ pub(crate) fn assign_research(
 /// исследование становится вторым источником навыка после парты — тем самым
 /// «мастерство из домена», ради которого парта и остановлена на пороге.
 pub(crate) fn work_research(
-    map: Res<BaseMap>,
-    tiles: Res<TileRules>,
     rules: Res<ResearchRules>,
     skill_rules: Res<SkillRules>,
     mut techs: ResMut<Techs>,
@@ -129,6 +165,7 @@ pub(crate) fn work_research(
         Option<&Skills>,
     )>,
     mut topics: Query<&mut Research>,
+    mut stacks: Query<(Entity, &Position, &mut Stack)>,
 ) {
     let science = skill_rules.index_of(SKILL_SCIENCE);
     for (cat_e, pos, task, path, skills) in &cats {
@@ -140,13 +177,12 @@ pub(crate) fn work_research(
             continue;
         };
 
-        if !tiles.is_lab(map.tile_at(pos.x, pos.y)) {
-            // Лабораторию могли снести, пока кот шёл, — тогда маршрут кончился
-            // не там. Отпускаем тему: раздатчик подыщет другую комнату, а нет
-            // её — тема просто ждёт, как ждёт чертёж без материала.
+        if (pos.x, pos.y) != topic.cell {
+            // Кот ещё идёт — или его сбили с маршрута (сон, рана, приказ).
+            // Тему при этом не трогаем: комната принадлежит ей (§12.132), а
+            // снос уносит её целиком, и делает это раздатчик.
             if path.is_none() {
                 topic.assignee = None;
-                topic.spot = None;
                 commands.entity(cat_e).remove::<Researching>();
             }
             continue;
@@ -163,6 +199,14 @@ pub(crate) fn work_research(
             // читаются как поломка.
             if !techs.knows(&rule.id) {
                 techs.0.push(rule.id.clone());
+            }
+            // Что вышло из образца, ложится **кучей на клетку темы** (§12.133,
+            // инвариант 8) — как добыча на шлюз и готовое под ноги мастеру.
+            // Дальше её разносит обычная уборка.
+            for &(item, count) in &rule.gives {
+                if count > 0 {
+                    spill(&mut commands, &mut stacks, topic.cell, item, count);
+                }
             }
             commands.entity(task.0).despawn();
             commands.entity(cat_e).remove::<Researching>();

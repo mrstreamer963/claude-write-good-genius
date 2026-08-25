@@ -319,9 +319,10 @@ fn treat_spot(map: &BaseMap, reach: &Reach, at: (i32, i32)) -> Option<((i32, i32
 fn plan_kit(
     piles: &[(Entity, usize, i32)],
     items: &ItemRules,
+    techs: &Techs,
     booked: &[(usize, i32)],
 ) -> Option<(i32, Vec<(Entity, i32)>)> {
-    items.medkits().find_map(|(item, mends)| {
+    items.medkits(techs).find_map(|(item, mends)| {
         plan_spend(piles, &[(item, 1)], booked).map(|takes| (mends, takes))
     })
 }
@@ -346,6 +347,7 @@ pub(crate) fn heal(
     rules: Res<HealthRules>,
     skill_rules: Res<SkillRules>,
     items: Res<ItemRules>,
+    techs: Res<Techs>,
     mut commands: Commands,
     mut patients: Query<(Entity, &Position, &mut Health, &mut Healing, Option<&Path>)>,
     medics: Query<(Entity, &Position, &Treating, Option<&Path>, Option<&Skills>)>,
@@ -402,7 +404,7 @@ pub(crate) fn heal(
                         .iter()
                         .map(|(e, p, s)| (e, (p.x, p.y), s.item, s.count)),
                 );
-                if let Some((mends, takes)) = plan_kit(&piles, &items, &booked) {
+                if let Some((mends, takes)) = plan_kit(&piles, &items, &techs, &booked) {
                     for (pile_e, taken) in takes {
                         if let Ok((_, _, mut stack)) = stacks.get_mut(pile_e) {
                             stack.count -= taken;

@@ -420,7 +420,11 @@ fn healing_works_without_any_medkit() {
 fn the_shipped_ruleset_can_bandage_the_wounded() {
     let sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
 
-    let kits: Vec<(usize, i32)> = sim.world.resource::<ItemRules>().medkits().collect();
+    // Технологии берём **как они есть на старте** — пустыми. С §12.131 это и
+    // есть проверка «аптечка не спрятана за технологией, до которой ещё дожить
+    // надо»: непонятый предмет не лечит, и такая аптечка в список не попадёт.
+    let techs = sim.world.resource::<Techs>();
+    let kits: Vec<(usize, i32)> = sim.world.resource::<ItemRules>().medkits(techs).collect();
     let &(kit, mends) = kits.first().expect("в палитре нет ни одной аптечки");
 
     // Аптечка должна быть сравнима с койкой, иначе она украшение: с ней ставка

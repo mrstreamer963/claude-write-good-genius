@@ -70,6 +70,7 @@ mod research;
 mod ruleset;
 mod save;
 mod schedule;
+mod seen;
 mod sim;
 mod skills;
 mod snapshot;

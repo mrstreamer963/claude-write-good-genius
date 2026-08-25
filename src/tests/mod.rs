@@ -28,9 +28,11 @@ mod paths;
 mod relay;
 mod research;
 mod save;
+mod seen;
 mod skills;
 mod stats;
 mod study;
+mod tech_tree;
 mod terrain;
 mod tidying;
 mod timeline;
@@ -133,6 +135,11 @@ fn sim_from(rows: &[&str]) -> Sim {
     // закрепил. Заводят их `set_favorite` и `set_ticker`.
     world.insert_resource(Favorites::default());
     world.insert_resource(Tickers::default());
+    // Шкала «что база видела» (§12.131) заводится всегда и пустой, как лента
+    // новостей: это не контент, а память мира о случившемся, и наблюдатель
+    // пишет в неё независимо от того, смотрит ли на неё хоть один экран.
+    // Пустая она ровно один тик — `note_seen` отметит всё, что схема положила.
+    world.insert_resource(Seen::default());
     // Лента новостей (§12.120) заводится всегда, как три журнала целей: она не
     // контент, а память мира о случившемся, и наблюдатель пишет в неё независимо
     // от того, смотрит ли на неё хоть один экран.
@@ -712,8 +719,11 @@ impl Sim {
         self.world.resource_mut::<CraftRules>().0[def].salvage = true;
     }
 
-    /// Закрыть надевание предмета технологией (§12.114). Зеркало
-    /// `set_tile_tech`: ворота у вещи те же, что у тайла и у рецепта.
+    /// Закрыть предмет технологией: база его **не понимает** (§12.114, §12.131).
+    ///
+    /// Зеркало `set_tile_tech`: ворота у вещи те же, что у тайла и у рецепта.
+    /// Имя осталось от надевания, с которого ворота начинались, но режут они
+    /// теперь всё, что берёт предмет в дело, — шаблон, еду и аптечку.
     fn set_wear_tech(&mut self, item: usize, tech: &str) {
         self.set_items(item + 1);
         let mut rules = self.world.resource_mut::<ItemRules>();
@@ -842,9 +852,43 @@ impl Sim {
             level,
             work,
             cost: cost.to_vec(),
+            // Образца и выхода у синтетической темы нет (§12.133): вскрытие —
+            // контент рулсета, как еда и снаряжение. Заводит их `set_specimen`.
+            specimen: Vec::new(),
+            gives: Vec::new(),
             requires: requires.iter().map(|t| t.to_string()).collect(),
         });
         rules.0.len() - 1
+    }
+
+    /// Сделать тему **вскрытием** (§12.133): что привезти в лабораторию и что
+    /// из этого выйдет. Ворота у такой темы — шкала `Seen`, а не склад.
+    fn set_specimen(&mut self, topic: usize, specimen: &[(usize, i32)], gives: &[(usize, i32)]) {
+        let mut rules = self.world.resource_mut::<ResearchRules>();
+        rules.0[topic].specimen = specimen.to_vec();
+        rules.0[topic].gives = gives.to_vec();
+    }
+
+    /// Сколько образца уже завезли в лабораторию по этой теме (§12.133).
+    fn topic_delivered(&mut self, item: usize) -> i32 {
+        let mut q = self.world.query::<&Research>();
+        q.iter(&self.world)
+            .flat_map(|t| t.delivered.iter())
+            .filter(|&&(i, _)| i == item)
+            .map(|&(_, n)| n)
+            .sum()
+    }
+
+    /// Клетка лаборатории, в которой стоит тема; `None` — темы нет (§12.132).
+    fn topic_cell(&mut self) -> Option<(i32, i32)> {
+        let mut q = self.world.query::<&Research>();
+        q.iter(&self.world).next().map(|t| t.cell)
+    }
+
+    /// Сколько тем идёт разом (§12.132).
+    fn topics_count(&mut self) -> usize {
+        let mut q = self.world.query::<&Research>();
+        q.iter(&self.world).count()
     }
 
     /// Выключить таймлайн в мире боевого рулсета.
@@ -917,6 +961,31 @@ impl Sim {
             .iter()
             .find(|t| t.id == id)
             .cloned()
+    }
+
+    /// Индекс темы по `id`; `None` — такой темы нет. Нужен сторожам на боевом
+    /// контенте по тому же доводу, что и `item_index`: порядок записей в YAML —
+    /// это индекс, и зашитый числом он разъедется молча.
+    fn topic_index(&self, id: &str) -> Option<usize> {
+        self.world
+            .resource::<ResearchRules>()
+            .0
+            .iter()
+            .position(|t| t.id == id)
+    }
+
+    /// Выдать коту столько опыта, чтобы он вышел на `level` в этом домене.
+    /// Удобнее `set_xp` там, где тесту важен допуск, а не число очков.
+    fn set_skill_level(&mut self, unit: &str, skill_id: &str, level: i32) {
+        let skill = self.skill_index(skill_id).expect("домен есть в палитре");
+        let need = self
+            .world
+            .resource::<SkillRules>()
+            .0
+            .get(skill)
+            .and_then(|r| r.levels.get((level - 1).max(0) as usize).copied())
+            .unwrap_or(0);
+        self.set_xp(unit, skill, need);
     }
 
     /// До какого уровня доводит парта этого домена (§12.18).
@@ -994,6 +1063,24 @@ impl Sim {
         let mut q = self.world.query::<&Research>();
         let assignee = q.iter(&self.world).next().and_then(|t| t.assignee)?;
         self.world.get::<UnitId>(assignee).map(|u| u.0.clone())
+    }
+
+    /// Есть ли **сейчас на базе** кот с допуском идущей темы (§12.135) — то
+    /// самое, чем панель отличает «некому взяться» от «все заняты».
+    fn topic_has_scientist_home(&mut self) -> bool {
+        let level = {
+            let mut q = self.world.query::<&Research>();
+            let def = q.iter(&self.world).next().map(|t| t.def);
+            def.and_then(|d| self.world.resource::<ResearchRules>().0.get(d))
+                .map_or(0, |r| r.level)
+        };
+        self.has_scientist_home(level)
+    }
+
+    /// Сколько тем сейчас с исполнителями (§12.132).
+    fn researchers_busy(&mut self) -> usize {
+        let mut q = self.world.query::<&Research>();
+        q.iter(&self.world).filter(|t| t.assignee.is_some()).count()
     }
 
     /// Кот учится — сидит за партой или идёт к ней.
@@ -1759,6 +1846,22 @@ impl Sim {
             Some((Surplus::Salvage, keep)) => Some(keep),
             _ => None,
         }
+    }
+
+    /// Индекс предмета по `id` из рулсета; `None` — такого нет.
+    ///
+    /// Нужен сторожам на боевом контенте: индексы палитры — это порядок
+    /// записей в YAML, и зашитое числом «ткань это 4» разъезжается на первой же
+    /// вставке предмета в середину списка, причём молча.
+    fn item_index(&self, id: &str) -> Option<usize> {
+        self.items.iter().position(|it| it.id == id)
+    }
+
+    /// Видела ли база этот предмет хоть раз (§12.131) — то есть есть ли у него
+    /// строка в окне «Склад» и в шапке. Только растёт: вывезенный подчистую
+    /// предмет остаётся виденным, и это ровно то, ради чего заведена шкала.
+    fn seen(&self, item: usize) -> bool {
+        self.world.resource::<Seen>().saw(item)
     }
 
     /// Лежит ли предмет в избранном: его строка стоит наверху окна «Склад»

@@ -27,6 +27,8 @@
 use bevy_ecs::prelude::*;
 use wasm_bindgen::prelude::*;
 
+use bevy_ecs::system::RunSystemOnce;
+
 use crate::components::*;
 use crate::goals::{WorldFacts, built_counts, progress_of};
 use crate::hauling::{plan_spend, stored_counts};
@@ -44,6 +46,7 @@ use crate::ruleset::{
 };
 use crate::save::{FORMAT, SaveFile, capture, fingerprint, note, restore};
 use crate::schedule::build_schedule;
+use crate::seen::note_seen;
 use crate::skills::{
     SKILL_RAID, SKILL_SCIENCE, desk_cap, level_cap_of, level_of, nearest_desk, xp_ceiling,
 };
@@ -362,6 +365,7 @@ impl Sim {
             self.world.resource::<ResearchRules>().0.len(),
             self.world.resource::<CraftRules>().0.len(),
             self.world.resource::<TileRules>().0.len(),
+            self.items.len(),
         ];
         // Базовая линия снимается молча: партия начинается с открытой первой
         // ступени, и объявлять её новостью не о чем. У загруженной партии линия
@@ -387,6 +391,10 @@ impl Sim {
                     NewsKind::Topic => self.topic_is_open(def),
                     NewsKind::Recipe => self.recipe_is_open(def),
                     NewsKind::Tile => self.tile_is_open(def),
+                    // Ворота предмета — шкала `Seen` (§12.131, §12.136): он
+                    // «открыт», как только побывал в мире базы. Как и у
+                    // рецепта, закрытий тут не бывает — шкала только растёт.
+                    NewsKind::Item => self.world.resource::<Seen>().saw(def),
                 };
                 let was = self.world.resource::<News>().was_open(kind, def);
                 let mut news = self.world.resource_mut::<News>();
@@ -512,6 +520,9 @@ impl Sim {
                 }
             }
         }
+        let seen = self.world.resource::<Seen>();
+        let items = self.world.resource::<ItemRules>();
+        let techs = self.world.resource::<Techs>();
         (0..self.items.len())
             .map(|item| {
                 let owed = booked
@@ -519,6 +530,8 @@ impl Sim {
                     .find(|&&(i, _)| i == item)
                     .map_or(0, |&(_, n)| n);
                 StockSnap {
+                    seen: seen.saw(item),
+                    understood: items.understood(item, techs),
                     stored: stored[item],
                     loose: loose[item],
                     booked: owed,
@@ -639,7 +652,6 @@ impl Sim {
             && let Some(mut topic) = self.world.get_mut::<Research>(topic_e)
         {
             topic.assignee = None;
-            topic.spot = None;
         }
         // У заказа освобождаем **только исполнителя**: ячейка станка — свойство
         // самого заказа, а не задачи кота (§12.96), и снятая здесь потеряла бы
@@ -698,10 +710,18 @@ impl Sim {
         }
     }
 
-    /// Тема, которую сейчас изучают (на POC не больше одной).
-    fn research(&mut self) -> Option<Entity> {
-        let mut q = self.world.query_filtered::<Entity, With<Research>>();
-        q.iter(&self.world).next()
+    /// Сущность темы по индексу записи; `None` — эту тему сейчас не изучают.
+    ///
+    /// Спрашивают **по `def`**, а не «идёт ли хоть какая-то тема» (§12.132):
+    /// тем теперь столько, сколько лабораторий. Ключ при этом однозначен, в
+    /// отличие от заказа: двух тем на один `def` не бывает никогда — тема
+    /// одноразова и необратима (§12.18), и `cancel_research` поэтому осталась
+    /// адресуемой темой, а не клеткой.
+    fn topic_of(&mut self, def: usize) -> Option<Entity> {
+        let mut q = self.world.query::<(Entity, &Research)>();
+        q.iter(&self.world)
+            .find(|(_, t)| t.def == def)
+            .map(|(e, _)| e)
     }
 
     /// Есть ли на базе клетка лаборатории — без неё работать негде.
@@ -716,13 +736,38 @@ impl Sim {
     /// Есть ли на базе кот с таким уровнем «Науки» — это допуск, а не скорость
     /// (§12.18): без него тему не возьмёт никто и никогда.
     fn has_scientist(&mut self, level: i32) -> bool {
+        self.count_scientists(level, false) > 0
+    }
+
+    /// То же, но **только среди тех, кто на базе** (§12.135): ушедший в поле не
+    /// возьмётся за тему, и `assign_research` его не видит (`Without<Away>`).
+    ///
+    /// Два вопроса, а не один: «есть ли у базы такой кот» решает заявку —
+    /// отказывать из-за того, что учёный сейчас в поле, значило бы отменять
+    /// решение игрока по временной причине, — а «есть ли он **сейчас**»
+    /// объясняет, почему заведённая тема стоит. Второе без первого читается как
+    /// «допуска нет», хотя он есть.
+    pub(crate) fn has_scientist_home(&mut self, level: i32) -> bool {
+        self.count_scientists(level, true) > 0
+    }
+
+    fn count_scientists(&mut self, level: i32, home_only: bool) -> usize {
         let Some(science) = self.world.resource::<SkillRules>().index_of(SKILL_SCIENCE) else {
-            return level <= 0; // домена нет вовсе — только тема без допуска
+            // Домена нет вовсе — тему без допуска возьмёт кто угодно, а с
+            // допуском не возьмёт никто.
+            return match level <= 0 {
+                true => 1,
+                false => 0,
+            };
         };
-        let mut q = self.world.query_filtered::<Option<&Skills>, With<UnitId>>();
+        let mut q = self
+            .world
+            .query_filtered::<(Option<&Skills>, Option<&Away>), With<UnitId>>();
         let rules = self.world.resource::<SkillRules>();
         q.iter(&self.world)
-            .any(|skills| level_of(rules, skills, science) >= level)
+            .filter(|(_, away)| !(home_only && away.is_some()))
+            .filter(|(skills, _)| level_of(rules, *skills, science) >= level)
+            .count()
     }
 
     /// Клетки торговых постов в порядке обхода карты — он фиксирован, значит
@@ -885,6 +930,22 @@ impl Sim {
     /// Сколько на базе мастерских. Тоже счёт: станок — слот заказа (§12.55).
     fn shops(&mut self) -> usize {
         self.shop_cells().len()
+    }
+
+    /// Свободная ячейка лаборатории под новую тему — первая по обходу карты.
+    ///
+    /// Близнец `free_shop_cell` (§12.132): с §12.132 тема, как заказ и сделка,
+    /// живёт **в ячейке** и держит её до последнего очка работы. Считает это
+    /// одно место на фасад и снимок — `research::free_lab`; правила-порога у
+    /// науки нет, так что третьего зова не появится.
+    fn free_lab_cell(&mut self) -> Option<(i32, i32)> {
+        let taken: Vec<(i32, i32)> = {
+            let mut q = self.world.query::<&Research>();
+            q.iter(&self.world).map(|t| t.cell).collect()
+        };
+        let map = self.world.resource::<BaseMap>();
+        let rules = self.world.resource::<TileRules>();
+        crate::research::free_lab(map, rules, &taken)
     }
 
     /// Свободная ячейка под новый заказ — первая по обходу карты, или `None`.
@@ -1136,6 +1197,16 @@ impl Sim {
                         .iter()
                         .filter_map(|(id, &n)| item_index(id).map(|i| (i, n)))
                         .collect(),
+                    specimen: r
+                        .specimen
+                        .iter()
+                        .filter_map(|(id, &n)| item_index(id).map(|i| (i, n)))
+                        .collect(),
+                    gives: r
+                        .gives
+                        .iter()
+                        .filter_map(|(id, &n)| item_index(id).map(|i| (i, n)))
+                        .collect(),
                     requires: r.requires.clone(),
                 })
                 .collect(),
@@ -1360,6 +1431,13 @@ impl Sim {
                 .collect(),
         ));
         world.insert_resource(Tickers::default());
+        // Что база уже видела своими глазами (§12.131). Пустой заводится, а
+        // наполняется ниже — одним прогоном наблюдателя по собранному миру:
+        // стартовый склад база видела заведомо, и ждать первого тика тут
+        // нельзя. Партия открывается **на паузе**, то есть тика может не быть
+        // ещё долго, и шапка успела бы сказать «ресурсы не выбраны» про
+        // выбранные рулсетом.
+        world.insert_resource(Seen(vec![false; rs.items.len()]));
         // Лента новостей (§12.120). Базовой линии у неё пока нет: снимет её
         // первый же `note_news`, и стартовая доступность новостью не станет.
         world.insert_resource(News::default());
@@ -1427,6 +1505,12 @@ impl Sim {
                 &stats,
             );
         }
+
+        // Стартовый склад база видела заведомо (§12.131). Прогоняем наблюдателя
+        // сразу, а не ждём первого тика: партия открывается на паузе, и тика
+        // может не быть ещё долго. Тот же наблюдатель, что в цепочке, — второй
+        // экземпляр этого обхода разошёлся бы с первым на первой же правке.
+        let _ = world.run_system_once(note_seen);
 
         let schedule = build_schedule();
         Ok(Sim {
@@ -2252,16 +2336,29 @@ impl Sim {
     /// Платят **образцами со склада**, разом при заявке, — как за найм (§12.24):
     /// работа котов начнётся потом, а решение принято сейчас.
     ///
+    /// **У темы-вскрытия плата другая** (§12.133): вместо `cost` у неё
+    /// `specimen`, и это не плата, а материал — коты везут его в лабораторию
+    /// ногами, как на станок (§12.102). Ворот у него **двое** (§12.139): шкала
+    /// `Seen` («предмет хоть раз побывал на базе», §12.131) открывает саму тему,
+    /// а склад — заявку. Списания при этом нет: образец приезжает подвозом.
+    ///
+    /// Одного `Seen`, как было до §12.139, мало: база, чьи коты разобрали по
+    /// себе все привезённые комбинезоны, заводила тему, которая **не ждёт
+    /// образец, а стоит намертво**, — и держала при этом ячейку лаборатории и
+    /// учёного. «Ждёт материал» законно у заказа (§12.30), потому что материал
+    /// на базе есть; надетое же со склада не вернётся никогда.
+    ///
     /// Тема одна за раз: на POC второй некого посадить, а очередь тем — механика,
     /// которую не на чем проверить. Вернёт false, если темы нет, она уже изучена
-    /// или идёт, не хватает предыдущих технологий, на базе нет лаборатории,
-    /// некому взяться или на складе нечем заплатить.
+    /// или идёт, не хватает предыдущих технологий, образец ещё не попадался
+    /// базе, на базе нет лаборатории, некому взяться или на складе нечем
+    /// заплатить.
     pub fn start_research(&mut self, def: usize) -> bool {
         note(&mut self.world, format!("research {def}"));
         let Some(rule) = self.world.resource::<ResearchRules>().0.get(def).cloned() else {
             return false;
         };
-        if self.research().is_some() {
+        if self.topic_of(def).is_some() {
             return false;
         }
         let techs = self.world.resource::<Techs>();
@@ -2270,9 +2367,30 @@ impl Sim {
         if techs.knows(&rule.id) || !techs.covers(&rule.requires) {
             return false;
         }
-        if !self.has_lab() {
+        // Образец база должна была **повидать** (§12.131, §12.133) — это ворота
+        // самой темы: невиданное не вскрывают, и в реестре такая тема стоит
+        // витриной (§12.137).
+        {
+            let seen = self.world.resource::<Seen>();
+            if !rule.specimen.iter().all(|&(item, _)| seen.saw(item)) {
+                return false;
+            }
+        }
+        // …а лежать он обязан **на складе прямо сейчас** (§12.139): везут его
+        // ногами и берут со складской кучи (§12.130), поэтому тема, заведённая
+        // над надетыми по котам комбинезонами, не ждёт образец, а стоит
+        // намертво — держа ячейку лаборатории и учёного. Спрашиваем тем же
+        // выражением, что и плату (`storage_covers`): списания тут нет,
+        // материал приедет подвозом, но обещать работу без материала нельзя.
+        if !self.storage_covers(&rule.specimen) {
             return false;
         }
+        // Свободная ячейка лаборатории (§12.132) — не «есть ли лаборатория
+        // вообще»: тем теперь идёт столько, сколько комнат, и вторая тема при
+        // одной комнате отклоняется, а не встаёт в очередь.
+        let Some(cell) = self.free_lab_cell() else {
+            return false;
+        };
         // Некому взяться — отказываем **до** оплаты: тема, за которую заплачено
         // образцами и которую никто не возьмёт, читается как потерянный ресурс,
         // а не как «подождите, пока кто-нибудь доучится».
@@ -2286,19 +2404,27 @@ impl Sim {
             def,
             progress: 0,
             assignee: None,
-            spot: None,
+            cell,
+            delivered: Vec::new(),
         });
         true
     }
 
-    /// Бросить тему и освободить исполнителя.
+    /// Бросить тему `def` и освободить исполнителя.
     ///
-    /// Образцы при этом **не возвращаются**: их уже разобрали на опыты — та же
-    /// цена поспешной разметки, что и у отменённого чертежа с завезённым ломом.
-    /// Вернёт false, если изучать нечего.
-    pub fn cancel_research(&mut self) -> bool {
-        note(&mut self.world, "cancel_research");
-        let Some(topic_e) = self.research() else {
+    /// Адресуется **темой, а не клеткой** (§12.132), в отличие от заказа
+    /// (§12.96): двух тем на один `def` не бывает никогда, потому что тема
+    /// одноразова и необратима (§12.18), — значит ключ однозначен, и заводить
+    /// второй незачем.
+    ///
+    /// Плата (`cost`) при этом **не возвращается**: образцы уже разобрали на
+    /// опыты — та же цена поспешной разметки, что и у отменённого чертежа.
+    /// А вот **завезённый образец** (`specimen`, §12.133) роняется кучей на
+    /// клетку: он ещё лежит в лаборатории целым, и материал не горит никогда
+    /// (инвариант 8). Вернёт false, если такой темы не изучают.
+    pub fn cancel_research(&mut self, def: usize) -> bool {
+        note(&mut self.world, format!("cancel_research {def}"));
+        let Some(topic_e) = self.topic_of(def) else {
             return false;
         };
         if let Some(cat_e) = self.world.get::<Research>(topic_e).and_then(|t| t.assignee) {
@@ -2306,7 +2432,21 @@ impl Sim {
                 .entity_mut(cat_e)
                 .remove::<(Researching, Path, MoveCooldown)>();
         }
+        // Завезённый образец возвращается кучей на клетку лаборатории (§12.133,
+        // §12.31) — дословно как материал со снятого заказа. Плата (`cost`) при
+        // этом не возвращается: её разобрали на опыты. Разница ровно та же, что
+        // между платой и материалом у мастерской (§12.102).
+        let spill = self
+            .world
+            .get::<Research>(topic_e)
+            .map(|t| (t.cell, t.delivered.clone()))
+            .unwrap_or_default();
         self.world.entity_mut(topic_e).despawn();
+        for (item, count) in spill.1 {
+            if count > 0 {
+                self.drop_stack(spill.0.0, spill.0.1, item, count);
+            }
+        }
         true
     }
 
@@ -4331,6 +4471,17 @@ impl Sim {
             }
         }
 
+        // Есть ли **сейчас на базе** кот с допуском каждой темы (§12.135).
+        // Считается до обхода тем, потому что запрос по миру, а не по теме.
+        let home_science: Vec<usize> = {
+            let rules = self.world.resource::<ResearchRules>().0.clone();
+            rules
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| self.has_scientist_home(r.level))
+                .map(|(def, _)| def)
+                .collect()
+        };
         let mut research = Vec::new();
         {
             let mut q = self.world.query::<&Research>();
@@ -4342,6 +4493,7 @@ impl Sim {
             };
             let rules = self.world.resource::<ResearchRules>();
             for topic in q.iter(&self.world) {
+                let need = topic_missing(rules, topic);
                 research.push(ResearchSnap {
                     def: topic.def,
                     progress: topic.progress,
@@ -4351,24 +4503,57 @@ impl Sim {
                         .and_then(|e| names.iter().find(|&&(cat, _)| cat == e))
                         .map(|(_, id)| id.clone())
                         .unwrap_or_default(),
+                    x: topic.cell.0,
+                    y: topic.cell.1,
+                    home: home_science.contains(&topic.def),
+                    owed: need
+                        .into_iter()
+                        .map(|(item, left)| NeedSnap { item, left })
+                        .collect(),
                 });
             }
         }
+        // Порядок — **по клетке** (§12.132): обход ECS зависит от истории
+        // вставок (§11), и до §12.132 это скрывала единственность темы. Без
+        // сортировки карточки тем переставлялись бы под курсором.
+        research.sort_by_key(|r| (r.y, r.x));
 
         let techs = self.world.resource::<Techs>().0.clone();
         let has_lab = self.has_lab();
+        // Свободная ячейка — **тем же выражением, что и заявка** (§12.132):
+        // «есть лаборатория» и «есть свободная» это два разных отказа, и
+        // второй экземпляр этой арифметики в JS однажды показал бы живую
+        // кнопку, которую фасад отклоняет (инвариант 14).
+        let lab_free = self.free_lab_cell().is_some();
+        let running: Vec<usize> = {
+            let mut q = self.world.query::<&Research>();
+            q.iter(&self.world).map(|t| t.def).collect()
+        };
         let mut topics = Vec::new();
         {
             let rules = self.world.resource::<ResearchRules>().0.clone();
-            for rule in &rules {
+            for (def, rule) in rules.iter().enumerate() {
                 let known = self.world.resource::<Techs>().knows(&rule.id);
                 let unlocked = self.world.resource::<Techs>().covers(&rule.requires);
+                // Образец — ворота по **шкале `Seen`** (§12.131, §12.133), а не
+                // по складу: тема открыта и ждёт, пока его привезут.
+                let sighted = {
+                    let seen = self.world.resource::<Seen>();
+                    rule.specimen.iter().all(|&(item, _)| seen.saw(item))
+                };
                 topics.push(TopicSnap {
                     known,
                     unlocked,
                     affordable: self.storage_covers(&rule.cost),
                     staffed: self.has_scientist(rule.level),
                     lab: has_lab,
+                    lab_free,
+                    busy: running.contains(&def),
+                    sighted,
+                    // Тем же выражением, что и `affordable` (§12.139): образец
+                    // берут со складской кучи, значит спрашивать надо склад.
+                    stocked: self.storage_covers(&rule.specimen),
+                    specimen: rule.specimen.iter().map(|&(item, _)| item).collect(),
                 });
             }
         }
@@ -4537,6 +4722,7 @@ impl Sim {
                     NewsKind::Topic => "topic",
                     NewsKind::Recipe => "recipe",
                     NewsKind::Tile => "tile",
+                    NewsKind::Item => "item",
                 },
                 def: n.def,
                 opened: n.opened,

@@ -280,8 +280,12 @@ onPanelClick(cellEl, ".craft-cancel", cancelCraftAt);
 // адресат один — ячейка станка. Два `onPanelClick` здесь не дубль правила, а
 // две панели: слушатель у каждой свой, и делить его нельзя.
 onPanelClick(craftEl, ".craft-cancel", cancelCraftAt);
-onPanelClick(researchEl, ".research-cancel", () =>
-  sendAction({ type: "cancelResearch" }),
+// Тема отменяется **по себе, а не по клетке** (§12.132), в отличие от заказа:
+// двух тем на один `def` не бывает никогда — тема одноразова и необратима
+// (§12.18). Ключ у кнопки всё равно свой (`topic@N`): тем в панели теперь
+// несколько, и по одному `data-def` `onPanelClick` их не различит (§12.66).
+onPanelClick(researchEl, ".research-cancel", (b) =>
+  sendAction({ type: "cancelResearch", topic: Number(b.dataset.def) }),
 );
 onPanelClick(missionEl, ".mission-cancel", (b) =>
   sendAction({ type: "cancelMission", mission: Number(b.dataset.def) }),
@@ -501,7 +505,6 @@ let missionsOut = [];
 // Заказы, по которым отряд уже вышел: двух вылазок по одному заказу не бывает
 // (§12.59), и гасить надо именно свою кнопку.
 let running = new Set();
-let researchRunning = false; // и тема тоже одна за раз (§12.26)
 // Мастерских может быть несколько, и заказов идёт столько же (§12.55).
 // Нужен только для объяснения отказа: сами ворота считает ядро (`RecipeSnap.shop`).
 let shops = 0;
@@ -1245,6 +1248,11 @@ function renderSnapshot(snap) {
   const pinned = (meta.items ?? [])
     .map((it, i) => {
       if (!favorites.includes(i)) return "";
+      // Предмет, которого база ни разу не видела, в шапке не стоит даже нулём
+      // (§12.131): знакомство с ним должно случиться в игре, а не в таблице.
+      // Считает это ядро — в снимке нет истории, а `stored > 0` прятало бы
+      // строку обратно, стоило запасу кончиться.
+      if (!(snap.stock ?? [])[i]?.seen) return "";
       // Главное число — **учтённое**: склад минус бронь (§12.53). С §12.69 у
       // него один смысл на всё, что база делает наружу, — им и платят, и
       // торгуют. Валяющееся приписано отдельно и приглушённо: оно у базы есть,
@@ -2367,11 +2375,25 @@ function cellWork(snap, x, y, def) {
   if (!def) return [];
   const out = [];
   if (def.lab) {
-    const topic = (snap.research ?? [])[0];
+    // **По координатам, а не `research[0]`** (§12.132): тем теперь столько,
+    // сколько лабораторий, и «здесь изучают ткань» на пустой соседней комнате
+    // было бы враньём того же сорта, каким врала шапка до §12.53. Дословно
+    // `craftCell` после §12.96.
+    const topic = (snap.research ?? []).find((v) => v.x === x && v.y === y);
+    const owed = topic?.owed ?? [];
     out.push(
       topic
-        ? `тема: ${esc(topicLabel(topic.def))}${topic.unit ? `, работает ${esc(topic.unit)}` : ""}`
-        : "тем нет — их берут в окне «Наука»",
+        ? `тема: ${esc(topicLabel(topic.def))}, ` +
+            (owed.length
+              ? // Ждёт образец — не то же, что ждёт исполнителя (§12.133):
+                // первое чинится вылазкой, второе временем.
+                `ждёт образец: ${owed.map((n) => esc(itemLabel(n.item))).join(", ")}`
+              : topic.unit
+                ? `работает ${esc(topic.unit)}`
+                : topic.home === false
+                  ? "некому взяться: все, кто умеет, в поле"
+                  : "ждёт исполнителя")
+        : "лаборатория свободна — темы берут в окне «Наука»",
     );
   }
   if (def.gate) {
@@ -2602,28 +2624,43 @@ function missionCard(m) {
   return `<div class="cat-skill">${parts.join("")}</div>`;
 }
 
-// Панель темы. Исследование идёт молча в дальней комнате, и без панели видно
+// Панель тем. Исследование идёт молча в дальней комнате, и без панели видно
 // только кота, который зачем-то стоит в лаборатории (§12.26).
+//
+// С §12.132 тем идёт столько, сколько лабораторий, — и панель рисует их все.
+// Пультом она при этом остаётся, в отличие от сводки заказов (§12.96): каждая
+// строка названа своим именем, и «Бросить» у неё законна — игрок целится в
+// «Быт колонии», а не в третью строку сверху.
 function renderResearchPanel(list) {
-  const r = (list ?? [])[0];
-  researchRunning = !!r;
-  if (!r || !meta) {
+  const rows = list ?? [];
+  if (!rows.length || !meta) {
     researchEl.hidden = true;
     return;
   }
-  const def = (meta.research ?? [])[r.def];
-  const pct = r.total > 0 ? Math.round((r.progress / r.total) * 100) : 0;
-  const parts = [
-    `<div class="cat-name">${esc(def?.label || def?.id || "Тема")}</div>`,
-    '<div class="cat-skill">' +
-      `<div class="cat-row"><span>Изучено</span><b>${pct}%</b></div>` +
-      `<div class="bar"><i style="width:${pct}%"></i></div>` +
-      "</div>",
-    // Пусто — исполнитель ещё не нашёлся: тема ждёт, а не идёт. Разница
-    // важная, и в полоске её не видно.
-    `<div class="cat-sub">${r.unit ? esc(r.unit) : "ждёт исполнителя"}</div>`,
-    '<button class="tool research-cancel"><span>Бросить</span></button>',
-  ];
+  const parts = [];
+  for (const r of rows) {
+    const def = (meta.research ?? [])[r.def];
+    const pct = r.total > 0 ? Math.round((r.progress / r.total) * 100) : 0;
+    // Ждёт образец — это не «ждёт исполнителя» (§12.133): первое чинится
+    // вылазкой, второе временем, и путать их нельзя. Что именно везут, ядро
+    // называет предметом (`owed`), а не «нужен образец» вообще (§12.53).
+    const owed = r.owed ?? [];
+    const state = owed.length
+      ? `ждёт образец: ${owed.map((n) => itemLabel(n.item)).join(", ")}`
+      : r.unit
+        ? esc(r.unit)
+        : "ждёт исполнителя";
+    parts.push(
+      `<div class="cat-name">${esc(def?.label || def?.id || "Тема")}</div>`,
+      '<div class="cat-skill">' +
+        `<div class="cat-row"><span>Изучено</span><b>${pct}%</b></div>` +
+        `<div class="bar"><i style="width:${pct}%"></i></div>` +
+        "</div>",
+      `<div class="cat-sub">${state}</div>`,
+      `<button class="tool research-cancel" data-key="topic@${r.def}" ` +
+        `data-def="${r.def}"><span>Бросить</span></button>`,
+    );
+  }
   researchEl.innerHTML = parts.join("");
   researchEl.hidden = false;
 }
@@ -3439,6 +3476,20 @@ function itemLabel(item) {
   return def?.label || def?.id || "?";
 }
 
+// Имя предмета **для незнакомого игроку места** (§12.131): того, чего база ни
+// разу не видела, зовём «??».
+//
+// Это не скрытие, а недосказанность, и разница принципиальна. Карточка вылазки
+// по-прежнему говорит, что добыча будет и сколько её, — отказа без причины тут
+// нет (§12.53); она лишь не называет вещь, которой игрок ещё не встречал.
+// Назови — и первое знакомство случилось бы в таблице заказов, а не в момент,
+// когда кот принёс это к шлюзу.
+//
+// Считает «видели» ядро (`stock[i].seen`), как и везде: в снимке нет истории.
+function itemName(item) {
+  return (stock[item] ?? {}).seen ? itemLabel(item) : "??";
+}
+
 function perkLabel(id) {
   const def = (meta.perks ?? []).find((p) => p.id === id);
   return def?.label || id;
@@ -4004,7 +4055,17 @@ document.addEventListener("visibilitychange", () => {
 // Цена тайла: по цветной фишке на каждый нужный предмет. Порядок — как в
 // палитре предметов, чтобы он совпадал со счётчиками в шапке (в самой цене
 // он алфавитный: в рулсете это отображение).
-function costChips(cost) {
+// `veiled` — показывать ли незнакомое игроку «??» вместо глифа (§12.131).
+//
+// Включает его **одна** строка на всю игру — добыча заказа вылазки: обещание
+// принести то, чего база ещё не видела, интереснее названного, а первое
+// знакомство должно случаться в момент, когда кот тащит это к шлюзу, а не в
+// таблице заказов. Везде остальное (цена тайла, цена темы, вход рецепта, «не
+// хватает» у площадки) флаг не ставится и ставиться не должен: там предмет
+// назван **требованием**, и скрытая цена — это отказ без причины (§12.53).
+//
+// Число при этом видно всегда: «сколько» — не спойлер, а вес решения.
+function costChips(cost, veiled = false) {
   // serde-wasm-bindgen отдаёт YAML-отображение настоящим `Map`, а не объектом:
   // цена приходит как `Map { "scrap" => 1 }`.
   const entries =
@@ -4013,7 +4074,12 @@ function costChips(cost) {
   const chips = (meta.items ?? [])
     .map((it, i) => {
       const found = entries.find(([id]) => id === it.id);
-      return found ? `${itemGlyph(i)}${found[1]}` : "";
+      if (!found) return "";
+      const known = !veiled || (stock[i] ?? {}).seen;
+      const mark = known
+        ? itemGlyph(i)
+        : `<i class="chip veiled" data-tip="Что это — узнаете, когда принесут">??</i>`;
+      return `${mark}${found[1]}`;
     })
     .filter(Boolean)
     .join(" ");
@@ -4619,14 +4685,30 @@ function syncTopicButtons(list) {
     // показывает то, за что можно взяться сейчас. Остальные причины отказа
     // (склад, допуск, лаборатория) кнопку не прячут — они про «пока нечем»,
     // а не про «пока нельзя выбрать».
-    b.hidden = !!t.known || !t.unlocked;
+    // **Закрытая тема про артефакт со склада показывается** (§12.137). Реестр,
+    // в отличие от палитры (§12.126), законно показывает то, что существует, но
+    // пока недоступно: палитра — инструмент, а окно «Наука» — витрина, и
+    // закрытая цель тянет, тогда как закрытый инструмент только мешает.
+    //
+    // Ворота узкие: только тема **с образцом**, который база видела. Проверка
+    // непустого `specimen` обязательна: `sighted` у темы без образца — `true`
+    // (пустой список проходит `all`), и без неё в витрину уезжают все закрытые
+    // темы разом, включая автоправила, которые не про вещь в руках вовсе.
+    const teasing =
+      !t.known && !t.unlocked && (t.specimen ?? []).length > 0 && !!t.sighted;
+    b.hidden = !!t.known || (!t.unlocked && !teasing);
+    b.classList.toggle("locked", teasing);
+    for (const el of b._details ?? []) el.hidden = teasing;
+    if (b._locked) b._locked.hidden = !teasing;
     const ready =
       !t.known &&
       t.unlocked &&
+      !t.busy &&
+      t.sighted &&
+      t.stocked &&
       t.affordable &&
       t.staffed &&
-      t.lab &&
-      !researchRunning;
+      t.lab_free;
     // Классом, а не `disabled`, — см. `syncRecruitButtons` выше: иначе причина
     // из `title` («Нужен кот с „Наукой“ 1 уровня») не видна ни разу.
     b.classList.toggle("off", !ready);
@@ -4635,17 +4717,40 @@ function syncTopicButtons(list) {
       b,
       t.known
         ? "Уже изучено"
-        : !t.unlocked
-          ? "Нужны предыдущие технологии"
-          : !t.lab
-            ? "Нет лаборатории"
-            : !t.staffed
-              ? `Нужен кот с «Наукой» ${b.dataset.level} уровня`
-              : !t.affordable
-                ? `На складе нет образцов: ${payHint((meta.research ?? [])[i]?.cost)}`
-                : researchRunning
-                  ? "Тема уже изучается"
-                  : "Взяться за тему",
+        : teasing
+          ? // Причина названа классом блокера, а не конкретной темой-предком:
+            // «когда-нибудь ты это поймёшь» — обещание, а перечень требований
+            // превратил бы витрину в чек-лист (§12.137).
+            "Наука до этого ещё не доросла"
+          : !t.unlocked
+            ? "Нужны предыдущие технологии"
+            : t.busy
+              ? "Эта тема уже изучается"
+              : !t.sighted
+                ? // Первые из двух ворот вскрытия (§12.133) — «видели»: пока
+                  // предмет не попадался, вскрывать нечего вовсе.
+                  `Нужен образец: «${(t.specimen ?? []).map(itemLabel).join(", ")}» ` +
+                  `ещё не попадал на базу`
+                : !t.stocked
+                  ? // Вторые (§12.139) — склад: образец везут со складской кучи,
+                    // и надетое по котам ею не станет. Слово **дословно то же**,
+                    // что у платы ниже, и считает его тот же `payHint`: игрок
+                    // видит «Комбинезон ×4» в шапке, и ответить ему надо не
+                    // «нет», а «на складе 0 из 1, ещё столько-то валяется» —
+                    // то есть числом и следующим шагом. Два отказа про склад,
+                    // звучащие по-разному, читались бы как две разные механики.
+                    `На складе нет образцов: ${payHint((meta.research ?? [])[i]?.specimen)}`
+                  : !t.lab
+                    ? "Нет лаборатории"
+                    : !t.lab_free
+                      ? // «Нет лаборатории» чинится стройкой, «все заняты» —
+                        // окончанием чужой темы. Два разных решения (§12.124).
+                        "Все лаборатории заняты"
+                      : !t.staffed
+                        ? `Нужен кот с «Наукой» ${b.dataset.level} уровня`
+                        : !t.affordable
+                          ? `На складе нет образцов: ${payHint((meta.research ?? [])[i]?.cost)}`
+                          : "Взяться за тему",
     );
   });
 }
@@ -5314,6 +5419,16 @@ function newsText(n) {
       ? ["в палитре появилась постройка", label]
       : ["постройка закрылась", label];
   }
+  if (n.kind === "item") {
+    // Новость про **вещь**, а не про умение (§12.136): она приехала на базу
+    // впервые, и до этого её строки не было на складе вовсе (§12.131).
+    // Закрытий не бывает — `Seen` только растёт.
+    const label = name(meta?.items, n.def);
+    // Формулировка нейтральная по роду намеренно: ярлык приходит из рулсета, и
+    // «попало Комбинезон» — ровно та неловкость, которой не должно быть в
+    // строке, собранной из двух кусков.
+    return n.opened ? ["новый ресурс", label] : ["ресурс пропал", label];
+  }
   const label = name(meta?.research, n.def);
   return n.opened
     ? ["лаборатория готова к теме", label]
@@ -5339,7 +5454,9 @@ function openNewsTarget(kind) {
     if (node) openRaidWindow(node.x, node.y);
     else openOnly("Вылазки");
   } else if (kind === "recruit") openHireWindow();
-  else if (kind === "recipe") openStockWindow();
+  // И рецепт, и новый ресурс ведут в «Склад»: там строка предмета, там же его
+  // «(?)» и кнопка заказа (§12.131, §12.136).
+  else if (kind === "recipe" || kind === "item") openStockWindow();
   // Постройка живёт не в окне, а в палитре (§12.126), поэтому и ведёт новость в
   // раздел тулбара — единственное место, где новую кнопку видно вместе с
   // соседями и где ею тут же можно размечать.
@@ -5469,7 +5586,29 @@ function orderNewFirst(list, buttons, kind, heads) {
 function syncSciWindow() {
   if (!sciWinOpen || !sciHeads) return;
   orderNewFirst(sciList, topicButtons, "topic", sciHeads);
+  orderLockedLast(sciList, topicButtons, sciHeads);
   setEmptyLine(sciHeads, topicButtons, "Все темы изучены");
+}
+
+// Третья группа окна «Наука» (§12.137) — темы про артефакт, до которого база
+// ещё не доросла. Ставится **после** обычной раскладки, потому что переставляет
+// уже разложенное: `orderNewFirst` про них не знает и знать не должен —
+// «Найму» такая группа не нужна.
+//
+// Заголовок прячется вместе с пустой группой, как и два других (§12.73):
+// подпись над ничем — шум ровно там, где всё в порядке.
+function orderLockedLast(list, buttons, heads) {
+  if (!list || !heads?.locked) return;
+  const locked = buttons.filter(
+    (b) => !b.hidden && b.classList.contains("locked"),
+  );
+  heads.locked.hidden = !locked.length;
+  if (!locked.length) return;
+  list.appendChild(heads.locked);
+  for (const b of locked) list.appendChild(b);
+  // Скрытые снова уходят в хвост — иначе они встанут между группой и её
+  // заголовком при следующей перекладке (§12.118).
+  for (const b of buttons.filter((v) => v.hidden)) list.appendChild(b);
 }
 
 function syncHireWindow() {
@@ -5518,9 +5657,28 @@ function syncDoors(snap) {
     const open = topics
       .map((t, i) => i)
       .filter((i) => !topics[i].known && topics[i].unlocked);
-    sciDoor.hidden = !open.length;
+    // Темы-витрины (§12.137) двери не открывают, но и прятать её не дают: за
+    // ней есть что посмотреть — артефакт, до которого база ещё не доросла.
+    const teasing = topics.some(
+      (t) =>
+        !t.known && !t.unlocked && (t.specimen ?? []).length > 0 && t.sighted,
+    );
+    sciDoor.hidden = !open.length && !teasing;
     const staffed = open.some((i) => topics[i].staffed);
-    sciDoor.classList.toggle("off", !staffed);
+    // Свободных лабораторий нет — тоже гашение с причиной, а не пропажа
+    // (§12.124, §12.132): чинится это окончанием идущей темы или второй
+    // комнатой, то есть решением, которое игрок может принять сейчас.
+    const room = open.some((i) => topics[i].lab_free);
+    // ⚠️ **Витрина отменяет гашение** (§12.137). `.off` не просто красит серым —
+    // обработчик двери отсекает по нему клик, — и погашенная дверь спрятала бы
+    // от игрока ровно то, ради чего §12.137 и заведена. Поэтому `.off` значит
+    // «за дверью нет ни решения, ни зрелища»; когда решения нет, а зрелище
+    // есть, дверь открывается, а причина отказа по каждой теме написана внутри,
+    // в её строке. §12.124 от этого цела: без витрины всё ровно как было.
+    sciDoor.classList.toggle(
+      "off",
+      !teasing && (!open.length || !staffed || !room),
+    );
     // Уровень называем **наименьший из открытых тем**: это ближайшая цель, а
     // весь список игрок и так прочтёт в окне, когда откроет его.
     const need = Math.min(
@@ -5528,17 +5686,26 @@ function syncDoors(snap) {
     );
     liveTitle(
       sciDoor,
-      staffed
-        ? "За какую тему взяться и чего для этого не хватает"
-        : `Некому взяться: нужен кот с «Наукой» ${need} уровня — ` +
-            "учат за партой, раздел «Обучение»",
+      !open.length
+        ? "Взяться пока не за что, но на складе лежит непонятное — загляните"
+        : !staffed
+          ? `Некому взяться: нужен кот с «Наукой» ${need} уровня — ` +
+            "учат за партой, раздел «Обучение»"
+          : !room
+            ? "Все лаборатории заняты — дождитесь темы или постройте вторую"
+            : "За какую тему взяться и чего для этого не хватает",
     );
   }
   if (hireDoor) hireDoor.hidden = !recruits.some((r) => !r.hired);
 }
 
 function syncNewsMarks() {
-  stockDoor?.classList.toggle("fresh", newsPending("recipe").length > 0);
+  // Дверь «Склад» носит метку и от рецепта, и от нового ресурса: обе новости
+  // отвечают строкой в одном и том же окне (§12.136).
+  stockDoor?.classList.toggle(
+    "fresh",
+    newsPending("recipe").length + newsPending("item").length > 0,
+  );
   sciDoor?.classList.toggle("fresh", newsPending("topic").length > 0);
   hireDoor?.classList.toggle("fresh", newsPending("recruit").length > 0);
   const raids = sections.find((sec) => sec.title === "Вылазки");
@@ -5554,7 +5721,7 @@ function syncNewsMarks() {
   }
 }
 
-function mkRegistryHeads(list) {
+function mkRegistryHeads(list, locked) {
   const mk = (text, cls) => {
     const el = document.createElement("div");
     el.className = cls;
@@ -5571,6 +5738,10 @@ function mkRegistryHeads(list) {
     // сюда можно ровно одним путём: последняя строка исчезла, пока окно
     // открыто, — тема доучилась, кандидат нанялся.
     empty: mk("", "cat-sub"),
+    // Третья группа есть только у «Науки» (§12.137): темы про артефакт, который
+    // уже лежит на складе, а науки для него ещё нет. Внизу и своим заголовком —
+    // иначе они оттеснили бы то, за что можно взяться сейчас.
+    locked: locked ? mk("Пока не по зубам", "cat-sub crew-head") : null,
   };
 }
 
@@ -5621,6 +5792,19 @@ function closeSciWindow() {
 // темы, `auto_gates` у правил), и отдельное поле «что я открываю» разошлось бы
 // с ними на первой же правке контента. Инварианта 14 это не касается: здесь не
 // исход, а имена — ядро о них ничего не решает.
+// Что тема **даёт на руки** (§12.133) — отдельной строкой, а не группой внутри
+// «Открывает:»: у вскрытия это и есть главный ответ на «ради чего», а
+// открывать оно может и вовсе ничего. Слепив их, получаем «Открывает: даёт
+// Ткань ×2» — фразу, которую никто не писал.
+function givesOf(topic) {
+  return pairsIn(topic.gives)
+    .map(([gid, n]) => {
+      const idx = (meta.items ?? []).findIndex((it) => it.id === gid);
+      return `${itemLabel(idx)} ×${n}`;
+    })
+    .join(", ");
+}
+
 function opensOf(topic) {
   const id = topic.id;
   // ⚠️ `auto_gates` везёт **ярлык** темы, а не её `id` (так его читает
@@ -5632,7 +5816,9 @@ function opensOf(topic) {
     ["постройки", names(meta.palette, (t) => t.tech === id)],
     // Разбор — тот же рецепт (§12.114), и называется он входом, а не выходом.
     ["рецепты", names(meta.recipes, (r) => (r.requires ?? []).includes(id))],
-    ["носить", names(meta.items, (it) => (it.requires ?? []).includes(id))],
+    // С §12.131 `requires` у предмета значит не «носить», а «понимать»: такой
+    // предмет до темы не идёт ни в одну цену и стоит на складе как «Ткань(?)».
+    ["понимать", names(meta.items, (it) => (it.requires ?? []).includes(id))],
     ["темы", names(meta.research, (r) => (r.requires ?? []).includes(id))],
     [
       "правила",
@@ -5641,6 +5827,7 @@ function opensOf(topic) {
         .map(([kind]) => AUTO_LABEL[kind] ?? kind),
     ],
   ];
+
   return groups
     .filter(([, xs]) => xs.length)
     .map(([kind, xs]) => `${kind} ${xs.join(", ")}`)
@@ -5656,19 +5843,37 @@ const AUTO_LABEL = {
 function buildSciWindow() {
   const { list } = mkWindow(sciWinEl, "Наука", () => closeSciWindow(), true);
   sciList = list;
-  sciHeads = mkRegistryHeads(list);
+  sciHeads = mkRegistryHeads(list, true);
   topicButtons.length = 0;
   (meta.research ?? []).forEach((r, i) => {
     const opens = opensOf(r);
+    const gives = givesOf(r);
     const b = mkTool(
       '<span class="topic-main">' +
         `<span class="sw sw-lab"></span><span>${esc(r.label || r.id)}</span>` +
-        `${costChips(r.cost)}</span>` +
+        // Цена и образец идут одними и теми же фишками, и это не небрежность:
+        // с точки зрения игрока оба отвечают на «что это стоит». Разницу —
+        // «платят со склада» против «везут ногами» — называет отказ словом,
+        // где она и решает (§12.133).
+        // Обёртка ради §12.137: у закрытой темы цену гасят, а имя оставляют —
+        // имя про артефакт, который у игрока уже в руках, и спойлером не
+        // является.
+        `<span class="topic-cost">${costChips(r.cost)}` +
+        `${costChips(r.specimen)}</span></span>` +
         // Тема, за которой ничего не стоит, строки не получает: пустое
         // «Открывает:» читалось бы как «ничего не даёт» (§12.53).
+        (gives ? `<span class="topic-opens">Даёт: ${esc(gives)}</span>` : "") +
         (opens
           ? `<span class="topic-opens">Открывает: ${esc(opens)}</span>`
-          : ""),
+          : "") +
+        // Строка для темы, до которой база ещё не доросла (§12.137). Стоит
+        // всегда, показывается только у закрытых: подробностей у них нет —
+        // ни цены, ни «даёт», ни «открывает», — но **причина словом есть**,
+        // иначе это молчащая кнопка (§12.53). Класс блокера назван, конкретная
+        // тема-предок — нет: в этом и смысл.
+        '<span class="topic-locked" hidden>Артефакт со склада. Что с ним ' +
+        "делать, база пока не понимает — нужна наука, до которой ещё не " +
+        "доросли</span>",
       () => {
         if (b.classList.contains("off")) return;
         sendAction({ type: "research", topic: i });
@@ -5676,6 +5881,11 @@ function buildSciWindow() {
     );
     b.classList.add("toggle", "topic");
     b.dataset.level = r.level ?? 0;
+    // Узлы подробностей держим на кнопке: у закрытой темы они гасятся кадром,
+    // а пересобирать её разметку нельзя — клик умрёт между `mousedown` и
+    // `mouseup` (§12.84).
+    b._details = [...b.querySelectorAll(".topic-cost, .topic-opens")];
+    b._locked = b.querySelector(".topic-locked");
     topicButtons.push(b);
     list.appendChild(b);
   });
@@ -5785,18 +5995,25 @@ function openStockWindow() {
 // и парой `mousedown`/`mouseup`, как всё в окнах (§12.84).
 onPanelClick(stockWinEl, ".win-fresh-go", (b) => {
   const def = Number(b.dataset.def);
-  // Ищем и среди разборов: у `salvage`-рецепта кнопка стоит в строке **входа**,
-  // а не выхода (§12.114), и по `keeps` он не нашёлся бы вовсе.
+  // У ресурса `def` — это сам предмет, у рецепта — рецепт, и строку по нему
+  // надо ещё найти (§12.136). Ищем и среди разборов: у `salvage`-рецепта кнопка
+  // стоит в строке **входа**, а не выхода (§12.114), и по `keeps` он не
+  // нашёлся бы вовсе.
   const has = (list) => list.some((k) => k.def === def);
-  const row = wareRows.find((r) => has(r.keeps) || has(r.salvages));
+  const row =
+    b.dataset.kind === "item"
+      ? wareRows.find((r) => r.item === def)
+      : wareRows.find((r) => has(r.keeps) || has(r.salvages));
   row?.row.scrollIntoView({ block: "center", behavior: "smooth" });
 });
 
 function closeStockWindow() {
   if (!stockWinOpen) return;
   // Новость гаснет там, где её видно целиком (§12.120): пока окно открыто,
-  // указатель в шапке и есть весь ответ на «что нового».
+  // указатель в шапке и есть весь ответ на «что нового». Обе новости этого
+  // окна — и новое умение, и новый ресурс (§12.136).
   readNews("recipe");
+  readNews("item");
   // Уход из окна — конец набора (§12.89): открытую правку досылаем, иначе
   // число не доедет до ядра и не попадёт в автосейв.
   endNumEdit(true);
@@ -5998,8 +6215,12 @@ function buildStockWindow() {
     // Глиф рядом с подписью, а не вместо неё (§12.109): у строки склада имя
     // есть, и значок здесь опознаёт предмет с той же скоростью, с какой он
     // опознаётся в шапке и в ценах, — один словарь на все экраны.
-    name.innerHTML =
-      itemGlyph(item, "sw-glyph") + `<span>${esc(it.label || it.id)}</span>`;
+    // Подпись живёт своим узлом: к ней кадром дописывается «(?)» у предмета,
+    // которого база ещё не поняла (§12.131).
+    name.innerHTML = itemGlyph(item, "sw-glyph");
+    const label = document.createElement("span");
+    label.textContent = it.label || it.id;
+    name.appendChild(label);
     row.appendChild(name);
 
     // Числа — идиома шапки: главное и `+22` серым, без подписей. Расклад на три
@@ -6264,6 +6485,8 @@ function buildStockWindow() {
       item,
       row,
       fav,
+      name,
+      label,
       num,
       keeps,
       salvages,
@@ -6422,17 +6645,32 @@ function syncStockWindow() {
   if (warnEl.innerHTML !== warnHtml) warnEl.innerHTML = warnHtml;
   warnEl.hidden = !warns.length;
 
-  // Новое в этом окне — не строка, а **умение**: «Комбинезон» и вчера стоял в
-  // списке со своим курсом и запасом, а появилась у него кнопка «Произвести».
-  // Поэтому указатель называет предмет, а подсвечивается сама кнопка.
+  // Нового в этом окне два вида, и они про разное (§12.136).
+  //
+  // **Умение**: «Комбинезон» и вчера стоял в списке со своим курсом и запасом,
+  // а появилась у него кнопка «Произвести» — поэтому указатель называет
+  // предмет, а подсвечивается сама кнопка.
+  //
+  // **Ресурс**: строки не было вовсе, и теперь она есть (§12.131). Здесь
+  // подсвечивать нечего — вся строка и есть новость, — поэтому указатель просто
+  // ведёт к ней. Ресурсы идут первыми: «в мире появилась вещь» — событие
+  // крупнее, чем «у знакомой вещи появилась кнопка».
   const freshRecipes = newlyOpen("recipe");
-  const named = [...freshRecipes]
-    .filter((def) => recipeSnaps[def]?.unlocked)
-    .map(
+  const freshItems = newlyOpen("item");
+  const named = [
+    ...[...freshItems].map(
       (def) =>
-        `<button class="win-fresh-go" data-key="fresh${def}" data-def="${def}">` +
-        `${esc(recipeLabel(def))}</button>`,
-    );
+        `<button class="win-fresh-go" data-key="freshitem${def}" ` +
+        `data-kind="item" data-def="${def}">${esc(itemLabel(def))}</button>`,
+    ),
+    ...[...freshRecipes]
+      .filter((def) => recipeSnaps[def]?.unlocked)
+      .map(
+        (def) =>
+          `<button class="win-fresh-go" data-key="fresh${def}" ` +
+          `data-kind="recipe" data-def="${def}">${esc(recipeLabel(def))}</button>`,
+      ),
+  ];
   const freshHtml = named.length ? `<span>Новое:</span>${named.join("")}` : "";
   if (freshEl.innerHTML !== freshHtml) freshEl.innerHTML = freshHtml;
   freshEl.hidden = !named.length;
@@ -6448,8 +6686,44 @@ function syncStockWindow() {
       booked: 0,
       on_base: 0,
     };
+    // **Четвёртое состояние строки, и оно раньше трёх остальных** (§12.131):
+    // предмета, которого база ни разу не видела, в списке нет вовсе. Скрытие
+    // считает ядро (`seen`) и только здесь да в шапке: везде, где предмет
+    // назван ценой, требованием, добычей или содержимым кучи, он показывается
+    // всегда — скрытая цена это отказ без причины (§12.53).
+    //
+    // Строки при этом строятся все и живут своими узлами: окно собирается один
+    // раз при открытии (§12.118), и `hidden` — то, что меняется кадром.
+    //
+    // Одно исключение, и оно про кнопку: **открытый рецепт делает строку
+    // видимой**, даже если предмет ещё ни разу не появлялся. «Произвести»
+    // живёт в строке выхода, и первую аптечку иначе нечем было бы сделать —
+    // строка спрятана, кнопка вместе с ней, и рецепт, за который заплачено
+    // темой, не нажать вовсе. Знание тут и есть знакомство: раз база умеет
+    // это делать, предмет ей известен.
+    const makeable = r.keeps.some((k) => recipeSnaps[k.def]?.unlocked);
+    r.row.hidden = !st.seen && !makeable;
+    if (r.row.hidden) continue;
     const free = Math.max(0, st.stored - st.booked);
     const name = esc(r.it.label || r.it.id);
+
+    // **Третье состояние строки** (§12.131): предмет виден, но база ещё не
+    // поняла, что это. Он лежит, он продаётся — и больше ничего: ни одна
+    // механика не берёт его в дело, поэтому кнопки производства, разбора и
+    // порога у такой строки нет. Сказано это **словом**, а не пустым местом:
+    // «Ткань(?)» отвечает на «почему тут ничего нельзя», а голая строка
+    // читалась бы как поломка (§12.53).
+    const known = st.understood !== false;
+    const mark = known ? r.it.label || r.it.id : `${r.it.label || r.it.id}(?)`;
+    if (r.label.textContent !== mark) r.label.textContent = mark;
+    r.name.classList.toggle("unknown", !known);
+    liveTitle(
+      r.name,
+      known
+        ? ""
+        : `${name}: что это такое, база пока не поняла. Лежит и продаётся; ` +
+            `в дело пойдёт, когда наука её разберёт`,
+    );
 
     // Числа и их расклад — ровно то же, что в шапке (§12.53): второй формы
     // записи тех же трёх чисел в игре быть не должно.
@@ -6509,7 +6783,7 @@ function syncStockWindow() {
         k.label.textContent = min > 0 ? `делать до ${min}` : "делать до —";
       }
       k.line.classList.toggle("on", min > 0 && !craftGate);
-      k.line.hidden = !open;
+      k.line.hidden = !open || !known;
       // Нет станка — полоски порога нет, а причина написана красным в шапке
       // окна: порог без мастерской не сработает ни разу (§12.100).
       k.label.hidden = !!craftGate || !canCraft;
@@ -6583,7 +6857,7 @@ function syncStockWindow() {
     for (const k of r.salvages) {
       const rs = recipeSnaps[k.def] ?? {};
       const open = rs.unlocked ?? false;
-      k.line.hidden = !open;
+      k.line.hidden = !open || !known;
       let next = k.line.nextElementSibling;
       while (next && next.hidden) next = next.nextElementSibling;
       k.craft.classList.toggle(
@@ -6633,7 +6907,10 @@ function syncStockWindow() {
       // Считаем **обе** дороги, а не только выбранную, потому что от этого
       // зависит, показывать ли строку целиком (см. ниже).
       const canSell = !saleGate && canTrade;
-      const canScrap = !autoGateHint("crafting") && canCraft && r.canTear;
+      // Непонятое не разбирают (§12.131) — но **продают**, и потому строка
+      // правила остаётся: у неё есть что сказать одной из двух дорог.
+      const canScrap =
+        known && !autoGateHint("crafting") && canCraft && r.canTear;
       if (!numEditing(r.sale.key)) {
         const verb = tears ? "разбирать" : "сбывать";
         r.sale.label.textContent =
@@ -7156,7 +7433,7 @@ function missionLootRow(def, share) {
   if (def.rescue) {
     return '<div class="cat-sub">возвращает пленного, а не добычу</div>';
   }
-  const loot = costChips(def.loot);
+  const loot = costChips(def.loot, true);
   if (!loot) return "";
   return (
     `<div class="raidwin-loot">добыча ${loot}` +

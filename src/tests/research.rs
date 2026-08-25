@@ -275,16 +275,20 @@ fn cancelling_research_frees_the_cat_but_not_the_samples() {
     sim.start_research(topic);
     sim.tick_n(6);
 
-    assert!(sim.cancel_research());
+    assert!(sim.cancel_research(topic));
     assert_eq!(sim.research_progress(), None, "темы больше нет");
     assert_eq!(sim.item_total(0), 0, "образцы не вернулись");
     assert!(!sim.is_researching("a"), "а кот снова свободен");
 }
 
-/// Лабораторию снесли под работающим котом: тема отпускается и ждёт, как ждёт
-/// чертёж без материала. Молчаливое зависание было бы хуже.
+/// Лабораторию снесли под работающим котом: тема уходит вместе с ней (§12.132).
+///
+/// Дословно снесённый станок, уносящий свой заказ (§12.96): комната
+/// принадлежит теме, и темы без комнаты не бывает. До §12.132 тема оставалась
+/// висеть «в ожидании лаборатории» — но комнату ей больше никто не искал бы,
+/// потому что искать её теперь некому: ячейку выбирает заявка.
 #[test]
-fn a_demolished_lab_releases_the_topic() {
+fn a_demolished_lab_takes_its_topic_with_it() {
     let (mut sim, _) = sim_with_lab();
     let topic = sim.set_topic("materials", 0, 2000, &[], &[]);
     sim.start_research(topic);
@@ -293,8 +297,9 @@ fn a_demolished_lab_releases_the_topic() {
 
     sim.force_tile(3, 1, 0);
     sim.tick_n(6);
-    assert_eq!(sim.researcher(), None, "работать негде — тема свободна");
-    assert!(sim.research_progress().is_some(), "но не потеряна");
+    assert_eq!(sim.researcher(), None, "исполнитель свободен");
+    assert_eq!(sim.research_progress(), None, "и темы больше нет");
+    assert!(!sim.knows_tech("materials"), "технологию она не подарила");
 }
 
 // --- технология как ворота --------------------------------------------------
@@ -399,4 +404,364 @@ fn the_shipped_ruleset_can_reach_its_automation() {
             );
         }
     }
+}
+
+// --- тема-вскрытие (§12.133) -------------------------------------------------
+//
+// Образец **едет в лабораторию ногами**, как материал на станок (§12.102), и
+// там тратится. Ворота при этом стоят не на складе, а на шкале `Seen`
+// (§12.131) — «предмет хоть раз побывал на базе», — и вся эта развилка про
+// один-единственный случай: коты разобрали привезённые комбинезоны по себе.
+
+/// Первые ворота — «видели»: невиданное не вскрывают ни при каком складе.
+#[test]
+fn a_specimen_topic_is_shut_until_the_item_has_been_seen() {
+    let (mut sim, _) = sim_with_lab();
+    sim.set_items(2);
+    // Уборка тут только мешает: кот подхватил бы образец в лапы, и «в мире его
+    // больше нет» перестало бы быть правдой — груз в лапах кучей не считается.
+    sim.set_auto_tidy(false);
+    let topic = sim.set_topic("fabrics", 0, 400, &[], &[]);
+    sim.set_specimen(topic, &[(1, 1)], &[]);
+
+    assert!(!sim.start_research(topic), "предмета база ещё не видела");
+
+    // Один раз полежал на полу — и этого хватило навсегда (§12.131).
+    sim.put_item(1, 1, 1, 1);
+    sim.tick_n(1);
+    sim.take_item(1, 1, 1);
+    sim.tick_n(1);
+    assert_eq!(sim.item_total(1), 0, "в мире образца больше нет");
+
+    assert!(
+        !sim.start_research(topic),
+        "тема повидана, но образца на складе нет — заявку не принимают (§12.139)",
+    );
+
+    // Привезли ещё один — и тема заводится.
+    sim.put_item(5, 1, 1, 1);
+    sim.tick_n(1);
+    assert!(sim.start_research(topic), "теперь образец лежит на складе");
+}
+
+/// Вторые ворота — склад, и меряют они **складскую кучу**: валяющееся на полу
+/// в счёт не идёт (§12.130), потому что подвоз в лабораторию его не возьмёт.
+#[test]
+fn a_specimen_on_the_floor_does_not_open_the_topic() {
+    let (mut sim, _) = sim_with_lab();
+    sim.set_items(2);
+    sim.set_auto_tidy(false); // иначе образец уедет на склад сам
+    let topic = sim.set_topic("fabrics", 0, 400, &[], &[]);
+    sim.set_specimen(topic, &[(1, 1)], &[]);
+    sim.put_item(1, 1, 1, 1); // пол
+    sim.tick_n(1);
+
+    assert!(!sim.start_research(topic), "с пола образец не берут");
+
+    sim.set_auto_tidy(true);
+    sim.tick_n(30);
+    assert!(
+        sim.start_research(topic),
+        "убрали на склад — тема открылась"
+    );
+}
+
+/// Кот везёт образец со склада в лабораторию, и только после этого тема идёт.
+#[test]
+fn a_specimen_is_hauled_to_the_lab_before_the_work_starts() {
+    let (mut sim, _) = sim_with_lab();
+    sim.set_items(2);
+    let topic = sim.set_topic("fabrics", 0, 4000, &[], &[]);
+    sim.set_specimen(topic, &[(1, 1)], &[]);
+    sim.put_item(5, 1, 1, 1); // склад
+    sim.tick_n(1);
+
+    assert!(sim.start_research(topic));
+    sim.tick_n(40);
+
+    assert_eq!(sim.topic_delivered(1), 1, "образец завезли");
+    assert_eq!(sim.item_total(1), 0, "и он ушёл со склада");
+    assert!(sim.researcher().is_some(), "теперь за тему взялись");
+    assert!(sim.research_progress().is_some_and(|p| p > 0));
+}
+
+/// Что вышло из образца, ложится **кучей на клетку лаборатории** (инвариант 8),
+/// как добыча на шлюз и готовое под ноги мастеру.
+#[test]
+fn a_topic_drops_what_it_found_on_its_own_cell() {
+    let (mut sim, _) = sim_with_lab();
+    sim.set_items(3);
+    let topic = sim.set_topic("fabrics", 0, 100, &[], &[]);
+    sim.set_specimen(topic, &[(1, 1)], &[(2, 2)]);
+    sim.put_item(5, 1, 1, 1);
+    sim.tick_n(1);
+    sim.start_research(topic);
+
+    // Уборку глушим: она увезёт выход на склад, и «легло в лаборатории» станет
+    // непроверяемым — а проверяем мы именно место, а не факт появления.
+    sim.set_auto_tidy(false);
+    sim.tick_n(60);
+
+    assert!(sim.knows_tech("fabrics"), "тема доведена до конца");
+    assert_eq!(sim.item_at(3, 1, 2), 2, "выход лёг кучей в лаборатории");
+}
+
+/// Отмена роняет завезённое кучей (§12.31): материал не горит никогда.
+#[test]
+fn cancelling_a_specimen_topic_drops_it_back() {
+    let (mut sim, _) = sim_with_lab();
+    sim.set_items(2);
+    let topic = sim.set_topic("fabrics", 0, 4000, &[], &[]);
+    sim.set_specimen(topic, &[(1, 1)], &[]);
+    sim.put_item(5, 1, 1, 1);
+    sim.tick_n(1);
+    sim.start_research(topic);
+    sim.tick_n(40);
+    assert_eq!(sim.topic_delivered(1), 1);
+
+    assert!(sim.cancel_research(topic));
+
+    assert_eq!(
+        sim.item_at(3, 1, 1),
+        1,
+        "образец вернулся кучей в лабораторию"
+    );
+}
+
+/// Главный случай §12.139: комбинезоны разобраны котами по себе — заявку не
+/// принимают, хотя предмет базе знаком и в шапке числится.
+///
+/// Это **отмена** прежнего правила (§12.133), где такая тема заводилась и
+/// вставала намертво, держа ячейку лаборатории и учёного.
+#[test]
+fn worn_gear_does_not_count_as_a_specimen() {
+    let (mut sim, _) = sim_with_lab();
+    sim.set_items(2);
+    sim.set_force(1, 1);
+    sim.set_loadout(&[1]);
+    let topic = sim.set_topic("fabrics", 0, 400, &[], &[]);
+    sim.set_specimen(topic, &[(1, 1)], &[]);
+
+    // Один комбинезон на двух котов: его наденут, и на складе не останется.
+    sim.put_item(5, 1, 1, 1);
+    sim.tick_n(30);
+    assert_eq!(sim.item_total(1), 0, "комбинезон надет");
+    assert!(!sim.gear_of("a").is_empty() || !sim.gear_of("b").is_empty());
+
+    assert!(
+        !sim.start_research(topic),
+        "надетое образцом не считается: везти в лабораторию нечего",
+    );
+}
+
+/// Шаблон снаряжения уступает **заведённой** теме, но не открытой (§12.115).
+///
+/// Два теста в одном намеренно: граница проходит ровно между ними, и порознь
+/// они читались бы как два независимых правила.
+#[test]
+fn the_loadout_yields_to_a_started_topic_and_not_to_an_open_one() {
+    let outfit = |started: bool| {
+        let (mut sim, _) = sim_with_lab();
+        sim.set_items(2);
+        sim.set_force(1, 1);
+        sim.set_loadout(&[1]);
+        let topic = sim.set_topic("fabrics", 0, 4000, &[], &[]);
+        sim.set_specimen(topic, &[(1, 1)], &[]);
+        sim.put_item(5, 1, 1, 1);
+        sim.tick_n(1);
+        if started {
+            assert!(sim.start_research(topic), "тема заводится");
+        }
+        sim.tick_n(40);
+        (
+            sim.gear_of("a").len() + sim.gear_of("b").len(),
+            sim.topic_delivered(1),
+        )
+    };
+
+    let (worn_when_open, _) = outfit(false);
+    let (worn_when_started, delivered) = outfit(true);
+
+    assert_eq!(
+        worn_when_open, 1,
+        "тема только открыта — комбинезон уходит на кота, шаблон важнее",
+    );
+    assert_eq!(
+        (worn_when_started, delivered),
+        (0, 1),
+        "тема заведена — комбинезон едет в лабораторию, а не на кота",
+    );
+}
+
+// --- лаборатория как ячейка (§12.132) ----------------------------------------
+//
+// Идиома §12.96 дословно: тема рождается **в ячейке** и держит её до последнего
+// очка работы. Отличие от заказа ровно одно — двух тем на один `def` не бывает
+// никогда (тема одноразова и необратима, §12.18), поэтому отменяют её по теме,
+// а не по клетке.
+
+/// Коридор с **двумя** лабораториями: (3,1) и (4,1).
+fn sim_with_two_labs() -> Sim {
+    let mut sim = sim_from(&["########", "#a....b#", "########"]);
+    sim.set_skill("science", &[100, 400]);
+    sim.set_lab(1, true);
+    sim.force_tile(3, 1, 1);
+    sim.force_tile(4, 1, 1);
+    sim.set_capacity(2, 100);
+    sim.force_tile(6, 1, 2);
+    sim
+}
+
+/// Вторая лаборатория даёт вторую работу, а не декорацию (§12.55).
+#[test]
+fn two_labs_run_two_topics_at_once() {
+    let mut sim = sim_with_two_labs();
+    let first = sim.set_topic("materials", 0, 4000, &[], &[]);
+    let second = sim.set_topic("comfort", 0, 4000, &[], &[]);
+
+    assert!(sim.start_research(first));
+    assert!(sim.start_research(second), "вторая комната — вторая тема");
+    sim.tick_n(10);
+
+    assert_eq!(sim.topics_count(), 2, "обе темы живы");
+    assert_eq!(sim.researchers_busy(), 2, "и обе с исполнителями");
+}
+
+/// Свободной ячейки нет — заявка **отклоняется**, а не встаёт в очередь, и
+/// склад при этом не трогают: очередь тем была бы вторым планировщиком рядом с
+/// раздатчиком (§12.16).
+#[test]
+fn a_second_topic_without_a_free_lab_is_refused() {
+    let (mut sim, _) = sim_with_lab();
+    let first = sim.set_topic("materials", 0, 4000, &[], &[]);
+    let second = sim.set_topic("comfort", 0, 4000, &[(0, 3)], &[]);
+    sim.put_item(5, 1, 0, 10);
+
+    assert!(sim.start_research(first));
+    assert!(!sim.start_research(second), "комната одна");
+    assert_eq!(sim.item_at(5, 1, 0), 10, "и склад не тронут");
+}
+
+/// Одну тему не берут дважды даже при свободной второй комнате: она одноразова.
+#[test]
+fn the_same_topic_is_never_taken_twice() {
+    let mut sim = sim_with_two_labs();
+    let topic = sim.set_topic("materials", 0, 4000, &[], &[]);
+
+    assert!(sim.start_research(topic));
+    assert!(!sim.start_research(topic), "второй раз не берутся");
+    assert_eq!(sim.topics_count(), 1);
+}
+
+/// Спящий учёный **не отдаёт ячейку**: комната принадлежит теме, а не задаче
+/// кота (§12.132) — дословно как станок принадлежит заказу (§12.96).
+#[test]
+fn a_sleeping_scientist_keeps_the_lab_for_the_topic() {
+    let (mut sim, _) = sim_with_lab();
+    let first = sim.set_topic("materials", 0, 4000, &[], &[]);
+    sim.start_research(first);
+    sim.tick_n(6);
+    let cell = sim.topic_cell().expect("тема в комнате");
+
+    // Уводим исполнителя усталостью — задачу отбирает `release_work`.
+    sim.set_needs(1000, 900, 1);
+    sim.set_energy("a", 1);
+    sim.set_energy("b", 1);
+    sim.tick_n(4);
+
+    assert!(sim.researcher().is_none(), "исполнителя увели");
+    assert_eq!(sim.topic_cell(), Some(cell), "но комната осталась за темой");
+
+    let second = sim.set_topic("comfort", 0, 4000, &[], &[]);
+    assert!(!sim.start_research(second), "и второй теме её не отдадут");
+}
+
+/// Отменяют тему **по ней самой**, а не по клетке: соседняя тема цела.
+#[test]
+fn cancelling_names_the_topic_and_leaves_the_other_alone() {
+    let mut sim = sim_with_two_labs();
+    let first = sim.set_topic("materials", 0, 4000, &[], &[]);
+    let second = sim.set_topic("comfort", 0, 4000, &[], &[]);
+    sim.start_research(first);
+    sim.start_research(second);
+    sim.tick_n(6);
+
+    assert!(sim.cancel_research(second));
+
+    assert_eq!(sim.topics_count(), 1, "осталась одна");
+    assert!(!sim.start_research(first), "и это та, которую не трогали");
+    // А брошенную можно завести заново: комната освободилась вместе с ней.
+    assert!(sim.start_research(second));
+}
+
+/// Учёного увели на вылазку: тема отпускается и её подхватывает другой
+/// допущенный кот — ровно как после приказа игрока.
+///
+/// Заявка на вылазку — не приказ и не истощение, но освобождение у неё то же
+/// (`release_task`, инвариант 7). Пропусти его — и тема осталась бы за котом,
+/// которого на базе нет, то есть зависла бы до его возвращения при живом
+/// втором учёном рядом.
+#[test]
+fn a_raid_frees_the_topic_for_the_others() {
+    let (mut sim, science) = sim_with_lab();
+    // Оба кота проходят допуск: проверяем именно передачу темы, а не то, что
+    // единственный учёный ушёл.
+    sim.set_xp("a", science, 100);
+    sim.set_xp("b", science, 100);
+    let topic = sim.set_topic("materials", 1, 4000, &[], &[]);
+    sim.start_research(topic);
+    sim.tick_n(6);
+    assert_eq!(sim.researcher().as_deref(), Some("a"), "взялся ближний");
+    let progress = sim.research_progress().unwrap();
+
+    sim.set_gate(2, true);
+    sim.force_tile(7, 1, 2);
+    sim.set_relay(2, true);
+    let mission = sim.set_mission(1, 400, &[]);
+    assert!(sim.launch(mission, vec!["a".into()]), "отряд ушёл");
+
+    assert_eq!(sim.researcher(), None, "тема отпущена в тот же миг");
+    assert_eq!(sim.research_progress(), Some(progress), "прогресс цел");
+
+    sim.tick_n(20);
+    assert_eq!(
+        sim.researcher().as_deref(),
+        Some("b"),
+        "и её подхватил второй допущенный кот",
+    );
+}
+
+/// А если допущенный кот на базе один и он ушёл — тема **ждёт**, и это не
+/// зависание: она стоит в своей комнате с прежним прогрессом, и вернувшийся
+/// учёный садится за неё сам.
+#[test]
+fn a_topic_waits_out_the_only_scientist_and_resumes() {
+    let (mut sim, science) = sim_with_lab();
+    sim.set_xp("a", science, 100);
+    let topic = sim.set_topic("materials", 1, 4000, &[], &[]);
+    sim.start_research(topic);
+    sim.tick_n(6);
+    let progress = sim.research_progress().unwrap();
+
+    sim.set_gate(2, true);
+    sim.force_tile(7, 1, 2);
+    sim.set_relay(2, true);
+    let mission = sim.set_mission(1, 60, &[]);
+    sim.launch(mission, vec!["a".into()]);
+
+    sim.tick_n(30);
+    assert!(sim.is_away("a"), "учёный ещё в поле");
+    assert_eq!(sim.researcher(), None, "браться некому");
+    assert_eq!(sim.research_progress(), Some(progress), "но тема цела");
+    assert!(
+        !sim.topic_has_scientist_home(),
+        "и панель обязана сказать это словом, а не «ждёт исполнителя» (§12.135)",
+    );
+
+    sim.tick_n(120);
+    assert!(!sim.is_away("a"), "вернулся");
+    assert!(
+        sim.research_progress().is_some_and(|p| p > progress),
+        "и работа пошла дальше сама",
+    );
 }

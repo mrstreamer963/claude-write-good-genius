@@ -79,6 +79,8 @@ pub(crate) fn assign_equip(
     stacks: Query<(Entity, &Position, &Stack)>,
     deals: Query<&Deal>,
     in_paws: Query<(&Haul, &Carrying)>,
+    topics: Query<&Research>,
+    topic_rules: Res<ResearchRules>,
 ) {
     if loadout.0.is_empty() {
         return;
@@ -111,7 +113,50 @@ pub(crate) fn assign_equip(
     // распоряжается сделка. Проверяем в раздатчике, а не только при надевании,
     // иначе кот ходил бы к обещанной куче и возвращался ни с чем.
     let booked = crate::trade::booked(deals.iter(), in_paws.iter());
-    let free = |item: usize| !booked.iter().any(|&(sold, _)| sold == item);
+    let sold = |item: usize| booked.iter().any(|&(s, _)| s == item);
+
+    // **Заведённая тема-вскрытие важнее шаблона** (§12.133): образец, который
+    // ей ещё везут, шаблон не разбирает. Без этого «ждёт образец» длилось бы
+    // вечно на базе, где кто-то всегда не одет, — а комбинезонов привозят по
+    // одному.
+    //
+    // Уступка ровно одна, и **незаведённой** теме не уступает ничего. Соблазн
+    // придержать «последний экземпляр, у которого есть неизученная тема»
+    // отвергнут: кот ушёл бы на вылазку раздетым, отряд стал бы слабее, а
+    // причина лежала бы в чужой механике — скрытый штраф вместо слова (§12.53).
+    // Тот же спор §12.115 уже решил в эту сторону: разбор уступает шаблону.
+    let mut owed: Vec<(usize, i32)> = Vec::new();
+    for topic in &topics {
+        for (item, need) in topic_missing(&topic_rules, topic) {
+            match owed.iter_mut().find(|(i, _)| *i == item) {
+                Some((_, n)) => *n += need,
+                None => owed.push((item, need)),
+            }
+        }
+    }
+    // Уже везомое лабораториям из недостачи вычтено самой `topic_missing`
+    // только по `delivered`; груз в лапах ещё не сдан, поэтому вычитаем его
+    // здесь — иначе один комбинезон числился бы обещанным дважды.
+    for (haul, load) in &in_paws {
+        if let HaulTo::Lab(_) = haul.to
+            && let Some(slot) = owed.iter_mut().find(|(i, _)| *i == load.item)
+        {
+            slot.1 -= load.count;
+        }
+    }
+    let promised = |item: usize| {
+        owed.iter()
+            .find(|&&(i, _)| i == item)
+            .map_or(0, |&(_, n)| n)
+    };
+    let in_piles = |item: usize| -> i32 {
+        stacks
+            .iter()
+            .filter(|(_, _, s)| s.item == item)
+            .map(|(_, _, s)| s.count)
+            .sum()
+    };
+    let free = |item: usize| !sold(item) && in_piles(item) > promised(item).max(0);
 
     // Сколько в каждой куче уже обещано тем, кто к ней идёт.
     let mut taken: Vec<(Entity, i32)> = Vec::new();

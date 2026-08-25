@@ -216,3 +216,111 @@ fn booked_goods_are_shown_apart_from_the_shelf() {
     assert!(sim.trade(f, 0, 2, false), "заявка на продажу двух принята");
     assert_eq!(sim.stock_of(0), (5, 0, 2), "две обещаны покупателю");
 }
+
+// ── Понимание предмета (§12.131) ─────────────────────────────────────────────
+//
+// `requires` у записи в `items:` начинались как ворота надевания (§12.114), а
+// значат «база поняла, что это». Непонятый предмет лежит, продаётся — и больше
+// ничего: ни одна механика не берёт его в дело. Три теста на трёх механиках,
+// потому что ворота **одни**, и разъехаться им нельзя.
+
+/// Непонятая еда не кормит: банка без этикетки — это не паёк.
+#[test]
+fn an_ununderstood_item_is_not_food() {
+    const RATION: usize = 1;
+
+    let ate = |understood: bool| {
+        let mut sim = sim_from(&["#####", "#a..#", "#####"]);
+        sim.set_items(2);
+        sim.set_food(1000, 900, 1);
+        sim.set_nutrition(RATION, 400);
+        sim.set_fed("a", 100);
+        sim.put_item(3, 1, RATION, 5);
+        if !understood {
+            sim.set_wear_tech(RATION, "canning");
+        }
+        sim.tick_n(20);
+        (sim.fed_of("a"), sim.item_total(RATION))
+    };
+
+    let (hungry, kept) = ate(false);
+    let (fed, eaten) = ate(true);
+
+    // Сытость тикает у всех (§12.36), поэтому мерим не «сколько осталось», а
+    // разницу между двумя мирами: в одном кот поел, в другом только голодал.
+    assert_eq!(kept, 5, "кот съел то, чего база не понимает");
+    assert!(
+        hungry < 100,
+        "сытость обязана убывать сама по себе: {hungry}"
+    );
+    assert!(eaten < 5, "понятная еда должна убывать: осталось {eaten}");
+    assert!(fed > hungry, "и кормить: {fed} против {hungry}");
+}
+
+/// Непонятая аптечка не лечит — но лечение от этого не пропадает (§12.47):
+/// раненый встаёт и без неё, просто дольше.
+#[test]
+fn an_ununderstood_item_is_not_a_medkit() {
+    const KIT: usize = 0;
+
+    let healed = |understood: bool| {
+        let mut sim = sim_from(&["#########", "#a.....b#", "#########"]);
+        sim.set_health_rules(1000, 600, 1);
+        sim.set_health("a", 100);
+        sim.set_capacity(1, 20);
+        sim.force_tile(4, 1, 1);
+        sim.set_mends(KIT, 8);
+        sim.put_item(4, 1, KIT, 3);
+        if !understood {
+            sim.set_wear_tech(KIT, "chemistry");
+        }
+
+        sim.tick_n(30);
+        assert!(sim.is_treating("b"), "медик взялся в обоих мирах");
+        let start = sim.health_of("a");
+        sim.tick_n(40);
+        (sim.health_of("a") - start, sim.item_total(KIT))
+    };
+
+    let (blind, kept) = healed(false);
+    let (known, spent) = healed(true);
+
+    assert_eq!(kept, 3, "непонятную аптечку вскрыли");
+    assert!(
+        blind > 0,
+        "лечение обязано идти и без аптечки — иначе пустой склад это тупик",
+    );
+    assert!(
+        known > blind,
+        "с понятой аптечкой быстрее: {known} против {blind}"
+    );
+    assert_eq!(spent, 2, "и она израсходована ровно одна");
+}
+
+/// Ворота **одни на все механики**: изученная технология включает предмет
+/// разом везде. Разъедься они — надеть было бы можно то, что нельзя съесть,
+/// без единой причины различать.
+#[test]
+fn understanding_opens_every_use_at_once() {
+    const RATION: usize = 1;
+
+    let mut sim = sim_from(&["#####", "#a..#", "#####"]);
+    sim.set_items(2);
+    sim.set_food(1000, 900, 1);
+    sim.set_nutrition(RATION, 400);
+    sim.set_fed("a", 100);
+    sim.set_wear_tech(RATION, "canning");
+    sim.put_item(3, 1, RATION, 5);
+
+    sim.tick_n(20);
+    let blind = sim.fed_of("a");
+    assert_eq!(sim.item_total(RATION), 5, "до технологии еда не еда");
+
+    sim.set_tech("canning");
+    sim.tick_n(20);
+
+    assert!(
+        sim.item_total(RATION) < 5 && sim.fed_of("a") > blind,
+        "технология изучена, а паёк так и остался картинкой",
+    );
+}

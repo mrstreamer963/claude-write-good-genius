@@ -18,6 +18,7 @@ use crate::movement::{clear_solids, escape_voids, move_units, retry_orders, spre
 use crate::needs::{assign_nap, assign_rest, collapse_exhausted, doze, sleep, tire};
 use crate::relay::assign_relay;
 use crate::research::{assign_research, work_research};
+use crate::seen::note_seen;
 use crate::skills::{assign_study, study, train_skills};
 use crate::timeline::run_timeline;
 use crate::trade::run_trade;
@@ -134,6 +135,14 @@ fn advance_time(mut time: ResMut<SimTime>) {
 /// `train_skills` идёт после любой системы работы, включая будущие: он
 /// превращает в опыт маркеры `Worked`, которые те за тик оставили (§12.17).
 ///
+/// `note_seen` и `check_goals` замыкают цепочку и **ничего в мире не меняют**.
+/// Оба наблюдатели: смотрят на уже сложившийся тик и отмечают, что случилось.
+/// `note_seen` (§12.131) стоит первым из двух только ради того, чтобы правило
+/// «`check_goals` замыкает цепочку» осталось буквальным, — между собой их
+/// порядок не значим, цели шкалу `Seen` не читают. Место обоих — цепочка, а не
+/// фасад рядом с `note_news`: тот живёт в фасаде потому, что читает **ворота**,
+/// а эти двое читают **мир** (инвариант 14).
+///
 /// `check_goals` замыкает цепочку и **ничего в мире не меняет** (§12.58): цель —
 /// наблюдатель, а не актор. Она смотрит на уже сложившийся тик и отмечает, что
 /// случилось, поэтому обязана стоять после всех, кто ещё может что-то сделать, —
@@ -197,6 +206,7 @@ pub(crate) fn build_schedule() -> Schedule {
         tire,
         hunger,
         train_skills,
+        note_seen,
         check_goals,
     )
         .chain();
