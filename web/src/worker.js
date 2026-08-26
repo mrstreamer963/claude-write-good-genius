@@ -54,7 +54,17 @@ function announce() {
   sinceSave = 0;
   lastSaveAt = performance.now();
   dirty = false;
-  postMessage({ type: "ready", meta: sim.map_meta(), map: sim.base_map() });
+  // `tickMs` — сколько реального времени стоит сим-тик на ×1. Виду он нужен на
+  // долю тика внутри шага (§12.140): ядро считает шаг тиками, а между тиками
+  // кадров десяток, и промежуточные кадры больше считать не по чему. Едет
+  // отсюда, потому что модель времени — воркерова: второй копии `BASE_TPS` в
+  // `main.js` быть не должно.
+  postMessage({
+    type: "ready",
+    meta: sim.map_meta(),
+    map: sim.base_map(),
+    tickMs: SIM_DT_MS,
+  });
 }
 
 async function boot() {

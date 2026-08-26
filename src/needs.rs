@@ -226,7 +226,7 @@ pub(crate) fn release_work(
         Treating,
         OnDuty,
         Path,
-        MoveCooldown,
+        Stride,
     )>();
 }
 
@@ -423,11 +423,9 @@ fn claim_bed(map: &BaseMap, free: &mut Vec<(i32, i32)>, from: (i32, i32)) -> Opt
 /// месте»; снимет его `move_units`, и со следующего тика кот спит.
 fn lie_down(commands: &mut Commands, cat_e: Entity, bed: Bed) {
     let (cell, path) = bed;
-    commands.entity(cat_e).insert((
-        Rest { spot: Some(cell) },
-        Path { steps: path },
-        MoveCooldown(0),
-    ));
+    commands
+        .entity(cat_e)
+        .insert((Rest { spot: Some(cell) }, Path { steps: path }));
 }
 
 /// Отправляет кота, которому нечем заняться, на свободную лежанку — дремать
@@ -521,9 +519,12 @@ pub(crate) fn assign_nap(
         // мелочь. Кот с маршрутом невидим раздатчикам (`Without<Path>`,
         // инвариант 5), а дорога через полбазы длится десятки тиков: выдай
         // маршрут целиком — и освободившийся чертёж простоял бы всё это время,
-        // пока бригада бредёт в спальню. Так кот свободен через тик, а идёт с
-        // обычной скоростью: `MoveCooldown(1)` — тот же `MOVE_PERIOD`, который
-        // `move_units` ставит после каждого шага.
+        // пока бригада бредёт в спальню. Так кот свободен через тик.
+        //
+        // Идёт он при этом на тик медленнее обычного (§12.140): шаг длится два
+        // тика, а третий уходит на то, чтобы получить следующий, — раздача
+        // видит кота только после прибытия. Это цена пошаговой ходьбы, и она
+        // читается по месту: к лежанке кот плетётся, а не бежит.
         let Some((_, path)) = claim_bed(&map, &mut free, at) else {
             continue;
         };
@@ -542,9 +543,7 @@ pub(crate) fn assign_nap(
             None => continue, // замереть по дороге негде — идти нет смысла
         };
         if !steps.is_empty() {
-            commands
-                .entity(cat_e)
-                .insert((Path { steps }, MoveCooldown(1)));
+            commands.entity(cat_e).insert(Path { steps });
         }
     }
 }

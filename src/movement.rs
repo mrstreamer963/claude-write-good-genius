@@ -18,11 +18,19 @@ const CLUTTER_MAX: u8 = 3;
 
 /// Двигает юнитов по маршруту; на прибытии снимает компоненты движения.
 ///
-/// **Завал под лапами замедляет шаг** (§12.35): кот, шагнувший на клетку с
-/// кучей, задерживается тем дольше, чем куча больше, — до потолка. Считается
-/// только то, что валяется **на полу**: сложенное в склад или на стеллаж — это
-/// порядок, а не завал, иначе собственное хранилище становилось бы болотом, а
-/// уборка наказывала бы сама себя.
+/// **Кот числится в клетке, пока не дошёл** (§12.140). Шаг — это состояние мира
+/// (`Stride`), а не мгновенное присваивание: кот занимает свою клетку весь шаг и
+/// появляется в соседней ровно на прибытии. Отсюда две вещи разом — вид рисует
+/// дорогу по честному прогрессу, а не догадывается по прошлому снимку, и снос
+/// пола под идущим котом перестал быть гонкой: пропавшая клетка отменяет шаг, а
+/// кот остаётся там, где стоял.
+///
+/// **Завал под лапами замедляет шаг** (§12.35): чем больше куча в клетке, тем
+/// дольше шаг **в неё**, — до потолка. Считается только то, что валяется **на
+/// полу**: сложенное в склад или на стеллаж — это порядок, а не завал, иначе
+/// собственное хранилище становилось бы болотом, а уборка наказывала бы сама
+/// себя. До §12.140 это была пауза **после** шага, и в игре она читалась
+/// дёрганьем; теперь это цена входа, и кот через кучу бредёт.
 ///
 /// **Маршрут этого не знает и знать не должен.** BFS считает шаги, а не время
 /// (§11): дай ему веса — и коты начнут обходить кучи, которые сами же и пришли
@@ -35,11 +43,80 @@ pub(crate) fn move_units(
     // `Without<Path>` не сужает выборку — у куч маршрута не бывает, — а делает
     // запросы непересекающимися по `Position`: идущих котов забирает `q`.
     stacks: Query<(&Position, &Stack), Without<Path>>,
-    mut q: Query<(Entity, &mut Position, &mut Path, &mut MoveCooldown)>,
+    mut q: Query<(Entity, &mut Position, &mut Path, Option<&mut Stride>)>,
 ) {
-    // Что и где валяется: клетки хранения сюда не попадают вовсе.
+    let clutter = clutter_map(&stacks, &map, &rules);
+
+    for (e, mut pos, mut path, stride) in &mut q {
+        // 1. Едем. Прибытие и следующий шаг случаются **в одном тике**: разведи
+        //    их — и между клетками появится лишний тик стояния, то есть база
+        //    станет вдвое медленнее.
+        if let Some(mut s) = stride {
+            // Пол, в который кот шагает, могли снести за время шага. Кот при
+            // этом числится в своей клетке, поэтому терять нечего: шаг
+            // отменяется, маршрут перекладывается с места.
+            if !map.walkable(s.to.0, s.to.1) {
+                commands.entity(e).remove::<Stride>();
+                repath(&map, &mut path, (pos.x, pos.y));
+                continue;
+            }
+            s.left -= 1;
+            if s.left > 0 {
+                continue;
+            }
+            pos.x = s.to.0;
+            pos.y = s.to.1;
+            // Клетка снимается с маршрута **на прибытии**, а не в начале шага:
+            // пока кот идёт, она обязана оставаться в `steps` — по ней его
+            // цель читают и другие (`assign_nap` считает клетку занятой, чтобы
+            // двое не пришли на одну лежанку, §12.39). Сними её раньше — и
+            // клетка, в которую кот уже шагает, для всех остальных пуста.
+            path.steps.pop();
+            commands.entity(e).remove::<Stride>();
+        }
+
+        // 2. Трогаемся. `Path` держится до самого прибытия — снять его раньше
+        //    значит объявить идущего кота свободным (инвариант 5), и раздатчик
+        //    отправил бы его от клетки, из которой он уже вышел.
+        if path.steps.is_empty() {
+            commands.entity(e).remove::<(Path, Stride)>();
+            continue;
+        }
+        let next = *path.steps.last().unwrap();
+        if !map.walkable(next.0, next.1) {
+            repath(&map, &mut path, (pos.x, pos.y));
+            continue;
+        }
+        let span = step_span(&clutter, next);
+        commands.entity(e).insert(Stride {
+            to: next,
+            left: span,
+            span,
+        });
+    }
+}
+
+/// Перекладывает маршрут с текущей клетки к прежней цели. Не вышло — маршрут
+/// стирается, и кот освобождается следующим тиком: приказ ему перепроложит
+/// `retry_orders`, когда карта изменится.
+fn repath(map: &BaseMap, path: &mut Path, from: (i32, i32)) {
+    let Some(&goal) = path.steps.first() else {
+        return;
+    };
+    match find_path(map, from, goal) {
+        Some(p) => path.steps = p,
+        None => path.steps.clear(),
+    }
+}
+
+/// Что и где валяется **на полу**: клетки хранения сюда не попадают вовсе.
+fn clutter_map(
+    stacks: &Query<(&Position, &Stack), Without<Path>>,
+    map: &BaseMap,
+    rules: &TileRules,
+) -> Vec<((i32, i32), i32)> {
     let mut clutter: Vec<((i32, i32), i32)> = Vec::new();
-    for (pos, stack) in &stacks {
+    for (pos, stack) in stacks {
         if stack.count <= 0 || rules.capacity_of(map.tile_at(pos.x, pos.y)) > 0 {
             continue;
         }
@@ -48,43 +125,21 @@ pub(crate) fn move_units(
             None => clutter.push(((pos.x, pos.y), stack.count)),
         }
     }
+    clutter
+}
 
-    for (e, mut pos, mut path, mut cd) in &mut q {
-        if path.steps.is_empty() {
-            commands.entity(e).remove::<(Path, MoveCooldown)>();
-            continue;
-        }
-        if cd.0 > 0 {
-            cd.0 -= 1;
-            continue;
-        }
-
-        let next = *path.steps.last().unwrap();
-        if !map.walkable(next.0, next.1) {
-            let goal = *path.steps.first().unwrap();
-            match find_path(&map, (pos.x, pos.y), goal) {
-                Some(p) => path.steps = p,
-                None => path.steps.clear(),
-            }
-            cd.0 = MOVE_PERIOD;
-            continue;
-        }
-
-        path.steps.pop();
-        pos.x = next.0;
-        pos.y = next.1;
-        cd.0 = MOVE_PERIOD + clutter_delay(&clutter, next);
-
-        if path.steps.is_empty() {
-            commands.entity(e).remove::<(Path, MoveCooldown)>();
-        }
-    }
+/// Сколько тиков занимает шаг **в** клетку `at`.
+///
+/// `MOVE_PERIOD + 1` — установившийся темп: тик, в который кот переставляет
+/// лапы, плюс период остывания. Сверх него — завал в самой клетке (§12.35).
+fn step_span(clutter: &[((i32, i32), i32)], at: (i32, i32)) -> u8 {
+    MOVE_PERIOD + 1 + clutter_delay(clutter, at)
 }
 
 /// Сколько лишних тиков стоит шаг на клетку с завалом.
 ///
-/// Задержка ложится на клетку, **в которую** кот шагнул: он уже в куче и
-/// выбирается из неё. Так замедление видно там же, где видна куча.
+/// Задержка ложится на клетку, **в которую** кот шагает: он пробирается через
+/// кучу. Так замедление видно там же, где видна куча.
 fn clutter_delay(clutter: &[((i32, i32), i32)], at: (i32, i32)) -> u8 {
     let count = clutter
         .iter()
@@ -141,9 +196,7 @@ pub(crate) fn retry_orders(
         match find_path(&map, (pos.x, pos.y), (order.x, order.y)) {
             Some(path) => {
                 order.tried_version = None;
-                commands
-                    .entity(e)
-                    .insert((Path { steps: path }, MoveCooldown(0)));
+                commands.entity(e).insert(Path { steps: path });
             }
             None => order.tried_version = Some(map.version),
         }
@@ -177,9 +230,7 @@ pub(crate) fn escape_voids(
             .map(|(dx, dy)| (pos.x + dx, pos.y + dy))
             .find(|(nx, ny)| map.walkable(*nx, *ny))
         {
-            commands
-                .entity(e)
-                .insert((Path { steps: vec![step] }, MoveCooldown(0)));
+            commands.entity(e).insert(Path { steps: vec![step] });
         }
     }
 }
@@ -297,9 +348,7 @@ pub(crate) fn spread_units(
         };
         // Цель занимаем сразу: иначе двое из одной клетки шагнут в одну и ту же.
         blocked.push(step);
-        commands
-            .entity(cat_e)
-            .insert((Path { steps: vec![step] }, MoveCooldown(0)));
+        commands.entity(cat_e).insert(Path { steps: vec![step] });
     }
 }
 
@@ -383,9 +432,7 @@ pub(crate) fn clear_solids(
             continue; // сойти некуда — стоит где стоял, это не ошибка
         };
         blocked.push(step);
-        commands
-            .entity(cat_e)
-            .insert((Path { steps: vec![step] }, MoveCooldown(0)));
+        commands.entity(cat_e).insert(Path { steps: vec![step] });
     }
 }
 

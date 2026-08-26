@@ -494,7 +494,7 @@ pub(crate) fn assign_hauls(
         };
         commands
             .entity(cat_e)
-            .insert((Haul { to, aim }, Path { steps: path }, MoveCooldown(0)));
+            .insert((Haul { to, aim }, Path { steps: path }));
     }
 }
 
@@ -611,7 +611,6 @@ pub(crate) fn assign_tidy(
                     aim: None,
                 },
                 Path { steps: path },
-                MoveCooldown(0),
             ));
         }
     }
@@ -699,7 +698,6 @@ pub(crate) fn assign_tidy(
                 aim: None,
             },
             Path { steps: path },
-            MoveCooldown(0),
         ));
     }
 }
@@ -820,7 +818,6 @@ pub(crate) fn work_hauls(
                                 },
                                 Carrying { item, count: taken },
                                 Path { steps: path },
-                                MoveCooldown(0),
                             ));
                         }
                         // Площадка стала недостижима, пока кот шёл за грузом:
@@ -898,7 +895,6 @@ pub(crate) fn work_hauls(
                                 },
                                 Carrying { item, count: taken },
                                 Path { steps: path },
-                                MoveCooldown(0),
                             ));
                         }
                         None => {
@@ -973,7 +969,6 @@ pub(crate) fn work_hauls(
                                 },
                                 Carrying { item, count: taken },
                                 Path { steps: path },
-                                MoveCooldown(0),
                             ));
                         }
                         None => {
@@ -1032,7 +1027,6 @@ pub(crate) fn work_hauls(
                                 },
                                 Carrying { item, count: taken },
                                 Path { steps: path },
-                                MoveCooldown(0),
                             ));
                         }
                         None => {
@@ -1094,11 +1088,9 @@ pub(crate) fn work_hauls(
                         continue;
                     };
                     let path = reach.path_to(cell.0, cell.1).unwrap_or_default();
-                    commands.entity(cat_e).insert((
-                        Carrying { item, count: taken },
-                        Path { steps: path },
-                        MoveCooldown(0),
-                    ));
+                    commands
+                        .entity(cat_e)
+                        .insert((Carrying { item, count: taken }, Path { steps: path }));
                     continue;
                 };
 

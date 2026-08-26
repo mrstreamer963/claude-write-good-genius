@@ -207,11 +207,9 @@ pub(crate) fn assign_equip(
             None => taken.push((pile_e, 1)),
         }
         let path = reach.path_to(at.0, at.1).unwrap_or_default();
-        commands.entity(cat_e).insert((
-            Equipping { item, pile: pile_e },
-            Path { steps: path },
-            MoveCooldown(0),
-        ));
+        commands
+            .entity(cat_e)
+            .insert((Equipping { item, pile: pile_e }, Path { steps: path }));
     }
 }
 

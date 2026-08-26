@@ -265,9 +265,7 @@ pub(crate) fn plan_craft(
                 }
                 if let Ok((_, order)) = orders.get(order_e) {
                     if let Some(cat_e) = order.assignee {
-                        commands
-                            .entity(cat_e)
-                            .remove::<(Crafting, Path, MoveCooldown)>();
+                        commands.entity(cat_e).remove::<(Crafting, Path, Stride)>();
                     }
                     // Привезённое не исчезает вместе с заказом (§12.31,
                     // инвариант 8): оно ложится кучей на клетку станка, откуда
@@ -357,9 +355,7 @@ pub(crate) fn assign_craft(
     }
     for (order_e, cell, delivered, assignee) in razed {
         if let Some(cat_e) = assignee {
-            commands
-                .entity(cat_e)
-                .remove::<(Crafting, Path, MoveCooldown)>();
+            commands.entity(cat_e).remove::<(Crafting, Path, Stride)>();
         }
         spill_delivered(&mut commands, &mut stacks, cell, &delivered);
         commands.entity(order_e).despawn();
@@ -434,7 +430,7 @@ pub(crate) fn assign_craft(
         let path = reach.path_to(cell.0, cell.1).unwrap_or_default();
         commands
             .entity(cat_e)
-            .insert((Crafting(order_e), Path { steps: path }, MoveCooldown(0)));
+            .insert((Crafting(order_e), Path { steps: path }));
     }
 }
 
@@ -487,9 +483,7 @@ pub(crate) fn work_craft(
         // этом держит: он ждёт материала, а не исполнителя (§12.96).
         if !craft_supplied(&rules, &order) {
             order.assignee = None;
-            commands
-                .entity(cat_e)
-                .remove::<(Crafting, Path, MoveCooldown)>();
+            commands.entity(cat_e).remove::<(Crafting, Path, Stride)>();
             continue;
         }
 

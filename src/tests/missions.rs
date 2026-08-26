@@ -403,7 +403,7 @@ fn an_order_does_not_drop_the_load() {
 
     // Дальше кот несёт лом до площадки: груз с приказом не теряется, а первым
     // же освободившимся тиком его подберёт та же доставка (§12.15).
-    sim.tick_n(6);
+    sim.tick_n(12);
     assert_eq!(sim.carrying_of("a"), 0, "донёс");
     assert_eq!(sim.delivered_at(5, 1), Some(2), "именно на площадку");
     sim.tick_n(BUILD_TICKS + 2);

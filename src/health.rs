@@ -145,7 +145,6 @@ pub(crate) fn assign_heal(
                 kit: 0,
             },
             Path { steps: path },
-            MoveCooldown(0),
         ));
     }
 
@@ -173,9 +172,7 @@ pub(crate) fn assign_heal(
         if let Ok((.., mut task)) = lying.get_mut(cat_e) {
             task.spot = Some(cell);
         }
-        commands
-            .entity(cat_e)
-            .insert((Path { steps: path }, MoveCooldown(0)));
+        commands.entity(cat_e).insert(Path { steps: path });
     }
 }
 
@@ -295,7 +292,7 @@ pub(crate) fn assign_treat(
         let path = reach.path_to(spot.0, spot.1).unwrap_or_default();
         commands
             .entity(cat_e)
-            .insert((Treating(patient_e), Path { steps: path }, MoveCooldown(0)));
+            .insert((Treating(patient_e), Path { steps: path }));
     }
 }
 

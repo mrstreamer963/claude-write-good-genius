@@ -335,6 +335,18 @@ impl Sim {
             .unwrap_or(false)
     }
 
+    /// Шаг, который кот делает прямо сейчас (§12.140): куда идёт, сколько
+    /// тиков осталось, сколько занимает шаг целиком. `None` — кот стоит.
+    ///
+    /// Не то же, что `has_path`: маршрут есть и у кота, который в этот тик
+    /// только получил его и ещё не тронулся.
+    fn stride_of(&mut self, unit: &str) -> Option<((i32, i32), u8, u8)> {
+        let mut q = self.world.query::<(&UnitId, Option<&Stride>)>();
+        q.iter(&self.world)
+            .find(|(id, _)| id.0 == unit)
+            .and_then(|(_, s)| s.map(|s| (s.to, s.left, s.span)))
+    }
+
     fn has_path(&mut self, unit: &str) -> bool {
         let mut q = self.world.query::<(&UnitId, Option<&Path>)>();
         q.iter(&self.world)

@@ -25,7 +25,7 @@ fn a_cat_sent_to_study_walks_to_the_desk_and_learns() {
     let (mut sim, science) = sim_with_desk();
 
     assert!(sim.teach("a", "science"));
-    sim.tick_n(3);
+    sim.tick_n(5);
     assert_eq!(sim.pos_of("a"), (3, 1), "дошёл до парты");
     assert!(sim.xp_of("a", science) > 0, "и она уже учит");
 }
@@ -175,7 +175,7 @@ fn the_ceiling_ends_the_enrolment() {
 fn unteaching_takes_the_cat_off_the_desk_at_once() {
     let (mut sim, science) = sim_with_desk();
     sim.teach("a", "science");
-    sim.tick_n(4);
+    sim.tick_n(6);
     let xp = sim.xp_of("a", science);
     assert!(xp > 0, "учится");
 
@@ -209,7 +209,7 @@ fn an_order_onto_a_desk_enrols_the_cat() {
     assert!(sim.is_enrolled("a"), "и это запись на учёбу");
     assert_eq!(sim.desk_of("a"), Some((3, 1)), "именно за эту парту");
 
-    sim.tick_n(4);
+    sim.tick_n(6);
     assert_eq!(sim.pos_of("a"), (3, 1));
     assert!(sim.xp_of("a", science) > 0, "дошёл и учится");
 }
@@ -247,7 +247,7 @@ fn an_order_onto_a_desk_at_the_ceiling_stays_an_order() {
 
     assert!(sim.set_target("a", 3, 1));
     assert!(!sim.is_enrolled("a"), "учить нечему");
-    sim.tick_n(4);
+    sim.tick_n(6);
     assert_eq!(sim.pos_of("a"), (3, 1), "но дойти — дошёл");
 }
 

@@ -54,7 +54,7 @@ fn cat_takes_the_nearest_blueprint_first() {
     assert_eq!(sim.tile(2, 2), 0, "ближний чертёж построен первым");
     assert_eq!(sim.tile(7, 2), -1, "дальний ждёт очереди");
 
-    sim.tick_n(BUILD_TICKS + 8);
+    sim.tick_n(BUILD_TICKS + 10);
     assert_eq!(sim.tile(7, 2), 0, "дальний построен следом");
 }
 

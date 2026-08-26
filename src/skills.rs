@@ -208,11 +208,9 @@ pub(crate) fn assign_study(
         };
         taken.push(spot);
         let path = find_path(&map, at, spot).unwrap_or_default();
-        commands.entity(cat_e).insert((
-            Study { skill, spot },
-            Path { steps: path },
-            MoveCooldown(0),
-        ));
+        commands
+            .entity(cat_e)
+            .insert((Study { skill, spot }, Path { steps: path }));
     }
 }
 
@@ -267,9 +265,7 @@ pub(crate) fn study(
             let others: Vec<(i32, i32)> =
                 taken.iter().copied().filter(|&c| c != task.spot).collect();
             let Some(spot) = nearest_desk(&map, &tiles, task.skill, (pos.x, pos.y), &others) else {
-                commands
-                    .entity(cat_e)
-                    .remove::<(Study, Path, MoveCooldown)>();
+                commands.entity(cat_e).remove::<(Study, Path, Stride)>();
                 continue;
             };
             task.spot = spot;
@@ -277,12 +273,10 @@ pub(crate) fn study(
             // сперва сходить туда, где учиться уже нечему.
             match find_path(&map, (pos.x, pos.y), spot) {
                 Some(steps) if !steps.is_empty() => {
-                    commands
-                        .entity(cat_e)
-                        .insert((Path { steps }, MoveCooldown(0)));
+                    commands.entity(cat_e).insert(Path { steps });
                 }
                 _ => {
-                    commands.entity(cat_e).remove::<(Path, MoveCooldown)>();
+                    commands.entity(cat_e).remove::<(Path, Stride)>();
                 }
             }
             continue;
@@ -295,9 +289,7 @@ pub(crate) fn study(
             commands.entity(cat_e).insert(Worked(task.skill));
         } else if let Some(steps) = find_path(&map, (pos.x, pos.y), task.spot) {
             // Маршрут оборвался — кота выбросило из ямы или парту перенесли.
-            commands
-                .entity(cat_e)
-                .insert((Path { steps }, MoveCooldown(0)));
+            commands.entity(cat_e).insert(Path { steps });
         }
     }
 }

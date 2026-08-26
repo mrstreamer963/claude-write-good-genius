@@ -152,7 +152,7 @@ impl Sim {
         if let Some(cat) = assignee {
             self.world
                 .entity_mut(cat)
-                .remove::<(Assignment, Path, MoveCooldown)>();
+                .remove::<(Assignment, Path, Stride)>();
         }
         // Носильщиков у площадки может быть несколько, и записаны они не у неё,
         // а у себя (§12.48): разворачиваем всех, кто вёз сюда.
@@ -163,9 +163,7 @@ impl Sim {
             .map(|(cat, _)| cat)
             .collect();
         for cat in going {
-            self.world
-                .entity_mut(cat)
-                .remove::<(Haul, Path, MoveCooldown)>();
+            self.world.entity_mut(cat).remove::<(Haul, Path, Stride)>();
         }
         self.world.entity_mut(e).despawn();
         true
@@ -423,7 +421,7 @@ impl Sim {
         for (cat_e, _) in self.crew_of(mission) {
             self.world
                 .entity_mut(cat_e)
-                .remove::<(Squad, Path, MoveCooldown)>();
+                .remove::<(Squad, Path, Stride)>();
         }
         self.world.entity_mut(mission).despawn();
     }
@@ -686,7 +684,7 @@ impl Sim {
             Treating,
             OnDuty,
             Path,
-            MoveCooldown,
+            Stride,
         )>();
     }
 
@@ -1810,9 +1808,7 @@ impl Sim {
             .map(|(e, ..)| e)
             .collect();
         for e in going {
-            self.world
-                .entity_mut(e)
-                .remove::<(Haul, Path, MoveCooldown)>();
+            self.world.entity_mut(e).remove::<(Haul, Path, Stride)>();
         }
     }
 
@@ -2227,9 +2223,7 @@ impl Sim {
             {
                 let steps =
                     find_path(self.world.resource::<BaseMap>(), from, gate).unwrap_or_default();
-                self.world
-                    .entity_mut(cat_e)
-                    .insert((Path { steps }, MoveCooldown(0)));
+                self.world.entity_mut(cat_e).insert(Path { steps });
             }
         }
         true
@@ -2430,7 +2424,7 @@ impl Sim {
         if let Some(cat_e) = self.world.get::<Research>(topic_e).and_then(|t| t.assignee) {
             self.world
                 .entity_mut(cat_e)
-                .remove::<(Researching, Path, MoveCooldown)>();
+                .remove::<(Researching, Path, Stride)>();
         }
         // Завезённый образец возвращается кучей на клетку лаборатории (§12.133,
         // §12.31) — дословно как материал со снятого заказа. Плата (`cost`) при
@@ -2535,7 +2529,7 @@ impl Sim {
             if let Some(cat_e) = self.world.get::<Craft>(order_e).and_then(|c| c.assignee) {
                 self.world
                     .entity_mut(cat_e)
-                    .remove::<(Crafting, Path, MoveCooldown)>();
+                    .remove::<(Crafting, Path, Stride)>();
             }
             self.world.entity_mut(order_e).despawn();
         }
@@ -2876,7 +2870,7 @@ impl Sim {
         if let Some(cat_e) = self.world.get::<Craft>(order_e).and_then(|o| o.assignee) {
             self.world
                 .entity_mut(cat_e)
-                .remove::<(Crafting, Path, MoveCooldown)>();
+                .remove::<(Crafting, Path, Stride)>();
         }
         // Привезённое на станок возвращается кучей на его клетку (§12.102,
         // §12.31): материал не исчезает никогда, а дальше его увозит обычная
@@ -3279,12 +3273,14 @@ impl Sim {
         let Some(def) = self.salvage_recipe(item) else {
             return; // рецепт унесли из рулсета — правило молчит, а не падает
         };
-        let booked = self
-            .booked_for_sale()
-            .iter()
-            .find(|&&(i, _)| i == item)
-            .map_or(0, |&(_, n)| n);
-        let surplus = self.in_storage(item) - booked - keep - self.unequipped_need(item);
+        // Свободное считается **тем же выражением, что и ворота кнопки**
+        // (§12.129): склад минус бронь продажи минус обещанное открытым
+        // заказам. Голый склад врал бы дважды за одну ходку — материал уходит
+        // из кучи только когда носильщик до неё дошёл, а шаг длится тики
+        // (§12.140), — и правило заказывало бы поверх собственного заказа,
+        // сливая запас ниже своего же порога.
+        let free = self.craft_room(&[(item, 1)]);
+        let surplus = free - keep - self.unequipped_need(item);
         if surplus <= 0 {
             return;
         }
@@ -3456,7 +3452,6 @@ impl Sim {
             Enrolled { skill },
             Study { skill, spot },
             Path { steps: path },
-            MoveCooldown(0),
         ));
         true
     }
@@ -3517,7 +3512,6 @@ impl Sim {
                 spot: (x, y),
             },
             Path { steps: path },
-            MoveCooldown(0),
         ));
         true
     }
@@ -3552,7 +3546,7 @@ impl Sim {
         }
         self.world
             .entity_mut(cat_e)
-            .remove::<(Enrolled, Study, Path, MoveCooldown)>();
+            .remove::<(Enrolled, Study, Path, Stride)>();
         true
     }
 
@@ -3609,7 +3603,7 @@ impl Sim {
             let mut cat = self.world.entity_mut(e);
             cat.remove::<(Posted, OnDuty)>();
             if on_duty {
-                cat.remove::<(Path, MoveCooldown)>();
+                cat.remove::<(Path, Stride)>();
             }
         }
         self.world.entity_mut(cat_e).insert(Posted { spot: (x, y) });
@@ -3641,7 +3635,7 @@ impl Sim {
         }
         self.world
             .entity_mut(cat_e)
-            .remove::<(Posted, OnDuty, Path, MoveCooldown)>();
+            .remove::<(Posted, OnDuty, Path, Stride)>();
         true
     }
 
@@ -3824,14 +3818,10 @@ impl Sim {
         }
         match path {
             Some(p) => {
-                self.world
-                    .entity_mut(entity)
-                    .insert((Path { steps: p }, MoveCooldown(0)));
+                self.world.entity_mut(entity).insert(Path { steps: p });
             }
             None => {
-                self.world
-                    .entity_mut(entity)
-                    .remove::<(Path, MoveCooldown)>();
+                self.world.entity_mut(entity).remove::<(Path, Stride)>();
             }
         }
         true
@@ -3919,6 +3909,15 @@ impl Sim {
                 let mut q = self.world.query::<(&UnitId, &Enlisted)>();
                 q.iter(&self.world)
                     .map(|(id, e)| (id.0.clone(), e.spot))
+                    .collect()
+            };
+            // Шаг, который кот делает прямо сейчас (§12.140), — тем же отдельным
+            // запросом и по той же причине: кортеж выше уже упёрся в предел
+            // арности `QueryData`.
+            let strides: Vec<(String, ((i32, i32), u8, u8))> = {
+                let mut q = self.world.query::<(&UnitId, &Stride)>();
+                q.iter(&self.world)
+                    .map(|(id, s)| (id.0.clone(), (s.to, s.left, s.span)))
                     .collect()
             };
             // Приписка к парте (§12.84) — тем же отдельным запросом и по той же
@@ -4009,6 +4008,12 @@ impl Sim {
                     away,
                     bed,
                 );
+                // Шаг ищется по `id` тем же перебором, что и отряд ниже: котов
+                // на базе десяток, и словарь ради этого не заводится.
+                let stride = strides
+                    .iter()
+                    .find(|(who, _)| *who == id.0)
+                    .map(|(_, s)| *s);
                 entities.push(EntitySnap {
                     id: id.0.clone(),
                     sprite: r.sprite.clone(),
@@ -4058,6 +4063,12 @@ impl Sim {
                         job => job,
                     },
                     moving: busy.moving,
+                    // Стоящий кот «идёт» в свою же клетку: нулевой `step_span`
+                    // и есть признак, что рисовать нечего.
+                    to_x: stride.map_or(p.x, |(to, _, _)| to.0),
+                    to_y: stride.map_or(p.y, |(to, _, _)| to.1),
+                    step_left: stride.map_or(0, |(_, left, _)| left),
+                    step_span: stride.map_or(0, |(_, _, span)| span),
                     carrying: load.map_or(0, |c| c.count),
                     carrying_item: load.map_or(-1, |c| c.item as i32),
                     carry_max: carry.map_or(0, |c| c.0),

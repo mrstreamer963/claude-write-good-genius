@@ -101,7 +101,7 @@ pub(crate) fn assign_research(
             if let Some(cat_e) = topic.assignee {
                 commands
                     .entity(cat_e)
-                    .remove::<(Researching, Path, MoveCooldown)>();
+                    .remove::<(Researching, Path, Stride)>();
             }
             commands.entity(topic_e).despawn();
             continue;
@@ -163,11 +163,9 @@ pub(crate) fn assign_research(
             topic.assignee = Some(cat_e);
         }
         let path = reach.path_to(cell.0, cell.1).unwrap_or_default();
-        commands.entity(cat_e).insert((
-            Researching(topic_e),
-            Path { steps: path },
-            MoveCooldown(0),
-        ));
+        commands
+            .entity(cat_e)
+            .insert((Researching(topic_e), Path { steps: path }));
     }
 }
 

@@ -61,8 +61,9 @@ fn food_is_eaten_from_the_floor() {
     sim.put_item(2, 1, RATION, 1);
     sim.set_fed("a", 10);
 
-    sim.tick_n(10);
-    // Ровно 90: паёк долил до потолка, а голод отсчитал свои десять тиков.
+    sim.tick_n(12);
+    // Ровно 90: паёк долил до потолка, а голод отсчитал свои тики. Дорога до
+    // кучи стоит два тика на клетку (§12.140), поэтому счёт идёт от прибытия.
     assert_eq!(sim.fed_of("a"), 90, "поел прямо с пола");
     assert_eq!(sim.item_at(2, 1, RATION), 0, "кучи больше нет");
 }
@@ -252,7 +253,7 @@ fn eating_stops_the_double_burn() {
     sim.put_item(2, 1, RATION, 1);
     sim.set_fed("a", 0);
 
-    sim.tick_n(10); // дошёл и поел
+    sim.tick_n(12); // дошёл и поел
     assert_eq!(sim.fed_of("a"), 90, "сыт");
     let before = sim.energy_of("a");
     sim.tick_n(10);

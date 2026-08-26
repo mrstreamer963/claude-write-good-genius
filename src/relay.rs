@@ -213,6 +213,6 @@ pub(crate) fn assign_relay(
         let path = reach.path_to(spot.0, spot.1).unwrap_or_default();
         commands
             .entity(cat_e)
-            .insert((OnDuty { spot }, Path { steps: path }, MoveCooldown(0)));
+            .insert((OnDuty { spot }, Path { steps: path }));
     }
 }

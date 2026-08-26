@@ -433,7 +433,7 @@ fn a_players_order_waits_for_the_sleeper() {
     assert!(!sim.is_resting("a"), "проснулся");
     assert_eq!(sim.job_of("a"), ("order", true), "и сам пошёл по приказу");
 
-    sim.tick_n(8);
+    sim.tick_n(10);
     assert_eq!(sim.pos_of("a"), (5, 1), "дошёл, куда было велено");
 }
 
@@ -531,7 +531,7 @@ fn a_dozing_cat_obeys_an_order_at_once() {
     assert_eq!(sim.job_of("a"), ("order", true), "встал тем же тиком");
 
     // Ровно до прихода: дальше кот снова без дела и бредёт дремать обратно.
-    sim.tick_n(6);
+    sim.tick_n(8);
     assert_eq!(sim.pos_of("a"), (5, 1), "дошёл без второго клика");
 }
 
@@ -582,7 +582,9 @@ fn an_idle_cat_walks_to_a_free_bed() {
     sim.set_needs(1000, 300, 1);
     sim.set_energy("a", 800); // не устал, но и не полон
 
-    sim.tick_n(14);
+    // Пошаговая ходьба стоит трёх тиков на клетку (§12.140): два на сам шаг и
+    // один на то, чтобы раздача выдала следующий.
+    sim.tick_n(19);
     assert_eq!(sim.pos_of("a"), (7, 1), "дошёл до лежанки сам");
     assert!(!sim.is_resting("a"), "но не спит — это дремота");
     assert_eq!(sim.job_of("a"), ("nap", false), "так и подписано");
@@ -604,7 +606,7 @@ fn work_interrupts_the_walk_to_the_bed() {
     assert!(on_the_way.0 > 1 && on_the_way.0 < 7, "кот в пути к лежанке");
 
     sim.add_blueprint(4, 2, 0);
-    sim.tick_n(2);
+    sim.tick_n(4);
     assert!(sim.has_assignment("a"), "работа перехватила его по дороге");
 }
 

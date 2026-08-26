@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 24;
+pub(crate) const FORMAT: u32 = 25;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -69,7 +69,7 @@ pub(crate) const SAVED: &[&str] = &[
     "Renderable",
     "UnitId",
     "Path",
-    "MoveCooldown",
+    "Stride",
     "Carry",
     "Energy",
     "Fed",
@@ -335,7 +335,10 @@ pub(crate) struct EntityDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) path: Option<Vec<(i32, i32)>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) cooldown: Option<u8>,
+    /// Шаг, который кот делает прямо сейчас (§12.140): куда, сколько тиков
+    /// осталось, сколько занимает целиком. До §12.140 здесь стоял обратный
+    /// отсчёт `MoveCooldown`.
+    pub(crate) stride: Option<((i32, i32), u8, u8)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) carry: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -566,7 +569,7 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                 sprite: e.get::<Renderable>().map(|r| r.sprite.clone()),
                 unit: e.get::<UnitId>().map(|u| u.0.clone()),
                 path: e.get::<Path>().map(|p| p.steps.clone()),
-                cooldown: e.get::<MoveCooldown>().map(|c| c.0),
+                stride: e.get::<Stride>().map(|s| (s.to, s.left, s.span)),
                 carry: e.get::<Carry>().map(|c| c.0),
                 energy: e.get::<Energy>().map(|c| c.0),
                 fed: e.get::<Fed>().map(|c| c.0),
@@ -887,8 +890,8 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
                 steps: steps.clone(),
             });
         }
-        if let Some(c) = dto.cooldown {
-            e.insert(MoveCooldown(c));
+        if let Some((to, left, span)) = dto.stride {
+            e.insert(Stride { to, left, span });
         }
         if let Some(c) = dto.carry {
             e.insert(Carry(c));

@@ -404,8 +404,8 @@ world.addChild(overlay);
 app.stage.addChild(world);
 
 const hoverRect = new Graphics();
-// Колец столько, сколько выбрано котов: под вылазку их набирают по несколько.
-const selectionRings = new Container();
+// Кольца выбора здесь больше нет: с §12.140 оно ребёнок узла кота, потому что
+// кот едет между клетками, а оверлей знает только клетки.
 const orderMarker = new Graphics();
 orderMarker
   .circle(0, 0, TILE * 0.16)
@@ -419,7 +419,6 @@ const cellMarker = new Graphics();
 overlay.addChild(hoverRect);
 overlay.addChild(orderMarker);
 overlay.addChild(cellMarker);
-overlay.addChild(selectionRings);
 
 app.stage.eventMode = "static";
 app.stage.hitArea = app.screen;
@@ -429,6 +428,14 @@ const unitTiles = new Map(); // id -> { x, y } (в тайлах)
 const orders = new Map(); // id -> { x, y } (заданная цель, для метки)
 
 let meta = null; // { width, height, palette, items, skills, perks }
+// Сколько реального времени стоит сим-тик на ×1 — приходит из воркера в `ready`
+// (§12.140). Ноль значит «мир ещё не приехал»: до него двигать нечего.
+let tickMs = 0;
+// Когда в последний раз сменился `snap.tick`, и какой он был. По этой отметке
+// считается доля тика внутри шага: ядро знает прогресс с точностью до тика, а
+// кадров между тиками десяток.
+let lastTick = -1;
+let tickFrac = 0;
 // Во сколько раз карта растянута под размер окна (`layout`). Читают двое:
 // само центрирование и текст внутри `world` — тот растеризуется в момент
 // создания и без поправки на масштаб мылится.
@@ -621,6 +628,11 @@ worker.onmessage = (e) => {
     // говорила бы о старом мире, а взведённый приказ — о котах, которых нет.
     selectedCell = null;
     selectedUnits = [];
+    // ...и клетки котов: `id` у нового мира те же («cat1»), а стоят коты в
+    // других местах, и узел поехал бы к ним через полкарты (§12.140).
+    unitTiles.clear();
+    tickMs = m.tickMs ?? 0;
+    lastTick = -1;
     // ...и цели тоже: у нового мира своя история взятого, и старая сделала бы
     // всё уже закрытое «только что закрытым» (см. `goalsDoneSeen`).
     goalsDoneSeen = null;
@@ -1119,6 +1131,12 @@ function days(n) {
 
 function renderSnapshot(snap) {
   lastSnap = snap;
+  // Тик сменился — доля тика начинается заново. Отметка общая на всех: тикают
+  // коты вместе, и второй такой счётчик на каждого разошёлся бы с этим.
+  if (snap.tick !== lastTick) {
+    lastTick = snap.tick;
+    tickFrac = 0;
+  }
   // Сырой тик остаётся под наведением: он нужен для отладки и для сверки с
   // тестами, которые меряют время тиками и ничем другим мерить не могут.
   const day = dayOf(snap.tick);
@@ -1139,15 +1157,34 @@ function renderSnapshot(snap) {
       unitTiles.delete(e.id);
       continue;
     }
-    // TODO(§8b): интерполяция между тиками. Пока — снап к центру тайла.
-    c.x = e.x * TILE + TILE / 2;
-    c.y = e.y * TILE + TILE / 2;
+    // Позицию узла здесь **не пишем**: снапшот шаг только запоминает, а едет
+    // им `stepUnits` в тикере Pixi (§12.140). Ядро отдаёт шаг честно — из
+    // какой клетки, в какую и сколько тиков осталось, — а вид добавляет к
+    // прогрессу долю текущего тика: тик длится 167 мс на ×1, кадр 16 мс.
+    const from = { x: e.x * TILE + TILE / 2, y: e.y * TILE + TILE / 2 };
+    const to = { x: e.to_x * TILE + TILE / 2, y: e.to_y * TILE + TILE / 2 };
+    // Шага не было — садимся на клетку. Сюда же попадают появление кота
+    // (найм), возвращение с вылазки и загрузка чужого мира: клетка меняется
+    // прыжком, которого ядро шагом сделать не может (только 4-сосед).
+    const was = unitTiles.get(e.id);
+    const jump = !was || Math.abs(e.x - was.x) + Math.abs(e.y - was.y) > 1;
+    c.fromX = from.x;
+    c.fromY = from.y;
+    c.toX = to.x;
+    c.toY = to.y;
+    c.stepLeft = e.step_span > 0 ? e.step_left : 0;
+    c.stepSpan = e.step_span;
+    if (jump || e.step_span <= 0) {
+      c.x = from.x;
+      c.y = from.y;
+    }
     c.stuckRing.visible = !!e.stuck;
     // Разворот: куда шагнул, туда и смотрит, — и **остаётся** смотреть, встав.
-    // Прошлая клетка лежит в `unitTiles` до перезаписи ниже, второго источника
-    // для этого не нужно. Зеркалим силуэт, а не весь узел: метки состояний —
-    // соседние дети контейнера, и они бы уехали вместе с ним.
-    const was = unitTiles.get(e.id);
+    // Считается по клеткам ядра (`was` выше), а не по нарисованной дельте:
+    // момент смены клетки и есть тот момент, когда кот повернулся, а дельта
+    // пикселей давала бы субпиксельный шум и мигание на месте. Зеркалим силуэт,
+    // а не весь узел: метки состояний — соседние дети контейнера, и они бы
+    // уехали вместе с ним.
     if (was && was.x !== e.x) {
       const face = e.x > was.x ? 1 : -1;
       // Только на смене: `scale` и `x` — это грязный трансформ у Pixi, и писать
@@ -1336,7 +1373,8 @@ function renderSnapshot(snap) {
   // Приписка к парте меняется без участия игрока — кот доучился, и кнопка
   // обязана перестать быть «Снять с учёбы» тем же кадром (§12.84).
   syncTeachButtons();
-  // После цикла по сущностям: панель читает `unitTiles`, и он обновлён выше.
+  // После цикла по сущностям: панель спрашивает `unitsAt`, а тот считает по
+  // нарисованным клеткам (§12.140) — то есть по узлам, обновлённым выше.
   renderCellPanel(snap);
   renderCaptivePanel();
   renderMissionPanel(snap.missions);
@@ -1441,6 +1479,16 @@ function createUnit(e) {
   const c = new Container();
   const body = new Graphics();
   drawCat(body, COLORS.unit[e.sprite] ?? COLORS.unitDefault, false);
+  // Кольцо выбора живёт **на самом узле**, как и кольцо «застрял» ниже
+  // (§12.140): кот теперь едет между клетками, и кольцо, поставленное по
+  // клетке ядра, прыгало бы вокруг него. Заодно ушло пересоздание `Graphics`
+  // каждым кадром — четвёртое лицо тех же граблей, что `onPanelClick` и
+  // `syncTeachButtons` (§12.84).
+  const selectRing = new Graphics();
+  selectRing
+    .circle(0, 0, TILE * 0.44)
+    .stroke({ color: COLORS.select, width: 2 });
+  selectRing.visible = false;
   // Кольцо «кот застрял» — шире кольца выбора, чтобы читались вместе.
   const stuckRing = new Graphics();
   stuckRing
@@ -1513,6 +1561,7 @@ function createUnit(e) {
     .rect(-TILE * 0.11, -TILE * 0.71, TILE * 0.22, 4)
     .stroke({ color: COLORS.wound, width: 1.5 });
   medicMark.visible = false;
+  c.addChild(selectRing);
   c.addChild(body);
   c.addChild(stuckRing);
   c.addChild(load);
@@ -1520,6 +1569,7 @@ function createUnit(e) {
   c.addChild(studyMark);
   c.addChild(woundMark);
   c.addChild(medicMark);
+  c.selectRing = selectRing;
   c.stuckRing = stuckRing;
   c.load = load;
   c.loadGlyph = null;
@@ -1534,6 +1584,18 @@ function createUnit(e) {
   // и сторону, с которой висит груз), поэтому живёт на узле, а не выводится
   // заново в каждом месте.
   c.face = 1;
+  // Шаг, который кот проходит прямо сейчас (§12.140): откуда, куда и сколько
+  // тиков осталось. Приезжает из ядра снапшотом, а между снапшотами по нему
+  // едет `stepUnits`. Позицию ставим сразу: до первого кадра тикера узел иначе
+  // мигнёт в левом верхнем углу.
+  c.fromX = e.x * TILE + TILE / 2;
+  c.fromY = e.y * TILE + TILE / 2;
+  c.toX = c.fromX;
+  c.toY = c.fromY;
+  c.stepLeft = 0;
+  c.stepSpan = 0;
+  c.x = c.fromX;
+  c.y = c.fromY;
   c.sleepMark = sleepMark;
   c.studyMark = studyMark;
   c.woundMark = woundMark;
@@ -1543,19 +1605,48 @@ function createUnit(e) {
   return c;
 }
 
-function updateSelectionOverlay() {
-  // Выбранный кот мог уйти на вылазку — с карты он при этом исчезает, но из
-  // выбора не выпадает: вернётся, и кольцо снова зажжётся.
-  selectionRings.removeChildren();
-  for (const id of selectedUnits) {
-    const at = unitTiles.get(id);
-    if (!at) continue;
-    const ring = new Graphics();
-    ring.circle(0, 0, TILE * 0.44).stroke({ color: COLORS.select, width: 2 });
-    ring.x = at.x * TILE + TILE / 2;
-    ring.y = at.y * TILE + TILE / 2;
-    selectionRings.addChild(ring);
+/// Двигает котов между клетками — единственное место, которое пишет позицию
+/// узла (§12.140).
+///
+/// Крутится в тикере Pixi, а не в `renderSnapshot`, и это не вкусовщина:
+/// снапшот приходит по `setTimeout(16)` из воркера, кадр — по rAF, каденции у
+/// них разные и дрейфуют друг относительно друга. Тикер даёт честный
+/// `deltaMS` и отрабатывает **до** рендера — сам рендер Pixi висит в том же
+/// тикере с `UPDATE_PRIORITY.LOW`, а мы идём с обычным.
+///
+/// Прогресс шага главный из ядра, доля тика — своя: ядро считает шаг тиками
+/// (на ×1 тик это 167 мс), а кадров между тиками десяток, и промежуточные
+/// кадры больше считать не по чему. Обнуляется доля на смене `snap.tick`,
+/// значит дрейфа не набегает: каждый тик пересинхронизирует картинку.
+///
+/// Линейно намеренно: easing на клетку читается как остановка в каждой, а шаги
+/// идут цепочкой.
+function stepUnits(ticker) {
+  if (!tickMs) return; // мир ещё не приехал
+  // Скорость **умножает**, поэтому пауза (0) просто останавливает долю тика:
+  // кот замирает между клетками ровно там, где он в симуляции, и делить на
+  // ноль не на что. На ×10 тик короче кадра — доля упирается в единицу за
+  // кадр, и картинка сама вырождается в прежний телепорт.
+  tickFrac = Math.min(1, tickFrac + (ticker.deltaMS * speed) / tickMs);
+  for (const c of units.values()) {
+    if (!c.visible) continue;
+    if (c.stepSpan <= 0) {
+      c.x = c.fromX;
+      c.y = c.fromY;
+      continue;
+    }
+    const k = Math.min(1, (c.stepSpan - c.stepLeft + tickFrac) / c.stepSpan);
+    c.x = c.fromX + (c.toX - c.fromX) * k;
+    c.y = c.fromY + (c.toY - c.fromY) * k;
   }
+}
+
+function updateSelectionOverlay() {
+  // Кольцо — ребёнок узла кота (§12.140), поэтому оно едет с ним само, а здесь
+  // остаётся только зажечь нужные. Ушедший на вылазку гаснет вместе со всем
+  // узлом (`c.visible`), но из выбора не выпадает: вернётся — зажжётся снова.
+  const chosen = new Set(selectedUnits);
+  for (const [id, c] of units) c.selectRing.visible = chosen.has(id);
 
   syncTeachButtons();
 
@@ -3585,19 +3676,37 @@ function isWalkable(tx, ty) {
   return mapCells && mapCells[ty * meta.width + tx] >= 0;
 }
 
+// Клетка, в которой кот **нарисован** (§12.140). Не то же, что клетка ядра:
+// кот числится в той, из которой вышел, пока не дойдёт, — а попадание мышью
+// обязано считаться по тому, что игрок видит. На ×1 кот идёт три клетки в
+// секунду и в пути находится почти всегда: считай по ядру — и клик по бегущему
+// коту промахивался бы почти каждый раз.
+//
+// Второго реестра ради этого не заводим: узел и есть источник.
+function drawnCell(c) {
+  return { x: Math.floor(c.x / TILE), y: Math.floor(c.y / TILE) };
+}
+
 function unitAt(tx, ty) {
-  for (const [id, ut] of unitTiles) if (ut.x === tx && ut.y === ty) return id;
+  for (const [id, c] of units) {
+    if (!c.visible) continue;
+    const at = drawnCell(c);
+    if (at.x === tx && at.y === ty) return id;
+  }
   return null;
 }
 
 // Все коты на клетке — для панели. `unitAt` берёт первого и остаётся как есть:
-// он в горячем пути `updateHover`, на каждом движении мыши. Порядок `unitTiles`
+// он в горячем пути `updateHover`, на каждом движении мыши. Порядок `units`
 // идёт из порядка сущностей ECS и для показа недетерминирован, поэтому сортируем
 // по имени: список, который сам себя перетасовывает, читается как мельтешение.
 function unitsAt(tx, ty) {
   const found = [];
-  for (const [id, ut] of unitTiles)
-    if (ut.x === tx && ut.y === ty) found.push(id);
+  for (const [id, c] of units) {
+    if (!c.visible) continue;
+    const at = drawnCell(c);
+    if (at.x === tx && at.y === ty) found.push(id);
+  }
   return found.sort();
 }
 
@@ -7925,3 +8034,8 @@ for (const b of document.querySelectorAll(".speed[data-speed]")) {
 // инструмента (§12.86). `lastSpeed` при этом уже ×1, так что пробел пускает
 // время туда, где оно и было бы.
 setSpeed(0);
+
+// Шаг котов едет здесь и больше нигде (§12.140). Вешается последним: до этой
+// строки модуль ещё раскладывает состояние, которое `stepUnits` читает
+// (`speed`), а первый кадр тикера придёт уже после.
+app.ticker.add(stepUnits);

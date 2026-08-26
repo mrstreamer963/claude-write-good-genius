@@ -75,7 +75,7 @@ fn a_tired_cat_walks_to_the_bed_then_sleeps() {
     sim.tick_n(1);
     assert_eq!(sim.job_of("a"), ("rest", true), "пошёл спать");
 
-    sim.tick_n(9);
+    sim.tick_n(11);
     assert_eq!(sim.job_of("a"), ("rest", false), "дошёл и спит");
 }
 

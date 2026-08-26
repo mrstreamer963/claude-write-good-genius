@@ -252,9 +252,7 @@ pub(crate) fn assign_jobs(
             // встаёт на паузу (прогресс сохраняется), а кот освобождается.
             if waiting {
                 bp.assignee = None;
-                commands
-                    .entity(cat)
-                    .remove::<(Assignment, Path, MoveCooldown)>();
+                commands.entity(cat).remove::<(Assignment, Path, Stride)>();
             }
         } else if !waiting && missing(&rules, &bp).is_empty() {
             open.push((bp_e, (bp.x, bp.y), bp.tile));
@@ -309,7 +307,7 @@ pub(crate) fn assign_jobs(
         }
         commands
             .entity(cat_e)
-            .insert((Assignment(bp_e), Path { steps: path }, MoveCooldown(0)));
+            .insert((Assignment(bp_e), Path { steps: path }));
     }
 }
 

@@ -234,7 +234,7 @@ fn crafting_has_no_skill_gate() {
     sim.start_craft(recipe, 1);
     // Работы тут на 100 очков, то есть на десять тиков (`WORK_RATE`): спросить
     // надо, пока заказ ещё жив.
-    sim.tick_n(6);
+    sim.tick_n(10);
 
     assert_eq!(sim.crafter(), Some("b".to_string()), "взялся без навыка");
 }
@@ -534,14 +534,14 @@ fn a_paid_item_is_not_paid_twice() {
     sim.put_item(5, 1, SCRAP, 4);
     let recipe = sim.set_recipe(1000, &[(SCRAP, 4)], &[(PART, 1)], &[]);
     sim.start_craft(recipe, 1);
-    sim.tick_n(6);
+    sim.tick_n(10);
     assert_eq!(sim.item_at(5, 1, SCRAP), 0, "материал списан");
 
     assert!(sim.set_target("a", 6, 1)); // мастера увели
     sim.tick_n(20);
     assert!(sim.craft_left().is_some(), "заказ жив");
     assert!(sim.crafter().is_some(), "и его взял мастер снова");
-    sim.tick_n(80);
+    sim.tick_n(100);
     assert_eq!(sim.item_total(PART), 1, "штука доделана без второй оплаты");
 }
 
@@ -867,7 +867,7 @@ fn a_manual_order_never_takes_a_paid_shop() {
     sim.put_item(5, 1, SCRAP, 40);
     let recipe = sim.set_recipe(400, &[(SCRAP, 4)], &[(PART, 1)], &[]);
     sim.set_stock(recipe, 1);
-    sim.tick_n(6);
+    sim.tick_n(10);
     assert_eq!(sim.item_at(5, 1, SCRAP), 36, "штука оплачена");
 
     assert!(sim.start_craft(recipe, 4));
@@ -921,7 +921,7 @@ fn a_supplied_piece_is_cancelled_with_the_threshold() {
     sim.put_item(5, 1, SCRAP, 4);
     let recipe = sim.set_recipe(400, &[(SCRAP, 4)], &[(PART, 1)], &[]);
     sim.set_stock(recipe, 1);
-    sim.tick_n(6);
+    sim.tick_n(10);
     assert_eq!(sim.craft_delivered(), Some(4), "материал завезли на станок");
 
     sim.set_stock(recipe, 0);
@@ -1543,7 +1543,7 @@ fn zeroing_a_threshold_cancels_even_a_supplied_order() {
     sim.set_stock(recipe, 1);
     // Ждём, пока материал доедет до станка, но не дольше: доделанная штука
     // закрыла бы заказ сама, и проверять было бы нечего.
-    sim.tick_n(6);
+    sim.tick_n(10);
     assert_eq!(sim.craft_delivered(), Some(2), "материал на станке");
 
     // Снятие порога — ноль и есть отмена.
@@ -1566,7 +1566,7 @@ fn lowering_a_threshold_below_the_stock_trims_supplied_orders() {
 
     // Высокий порог занимает все три станка и завозит на них материал.
     sim.set_stock(recipe, 10);
-    sim.tick_n(10);
+    sim.tick_n(16);
     assert!(sim.orders_count() >= 2, "правило заняло станки");
     assert!(sim.craft_delivered().is_some(), "и материал уже на станке");
 

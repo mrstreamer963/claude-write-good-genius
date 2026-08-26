@@ -301,9 +301,7 @@ pub(crate) fn gather_squad(
                 continue;
             }
             if let Some(steps) = find_path(map, at, gate) {
-                commands
-                    .entity(cat_e)
-                    .insert((Path { steps }, MoveCooldown(0)));
+                commands.entity(cat_e).insert(Path { steps });
             }
         }
     }
