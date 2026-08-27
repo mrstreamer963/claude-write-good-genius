@@ -1481,6 +1481,15 @@ impl Sim {
             .count()
     }
 
+    /// Сколько на базе шлюзов — то же число, что уезжает в снимок (`gates`) и
+    /// служит виду причиной словом (§12.53): снесли все гаражи — уйти некуда.
+    fn gate_count(&mut self) -> usize {
+        crate::missions::gate_count(
+            self.world.resource::<BaseMap>(),
+            self.world.resource::<TileRules>(),
+        )
+    }
+
     /// Сколько вылазок идёт прямо сейчас — занятых слотов (§12.59).
     fn raid_count(&mut self) -> usize {
         let mut q = self.world.query_filtered::<Entity, With<Mission>>();

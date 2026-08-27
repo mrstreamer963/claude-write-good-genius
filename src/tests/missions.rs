@@ -1425,3 +1425,21 @@ fn a_sleeping_crew_is_a_different_reason() {
     );
     assert_eq!(sim.raid_count(), 0, "и правило ждёт, а не уводит одного");
 }
+
+/// Снесли все гаражи — уйти некуда, и это видно **числом**, а не молчанием
+/// (§12.53). `pick_gate` не находит цели, заявка отклоняется, а вид называет
+/// причину словом по тому же счёту шлюзов, каким его считает ядро.
+#[test]
+fn without_a_gate_no_raid_leaves_and_the_count_says_so() {
+    let mut sim = sim_with_nodes(1);
+    let def = sim.set_mission(1, 30, &[(0, 5)]);
+    assert_eq!(sim.gate_count(), 1, "гараж на карте один");
+
+    sim.force_tile(2, 1, 0); // снесли гараж: на его месте обычный пол
+    assert_eq!(sim.gate_count(), 0, "и снос виден числом");
+    assert!(
+        !sim.launch(def, squad(&["a"])),
+        "без шлюза заявка отклоняется",
+    );
+    assert_eq!(sim.raid_count(), 0);
+}

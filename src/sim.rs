@@ -35,7 +35,8 @@ use crate::hauling::{plan_spend, stored_counts};
 use crate::jobs::{BUILD_WORK, Plan, access_ok};
 use crate::map::{BaseMap, rect_cells};
 use crate::missions::{
-    crew_danger, crew_force, duration, guide_cut, guide_of, guide_value, outcome, pick_gate,
+    crew_danger, crew_force, duration, gate_count, guide_cut, guide_of, guide_value, outcome,
+    pick_gate,
 };
 use crate::movement::{Busy, is_stuck};
 use crate::path::find_path;
@@ -4421,6 +4422,12 @@ impl Sim {
         // поузловые и живут в `NodeSnap::busy` — «занят ли этот», а не
         // «свободен ли хоть один».
         let relays = self.relay_nodes() as i32;
+        // Дверь наружу: без единого шлюза `pick_gate` не найдёт цели, и заявка
+        // отклоняется молча — причину обязано назвать ядро (§12.53).
+        let gates = gate_count(
+            self.world.resource::<BaseMap>(),
+            self.world.resource::<TileRules>(),
+        ) as i32;
         // Узлы поимённо: с §12.61 у каждого свой состав, и панель обязана
         // называть его словом — иначе кнопка вылазки берёт отряд ниоткуда.
         let nodes: Vec<NodeSnap> = {
@@ -4751,6 +4758,7 @@ impl Sim {
             missions,
             raids,
             relays,
+            gates,
             nodes,
             desks,
             fame,
