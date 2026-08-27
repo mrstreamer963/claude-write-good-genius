@@ -299,3 +299,37 @@ fn the_shipped_ruleset_keeps_the_desk_within_reach() {
         );
     }
 }
+
+/// **Бюджет врождённого один на всех** (§12.70, §12.141).
+///
+/// Кот — это **форма**, а не ступень качества: по одной шкале «лучше/хуже»
+/// выбирать нечего, всегда бери верхнего. Держится это ровно на том, что сумма
+/// параметров у всех одна, — и до §12.141 держалось молча, дисциплиной автора
+/// рулсета. Кандидатов стало вдвое больше, и молчаливое соглашение о шести
+/// записях уже не соглашение, а надежда.
+///
+/// Единица допуска — не щедрость, а факт: у «Гвоздя» 19 против 18 у остальных.
+/// Двойка означала бы уже ранг.
+#[test]
+fn the_shipped_ruleset_gives_every_cat_the_same_budget() {
+    let mut sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
+
+    let mut budgets: Vec<(String, i32)> = {
+        let mut q = sim.world.query::<(&UnitId, &Stats)>();
+        q.iter(&sim.world)
+            .map(|(id, stats)| (id.0.clone(), stats.0.iter().sum()))
+            .collect()
+    };
+    for r in &sim.world.resource::<RecruitRules>().0 {
+        budgets.push((r.id.clone(), r.stats.iter().map(|&(_, v)| v).sum()));
+    }
+    assert!(budgets.len() > 1, "сверять нечего: кот в рулсете один");
+
+    let lo = budgets.iter().map(|b| b.1).min().expect("непустой список");
+    let hi = budgets.iter().map(|b| b.1).max().expect("непустой список");
+    assert!(
+        hi - lo <= 1,
+        "бюджет врождённого разъехался ({lo}…{hi}) — это лестница качества, а не \
+         набор форм: {budgets:?}",
+    );
+}
