@@ -202,7 +202,7 @@ pub(crate) fn assign_relay(
         if open.is_empty() {
             return;
         }
-        let reach = Reach::all(&map, at);
+        let reach = Reach::all(&map, &tiles, at);
         // Приписанный идёт только на свой узел: сажать его к чужой рации значило
         // бы отменить решение игрока молча.
         let picked = open

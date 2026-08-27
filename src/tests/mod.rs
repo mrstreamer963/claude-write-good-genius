@@ -258,6 +258,7 @@ impl Sim {
                 Option<&Away>,
             ),
         )>();
+        let rules = self.world.resource::<TileRules>();
         let map = self.world.resource::<BaseMap>();
         q.iter(&self.world)
             .find(|(id, ..)| id.0 == unit)
@@ -267,6 +268,7 @@ impl Sim {
                 // и задачей не является (§12.52).
                 is_stuck(
                     map,
+                    rules,
                     p,
                     Busy::of(
                         o, path, a, h, r, st, re, cr, eq, ea, he, tr, s, du, away, false,
@@ -424,6 +426,30 @@ impl Sim {
             .collect()
     }
 
+    /// Клетки с ролью, до которых коту не дойти: `role` отбирает интересные
+    /// тайлы, старт — позиция первого кота (§12.142).
+    ///
+    /// Меряет ровно то, что после §12.142 стало возможным сломать контентом:
+    /// стеллаж стал стеной, и коридор, выложенный полками, режет базу надвое.
+    /// «Дойти» значит «встать на клетку или на соседнюю с ней» — тем же
+    /// выражением, каким кот сдаёт груз на полку.
+    fn unreachable_cells(&mut self, role: impl Fn(&TileRules, i16) -> bool) -> Vec<(i32, i32)> {
+        let mut q = self.world.query_filtered::<&Position, With<UnitId>>();
+        let from = q
+            .iter(&self.world)
+            .map(|p| (p.x, p.y))
+            .min()
+            .expect("на базе есть хоть один кот");
+        let map = self.world.resource::<BaseMap>();
+        let rules = self.world.resource::<TileRules>();
+        let reach = crate::path::Reach::all(map, rules, from);
+        (0..map.height)
+            .flat_map(|y| (0..map.width).map(move |x| (x, y)))
+            .filter(|&(x, y)| role(rules, map.tile_at(x, y)))
+            .filter(|&(x, y)| crate::jobs::work_spot(map, rules, &reach, (x, y), &[]).is_none())
+            .collect()
+    }
+
     /// Что обещано на клетке чертежом; `None` — чертежа нет.
     fn planned_tile(&mut self, x: i32, y: i32) -> Option<i16> {
         let mut q = self.world.query::<&Blueprint>();
@@ -536,8 +562,10 @@ impl Sim {
     /// Весь ли лом лежит на проходимых клетках.
     fn scrap_is_on_floor(&mut self) -> bool {
         let mut q = self.world.query::<(&Position, &Stack)>();
+        let rules = self.world.resource::<TileRules>();
         let map = self.world.resource::<BaseMap>();
-        q.iter(&self.world).all(|(p, _)| map.walkable(p.x, p.y))
+        q.iter(&self.world)
+            .all(|(p, _)| map.walkable(rules, p.x, p.y))
     }
 
     /// Весь ли лом убран на склад — то есть лежит на клетках с ёмкостью.

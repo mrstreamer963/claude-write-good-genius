@@ -130,7 +130,12 @@ pub(crate) fn assign_research(
         .iter()
         .map(|(e, id, p, skills)| {
             let level = science.map_or(0, |s| level_of(&skill_rules, skills, s));
-            (id.0.as_str(), e, level, Reach::all(&map, (p.x, p.y)))
+            (
+                id.0.as_str(),
+                e,
+                level,
+                Reach::all(&map, &tiles, (p.x, p.y)),
+            )
         })
         .collect();
     idle.sort_unstable_by_key(|&(id, ..)| id);

@@ -68,6 +68,21 @@ fn food_is_eaten_from_the_floor() {
     assert_eq!(sim.item_at(2, 1, RATION), 0, "кучи больше нет");
 }
 
+/// Паёк на стеллаже кот берёт **с прохода**: на полку не встать (§12.142), но
+/// склад от этого не перестаёт кормить.
+#[test]
+fn food_is_taken_from_a_rack_from_a_neighbour() {
+    let mut sim = sim_with_food();
+    sim.set_solid(1, true); // тот самый склад в (5, 1) — теперь стеллаж
+    sim.put_item(5, 1, RATION, 1);
+    sim.set_fed("a", 10);
+
+    sim.tick_n(20);
+    assert_eq!(sim.pos_of("a"), (4, 1), "встал рядом с полкой, а не на неё");
+    assert!(sim.fed_of("a") > 40, "и поел: сытость выше порога голода");
+    assert_eq!(sim.item_at(5, 1, RATION), 0, "паёк с полки ушёл");
+}
+
 /// Ближе — значит первым: выбор кучи тот же, что у любого раздатчика (§12.14).
 #[test]
 fn the_nearest_food_pile_wins() {

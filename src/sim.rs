@@ -2222,8 +2222,13 @@ impl Sim {
             }
             self.world.entity_mut(cat_e).insert(Squad(mission_e));
             {
-                let steps =
-                    find_path(self.world.resource::<BaseMap>(), from, gate).unwrap_or_default();
+                let steps = find_path(
+                    self.world.resource::<BaseMap>(),
+                    self.world.resource::<TileRules>(),
+                    from,
+                    gate,
+                )
+                .unwrap_or_default();
                 self.world.entity_mut(cat_e).insert(Path { steps });
             }
         }
@@ -3448,7 +3453,13 @@ impl Sim {
         // Старый приказ «иди туда» снимается: обучение — такое же адресное
         // распоряжение этим котом, и два противоречащих друг другу висеть не
         // должны. Иначе кот, доучившись, ушёл бы «доисполнять» забытый приказ.
-        let path = find_path(self.world.resource::<BaseMap>(), from, spot).unwrap_or_default();
+        let path = find_path(
+            self.world.resource::<BaseMap>(),
+            self.world.resource::<TileRules>(),
+            from,
+            spot,
+        )
+        .unwrap_or_default();
         self.world.entity_mut(cat_e).remove::<Order>().insert((
             Enrolled { skill },
             Study { skill, spot },
@@ -3505,7 +3516,13 @@ impl Sim {
         if let Some(mission_e) = self.world.get::<Squad>(cat_e).map(|s| s.0) {
             self.disband(mission_e);
         }
-        let path = find_path(self.world.resource::<BaseMap>(), from, (x, y)).unwrap_or_default();
+        let path = find_path(
+            self.world.resource::<BaseMap>(),
+            self.world.resource::<TileRules>(),
+            from,
+            (x, y),
+        )
+        .unwrap_or_default();
         self.world.entity_mut(cat_e).remove::<Order>().insert((
             Enrolled { skill },
             Study {
@@ -3769,11 +3786,20 @@ impl Sim {
             return false;
         }
 
-        if !self.world.resource::<BaseMap>().walkable(x, y) {
+        if !self
+            .world
+            .resource::<BaseMap>()
+            .walkable(self.world.resource::<TileRules>(), x, y)
+        {
             return false;
         }
         let map_version = self.world.resource::<BaseMap>().version;
-        let path = find_path(self.world.resource::<BaseMap>(), (sx, sy), (x, y));
+        let path = find_path(
+            self.world.resource::<BaseMap>(),
+            self.world.resource::<TileRules>(),
+            (sx, sy),
+            (x, y),
+        );
 
         // Приказ забирает кота у любой задачи — стройки, переноса, учёбы
         // (§12.15, §12.20). Груз он при этом не бросает: донесёт, когда снова
@@ -4020,7 +4046,7 @@ impl Sim {
                     sprite: r.sprite.clone(),
                     x: p.x,
                     y: p.y,
-                    stuck: is_stuck(map, p, busy),
+                    stuck: is_stuck(map, tiles, p, busy),
                     away: away.is_some(),
                     // Пленный тоже `away` — на карте его нет. Но пропавший кот
                     // обязан быть объясним: «ушёл на вылазку» видно в панели

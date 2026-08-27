@@ -300,7 +300,7 @@ pub(crate) fn gather_squad(
             if walking || at == gate {
                 continue;
             }
-            if let Some(steps) = find_path(map, at, gate) {
+            if let Some(steps) = find_path(map, &tiles, at, gate) {
                 commands.entity(cat_e).insert(Path { steps });
             }
         }
@@ -320,7 +320,7 @@ pub(crate) fn gate_count(map: &BaseMap, tiles: &TileRules) -> usize {
 /// отрезанный от одного из бойцов, значит вылазку, которая никогда не тронется.
 /// Ничьи разрешает порядок обхода карты, то есть детерминированно.
 pub(crate) fn pick_gate(map: &BaseMap, tiles: &TileRules, at: &[(i32, i32)]) -> Option<(i32, i32)> {
-    let reaches: Vec<Reach> = at.iter().map(|&p| Reach::all(map, p)).collect();
+    let reaches: Vec<Reach> = at.iter().map(|&p| Reach::all(map, tiles, p)).collect();
     gate_cells(map, tiles)
         .filter_map(|(x, y)| {
             let mut total = 0;

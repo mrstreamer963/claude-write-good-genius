@@ -355,7 +355,7 @@ pub(crate) fn assign_rest(
             if energy.0 > needs.critical || free.is_empty() {
                 continue;
             }
-            let Some(bed) = claim_bed(&map, &mut free, (pos.x, pos.y)) else {
+            let Some(bed) = claim_bed(&map, &rules, &mut free, (pos.x, pos.y)) else {
                 continue; // до свободной лежанки не добраться — работает дальше
             };
             release_work(
@@ -377,7 +377,7 @@ pub(crate) fn assign_rest(
         if energy.0 > needs.tired || free.is_empty() {
             continue;
         }
-        if let Some(bed) = claim_bed(&map, &mut free, (pos.x, pos.y)) {
+        if let Some(bed) = claim_bed(&map, &rules, &mut free, (pos.x, pos.y)) {
             lie_down(&mut commands, cat_e, bed);
         }
     }
@@ -395,7 +395,7 @@ pub(crate) fn assign_rest(
         if rules.rest_of(map.tile_at(pos.x, pos.y)) > 0 {
             continue; // упал прямо на лежанку — переезжать некуда и незачем
         }
-        if let Some(bed) = claim_bed(&map, &mut free, (pos.x, pos.y)) {
+        if let Some(bed) = claim_bed(&map, &rules, &mut free, (pos.x, pos.y)) {
             lie_down(&mut commands, cat_e, bed);
         }
     }
@@ -408,8 +408,13 @@ type Bed = ((i32, i32), Vec<(i32, i32)>);
 /// свободных не осталось или ни до одной не дойти.
 ///
 /// Выбор по расстоянию — то же правило, что у любого раздатчика (§12.14).
-fn claim_bed(map: &BaseMap, free: &mut Vec<(i32, i32)>, from: (i32, i32)) -> Option<Bed> {
-    let reach = Reach::all(map, from);
+fn claim_bed(
+    map: &BaseMap,
+    rules: &TileRules,
+    free: &mut Vec<(i32, i32)>,
+    from: (i32, i32),
+) -> Option<Bed> {
+    let reach = Reach::all(map, rules, from);
     let (i, cell, _) = free
         .iter()
         .enumerate()
@@ -525,7 +530,7 @@ pub(crate) fn assign_nap(
         // тика, а третий уходит на то, чтобы получить следующий, — раздача
         // видит кота только после прибытия. Это цена пошаговой ходьбы, и она
         // читается по месту: к лежанке кот плетётся, а не бежит.
-        let Some((_, path)) = claim_bed(&map, &mut free, at) else {
+        let Some((_, path)) = claim_bed(&map, &rules, &mut free, at) else {
             continue;
         };
         // ...но **останавливаться там, где стоять нельзя, нельзя и на шаг**:

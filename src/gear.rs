@@ -22,6 +22,7 @@
 use bevy_ecs::prelude::*;
 
 use crate::components::*;
+use crate::jobs::{work_spot, worked_cells};
 use crate::map::BaseMap;
 use crate::path::Reach;
 
@@ -47,6 +48,7 @@ use crate::path::Reach;
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn assign_equip(
     map: Res<BaseMap>,
+    tiles: Res<TileRules>,
     loadout: Res<LoadoutRules>,
     items: Res<ItemRules>,
     techs: Res<Techs>,
@@ -180,7 +182,7 @@ pub(crate) fn assign_equip(
             continue;
         }
 
-        let reach = Reach::all(&map, from);
+        let reach = Reach::all(&map, &tiles, from);
         // Кучи по шаблону: первая вещь, за которой вообще есть куда идти.
         let found = missing
             .iter()
@@ -192,13 +194,17 @@ pub(crate) fn assign_equip(
                         stack.item == item && stack.count > claimed(&taken, *pile_e)
                     })
                     .filter_map(|(pile_e, pos, _)| {
-                        Some((reach.dist_at(pos.x, pos.y)?, (pos.x, pos.y), pile_e, item))
+                        // Идут не на кучу, а к **подходу** к ней: комбинезон
+                        // лежит на стеллаже, а на стеллаж не встать (§12.142).
+                        let (spot, d) = work_spot(&map, &tiles, &reach, (pos.x, pos.y), &[])?;
+                        Some((d, (pos.x, pos.y), spot, pile_e, item))
                     })
                     // При равном расстоянии — по карте, а не по порядку сущностей:
-                    // обход ECS зависит от истории вставок (§11).
+                    // обход ECS зависит от истории вставок (§11). Ключ — клетка
+                    // **кучи**: подход у двух куч бывает общий.
                     .min_by_key(|&(d, at, ..)| (d, at.1, at.0))
             });
-        let Some((_, at, pile_e, item)) = found else {
+        let Some((_, _, at, pile_e, item)) = found else {
             continue; // до вещи не дойти — кот идёт как есть, это не ошибка
         };
 
@@ -227,6 +233,8 @@ fn claimed(taken: &[(Entity, i32)], pile: Entity) -> i32 {
 /// на неё же нацелившийся сосед. Кот просто освобождается, и следующий тик
 /// раздатчик подберёт ему другую кучу — ровно как с ломом (§12.15).
 pub(crate) fn work_equip(
+    map: Res<BaseMap>,
+    tiles: Res<TileRules>,
     mut commands: Commands,
     cats: Query<(Entity, &Position, &Equipping, Option<&Gear>), Without<Path>>,
     mut stacks: Query<(&Position, &mut Stack)>,
@@ -241,7 +249,11 @@ pub(crate) fn work_equip(
         let Ok((pile_pos, mut stack)) = stacks.get_mut(job.pile) else {
             continue; // кучи больше нет
         };
-        if (pile_pos.x, pile_pos.y) != (pos.x, pos.y) || stack.item != job.item || stack.count <= 0
+        // Дотягивается ли кот до кучи: своя клетка или заставленный сосед
+        // (§12.142) — вещь со стеллажа берут с прохода.
+        if !worked_cells(&map, &tiles, (pos.x, pos.y)).contains(&(pile_pos.x, pile_pos.y))
+            || stack.item != job.item
+            || stack.count <= 0
         {
             continue; // куча уехала или опустела, пока кот шёл
         }

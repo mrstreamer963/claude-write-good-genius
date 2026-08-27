@@ -14,7 +14,7 @@ use crate::hauling::{assign_hauls, assign_tidy, mark_loose_scrap, settle_stacks,
 use crate::health::{assign_heal, assign_treat, heal};
 use crate::jobs::{assign_jobs, work_jobs};
 use crate::missions::{gather_squad, run_missions};
-use crate::movement::{clear_solids, escape_voids, move_units, retry_orders, spread_units};
+use crate::movement::{escape_voids, move_units, retry_orders, spread_units};
 use crate::needs::{assign_nap, assign_rest, collapse_exhausted, doze, sleep, tire};
 use crate::relay::assign_relay;
 use crate::research::{assign_research, work_research};
@@ -108,8 +108,9 @@ fn advance_time(mut time: ResMut<SimTime>) {
 /// причине: он разбирает после факта то, что запретом стоило бы дороже, —
 /// двух котов, оставшихся в одной клетке (§12.32). Идёт после `escape_voids`,
 /// потому что кот с только что выданным маршрутом уже не «стоит».
-/// `clear_solids` — сразу за ним и по той же причине: он сгоняет котов с
-/// заставленных клеток (§12.35), и «стоит» для него значит ровно то же самое.
+/// Отдельной системы «сойти с полки» больше нет (§12.142): заставленная клетка
+/// стала непроходимой, встать на неё нельзя, и разбирать после факта нечего.
+/// Кота из старого сохранения, оставшегося на полке, подбирает `escape_voids`.
 ///
 /// `study` — после `move_units`, по той же причине, что и `run_missions`: кот,
 /// шагнувший к парте в этом тике, тикает сразу, а не со следующего. `work_equip`
@@ -198,7 +199,6 @@ pub(crate) fn build_schedule() -> Schedule {
         retry_orders,
         escape_voids,
         spread_units,
-        clear_solids,
         settle_stacks,
         sleep,
         doze,

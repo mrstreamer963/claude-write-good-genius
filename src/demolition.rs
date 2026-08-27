@@ -6,6 +6,7 @@
 
 use std::collections::VecDeque;
 
+use crate::components::TileRules;
 use crate::map::{BaseMap, DIRS};
 
 /// Волна сноса: как глубоко каждая клетка сидит в сносимой области и из какого
@@ -39,7 +40,12 @@ pub(crate) struct DemolitionFront {
 
 impl DemolitionFront {
     /// `doomed` — клетки с чертежом сноса, `cats` — позиции всех котов.
-    pub(crate) fn new(map: &BaseMap, doomed: &[(i32, i32)], cats: &[(i32, i32)]) -> Self {
+    pub(crate) fn new(
+        map: &BaseMap,
+        rules: &TileRules,
+        doomed: &[(i32, i32)],
+        cats: &[(i32, i32)],
+    ) -> Self {
         let n = (map.width * map.height) as usize;
         let mut is_doomed = vec![false; n];
         for &(x, y) in doomed {
@@ -58,12 +64,14 @@ impl DemolitionFront {
         let mut queue = VecDeque::new();
 
         // Волна от берега — остающегося пола — вглубь сносимой области.
+        // Берегом считается только то, на чём кот может стоять: заставленная
+        // клетка (§12.142) — не берег и не проход, сносят её с соседней.
         for (i, (&cell, &doomed)) in map.cells.iter().zip(&is_doomed).enumerate() {
-            if cell >= 0 && !doomed {
+            if cell >= 0 && !rules.is_solid(cell) && !doomed {
                 front.seed(i, &mut queue);
             }
         }
-        front.spread(map, &mut queue);
+        front.spread(map, rules, &mut queue);
 
         // Куда волна не дошла — область без берега; там источники это коты.
         for i in cats.iter().filter_map(|&(x, y)| map.index(x, y)) {
@@ -71,7 +79,7 @@ impl DemolitionFront {
                 front.seed(i, &mut queue);
             }
         }
-        front.spread(map, &mut queue);
+        front.spread(map, rules, &mut queue);
 
         for (i, &doomed) in is_doomed.iter().enumerate() {
             if doomed && front.depth[i] >= 0 {
@@ -88,12 +96,12 @@ impl DemolitionFront {
         queue.push_back(i);
     }
 
-    fn spread(&mut self, map: &BaseMap, queue: &mut VecDeque<usize>) {
+    fn spread(&mut self, map: &BaseMap, rules: &TileRules, queue: &mut VecDeque<usize>) {
         while let Some(ci) = queue.pop_front() {
             let (cx, cy) = ((ci as i32) % self.width, (ci as i32) / self.width);
             for (dx, dy) in DIRS {
                 let (nx, ny) = (cx + dx, cy + dy);
-                if !map.walkable(nx, ny) {
+                if !map.walkable(rules, nx, ny) {
                     continue;
                 }
                 let ni = (ny * self.width + nx) as usize;

@@ -113,7 +113,7 @@ pub(crate) fn nearest_desk(
     from: (i32, i32),
     taken: &[(i32, i32)],
 ) -> Option<(i32, i32)> {
-    let reach = Reach::all(map, from);
+    let reach = Reach::all(map, tiles, from);
     (0..map.height)
         .flat_map(|y| (0..map.width).map(move |x| (x, y)))
         .filter(|&(x, y)| tiles.teaches_of(map.tile_at(x, y)) == Some(skill))
@@ -207,7 +207,7 @@ pub(crate) fn assign_study(
             continue; // парт нет, все заняты или не дойти — попробуем следующим тиком
         };
         taken.push(spot);
-        let path = find_path(&map, at, spot).unwrap_or_default();
+        let path = find_path(&map, &tiles, at, spot).unwrap_or_default();
         commands
             .entity(cat_e)
             .insert((Study { skill, spot }, Path { steps: path }));
@@ -271,7 +271,7 @@ pub(crate) fn study(
             task.spot = spot;
             // Старый маршрут вёл к снесённой парте: оставить его — значит
             // сперва сходить туда, где учиться уже нечему.
-            match find_path(&map, (pos.x, pos.y), spot) {
+            match find_path(&map, &tiles, (pos.x, pos.y), spot) {
                 Some(steps) if !steps.is_empty() => {
                     commands.entity(cat_e).insert(Path { steps });
                 }
@@ -287,7 +287,7 @@ pub(crate) fn study(
         }
         if (pos.x, pos.y) == task.spot {
             commands.entity(cat_e).insert(Worked(task.skill));
-        } else if let Some(steps) = find_path(&map, (pos.x, pos.y), task.spot) {
+        } else if let Some(steps) = find_path(&map, &tiles, (pos.x, pos.y), task.spot) {
             // Маршрут оборвался — кота выбросило из ямы или парту перенесли.
             commands.entity(cat_e).insert(Path { steps });
         }

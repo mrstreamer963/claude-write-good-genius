@@ -133,7 +133,7 @@ pub(crate) fn assign_heal(
         );
         // Койка вешается строго после освобождения задачи: `release_work`
         // снимает `Path`, а команды применяются в порядке добавления.
-        let ward = claim_ward(&map, &mut free, at);
+        let ward = claim_ward(&map, &tiles, &mut free, at);
         let (spot, path) = match ward {
             Some((cell, path)) => (Some(cell), path),
             None => (None, Vec::new()),
@@ -165,7 +165,7 @@ pub(crate) fn assign_heal(
     let moves: Vec<(Entity, (i32, i32), Vec<(i32, i32)>)> = floored
         .into_iter()
         .filter_map(|(_, cat_e, at)| {
-            claim_ward(&map, &mut free, at).map(|(cell, path)| (cat_e, cell, path))
+            claim_ward(&map, &tiles, &mut free, at).map(|(cell, path)| (cat_e, cell, path))
         })
         .collect();
     for (cat_e, cell, path) in moves {
@@ -182,11 +182,16 @@ type Ward = ((i32, i32), Vec<(i32, i32)>);
 /// Забрать из `free` ближайшую достижимую койку и маршрут к ней; `None` —
 /// свободных не осталось или ни до одной не дойти. Близнец `claim_bed`
 /// (§12.20): выбор по расстоянию — общее правило раздачи (§12.14).
-fn claim_ward(map: &BaseMap, free: &mut Vec<(i32, i32)>, from: (i32, i32)) -> Option<Ward> {
+fn claim_ward(
+    map: &BaseMap,
+    rules: &TileRules,
+    free: &mut Vec<(i32, i32)>,
+    from: (i32, i32),
+) -> Option<Ward> {
     if free.is_empty() {
         return None;
     }
-    let reach = Reach::all(map, from);
+    let reach = Reach::all(map, rules, from);
     let (i, cell, _) = free
         .iter()
         .enumerate()
@@ -211,6 +216,7 @@ fn claim_ward(map: &BaseMap, free: &mut Vec<(i32, i32)>, from: (i32, i32)) -> Op
 /// сам. Одно место починки вместо семи мест освобождения.
 pub(crate) fn assign_treat(
     map: Res<BaseMap>,
+    tiles: Res<TileRules>,
     rules: Res<HealthRules>,
     mut commands: Commands,
     mut patients: Query<(Entity, &Position, &mut Healing)>,
@@ -277,8 +283,9 @@ pub(crate) fn assign_treat(
             .iter()
             .enumerate()
             .filter_map(|(i, &(_, cat_e, from))| {
-                let reach = Reach::all(&map, from);
-                treat_spot(&map, &reach, at).map(|(spot, steps)| (steps, i, cat_e, spot, reach))
+                let reach = Reach::all(&map, &tiles, from);
+                treat_spot(&map, &tiles, &reach, at)
+                    .map(|(spot, steps)| (steps, i, cat_e, spot, reach))
             })
             .min_by_key(|&(steps, ..)| steps);
         let Some((_, i, cat_e, spot, reach)) = chosen else {
@@ -300,10 +307,15 @@ pub(crate) fn assign_treat(
 ///
 /// Только соседи: сам пациент занимает свою клетку, и встать на неё нельзя
 /// (§12.32). Из подходящих берём ближайшую к медику — общее правило (§12.14).
-fn treat_spot(map: &BaseMap, reach: &Reach, at: (i32, i32)) -> Option<((i32, i32), i32)> {
+fn treat_spot(
+    map: &BaseMap,
+    rules: &TileRules,
+    reach: &Reach,
+    at: (i32, i32),
+) -> Option<((i32, i32), i32)> {
     DIRS.iter()
         .map(|(dx, dy)| (at.0 + dx, at.1 + dy))
-        .filter(|&(x, y)| map.walkable(x, y))
+        .filter(|&(x, y)| map.walkable(rules, x, y))
         .filter_map(|c| reach.dist_at(c.0, c.1).map(|d| (c, d)))
         .min_by_key(|&(_, d)| d)
 }

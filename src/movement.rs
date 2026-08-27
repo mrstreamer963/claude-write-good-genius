@@ -55,9 +55,9 @@ pub(crate) fn move_units(
             // Пол, в который кот шагает, могли снести за время шага. Кот при
             // этом числится в своей клетке, поэтому терять нечего: шаг
             // отменяется, маршрут перекладывается с места.
-            if !map.walkable(s.to.0, s.to.1) {
+            if !map.walkable(&rules, s.to.0, s.to.1) {
                 commands.entity(e).remove::<Stride>();
-                repath(&map, &mut path, (pos.x, pos.y));
+                repath(&map, &rules, &mut path, (pos.x, pos.y));
                 continue;
             }
             s.left -= 1;
@@ -83,8 +83,8 @@ pub(crate) fn move_units(
             continue;
         }
         let next = *path.steps.last().unwrap();
-        if !map.walkable(next.0, next.1) {
-            repath(&map, &mut path, (pos.x, pos.y));
+        if !map.walkable(&rules, next.0, next.1) {
+            repath(&map, &rules, &mut path, (pos.x, pos.y));
             continue;
         }
         let span = step_span(&clutter, next);
@@ -99,11 +99,11 @@ pub(crate) fn move_units(
 /// Перекладывает маршрут с текущей клетки к прежней цели. Не вышло — маршрут
 /// стирается, и кот освобождается следующим тиком: приказ ему перепроложит
 /// `retry_orders`, когда карта изменится.
-fn repath(map: &BaseMap, path: &mut Path, from: (i32, i32)) {
+fn repath(map: &BaseMap, rules: &TileRules, path: &mut Path, from: (i32, i32)) {
     let Some(&goal) = path.steps.first() else {
         return;
     };
-    match find_path(map, from, goal) {
+    match find_path(map, rules, from, goal) {
         Some(p) => path.steps = p,
         None => path.steps.clear(),
     }
@@ -158,6 +158,7 @@ fn clutter_delay(clutter: &[((i32, i32), i32)], at: (i32, i32)) -> u8 {
 /// начатой задачи. Он подхватится сам, как только задача снимется.
 pub(crate) fn retry_orders(
     map: Res<BaseMap>,
+    rules: Res<TileRules>,
     mut commands: Commands,
     mut q: Query<
         (Entity, &Position, &mut Order),
@@ -193,7 +194,7 @@ pub(crate) fn retry_orders(
         if order.tried_version == Some(map.version) {
             continue;
         }
-        match find_path(&map, (pos.x, pos.y), (order.x, order.y)) {
+        match find_path(&map, &rules, (pos.x, pos.y), (order.x, order.y)) {
             Some(path) => {
                 order.tried_version = None;
                 commands.entity(e).insert(Path { steps: path });
@@ -203,7 +204,12 @@ pub(crate) fn retry_orders(
     }
 }
 
-/// Выводит кота со снесённой клетки на соседний пол обычным шагом.
+/// Выводит кота с клетки, на которой ему стоять нельзя, на соседний пол
+/// обычным шагом: снесённая клетка (пустота) или полка (§12.142).
+///
+/// Полка сюда попадает только из старого сохранения: в новой партии на неё
+/// не встать вовсе. Правило одно на оба случая, и второго прохода ради
+/// переходного состояния заводить не за чем.
 ///
 /// Снос под котом разрешён — это штатная механика (дырки в перекрытиях, см.
 /// `ideas.md`), а не ошибка (§12.10 concept.md).
@@ -217,18 +223,19 @@ pub(crate) fn retry_orders(
 /// рядом, и кот выбирается — в том числе построив этот пол сам, изнутри.
 pub(crate) fn escape_voids(
     map: Res<BaseMap>,
+    rules: Res<TileRules>,
     mut commands: Commands,
     q: Query<(Entity, &Position), (With<UnitId>, Without<Path>, Without<Away>)>,
 ) {
     for (e, pos) in &q {
-        if map.walkable(pos.x, pos.y) {
+        if map.walkable(&rules, pos.x, pos.y) {
             continue;
         }
         // Порядок DIRS фиксирован, значит выбор соседа детерминирован (§11).
         if let Some(step) = DIRS
             .iter()
             .map(|(dx, dy)| (pos.x + dx, pos.y + dy))
-            .find(|(nx, ny)| map.walkable(*nx, *ny))
+            .find(|(nx, ny)| map.walkable(&rules, *nx, *ny))
         {
             commands.entity(e).insert(Path { steps: vec![step] });
         }
@@ -338,99 +345,11 @@ pub(crate) fn spread_units(
         let Some(step) = DIRS
             .iter()
             .map(|(dx, dy)| (at.0 + dx, at.1 + dy))
-            .find(|&(nx, ny)| {
-                map.walkable(nx, ny)
-                    && !rules.is_solid(map.tile_at(nx, ny))
-                    && !blocked.contains(&(nx, ny))
-            })
+            .find(|&(nx, ny)| map.walkable(&rules, nx, ny) && !blocked.contains(&(nx, ny)))
         else {
             continue; // отойти некуда — стоят вместе, это не ошибка
         };
         // Цель занимаем сразу: иначе двое из одной клетки шагнут в одну и ту же.
-        blocked.push(step);
-        commands.entity(cat_e).insert(Path { steps: vec![step] });
-    }
-}
-
-/// Сгоняет котов с клеток, заставленных доверху (`solid`, §12.35).
-///
-/// Стеллаж — мебель, а не комната: между полками протискиваются, но не живут.
-/// Правило разбирается **после факта**, тем же приёмом, что `spread_units`
-/// разводит двоих из одной клетки (§12.32): запрет в проходимости изменил бы
-/// маршруты и отрезал бы склад от носильщиков, а условие «сюда не вставать» в
-/// каждом раздатчике — это восемь мест, где его однажды забудут.
-///
-/// **Кто при деле, тот остаётся**: носильщик сдаёт груз именно здесь, строитель
-/// работает с соседней клетки, которой мог оказаться стеллаж, и согнать их
-/// значит остановить работу на ровном месте. Уйдут они сами, закончив.
-///
-/// Сходят **свободные и спящие**. Спящий — ровно та картинка, ради которой
-/// правило и заводилось: кот, свалившийся на полки. Досыпать он продолжит рядом
-/// (§12.33). Отряд у шлюза не трогаем: шлюз заставленным не бывает, а сбор
-/// сводит котов в одну точку намеренно (§12.22).
-///
-/// **Занятый выход не держит кота на полке** (§12.39). Сойти кот пробует дважды:
-/// сперва на свободного соседа, а если такого нет — на соседа под котом.
-/// Наложение разберётся само (`spread_units`, §12.32), а стеллаж сам себя не
-/// разберёт: в тупике на две клетки первый проход не находит ничего никогда,
-/// и кот сидел бы в мебели, пока сосед не уйдёт по своим делам.
-///
-/// Некуда сойти — кот стоит на месте: как и `stuck`, это легальное состояние.
-pub(crate) fn clear_solids(
-    map: Res<BaseMap>,
-    rules: Res<TileRules>,
-    mut commands: Commands,
-    all: Query<(&Position, Option<&Path>), (With<UnitId>, Without<Away>)>,
-    stopped: Query<
-        (Entity, &UnitId, &Position),
-        (
-            With<UnitId>,
-            Without<Path>,
-            Without<Away>,
-            Without<Squad>,
-            Without<Assignment>,
-            Without<Haul>,
-            Without<Study>,
-            Without<Researching>,
-            Without<Crafting>,
-            Without<Equipping>,
-            Without<Eating>,
-            // Раненый уходит со стеллажа наравне со спящим: он тоже лежит, а не
-            // работает, — и это ровно та картинка, ради которой правило писалось
-            // (§12.35, §12.37). Медик, наоборот, при деле и остаётся.
-            Without<Treating>,
-            Without<OnDuty>,
-        ),
-    >,
-) {
-    let mut blocked: Vec<(i32, i32)> = all
-        .iter()
-        .filter(|(_, path)| path.is_none())
-        .map(|(p, _)| (p.x, p.y))
-        .collect();
-
-    // Порядок обхода задан по `id`: когда сойти есть куда не всем, «кто куда»
-    // не должно зависеть от истории вставок в ECS (§11, §12.24).
-    let mut standing: Vec<(&str, Entity, (i32, i32))> = stopped
-        .iter()
-        .filter(|(_, _, pos)| rules.is_solid(map.tile_at(pos.x, pos.y)))
-        .map(|(e, id, pos)| (id.0.as_str(), e, (pos.x, pos.y)))
-        .collect();
-    standing.sort_unstable_by_key(|&(id, ..)| id);
-
-    for (_, cat_e, at) in standing {
-        let mut free = DIRS
-            .iter()
-            .map(|(dx, dy)| (at.0 + dx, at.1 + dy))
-            .filter(|&(nx, ny)| map.walkable(nx, ny) && !rules.is_solid(map.tile_at(nx, ny)));
-        // Свободный сосед — если есть; иначе занятый, лишь бы не полка.
-        let Some(step) = free
-            .clone()
-            .find(|at| !blocked.contains(at))
-            .or_else(|| free.next())
-        else {
-            continue; // сойти некуда — стоит где стоял, это не ошибка
-        };
         blocked.push(step);
         commands.entity(cat_e).insert(Path { steps: vec![step] });
     }
@@ -446,14 +365,14 @@ pub(crate) fn clear_solids(
 ///
 /// Ушедшего на миссию не касается ни то, ни другое: его позиция — это шлюз, с
 /// которого он ушёл, и она ничего не говорит о том, где кот на самом деле.
-pub(crate) fn is_stuck(map: &BaseMap, pos: &Position, tasks: Busy) -> bool {
+pub(crate) fn is_stuck(map: &BaseMap, rules: &TileRules, pos: &Position, tasks: Busy) -> bool {
     if tasks.away {
         return false;
     }
-    let entombed = !map.walkable(pos.x, pos.y)
+    let entombed = !map.walkable(rules, pos.x, pos.y)
         && !DIRS
             .iter()
-            .any(|(dx, dy)| map.walkable(pos.x + dx, pos.y + dy));
+            .any(|(dx, dy)| map.walkable(rules, pos.x + dx, pos.y + dy));
     entombed || (tasks.ordered && tasks.idle)
 }
 

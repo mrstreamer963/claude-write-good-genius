@@ -2,6 +2,7 @@
 
 use std::collections::VecDeque;
 
+use crate::components::TileRules;
 use crate::map::{BaseMap, DIRS};
 
 /// Дерево кратчайших путей: BFS от клетки по проходимым соседям.
@@ -11,7 +12,8 @@ use crate::map::{BaseMap, DIRS};
 /// сравнить десяток мест работы одним обходом дешевле, чем звать BFS на каждое.
 ///
 /// Проходимость **стартовой** клетки не требуется — на этом свойстве держится
-/// выход кота из ямы (шаг наружу из пустоты), менять осторожно.
+/// выход кота из ямы (шаг наружу из пустоты) и, с §12.142, сход с полки,
+/// на которой кот остался от старого сохранения. Менять осторожно.
 pub(crate) struct Reach {
     width: i32,
     start: usize,
@@ -23,16 +25,26 @@ pub(crate) struct Reach {
 
 impl Reach {
     /// Обход всей достижимой области.
-    pub(crate) fn all(map: &BaseMap, start: (i32, i32)) -> Self {
-        Self::explore(map, start, None)
+    pub(crate) fn all(map: &BaseMap, rules: &TileRules, start: (i32, i32)) -> Self {
+        Self::explore(map, rules, start, None)
     }
 
     /// Обход с ранним выходом: как только цель достигнута, дальше не идём.
-    pub(crate) fn to(map: &BaseMap, start: (i32, i32), goal: (i32, i32)) -> Self {
-        Self::explore(map, start, Some(goal))
+    pub(crate) fn to(
+        map: &BaseMap,
+        rules: &TileRules,
+        start: (i32, i32),
+        goal: (i32, i32),
+    ) -> Self {
+        Self::explore(map, rules, start, Some(goal))
     }
 
-    fn explore(map: &BaseMap, start: (i32, i32), stop_at: Option<(i32, i32)>) -> Self {
+    fn explore(
+        map: &BaseMap,
+        rules: &TileRules,
+        start: (i32, i32),
+        stop_at: Option<(i32, i32)>,
+    ) -> Self {
         let (w, h) = (map.width, map.height);
         let start_i = (start.1 * w + start.0) as usize;
         let mut r = Reach {
@@ -57,7 +69,7 @@ impl Reach {
                     continue;
                 }
                 let ni = (ny * w + nx) as usize;
-                if r.came[ni] != -1 || !map.walkable(nx, ny) {
+                if r.came[ni] != -1 || !map.walkable(rules, nx, ny) {
                     continue;
                 }
                 r.came[ni] = ci as i32;
@@ -100,8 +112,9 @@ impl Reach {
 /// `[goal, .., first_step]` (без стартовой клетки), либо None если пути нет.
 pub(crate) fn find_path(
     map: &BaseMap,
+    rules: &TileRules,
     start: (i32, i32),
     goal: (i32, i32),
 ) -> Option<Vec<(i32, i32)>> {
-    Reach::to(map, start, goal).path_to(goal.0, goal.1)
+    Reach::to(map, rules, start, goal).path_to(goal.0, goal.1)
 }

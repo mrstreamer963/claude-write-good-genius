@@ -144,6 +144,7 @@ pub(crate) fn access_ok(plan: &Plan, rules: &TileRules, at: (i32, i32), tile: i1
 /// инвариант 4 не обсуждается.
 pub(crate) fn build_spot(
     map: &BaseMap,
+    rules: &TileRules,
     reach: &Reach,
     bp: (i32, i32),
     bp_tile: i16,
@@ -151,12 +152,12 @@ pub(crate) fn build_spot(
     held: &[(i32, i32)],
 ) -> Option<((i32, i32), i32)> {
     let mut spots = Vec::new();
-    if bp_tile >= 0 && map.walkable(bp.0, bp.1) {
+    if bp_tile >= 0 && map.walkable(rules, bp.0, bp.1) {
         spots.push(bp);
     }
     for (dx, dy) in DIRS {
         let n = (bp.0 + dx, bp.1 + dy);
-        if map.walkable(n.0, n.1) {
+        if map.walkable(rules, n.0, n.1) {
             spots.push(n);
         }
     }
@@ -169,6 +170,57 @@ pub(crate) fn build_spot(
         Some(f) => reachable.min_by_key(|&(s, d)| (f.depth_at(s.0, s.1), busy(s, d), d)),
         None => reachable.min_by_key(|&(s, d)| (busy(s, d), d)),
     }
+}
+
+/// Откуда кот работает с клеткой и её цена в шагах: сама клетка, если на ней
+/// можно стоять, иначе ближайший сосед (§12.142).
+///
+/// Своя клетка **всегда важнее соседа**, и этим `work_spot` отличается от
+/// `build_spot`: там кот выбирает самое дешёвое место (стройка идёт и с
+/// соседней клетки), здесь он идёт к конкретной клетке — на склад, к куче, к
+/// станку. Возьми дешёвое, и кот, стоящий рядом со стеллажом, «дошёл» бы, не
+/// сходя с места, а класть ему было бы некуда.
+///
+/// Занятых соседей обходим тем же ключом, что `build_spot` (§12.103): сперва
+/// свободные, потом занятые, внутри — по расстоянию. Проход у полки бывает в
+/// одну клетку, поэтому это предпочтение, а не запрет.
+///
+/// Соседи перебираются в порядке `DIRS`, ничью решает расстояние, потом сам
+/// порядок, — то есть детерминированно (§11).
+pub(crate) fn work_spot(
+    map: &BaseMap,
+    rules: &TileRules,
+    reach: &Reach,
+    at: (i32, i32),
+    held: &[(i32, i32)],
+) -> Option<((i32, i32), i32)> {
+    if map.walkable(rules, at.0, at.1) {
+        return reach.dist_at(at.0, at.1).map(|d| (at, d));
+    }
+    DIRS.iter()
+        .map(|(dx, dy)| (at.0 + dx, at.1 + dy))
+        .filter(|&(x, y)| map.walkable(rules, x, y))
+        .filter_map(|c| reach.dist_at(c.0, c.1).map(|d| (c, d)))
+        .min_by_key(|&(c, d)| (i32::from(d > 0 && held.contains(&c)), d))
+}
+
+/// Клетки, с которыми кот работает, стоя на `at`: своя и заставленные соседи.
+///
+/// Расширение ровно на `solid` (§12.142), и это не вкус: заставленная клетка —
+/// единственная, на которую нельзя встать, но с которой берут и на которую
+/// кладут. Возьми всех соседей — и носильщик подметал бы соседний пол, за
+/// которым его не посылали; возьми одну свою — и стеллаж перестал бы быть
+/// складом. Порядок фиксирован (своя, потом `DIRS`), значит выбор
+/// детерминирован (§11).
+pub(crate) fn worked_cells(map: &BaseMap, rules: &TileRules, at: (i32, i32)) -> Vec<(i32, i32)> {
+    let mut cells = vec![at];
+    for (dx, dy) in DIRS {
+        let n = (at.0 + dx, at.1 + dy);
+        if map.has_floor(n.0, n.1) && rules.is_solid(map.tile_at(n.0, n.1)) {
+            cells.push(n);
+        }
+    }
+    cells
 }
 
 /// Клетки, которые кто-то держит собой: кот стоит и никуда не идёт (§12.103).
@@ -235,7 +287,7 @@ pub(crate) fn assign_jobs(
         .collect();
     let front = (!doomed.is_empty()).then(|| {
         let positions: Vec<(i32, i32)> = cats.iter().map(|(p, _)| (p.x, p.y)).collect();
-        DemolitionFront::new(&map, &doomed, &positions)
+        DemolitionFront::new(&map, &rules, &doomed, &positions)
     });
     // Кого сгонять нельзя (§12.103). Считаем один раз на систему: список не
     // меняется, пока раздача идёт, а `commands` всё равно отложены до конца тика.
@@ -271,10 +323,10 @@ pub(crate) fn assign_jobs(
 
     // Достижимость считаем по разу на кота: одного обхода хватает, чтобы
     // сравнить между собой все доступные ему места работы.
-    let (map, front) = (&*map, front.as_ref());
+    let (map, rules, front) = (&*map, &*rules, front.as_ref());
     let mut idle: Vec<(&str, Entity, Reach)> = free_cats
         .iter()
-        .map(|(e, id, p)| (id.0.as_str(), e, Reach::all(map, (p.x, p.y))))
+        .map(|(e, id, p)| (id.0.as_str(), e, Reach::all(map, rules, (p.x, p.y))))
         .collect();
     idle.sort_unstable_by_key(|&(id, ..)| id);
 
@@ -289,7 +341,7 @@ pub(crate) fn assign_jobs(
                 open.iter()
                     .enumerate()
                     .filter_map(move |(oi, &(_, bp_xy, bp_tile))| {
-                        build_spot(map, reach, bp_xy, bp_tile, front, held)
+                        build_spot(map, rules, reach, bp_xy, bp_tile, front, held)
                             .map(|(spot, steps)| (steps, ci, oi, spot))
                     })
             })

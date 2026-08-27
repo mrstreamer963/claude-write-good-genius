@@ -395,7 +395,7 @@ pub(crate) fn assign_craft(
     // Достижимость считаем по разу на кота, коты — по `id` (§12.14, §11).
     let mut idle: Vec<(&str, Entity, Reach)> = free_cats
         .iter()
-        .map(|(e, id, p)| (id.0.as_str(), e, Reach::all(&map, (p.x, p.y))))
+        .map(|(e, id, p)| (id.0.as_str(), e, Reach::all(&map, &tiles, (p.x, p.y))))
         .collect();
     idle.sort_unstable_by_key(|&(id, ..)| id);
 
