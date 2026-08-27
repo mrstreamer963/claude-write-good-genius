@@ -4812,7 +4812,17 @@ function syncTopicButtons(list) {
     // темы разом, включая автоправила, которые не про вещь в руках вовсе.
     const teasing =
       !t.known && !t.unlocked && (t.specimen ?? []).length > 0 && !!t.sighted;
-    b.hidden = !!t.known || (!t.unlocked && !teasing);
+    // **Тема, ждущая находки, не показывается вовсе** (§12.143). Витрина
+    // §12.137 сюда не распространяется, и граница между ними ровно в том, что
+    // игрок уже держал в руках: там артефакт лежит на складе и вопрос «что с
+    // ним делать» у игрока уже возник — строка на него отвечает. Здесь вещи не
+    // было никогда, и строка про «Образец» была бы первым и единственным
+    // местом, где игра это слово произносит, — то есть тем же требованием
+    // несуществующего, ради снятия которого §12.143 и затевалась, только
+    // вежливо сформулированным.
+    const awaiting =
+      !t.known && t.unlocked && (t.specimen ?? []).length > 0 && !t.sighted;
+    b.hidden = !!t.known || awaiting || (!t.unlocked && !teasing);
     b.classList.toggle("locked", teasing);
     for (const el of b._details ?? []) el.hidden = teasing;
     if (b._locked) b._locked.hidden = !teasing;
@@ -5716,19 +5726,28 @@ function mkWindow(el, title, onClose, narrow) {
 function orderNewFirst(list, buttons, kind, heads) {
   if (!list) return;
   const fresh = newlyOpen(kind);
-  const live = buttons.filter((b, i) => !b.hidden && fresh.has(i));
-  const rest = buttons.filter((b, i) => !b.hidden && !fresh.has(i));
+  // Строки витрины (§12.137) в эти две группы не идут: их забирает
+  // `orderLockedLast`, и не вычти мы их здесь — «Остальное» встало бы
+  // заголовком над пустотой. У «Найма» класса `locked` нет вовсе, так что
+  // фильтр там ничего не меняет.
+  const shown = (b) => !b.hidden && !b.classList.contains("locked");
+  const live = buttons.filter((b, i) => shown(b) && fresh.has(i));
+  const rest = buttons.filter((b, i) => shown(b) && !fresh.has(i));
   const order = [];
   // Заголовков нет, пока нечего отделять: подпись над единственным списком —
   // это шум ровно там, где всё в порядке (§12.73).
   heads.fresh.hidden = !live.length;
-  heads.rest.hidden = !live.length;
+  // «Остальное» отделяет что-то от чего-то: без свежих строк отделять нечего,
+  // а без обычных — нечего подписывать. Второе условие не теоретическое: в
+  // «Науке» бывает ровно одна открытая тема и одна витринная (§12.143), и
+  // заголовок вставал над пустотой.
+  heads.rest.hidden = !live.length || !rest.length;
   if (live.length) order.push(heads.fresh, ...live, heads.rest);
   else order.push(heads.fresh, heads.rest);
   order.push(...rest);
   // Скрытые строки держим в конце: узел остаётся на месте, а прятать его
   // удалением значило бы пересобирать список (§12.118).
-  order.push(...buttons.filter((b) => b.hidden));
+  order.push(...buttons.filter((b) => !shown(b)));
   orderChildren(list, order);
 }
 
@@ -5803,9 +5822,17 @@ function syncDoors(snap) {
   if (sciDoor) {
     // Индексы, а не сами темы: уровень допуска лежит в палитре (`meta.research`),
     // и связывает их только номер — тот же, что у кнопок в окне.
+    // Тема, ждущая находки, за дверью не числится вовсе (§12.143): её не
+    // показывает и окно, — значит дверь, оставшаяся ради неё, вела бы в пустой
+    // список. Пока образец не привезли, «Науки» на экране нет.
     const open = topics
       .map((t, i) => i)
-      .filter((i) => !topics[i].known && topics[i].unlocked);
+      .filter(
+        (i) =>
+          !topics[i].known &&
+          topics[i].unlocked &&
+          ((topics[i].specimen ?? []).length === 0 || topics[i].sighted),
+      );
     // Темы-витрины (§12.137) двери не открывают, но и прятать её не дают: за
     // ней есть что посмотреть — артефакт, до которого база ещё не доросла.
     const teasing = topics.some(

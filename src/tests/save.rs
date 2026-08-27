@@ -331,7 +331,12 @@ fn claims_survive_a_save() {
     live.put_item(4, 3, sample, 10);
     assert!(live.teach("excellent", "science"));
     live.tick_n(800); // доучился и встал из-за парты
-    assert!(live.start_research(0));
+    // Берём тему, за которую садятся сразу: у пролога («Свойства образца»)
+    // материал везут в лабораторию ногами (§12.133), и claim появился бы
+    // сильно позже. Тест про ремап ссылок, а не про цепочку тем.
+    live.set_tech("sample_lore");
+    let materials = live.topic_index("materials").expect("тема есть");
+    assert!(live.start_research(materials));
     live.tick_n(60); // и сел за тему — теперь она за ним
     assert!(live.add_blueprint_rect(9, 6, 2, 2, bed));
     assert!(live.launch(0, vec!["sp2".to_string(), "sp3".to_string()]));
