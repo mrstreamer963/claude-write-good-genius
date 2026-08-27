@@ -108,6 +108,91 @@ pub(crate) fn access_ok(plan: &Plan, rules: &TileRules, at: (i32, i32), tile: i1
             let n = (at.0 + dx, at.1 + dy);
             !rules.is_solid(plan.tile_at(n.0, n.1)) || has_access(n)
         })
+        && !splits_space(plan, rules, at, tile)
+}
+
+/// Отрежет ли эта полка кусок базы от остальной (§12.144).
+///
+/// Второе лицо правила доступа. Первое спрашивает «есть ли подход к самой
+/// полке», а это — «останется ли подход ко всему, что за ней»: у стеллажей
+/// хватает длины, чтобы сойтись в стену, и последняя клетка такой стены
+/// запирает за собой и клетки с ролью, и котов. Ловится это только здесь: кот
+/// в кармане стоит на нормальном полу, раздатчики видят его свободным, и
+/// молчит вся база, а не одна кнопка (§12.53).
+///
+/// Считается по плану, как и подход: иначе правило снимается тем же мазком
+/// рамкой, ради которого заводилось (§12.111).
+///
+/// Порядок проверок — сперва дешёвое кольцо, потом обход. Отрезать что-то
+/// умеет только клетка, чьи проходимые соседи расходятся по кольцу вокруг неё
+/// на две дуги: если они соединены в самом кольце, то соединены и без `at`.
+/// Кольцо связывается по стороне (диагональ котам не дорога), то есть углы в
+/// нём — мостики между сторонами. Без этого отсева обход считался бы для каждой
+/// клетки карты в маске превью каждым кадром.
+fn splits_space(plan: &Plan, rules: &TileRules, at: (i32, i32), tile: i16) -> bool {
+    let standable = |x: i32, y: i32| {
+        let t = if (x, y) == at {
+            tile
+        } else {
+            plan.tile_at(x, y)
+        };
+        t >= 0 && !rules.is_solid(t)
+    };
+    // Кольцо по часовой стрелке, начиная с севера: соседи по сторонам стоят на
+    // чётных местах, углы — на нечётных.
+    const RING: [(i32, i32); 8] = [
+        (0, -1),
+        (1, -1),
+        (1, 0),
+        (1, 1),
+        (0, 1),
+        (-1, 1),
+        (-1, 0),
+        (-1, -1),
+    ];
+    let open: Vec<bool> = RING
+        .iter()
+        .map(|(dx, dy)| standable(at.0 + dx, at.1 + dy))
+        .collect();
+    // Сколько раз кольцо переходит из проходимого в закрытое: один переход (или
+    // ни одного) значит одну дугу, то есть без `at` соседи всё равно вместе.
+    let breaks = (0..8).filter(|&i| open[i] && !open[(i + 1) % 8]).count();
+    if breaks <= 1 {
+        return false;
+    }
+
+    let sides: Vec<(i32, i32)> = (0..4)
+        .map(|i| (at.0 + RING[i * 2].0, at.1 + RING[i * 2].1))
+        .filter(|&(x, y)| standable(x, y))
+        .collect();
+    let Some(&start) = sides.first() else {
+        return false;
+    };
+    let mut seen = vec![false; (plan.width * plan.height) as usize];
+    let mark = |seen: &mut Vec<bool>, (x, y): (i32, i32)| {
+        seen[(y * plan.width + x) as usize] = true;
+    };
+    let known = |seen: &Vec<bool>, (x, y): (i32, i32)| seen[(y * plan.width + x) as usize];
+    mark(&mut seen, start);
+    let mut queue = vec![start];
+    let mut left = sides.len() - 1;
+    while let Some(c) = queue.pop() {
+        for (dx, dy) in DIRS {
+            let n = (c.0 + dx, c.1 + dy);
+            if n == at || !standable(n.0, n.1) || known(&seen, n) {
+                continue;
+            }
+            mark(&mut seen, n);
+            queue.push(n);
+            if sides.contains(&n) {
+                left -= 1;
+                if left == 0 {
+                    return false;
+                }
+            }
+        }
+    }
+    left > 0
 }
 
 /// Найти клетку, откуда кот выполнит чертёж (сам тайл, если проходим, либо

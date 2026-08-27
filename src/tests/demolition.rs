@@ -166,5 +166,8 @@ fn fully_erased_area_leaves_the_island_under_the_cat() {
     assert_eq!(sim.floors_left([1, 1, 3, 1]), 1, "остался ровно один тайл");
     let (x, y) = sim.pos_of("a");
     assert_eq!(sim.tile(x, y), 0, "и это клетка под котом");
-    assert!(!sim.stuck_of("a"), "кот стоит на полу, а не в пустоте");
+    assert!(
+        sim.stuck_of("a"),
+        "и кот на ней замурован: пол под лапами есть, а шагнуть некуда (§12.144)",
+    );
 }

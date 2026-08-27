@@ -388,12 +388,37 @@ fn a_rect_of_racks_keeps_an_aisle() {
         .flat_map(|y| (2..5).map(move |x| (x, y)))
         .filter(|&(x, y)| sim.planned_tile(x, y) == Some(RACK))
         .count();
-    assert_eq!(planned, 8, "восемь полок из девяти, девятая — проход");
+    assert_eq!(
+        planned, 7,
+        "семь полок из девяти: девятая клетка — проход, а восьмая заперла бы          его в кармане (§12.144)",
+    );
 
     sim.tick_n(600); // коту хватит достроить всё размеченное
     assert!(
         sim.solid_without_aisle().is_empty(),
         "и построенное правилу не противоречит",
+    );
+}
+
+/// Полка, отрезающая кусок базы, отклоняется — даже если подход у неё самой
+/// есть (§12.144). Правило доступа спрашивает не только «подойду ли я к ней»,
+/// но и «останется ли подход ко всему, что за ней».
+#[test]
+fn a_rack_that_seals_a_pocket_is_refused() {
+    let mut sim = sim_from(&["#####", "#a..#", "#...#", "#####"]);
+    sim.set_solid(RACK, true);
+
+    sim.add_blueprint_rect(2, 1, 1, 1, RACK as i32);
+    assert_eq!(sim.planned_tile(2, 1), Some(RACK), "первая полка законна");
+
+    // А эта заперла бы кота в углу: подход у самой полки есть — (2, 2), — но
+    // клетка (1, 1) осталась бы без выхода.
+    sim.add_blueprint_rect(1, 2, 1, 1, RACK as i32);
+    assert_eq!(sim.planned_tile(1, 2), None, "запирающая полка отклонена");
+    assert_eq!(
+        sim.buildable(RACK as i32, 1, 2, 1, 1)[2 * 5 + 1],
+        0,
+        "и превью перечёркивает её до жеста",
     );
 }
 
@@ -485,7 +510,10 @@ fn the_mask_counts_the_whole_stroke() {
         .flat_map(|y| (2..5).map(move |x| (x, y)))
         .filter(|&(x, y)| mask[(y * 7 + x) as usize] == 1)
         .count();
-    assert_eq!(open, 8, "одна клетка мазка уйдёт под проход");
+    assert_eq!(
+        open, 7,
+        "две клетки мазка уйдут: одна под проход, вторая — чтобы к нему подойти",
+    );
 
     sim.add_blueprint_rect(2, 1, 3, 3, RACK as i32);
     let planned = (1..4)
@@ -493,8 +521,8 @@ fn the_mask_counts_the_whole_stroke() {
         .filter(|&(x, y)| sim.planned_tile(x, y) == Some(RACK) && mask[(y * 7 + x) as usize] == 1)
         .count();
     assert_eq!(
-        planned, 8,
-        "и это ровно та клетка, которую отклонит разметка"
+        planned, 7,
+        "и это ровно те клетки, которые отклонит разметка"
     );
 }
 
