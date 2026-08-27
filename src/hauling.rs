@@ -453,10 +453,14 @@ pub(crate) fn assign_hauls(
                         .filter_map(|(pi, (_, pile, _, _, from_pile))| {
                             // До кучи — до **подхода** к ней: куча на стеллаже
                             // лежит на клетке, на которую не встать (§12.142).
-                            let (_, to_pile) = work_spot(map, tiles, reach, *pile, held)?;
+                            // Идёт кот **на подход**, а не на саму клетку кучи:
+                            // на стеллаж не встать (§12.142), и маршрут до него
+                            // не строится вовсе — кот «доходил» бы не сходя с
+                            // места, а взять с соседней клетки уже не мог.
+                            let (spot, to_pile) = work_spot(map, tiles, reach, *pile, held)?;
                             let (_, rest) =
                                 build_spot(map, tiles, from_pile, n.at, n.tile, None, held)?;
-                            Some((to_pile + rest, ci, ni, *pile, Some(pi)))
+                            Some((to_pile + rest, ci, ni, spot, Some(pi)))
                         })
                         .min_by_key(|&(steps, ..)| steps)
                 })
