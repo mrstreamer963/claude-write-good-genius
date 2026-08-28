@@ -135,6 +135,13 @@ header {
   font-size: 11px;
 }
 
+/* Предмет, который база ещё не поняла (§12.131): запас у него настоящий, и
+   размер числа тот же, — но в дело он не идёт, поэтому цвет приглушён. Так
+   шапка отличает «Ткань(?)» от ткани, не занимая места словом. */
+.stock.dim b {
+  color: var(--muted);
+}
+
 .stock u {
   color: var(--muted);
   text-decoration: none;
@@ -589,6 +596,18 @@ main#stage.mode-cursor #mode-banner {
 .keep .keep-val:hover {
   color: var(--text);
   border-bottom-color: var(--accent, #7fb0d6);
+}
+/* Ворота автоматики закрыты (§12.93) — правка не открывается, и подпись это
+   обещает: пунктира нет, курсор обычный. Причина при этом называется словом в
+   подсказке, поэтому подпись остаётся на месте, а не прячется (§12.53). */
+.keep .keep-val.off {
+  cursor: default;
+  border-bottom-color: transparent;
+  color: var(--muted);
+}
+.keep .keep-val.off:hover {
+  color: var(--muted);
+  border-bottom-color: transparent;
 }
 /* Пока в подписи стоит поле ввода, свой пунктир она прячет: у поля есть
    собственная рамка, и две черты под одним числом читаются как артефакт. */

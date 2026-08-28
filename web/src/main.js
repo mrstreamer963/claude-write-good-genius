@@ -1328,7 +1328,10 @@ function renderSnapshot(snap) {
       const free = Math.max(0, st.stored - st.booked);
       const made = soon.get(i) ?? 0;
       const spent = owed.get(i) ?? 0;
-      const name = esc(it.label || it.id);
+      // Имя — то же, каким предмет зовут окно «Склад» и тема (§12.131):
+      // непонятое зовётся «Ткань(?)». Голое «Ткань» в подсказке отвечало бы,
+      // что база вещь понимает, ровно в тот момент, когда она её не понимает.
+      const name = esc(itemKnownName(i));
       const hint = [
         `${name}: на складе ${st.stored}`,
         st.booked ? `забронировано ${st.booked} под сделку` : "",
@@ -1342,7 +1345,11 @@ function renderSnapshot(snap) {
         .filter(Boolean)
         .join(" · ");
       return (
-        `<span class="stock" data-tip="${hint}">` +
+        // Непонятое база хранит, но пустить в дело не может (§12.131) —
+        // главное число у него того же размера (это тот же запас), но тусклее:
+        // «(?)» в подсказке отвечает только тому, кто до неё дотянулся, а
+        // шапка обязана отличать понятое от непонятого сама.
+        `<span class="stock${st.understood === false ? " dim" : ""}" data-tip="${hint}">` +
         `${itemGlyph(i)}<b>${free}</b>` +
         (st.loose ? `<u>+${st.loose}</u>` : "") +
         (made ? `<i>+${made}</i>` : "") +
@@ -4999,6 +5006,12 @@ function mkKeepLabel(key, read, write) {
   liveTitle(label, "Клик — ввести число");
   label.addEventListener("mousedown", (e) => {
     if (e.button !== 0) return;
+    // Ворота автоматики (§12.93) гасят подпись классом, а не `hidden` и не
+    // `disabled`: по погашенному элементу браузер шлёт события, значит причина
+    // словом («Нужно исследование „Автопроизводство“») доедет до игрока
+    // (§12.53, §12.121). Поле ввода при закрытых воротах не открываем вовсе:
+    // набранное число ядро отклонит, и правка окажется отказом без причины.
+    if (label.classList.contains("off")) return;
     e.preventDefault(); // иначе начинается выделение текста, а не правка
     startNumEdit(key, label, read, write);
   });
@@ -5381,6 +5394,19 @@ function raidGate(i, node) {
   // самое расхождение вида с ядром, ради которого исход считает одно место.
   const enlisted = node.crew.length;
   const over = enlisted > most;
+  // **Идут все или никто** (§12.148). Ворота считает ядро (`NodeSnap::fit`) —
+  // те же, по которым уходит правило автовылазки, — и второй их экземпляр
+  // здесь показал бы живую кнопку, которую фасад отклонит. Чинится ожиданием
+  // или вычёркиванием неготового с узла, и оба способа названы словом.
+  // Пустой узел «не в сборе» не бывает: собирать там нечего, и ответ на это
+  // другой — «готовых 0» ниже. Ядро тем же `squad_is_fit` отвечает `false`, но
+  // причина у него та же, что у отказа заявки, а игроку нужны разные слова.
+  const fit = enlisted === 0 || node.fit !== false;
+  // Кого ждём. `home` — те, кого ядро уже вычло из `ready` (в поле, ранен,
+  // спит), но «не в сборе» бывает и от усталости: такой кот в `ready` есть, а
+  // правило его не пускает. Поимённо его здесь не назвать, и это не молчание —
+  // причина названа классом, как у «Науки» без учёного (§12.124).
+  const waiting = home.length ? ` (${home.join(", ")})` : " — кто-то вымотан";
   const ready =
     !nogate &&
     !busyHere &&
@@ -5388,6 +5414,7 @@ function raidGate(i, node) {
     known &&
     welcome &&
     !nobody &&
+    fit &&
     paws >= least &&
     !over;
   // Закрытая вылазка видна и объясняется словом: лестница ответственности —
@@ -5414,15 +5441,17 @@ function raidGate(i, node) {
             ? `${hint} · нужна известность ${def.requires ?? 0}`
             : nobody
               ? `${hint} · все дома, спасать некого`
-              : paws < least
-                ? `${hint} · готовых ${paws}, нужно ${need}` +
-                  (home.length ? ` · дома остаются: ${home.join(", ")}` : "")
-                : over
-                  ? `${hint} · в отряде ${enlisted}, а больше ${most} этот заказ` +
-                    ` не уводит — вычеркните лишних`
-                  : home.length
-                    ? `${hint} · дома остаются: ${home.join(", ")}`
-                    : hint;
+              : !fit
+                ? `${hint} · отряд не в сборе — идут все или никто${waiting}`
+                : paws < least
+                  ? `${hint} · готовых ${paws}, нужно ${need}` +
+                    (home.length ? ` · дома остаются: ${home.join(", ")}` : "")
+                  : over
+                    ? `${hint} · в отряде ${enlisted}, а больше ${most} этот заказ` +
+                      ` не уводит — вычеркните лишних`
+                    : home.length
+                      ? `${hint} · дома остаются: ${home.join(", ")}`
+                      : hint;
   // Причина отказа отдельной строкой от подсказки: тулбар склеивает их в один
   // `title`, а штаб (§12.71) печатает причину словом под заказом — там она и
   // должна читаться, не наводя мышь.
@@ -5438,12 +5467,15 @@ function raidGate(i, node) {
             ? `нужна известность ${def.requires ?? 0}, у базы ${fame}`
             : nobody
               ? "все дома — спасать некого"
-              : paws < least
-                ? `готовы идти ${paws}, а нужно ${need}`
-                : over
-                  ? `в отряде ${enlisted}, а больше ${most} этот заказ не уводит` +
-                    ` — вычеркните лишних`
-                  : null;
+              : !fit
+                ? `отряд не в сборе: идут все или никто — подождите${waiting}` +
+                  " или вычеркните неготовых с узла"
+                : paws < least
+                  ? `готовы идти ${paws}, а нужно ${need}`
+                  : over
+                    ? `в отряде ${enlisted}, а больше ${most} этот заказ не уводит` +
+                      ` — вычеркните лишних`
+                    : null;
   return {
     ready,
     title,
@@ -6082,12 +6114,20 @@ function opensOf(topic, known = []) {
           opensAfter(it.requires, id, known),
       ),
     ],
+    // Тема-вскрытие в этот список не идёт (§12.143): её ворот двое, и второе —
+    // `sighted`, то есть появление образца на складе. Пообещать «открывает тему
+    // „Свойства ткани“» значит назвать причиной изучение, тогда как строка эта
+    // зажжётся сама, когда в мир приедет «Ткань(?)», — и наоборот, не зажжётся,
+    // сколько ни учись. Обещание, которое игра не исполняет по названной
+    // причине, хуже молчания (§12.53).
     [
       "темы",
       names(
         meta.research,
         (r) =>
-          (r.requires ?? []).includes(id) && opensAfter(r.requires, id, known),
+          (r.requires ?? []).includes(id) &&
+          !(r.specimen ?? []).length &&
+          opensAfter(r.requires, id, known),
       ),
     ],
     [
@@ -6977,7 +7017,7 @@ function syncStockWindow() {
     r.row.hidden = !st.seen && !makeable;
     if (r.row.hidden) continue;
     const free = Math.max(0, st.stored - st.booked);
-    const name = esc(r.it.label || r.it.id);
+    const name = esc(itemKnownName(r.item));
 
     // **Третье состояние строки** (§12.131): предмет виден, но база ещё не
     // поняла, что это. Он лежит, он продаётся — и больше ничего: ни одна
@@ -7207,6 +7247,10 @@ function syncStockWindow() {
                 `его в мастерскую, на разбор`,
         );
       }
+      // Закрыта технология выбранной дороги — число не правится вовсе, а на
+      // подписи стоит причина словом: ядро такую команду отклонит (§12.93).
+      r.sale.label.classList.toggle("off", !!gate);
+      liveTitle(r.sale.label, gate ?? "Клик — ввести число");
       const open = tears ? canScrap : canSell;
       r.sale.line.classList.toggle("on", keep > 0 && open);
       r.sale.line.classList.toggle("off", !open);
@@ -8045,7 +8089,7 @@ function ruleRow(node, at) {
   // Правило живо и заказ открыт, а отряд стоит — и до §12.116 строка про это
   // молчала. Причин две, и они **разные**: «не в сборе» чинится временем (кто-
   // то спит, ранен или ещё в поле), а слабый прогноз — решением игрока (взять
-  // ещё кота, одеть отряд, подучить «Вылазки»). Обе считает ядро (`auto_fit`,
+  // ещё кота, одеть отряд, подучить «Вылазки»). Обе считает ядро (`fit`,
   // `auto_share`/`auto_fail`), и числа для слова приезжают оттуда же: считать
   // исход в JS запрещает инвариант 14 — это то же выражение, по которому
   // правило решает, идти ли (§12.117).
@@ -8061,7 +8105,7 @@ function ruleRow(node, at) {
   const most = squadBounds((meta.missions ?? [])[node.auto])[1];
   const over = holding && node.crew.length > most;
   const weak = holding && !over && (node.auto_fail || node.auto_share < 100);
-  const gathering = holding && !over && !weak && !node.auto_fit;
+  const gathering = holding && !over && !weak && node.fit === false;
   const state = nogate
     ? "выйти некуда"
     : blocked
