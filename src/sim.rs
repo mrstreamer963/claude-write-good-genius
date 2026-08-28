@@ -1965,6 +1965,19 @@ impl Sim {
         if !self.is_relay_at(x, y) || !self.node_is_free(x, y) {
             return false;
         }
+        // **Идут все или никто** (§12.148). Отряд, собранный наполовину, ушёл
+        // бы просевшей долей и вернулся бы с ранами, а половина, оставшаяся
+        // дома, ждала бы его без дела: цена решения размазана по двум местам, и
+        // ни в одном не видна целиком. Ворота здесь ровно те же, что у правила
+        // автовылазки (`squad_is_fit`), — второй их экземпляр разошёлся бы с
+        // ним, и одна и та же бригада уходила бы по кнопке и стояла по правилу.
+        //
+        // Отказ называется словом в штабе (`NodeSnap::fit`), а чинится он двумя
+        // способами и оба — решение игрока: подождать или вычеркнуть неготового
+        // с узла.
+        if !self.squad_is_fit(x, y) {
+            return false;
+        }
         let units = self.roster_of(x, y);
         if !self.launch_at(def, units, Some((x, y))) {
             return false;
@@ -4515,7 +4528,10 @@ impl Sim {
                     let auto = self.world.resource::<AutoRaids>().of(x, y);
                     let (auto_share, auto_fail) =
                         auto.map_or((0, false), |def| self.auto_forecast(x, y, def));
-                    let auto_fit = auto.is_some() && self.squad_is_fit(x, y);
+                    // Собран ли отряд целиком (§12.148). Ворота у кнопки и у
+                    // правила одни, поэтому и поле одно — `auto_fit` разошёлся
+                    // бы с кнопкой на первом же спящем.
+                    let fit = self.squad_is_fit(x, y);
                     NodeSnap {
                         x,
                         y,
@@ -4533,7 +4549,7 @@ impl Sim {
                         auto_on: self.world.resource::<AutoRaids>().is_on(x, y),
                         auto_share,
                         auto_fail,
-                        auto_fit,
+                        fit,
                         comms: {
                             let map = self.world.resource::<BaseMap>();
                             let tiles = self.world.resource::<TileRules>();

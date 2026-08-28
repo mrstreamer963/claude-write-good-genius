@@ -322,6 +322,47 @@ fn an_empty_node_launches_nobody() {
     assert!(!sim.launch_node(m, 1, 2), "а теперь их слишком много");
 }
 
+/// **Идут все или никто** (§12.148): отряд, где кто-то вымотан, спит или ранен,
+/// не уходит вовсе —
+/// теми же воротами, какими стоит правило автовылазки. До §12.148 бригада
+/// уходила без спящего, и половина отряда оставалась дома без дела.
+#[test]
+fn a_node_refuses_to_leave_half_its_crew_at_home() {
+    let (mut sim, m) = sim_with_two_nodes();
+    sim.enlist("a", 1, 2);
+    sim.enlist("b", 1, 2);
+    sim.set_squad_range(m, 1, 2);
+    sim.set_needs(100, 50, 1);
+    sim.set_energy("b", 40);
+    assert!(!sim.launch_node(m, 1, 2), "с вымотанным отряд не уходит");
+    sim.tick_n(20);
+    assert!(!sim.is_away("a"), "и готовый остался дома, а не ушёл один");
+
+    // Чинится это двумя способами, и оба — решение игрока. Первый: подождать.
+    sim.set_energy("b", 100);
+    assert!(sim.launch_node(m, 1, 2), "отдохнувший отряд уходит целиком");
+    sim.tick_n(20);
+    assert!(sim.is_away("a") && sim.is_away("b"), "ушли оба");
+}
+
+/// Второй способ — вычеркнуть неготового с узла: отряд становится другим, и
+/// уходит он целиком.
+#[test]
+fn dismissing_the_unfit_cat_lets_the_rest_go() {
+    let (mut sim, m) = sim_with_two_nodes();
+    sim.enlist("a", 1, 2);
+    sim.enlist("b", 1, 2);
+    sim.set_squad_range(m, 1, 2);
+    sim.set_needs(100, 50, 1);
+    sim.set_energy("b", 40);
+    assert!(!sim.launch_node(m, 1, 2), "пока b вымотан — никто не идёт");
+
+    sim.dismiss("b");
+    assert!(sim.launch_node(m, 1, 2), "отряд из одного готового ушёл");
+    sim.tick_n(20);
+    assert!(sim.is_away("a") && !sim.is_away("b"));
+}
+
 /// Кот числится не более чем в одном отряде: зачисление ко второму узлу
 /// снимает первое. Два узла, зовущих одного кота, — это вылазка, состав которой
 /// зависит от того, какую кнопку нажали раньше.

@@ -6,7 +6,7 @@
 use bevy_ecs::prelude::*;
 
 use crate::components::SimTime;
-use crate::crafting::{assign_craft, plan_craft, work_craft};
+use crate::crafting::{assign_craft, plan_craft, spread_craft, work_craft};
 use crate::food::{assign_eat, hunger, work_eat};
 use crate::gear::{assign_equip, work_equip};
 use crate::goals::check_goals;
@@ -170,6 +170,7 @@ pub(crate) fn build_schedule() -> Schedule {
         assign_hauls,
         assign_research,
         plan_craft,
+        spread_craft,
         assign_craft,
         assign_jobs,
         mark_loose_scrap,

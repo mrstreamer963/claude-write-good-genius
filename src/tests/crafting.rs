@@ -1579,3 +1579,24 @@ fn lowering_a_threshold_below_the_stock_trims_supplied_orders() {
     assert_eq!(sim.orders_count(), 0, "лишние заказы сняты");
     assert_eq!(sim.item_total(SCRAP), 40, "материал вернулся весь");
 }
+
+/// **Крупный заказ растекается по свободным станкам** (§12.149): двадцать штук,
+/// заказанных разом, рождаются в одной ячейке — и там же оставались до §12.149,
+/// сколько бы мастерских база ни построила.
+#[test]
+fn a_swollen_order_spreads_over_free_shops() {
+    let mut sim = sim_with_three_shops();
+    let def = sim.set_recipe(100, &[(0, 1)], &[(1, 1)], &[]);
+    sim.put_item(6, 1, 0, 100);
+    // Заявка целиком встаёт в первую ячейку по обходу карты (§12.96).
+    assert!(sim.start_craft(def, 20));
+    assert_eq!(sim.craft_cells_of(def).len(), 1, "заказ пока один");
+
+    sim.tick();
+    assert_eq!(
+        sim.craft_cells_of(def).len(),
+        3,
+        "свободные станки разобрали заказ по себе",
+    );
+    assert_eq!(sim.craft_left_of(def), Some(20), "штук столько же");
+}
