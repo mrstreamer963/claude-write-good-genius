@@ -4793,6 +4793,7 @@ function syncRecruitButtons(list) {
 // только показываем — и объясняем, чего не хватает: молчащая кнопка читается как
 // сломанная, а закрытая цель, наоборот, тянет (§4.4).
 function syncTopicButtons(list) {
+  const known = lastSnap?.techs ?? [];
   topicButtons.forEach((b, i) => {
     const t = (list ?? [])[i];
     if (!t) return;
@@ -4826,6 +4827,22 @@ function syncTopicButtons(list) {
     b.classList.toggle("locked", teasing);
     for (const el of b._details ?? []) el.hidden = teasing;
     if (b._locked) b._locked.hidden = !teasing;
+    // «Открывает:» — живая строка (см. `opensAfter`): она называет только то,
+    // что станет доступно **сразу** после этой темы, а список известных
+    // технологий растёт по ходу партии. Пишем **только на изменении**: узел
+    // живёт внутри кнопки, и безусловная перезапись каждые 16 мс убила бы клик
+    // между `mousedown` и `mouseup` (§12.84).
+    if (b._opens) {
+      const opens = teasing
+        ? ""
+        : opensOf((meta.research ?? [])[i] ?? {}, known);
+      const text = opens ? `Открывает: ${opens}` : "";
+      if (b._opens._text !== text) {
+        b._opens._text = text;
+        b._opens.textContent = text;
+      }
+      b._opens.hidden = !text;
+    }
     const ready =
       !t.known &&
       t.unlocked &&
@@ -6003,7 +6020,19 @@ function givesOf(topic) {
     .join(", ");
 }
 
-function opensOf(topic) {
+// Строка «Открывает:» обещает то, что будет доступно **сразу после** этой темы,
+// а не когда-нибудь потом: у рецепта, предмета и темы `requires` бывает
+// несколько, и «Открывает: темы Автопроизводство» под «Автоматизацией», которой
+// не хватает ещё и «Мастерской», — это обещание, которого изучение не выполнит.
+// Поэтому запись показывается, только когда все её **остальные** требования уже
+// изучены; изучили «Мастерскую» — «Автопроизводство» в строке появилось.
+// Отсюда же и то, что строка пересчитывается кадром (`syncTopicButtons`), а не
+// печётся раз при сборке окна: список известных технологий растёт по ходу партии.
+function opensAfter(reqs, id, known) {
+  return (reqs ?? []).every((r) => r === id || known.includes(r));
+}
+
+function opensOf(topic, known = []) {
   const id = topic.id;
   // ⚠️ `auto_gates` везёт **ярлык** темы, а не её `id` (так его читает
   // `autoGateHint`), — сверяем с обоими: у тем без `label` они совпадают.
@@ -6013,11 +6042,33 @@ function opensOf(topic) {
   const groups = [
     ["постройки", names(meta.palette, (t) => t.tech === id)],
     // Разбор — тот же рецепт (§12.114), и называется он входом, а не выходом.
-    ["рецепты", names(meta.recipes, (r) => (r.requires ?? []).includes(id))],
+    [
+      "рецепты",
+      names(
+        meta.recipes,
+        (r) =>
+          (r.requires ?? []).includes(id) && opensAfter(r.requires, id, known),
+      ),
+    ],
     // С §12.131 `requires` у предмета значит не «носить», а «понимать»: такой
     // предмет до темы не идёт ни в одну цену и стоит на складе как «Ткань(?)».
-    ["понимать", names(meta.items, (it) => (it.requires ?? []).includes(id))],
-    ["темы", names(meta.research, (r) => (r.requires ?? []).includes(id))],
+    [
+      "понимать",
+      names(
+        meta.items,
+        (it) =>
+          (it.requires ?? []).includes(id) &&
+          opensAfter(it.requires, id, known),
+      ),
+    ],
+    [
+      "темы",
+      names(
+        meta.research,
+        (r) =>
+          (r.requires ?? []).includes(id) && opensAfter(r.requires, id, known),
+      ),
+    ],
     [
       "правила",
       Object.entries(meta.auto_gates ?? {})
@@ -6044,7 +6095,6 @@ function buildSciWindow() {
   sciHeads = mkRegistryHeads(list, true);
   topicButtons.length = 0;
   (meta.research ?? []).forEach((r, i) => {
-    const opens = opensOf(r);
     const gives = givesOf(r);
     const b = mkTool(
       '<span class="topic-main">' +
@@ -6061,9 +6111,9 @@ function buildSciWindow() {
         // Тема, за которой ничего не стоит, строки не получает: пустое
         // «Открывает:» читалось бы как «ничего не даёт» (§12.53).
         (gives ? `<span class="topic-opens">Даёт: ${esc(gives)}</span>` : "") +
-        (opens
-          ? `<span class="topic-opens">Открывает: ${esc(opens)}</span>`
-          : "") +
+        // Пустой узел — не «ничего не даёт»: список пересчитывается кадром, и
+        // строка зажигается, как только остальные требования изучены.
+        '<span class="topic-opens topic-opens-live" hidden></span>' +
         // Строка для темы, до которой база ещё не доросла (§12.137). Стоит
         // всегда, показывается только у закрытых: подробностей у них нет —
         // ни цены, ни «даёт», ни «открывает», — но **причина словом есть**,
@@ -6082,8 +6132,11 @@ function buildSciWindow() {
     // Узлы подробностей держим на кнопке: у закрытой темы они гасятся кадром,
     // а пересобирать её разметку нельзя — клик умрёт между `mousedown` и
     // `mouseup` (§12.84).
-    b._details = [...b.querySelectorAll(".topic-cost, .topic-opens")];
+    b._details = [
+      ...b.querySelectorAll(".topic-cost, .topic-opens:not(.topic-opens-live)"),
+    ];
     b._locked = b.querySelector(".topic-locked");
+    b._opens = b.querySelector(".topic-opens-live");
     topicButtons.push(b);
     list.appendChild(b);
   });
