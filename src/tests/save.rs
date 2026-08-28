@@ -577,7 +577,7 @@ fn goals_and_their_logs_survive_a_save() {
 fn a_stocking_rule_survives_a_save() {
     let mut live = Sim::new(CORE).expect("рулсет");
     live.without_timeline(); // мир по расписанию тут только шум
-    live.set_tech("materials"); // «Материаловедение» открывает и станок, и рецепт
+    live.set_tech("workshops"); // тема «Мастерская» открывает и станок, и рецепт (§12.146)
     live.set_tech("planning"); // а «Автопроизводство» — само правило-порог (§12.93)
     assert!(live.add_blueprint(10, 7, 8), "мастерская размечена");
     live.tick_n(600); // коты подвезли лом и построили её

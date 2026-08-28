@@ -1016,7 +1016,7 @@ fn the_shipped_ruleset_makes_a_part_from_scrap() {
         "и мастерскую пока не построить",
     );
 
-    sim.set_tech("materials");
+    sim.set_tech("workshops");
     assert!(sim.add_blueprint(10, 7, shop), "технология открыла обе");
     sim.tick_n(600); // коты возят материал и строят
     assert_eq!(i32::from(sim.tile(10, 7)), shop, "мастерская готова");
@@ -1270,7 +1270,8 @@ fn the_shipped_ruleset_opens_the_cloth_branch_in_order() {
     let shop = 8; // индекс `shop` в палитре тайлов
 
     assert!(!sim.start_craft(salvage, 1), "без мастерской рецепта нет");
-    sim.set_tech("materials");
+    sim.set_tech("materials"); // веха: за ней и станок, и вскрытие (§12.146)
+    sim.set_tech("workshops");
     assert!(
         sim.add_blueprint(10, 7, shop),
         "технология открыла мастерскую"
