@@ -1942,9 +1942,10 @@ function tileRoles(def) {
   if (def.rest > 0) roles.push("лежанка");
   if (def.heal > 0) roles.push("койка лазарета");
   if (def.gate) roles.push("шлюз: отсюда уходят на вылазку");
-  // Без слова «парта» — оно уже в заголовке панели; роль отвечает только на
-  // «чему тут учат» (§12.80: строка, повторяющая соседа по экрану, лишняя).
-  if (def.teaches) roles.push(`учит «${esc(skillLabel(def.teaches))}»`);
+  // Парты в списке нет (§12.80): «учит «Наука»» повторяла бы заголовок
+  // карточки ниже («Наука · sp2 — 25 %»), а у свободной парты домен называет
+  // сама строка «свободна». Роль пишется там, где о клетке больше сказать
+  // нечего, — у парты есть своя карточка.
   if (def.lab) roles.push("лаборатория");
   if (def.shop) roles.push("мастерская");
   // Поста в списке нет (§12.81): «торговый пост» — это заголовок панели слово в
@@ -2189,7 +2190,16 @@ function renderCellPanel(snap) {
 
   // Кто стоит. Клетку коты делят на проходе (§12.32), а на паузе видно только
   // верхнего — из-за чего и разошлись показания в первом баге про лапы.
-  const here = unitsAt(x, y);
+  // Ученика за партой сюда не пишем: о нём слово в слово сказала карточка
+  // выше (§12.80). Остальных — да, клетку коты делят на проходе.
+  const said = def?.teaches
+    ? new Set(
+        (snap.entities ?? [])
+          .filter((e) => e.job === "study" && e.x === x && e.y === y)
+          .map((e) => e.id),
+      )
+    : null;
+  const here = unitsAt(x, y).filter((id) => !said?.has(id));
   if (here.length)
     parts.push(
       `<div class="cat-sub">здесь: ${here.map(esc).join(" · ")}</div>`,
@@ -3056,7 +3066,9 @@ function deskCell(snap, x, y, def) {
   const atDesk = (e) => e.job === "study" && !!tileDefAt(e.x, e.y)?.teaches;
   const cat = here ?? ents.find((e) => e.study === i && !atDesk(e));
   if (!cat) {
-    const out = ['<div class="cat-sub">парта свободна</div>'];
+    const out = [
+      `<div class="cat-sub">парта свободна: учит «${esc(skillLabel(def.teaches))}»</div>`,
+    ];
     // Почему второй клик не посадит выбранного кота (§12.53): молчащая клетка
     // читается как поломка ровно так же, как молчащая кнопка. Потолок парты
     // считает ядро (`desk` у навыка) — врождённого предела в виде нет.
@@ -3075,16 +3087,20 @@ function deskCell(snap, x, y, def) {
     skill && skill.desk > 0
       ? Math.min(100, Math.round((skill.xp / skill.desk) * 100))
       : 0;
+  // Имя ученика стоит в заголовке, а не отдельной строкой под полоской: «sp2
+  // занимается» при сидящем коте не добавляет к «Наука · sp2 — 25 %» ничего,
+  // и вместе с «здесь: sp2» ниже одно и то же имя стояло трижды. Строка
+  // остаётся только там, где ей есть что сказать, — когда кота за партой нет.
   const state = here
-    ? `${esc(cat.id)} занимается`
+    ? ""
     : cat.away
-      ? `${esc(cat.id)} не на базе — вернётся за парту сам`
-      : `${esc(cat.id)} приписан: сядет за свободную парту сам`;
+      ? "не на базе — вернётся за парту сам"
+      : "приписан: сядет за свободную парту сам";
   return [
     '<div class="cat-skill">' +
-      `<div class="cat-row"><span>Учится: ${esc(skillLabel(def.teaches))}</span><b>${pct}%</b></div>` +
+      `<div class="cat-row"><span>${esc(skillLabel(def.teaches))} · ${esc(cat.id)}</span><b>${pct}%</b></div>` +
       `<div class="bar"><i style="width:${pct}%"></i></div>` +
-      `<div class="cat-sub">${state}</div>` +
+      (state ? `<div class="cat-sub">${state}</div>` : "") +
       `<button class="tool study-off" data-key="unteach@${esc(cat.id)}" ` +
       `data-id="${esc(cat.id)}"><span>Снять с учёбы</span></button>` +
       "</div>",
