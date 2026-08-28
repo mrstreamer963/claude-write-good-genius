@@ -3669,6 +3669,21 @@ function itemName(item) {
   return (stock[item] ?? {}).seen ? itemLabel(item) : "??";
 }
 
+// Имя предмета так, как его знает база (§12.131), — то же самое, что стоит
+// строкой в окне «Склад»: не видели вовсе — «??», видели, но не поняли —
+// «Ткань(?)». Обе шкалы ортогональны, и обе называются словом, а не пустотой.
+//
+// Нужно это везде, где предмет назван **до** того, как игрок с ним познакомился,
+// — а «Даёт: …» у темы ровно такое место: «Вскрыть комбинезон» обещает ткань
+// той базе, которая про ткань ещё ничего не знает, и голое «Ткань ×2» выдавало
+// бы название вперёд самого вскрытия. Второй экземпляр этой арифметики заводить
+// нельзя: строка окна и строка темы обязаны звать вещь одинаково.
+function itemKnownName(item) {
+  const st = stock[item] ?? {};
+  if (!st.seen) return "??";
+  return st.understood === false ? `${itemLabel(item)}(?)` : itemLabel(item);
+}
+
 function perkLabel(id) {
   const def = (meta.perks ?? []).find((p) => p.id === id);
   return def?.label || id;
@@ -6005,7 +6020,7 @@ function givesOf(topic) {
   return pairsIn(topic.gives)
     .map(([gid, n]) => {
       const idx = (meta.items ?? []).findIndex((it) => it.id === gid);
-      return `${itemLabel(idx)} ×${n}`;
+      return `${itemKnownName(idx)} ×${n}`;
     })
     .join(", ");
 }
