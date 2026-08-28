@@ -729,7 +729,12 @@ impl Sim {
         requires: &[&str],
     ) -> usize {
         let mut rules = self.world.resource_mut::<CraftRules>();
+        // Синтетическому рецепту `id` не нужен — тесты держат его индексом,
+        // который сами же и получили, — но пустым он быть не должен: по нему
+        // ищет `recipe_index`, и два безымянных рецепта совпали бы.
+        let id = format!("test_recipe_{}", rules.0.len());
         rules.0.push(CraftRule {
+            id,
             work,
             cost: cost.to_vec(),
             gives: gives.to_vec(),
@@ -750,6 +755,19 @@ impl Sim {
         self.recipes
             .iter()
             .map(|r| (r.id.clone(), flat(&r.cost), flat(&r.gives)))
+            .collect()
+    }
+
+    /// Рецепты разбора как «из чего → что» **индексами** предметов: сторожу
+    /// цепочки «рынок → мастерская → рынок» (§12.150) нужны курсы, а курс
+    /// спрашивают по индексу, не по имени.
+    fn salvage_flows(&self) -> Vec<(String, Vec<(usize, i32)>, Vec<(usize, i32)>)> {
+        self.world
+            .resource::<CraftRules>()
+            .0
+            .iter()
+            .filter(|r| r.salvage)
+            .map(|r| (r.id.clone(), r.cost.clone(), r.gives.clone()))
             .collect()
     }
 
@@ -1024,6 +1042,18 @@ impl Sim {
             .0
             .iter()
             .position(|t| t.id == id)
+    }
+
+    /// Индекс рецепта по `id`; `None` — такого рецепта нет. Нужен по тому же
+    /// доводу, что `topic_index` и `item_index`: порядок записей `recipes:` —
+    /// это индекс, и зашитый числом он разъезжается молча от одной вставки в
+    /// середину списка.
+    fn recipe_index(&self, id: &str) -> Option<usize> {
+        self.world
+            .resource::<CraftRules>()
+            .0
+            .iter()
+            .position(|r| r.id == id)
     }
 
     /// Выдать коту столько опыта, чтобы он вышел на `level` в этом домене.
@@ -1793,13 +1823,60 @@ impl Sim {
     }
 
     /// Расписание базового курса по предмету: фазы идут по кругу.
+    ///
+    /// Строка кладётся **открытой** (§12.150): ворот у синтетического прайса нет,
+    /// как нет ни автопродажи, ни закладок, — их ставит `set_offer_gate`.
     fn set_prices(&mut self, faction: usize, item: usize, phases: &[i32]) {
         let mut rules = self.world.resource_mut::<FactionRules>();
         if let Some(rule) = rules.0.get_mut(faction) {
-            rule.prices.retain(|&(i, _)| i != item);
-            rule.prices.push((item, phases.to_vec()));
-            rule.prices.sort_unstable_by_key(|&(i, _)| i);
+            rule.prices.retain(|(i, _)| *i != item);
+            rule.prices.push((
+                item,
+                PriceLine {
+                    phases: phases.to_vec(),
+                    requires: 0,
+                    needs: Vec::new(),
+                },
+            ));
+            rule.prices.sort_unstable_by_key(|(i, _)| *i);
         }
+    }
+
+    /// Ворота на строку прайса (§12.150): порог известности и пол доверия.
+    ///
+    /// Строки нет — не делает ничего: ворота у товара, которым не торгуют,
+    /// выразить нечем, ровно как порог автопродажи на непродаваемый предмет.
+    fn set_offer_gate(
+        &mut self,
+        faction: usize,
+        item: usize,
+        requires: i32,
+        needs: &[(usize, i32)],
+    ) {
+        let mut rules = self.world.resource_mut::<FactionRules>();
+        if let Some(rule) = rules.0.get_mut(faction) {
+            if let Some((_, line)) = rule.prices.iter_mut().find(|(i, _)| *i == item) {
+                line.requires = requires;
+                line.needs = needs.to_vec();
+                line.needs.sort_unstable_by_key(|(f, _)| *f);
+            }
+        }
+    }
+
+    /// Ворота товара ровно так, как их видит витрина: `None` — не торгуют вовсе,
+    /// иначе «известности хватает» и «доверия хватает» (§12.150).
+    ///
+    /// Снапшот на хосте не собрать, поэтому спрашиваем то же выражение, каким
+    /// считает и фасад, и снимок (инвариант 14).
+    fn offer_gates(&self, faction: usize, item: usize) -> Option<(bool, bool)> {
+        crate::trade::offer_gates(
+            self.world.resource::<FactionRules>(),
+            self.world.resource::<Fame>(),
+            self.world.resource::<Standing>(),
+            faction,
+            item,
+        )
+        .map(|g| (g.unlocked, g.welcome))
     }
 
     /// Сколько предметов в палитре рулсета.

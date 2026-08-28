@@ -1360,3 +1360,151 @@ fn a_salvaged_item_is_not_sold_at_the_same_time() {
     assert!(sim.sales().is_empty(), "сделок нет — излишек ушёл в разбор");
     assert!(sim.craft_left_of(def).is_some(), "и заказ на него стоит");
 }
+
+// --- Ворота на строку прайса (§12.150) --------------------------------------
+//
+// Витрина покупки — второй вход в дерево технологий: деньгами вместо риска.
+// Чтобы «дорасти до товара» было выразимо, у строки прайса есть двое ворот —
+// известность и репутация, тем же словарём, что у вылазки и кандидата (§12.43).
+// Закрывают они **только покупку**: см. `PriceDef`.
+
+/// Известности не хватает — покупка отклоняется целиком: ни сделки, ни списания.
+///
+/// Именно «ни списания»: деньги за покупку уходят **в момент заказа** (§12.44),
+/// и ворота, проверенные после кассы, оставили бы игрока без денег и без товара.
+#[test]
+fn goods_above_your_fame_cannot_be_bought() {
+    let (mut sim, f) = sim_with_market();
+    sim.set_money(1000);
+    sim.set_offer_gate(f, 0, 5, &[]);
+
+    assert!(!sim.trade(f, 0, 1, true), "известности не хватает");
+    assert_eq!(sim.deals_open(), 0, "слот поста не занят");
+    assert_eq!(sim.money(), 1000, "и деньги на месте");
+}
+
+/// Доросли — та же кнопка срабатывает. Ворота открываются, а не исчезают:
+/// известность только растёт (§12.24), значит открытое не отбирается.
+#[test]
+fn fame_opens_the_goods_it_gated() {
+    let (mut sim, f) = sim_with_market();
+    sim.set_money(1000);
+    sim.set_offer_gate(f, 0, 5, &[]);
+    assert!(!sim.trade(f, 0, 1, true));
+
+    sim.set_fame(5);
+    assert!(sim.trade(f, 0, 1, true), "известность доросла — берут");
+    assert_eq!(sim.deals_open(), 1);
+}
+
+/// Репутация — вторые ворота, и они, в отличие от известности, **умеют
+/// закрываться** (§12.43): упавшее доверие снова запирает товар.
+#[test]
+fn standing_gates_the_goods_both_ways() {
+    let (mut sim, f) = sim_with_market();
+    sim.set_money(1000);
+    sim.set_offer_gate(f, 0, 0, &[(f, 20)]);
+
+    assert!(!sim.trade(f, 0, 1, true), "доверия ещё нет");
+    sim.set_standing(f, 20);
+    assert!(sim.trade(f, 0, 1, true), "доверие набрали — продают");
+    sim.set_standing(f, 5);
+    assert!(!sim.trade(f, 0, 1, true), "рассорились — снова нет");
+}
+
+/// **Ворота закрывают покупку, но не продажу.** Сдать фракции лом можно всегда,
+/// каким бы закрытым ни был её собственный ассортимент.
+///
+/// Это не послабление, а защита правила: репутация умеет падать, и ворота на
+/// продажу однажды сломали бы уже поставленную автопродажу — ровно того, чего
+/// §12.93 избегает у технологий их монотонностью.
+#[test]
+fn gated_goods_can_still_be_sold_to_that_faction() {
+    let (mut sim, f) = sim_with_market();
+    sim.set_offer_gate(f, 0, 99, &[(f, 99)]);
+    sim.put_scrap(6, 1, 10);
+
+    assert!(!sim.trade(f, 0, 1, true), "купить нельзя");
+    assert!(sim.trade(f, 0, 5, false), "а продать — всегда");
+    assert_eq!(sim.deals_open(), 1);
+}
+
+/// Ворота у предмета, которым фракция не торгует, — не «закрыто», а молчание
+/// прайса: `None`. Вид такую строку не показывает нигде, и путать эти два
+/// состояния нельзя — иначе витрина обещала бы то, чего у продавца нет.
+#[test]
+fn an_untraded_item_has_no_gates_at_all() {
+    let (sim, f) = sim_with_market();
+    assert_eq!(sim.offer_gates(f, 0), Some((true, true)), "лом открыт");
+    assert_eq!(sim.offer_gates(f, 1), None, "деталью не торгуют вовсе");
+}
+
+/// Строка без ворот открыта: короткая форма записи в YAML (`item: [фазы]`) — это
+/// та же строка с нулевым порогом и пустым `needs`, а не отдельный случай.
+#[test]
+fn a_plain_price_line_is_open_from_the_first_tick() {
+    let (mut sim, f) = sim_with_market();
+    sim.set_money(1000);
+    assert_eq!(sim.offer_gates(f, 0), Some((true, true)));
+    assert!(sim.trade(f, 0, 1, true), "ворот нет — берут сразу");
+}
+
+/// **Купить вещь, разобрать и продать содержимое обязано быть в убыток**
+/// (§12.150). Сторож на арбитраж перебирает пары фракций, но цепочку через
+/// мастерскую он не видит вовсе, — а с витриной покупки она появилась: вход
+/// разбора теперь можно не искать в поле, а взять за деньги.
+///
+/// Считается худший для базы случай: самая дешёвая покупка входа против самой
+/// дорогой продажи выхода, по всем фазам расписания и при полном доверии
+/// обеим сторонам. Сойдись они — и мастерская стала бы станком для печати
+/// денег, обесценив и вылазку, и сам рынок (§12.44).
+#[test]
+fn the_shipped_ruleset_never_pays_for_taking_a_bought_thing_apart() {
+    let mut sim = shipped();
+    let count = sim.faction_spans().len();
+    for f in 0..count {
+        let span = sim.faction_spans()[f];
+        sim.set_standing(f, span);
+    }
+    let period = sim.market_period();
+
+    // Крайние курсы по всем фазам и всем сторонам: почём самое дешёвое «купить»
+    // и почём самое дорогое «продадут».
+    let mut cheapest_buy = vec![None::<i32>; sim.item_count()];
+    let mut dearest_sell = vec![None::<i32>; sim.item_count()];
+    for phase in 0..8u64 {
+        sim.set_tick(phase * period);
+        for f in 0..count {
+            for item in 0..sim.item_count() {
+                if let Some(b) = sim.quote(f, item, true) {
+                    cheapest_buy[item] = Some(cheapest_buy[item].map_or(b, |m| m.min(b)));
+                }
+                if let Some(s) = sim.quote(f, item, false) {
+                    dearest_sell[item] = Some(dearest_sell[item].map_or(s, |m| m.max(s)));
+                }
+            }
+        }
+    }
+
+    for (id, cost, gives) in sim.salvage_flows() {
+        // Вход, которого никто не продаёт, этой дорогой не добывается: разбор
+        // такого рецепта питается полем, а не рынком, и к арбитражу отношения
+        // не имеет.
+        let spend: Option<i32> = cost
+            .iter()
+            .map(|&(item, n)| cheapest_buy[item].map(|p| p * n))
+            .sum();
+        let Some(spend) = spend else { continue };
+        // Выход считаем целиком, а непродаваемое — нулём: за него не платят,
+        // и завышать выручку в пользу базы тут нечем.
+        let earn: i32 = gives
+            .iter()
+            .map(|&(item, n)| dearest_sell[item].unwrap_or(0) * n)
+            .sum();
+        assert!(
+            spend > earn,
+            "«{id}»: вход стоит {spend}, а содержимое продаётся за {earn} — \
+             купил, разобрал, продал, и мастерская печатает деньги",
+        );
+    }
+}

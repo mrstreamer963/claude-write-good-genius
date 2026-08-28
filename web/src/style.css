@@ -478,6 +478,13 @@ main#stage.mode-cursor #mode-banner {
   border-radius: 50%;
 }
 
+/* Покупка: тот же цвет, что у торгового поста в палитре тайлов (§12.150).
+   Дверь ведёт в витрину внешнего рынка, и красить её надо тем, чем покрашено
+   место, куда товар приедет. */
+.sw-trade {
+  background: linear-gradient(135deg, #b0a06a 0 50%, #7a6f4a 50% 100%);
+}
+
 /* Известность: не предмет, но живёт в том же счётчике — она решает, что базе
    доступно, и смотреть на неё игрок будет так же часто (§12.24). */
 .fame {
@@ -1652,7 +1659,8 @@ main#stage.mode-cursor #mode-banner {
    синхронизируется на месте, потому что в нём живут поля порогов. */
 #stockwin,
 #sciwin,
-#hirewin {
+#hirewin,
+#buywin {
   position: fixed;
   inset: 0;
   display: flex;
@@ -1664,7 +1672,8 @@ main#stage.mode-cursor #mode-banner {
 }
 #stockwin[hidden],
 #sciwin[hidden],
-#hirewin[hidden] {
+#hirewin[hidden],
+#buywin[hidden] {
   display: none;
 }
 .win-box {
@@ -1933,7 +1942,8 @@ main#stage.mode-cursor #mode-banner {
    правому краю, и глаз читает столбец, а не шесть отдельных строк. */
 .ware-trade {
   display: grid;
-  grid-template-columns: auto 104px minmax(132px, auto) 104px 104px;
+  /* Колонок четыре, а не пять: «Купить» уехала в своё окно (§12.150). */
+  grid-template-columns: auto 104px minmax(132px, auto) 104px;
   align-items: center;
   justify-content: end;
   gap: 6px;
@@ -2213,4 +2223,47 @@ main#stage.mode-cursor #mode-banner {
   color: var(--muted);
   font-size: 11px;
   line-height: 15px;
+}
+
+/* --- окно «Покупка» (§12.150) ---------------------------------------------
+   Витрина внешнего рынка: закладка на сторону, строка на товар. Своё окно, а не
+   строка «Склада», потому что ассортимент приходит **от прайса**, и в нём стоит
+   то, чего база не видела ни разу (§12.131). */
+
+/* Закладки сторон — своей полосой над списком, а не заголовками групп внутри:
+   у каждой стороны свой курс на один и тот же товар, и склеенный список
+   спрашивал бы «почём» дважды в соседних строках (§12.88). */
+/* Красная строка стоит не в шапке окна, а над списком — своей полосой, значит
+   и отступы у неё свои:  рассчитан на строку внутри шапки. */
+.buy-warn {
+  padding: 0 10px;
+}
+.buy-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 10px 0;
+}
+
+/* Строка товара — это и есть кнопка сделки: цена, имя и «×N» в одном узле, как
+   у кандидата в «Найме». Гаснет она классом, никогда `disabled` (§12.53). */
+.buy-row {
+  display: grid;
+  grid-template-columns: auto minmax(140px, 1fr) minmax(96px, auto) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+}
+.buy-rate {
+  text-align: right;
+  color: var(--accent);
+}
+
+/* Закрытая позиция не прячется, а тускнеет и уезжает вниз группой «Пока не по
+   зубам» (§12.137): её цена и есть ответ на «ради чего расти». Тот же приём,
+   что у витрины тем, — и та же непрозрачность, чтобы две витрины читались
+   одинаково. */
+.tool.buy-row.locked {
+  opacity: 0.75;
 }

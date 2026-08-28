@@ -188,6 +188,7 @@ const stockWinEl = document.getElementById("stockwin");
 // из многих, и в колонке тулбара они не помещались.
 const sciWinEl = document.getElementById("sciwin");
 const hireWinEl = document.getElementById("hirewin");
+const buyWinEl = document.getElementById("buywin");
 const toastsEl = document.getElementById("toasts");
 const newsEl = document.getElementById("news");
 const liveTipEl = document.getElementById("livetip");
@@ -602,6 +603,7 @@ const topicButtons = []; // кнопки тем — гасим по технол
 let sciDoor = null;
 let hireDoor = null;
 let stockDoor = null;
+let buyDoor = null;
 // Пороги автопроизводства в порядке палитры рецептов (§12.65). Число хранит
 // ядро; здесь оно нужно строке окна «Склад» — и подписи, и полю правки, которое
 // открывается **с него** (§12.100, §12.105, §12.108).
@@ -1429,6 +1431,7 @@ function renderSnapshot(snap) {
   // прячет изученные темы и нанятых, а группировать надо живые (§12.120).
   syncSciWindow();
   syncHireWindow();
+  syncBuyWindow();
   renderNews(snap);
   syncDoors(snap);
   syncNewsMarks();
@@ -4417,15 +4420,14 @@ function buildToolbar() {
   sciDoor = null;
   hireDoor = null;
   if ((meta.research ?? []).length) {
-    // Дверь **гасится классом, а не прячется и не `disabled`** (§12.53,
-    // §12.124): по `disabled` браузер не шлёт событий мыши, и причина из
-    // `title` не показывается ни разу, — а обработчик отсекает клик сам.
-    sciDoor = mkTool(
-      '<span class="sw sw-lab"></span><span>Наука</span>',
-      () => {
-        if (sciDoor.classList.contains("off")) return;
-        openSciWindow();
-      },
+    // ⚠️ **Гаснет, но пускает** (§12.151). Отсечка по `.off` здесь была и
+    // убрана: §12.137 уже отменял её ради витрины тем, а §12.151 делает это
+    // общим правилом — тусклая дверь отвечает на «почему нельзя», открывшееся
+    // окно на «чего ждать», и запертая теряет второй ответ. Гасим классом, а не
+    // `disabled`: по выключенному элементу браузер не шлёт событий мыши, и
+    // причина не показалась бы ни разу (§12.53, §12.124).
+    sciDoor = mkTool('<span class="sw sw-lab"></span><span>Наука</span>', () =>
+      openSciWindow(),
     );
     liveTitle(sciDoor, "За какую тему взяться и чего для этого не хватает");
     el.appendChild(sciDoor);
@@ -4436,6 +4438,38 @@ function buildToolbar() {
     );
     liveTitle(hireDoor, "Кто откликнется на известность базы и чего он стоит");
     el.appendChild(hireDoor);
+  }
+  // Четвёртая дверь (§12.150). Дверь, а не строка «Склада»: витрина приходит от
+  // прайса, и в ней стоит то, чего база не видела ни разу, — то есть ровно то,
+  // что окно «Склад» прячет (§12.131).
+  //
+  // Отсутствие торгового поста дверь **не гасит**: это «нет ячейки», а не «нет
+  // технологии», и §12.100 такое называет словом внутри окна — там же, где
+  // видно, ради чего пост строить.
+  buyDoor = null;
+  if (
+    (meta.factions ?? []).some((f) =>
+      f.prices instanceof Map
+        ? f.prices.size
+        : Object.keys(f.prices ?? {}).length,
+    )
+  ) {
+    // ⚠️ **Гаснет, но пускает** (§12.150), и это не полумера, а тот же случай,
+    // что у «Науки» в §12.137: витрина **отменяет** отсечку по `.off`. Дверь
+    // тусклая отвечает на «почему нельзя торговать», а открытая — на «зачем мне
+    // торговый пост»: закрой её, и второй вопрос останется без ответа ровно там,
+    // где игрок его задаёт. Гасим классом, а не `disabled`: по выключенному
+    // элементу браузер не шлёт событий мыши, и причина не показалась бы ни разу
+    // (§12.53, §12.124).
+    buyDoor = mkTool(
+      '<span class="sw sw-trade"></span><span>Покупка</span>',
+      () => openBuyWindow(),
+    );
+    liveTitle(
+      buyDoor,
+      "Что продают снаружи, почём и до чего база ещё не доросла",
+    );
+    el.appendChild(buyDoor);
   }
 
   const build = mkSection(el, "Постройка");
@@ -4748,23 +4782,63 @@ function tradeState(fi, ii, buying, qty) {
         (meta.factions ?? [])[rule.faction]?.label ?? "?"
       }» сам`
     : "";
-  const title = !posts
-    ? "Нужен «Торговый пост»"
-    : !postFree
-      ? // Ячейка занята либо сделкой, либо непойманным привозом (§12.68):
-        // второй случай игрок чинит сам, и сказать об этом надо здесь.
-        `Свободных ячеек нет: разгрузите пост или постройте ещё один`
-      : broke
-        ? `Нужно ${total}¤ за ${qty}, у вас ${money}¤`
-        : empty
-          ? // Названное число — это «свободно», а не «есть»: под открытой
-            // сделкой товар базе уже не принадлежит (§12.50), и без этой
-            // оговорки отказ спорит с счётчиком в шапке.
-            `Свободно к продаже ${Math.max(0, free)}, нужно ${qty}`
-          : `${unit}¤ за штуку · ${qty} шт. = ${total}¤${
-              shiftHeld ? "" : ` · Shift — полный контейнер (${dealSize(true)})`
-            }${ahead}${auto}`;
-  return { q, unit, ready: postFree && !broke && !empty, title };
+  // **Ворота на сам товар — первая причина отказа, и только у покупки**
+  // (§12.150). Считает их ядро (`unlocked`/`welcome` в строке курса) теми же
+  // выражениями, что и `Sim::trade`: второй экземпляр однажды показал бы живой
+  // кнопку, которую фасад отклонит (инвариант 14). Стоят они впереди поста и
+  // денег намеренно — «постройте пост» бессмысленный совет тому, кому этот
+  // товар всё равно не продадут.
+  const gate = buying ? offerGate(fi, ii, q) : null;
+  const title = gate
+    ? gate
+    : !posts
+      ? "Нужен «Торговый пост»"
+      : !postFree
+        ? // Ячейка занята либо сделкой, либо непойманным привозом (§12.68):
+          // второй случай игрок чинит сам, и сказать об этом надо здесь.
+          `Свободных ячеек нет: разгрузите пост или постройте ещё один`
+        : broke
+          ? `Нужно ${total}¤ за ${qty}, у вас ${money}¤`
+          : empty
+            ? // Названное число — это «свободно», а не «есть»: под открытой
+              // сделкой товар базе уже не принадлежит (§12.50), и без этой
+              // оговорки отказ спорит с счётчиком в шапке.
+              `Свободно к продаже ${Math.max(0, free)}, нужно ${qty}`
+            : `${unit}¤ за штуку · ${qty} шт. = ${total}¤${
+                shiftHeld
+                  ? ""
+                  : ` · Shift — полный контейнер (${dealSize(true)})`
+              }${ahead}${auto}`;
+  return { q, unit, ready: !gate && postFree && !broke && !empty, title };
+}
+
+// Почему этот товар нельзя купить у этой стороны — словом, или `null`, если
+// можно (§12.150).
+//
+// Ворота считает ядро и везёт их в строке курса; здесь только слова, ровно как
+// `trustGap` даёт слова к `welcome` у заказа и кандидата (§12.24). Числа порога
+// живут в `meta.factions[*].prices` — той же палитре, из которой `sidesOf`
+// узнаёт, кто чем торгует.
+function offerGate(faction, item, q) {
+  if (!q || (q.unlocked && q.welcome)) return null;
+  const line = priceLine(faction, item);
+  if (!q.unlocked) {
+    const want = line?.requires ?? 0;
+    return `Известности не хватает: нужно ${want}, у вас ${fame}`;
+  }
+  return trustGap(line?.needs) ?? "С вами об этом ещё не говорят";
+}
+
+// Строка прайса из палитры: пороги ворот и расписание, как их записал рулсет.
+//
+// `prices` у фракции приезжает `Map`, а не объектом — та же идиома, что у цены
+// и добычи (см. `costChips`): `Object.entries` на нём молча вернёт пусто, и
+// причина отказа осталась бы без числа.
+function priceLine(faction, item) {
+  const prices = (meta.factions ?? [])[faction]?.prices;
+  const id = (meta.items ?? [])[item]?.id;
+  if (!prices || !id) return null;
+  return prices instanceof Map ? prices.get(id) : prices[id];
 }
 
 // Кнопки сделок в окне «Склад»: состояние на них наводит `tradeState`, а сам
@@ -5847,7 +5921,20 @@ function syncSciWindow() {
   if (!sciWinOpen || !sciHeads) return;
   orderNewFirst(sciList, topicButtons, "topic", sciHeads);
   orderLockedLast(sciList, topicButtons, sciHeads);
-  setEmptyLine(sciHeads, topicButtons, "Все темы изучены");
+  // **Пустой список обязан назвать, чего ждать** (§12.151). До сих пор он знал
+  // одну причину — «всё изучено», — потому что второй не бывало: дверь с пустым
+  // списком просто пряталась. Теперь она пускает, и на старте партии сюда
+  // попадают ровно в тот момент, когда изучено **ничего**, — сказать «все темы
+  // изучены» там значило бы соврать в самом первом окне, которое игрок открыл.
+  const topics = lastSnap?.topics ?? [];
+  const done = topics.length > 0 && topics.every((t) => t.known);
+  setEmptyLine(
+    sciHeads,
+    topicButtons,
+    done
+      ? "Все темы изучены"
+      : "Пока не за что взяться: темы открываются находками — сходите на вылазку",
+  );
 }
 
 // Третья группа окна «Наука» (§12.137) — темы про артефакт, до которого база
@@ -5900,17 +5987,23 @@ function setEmptyLine(heads, buttons, text) {
 function syncDoors(snap) {
   const topics = snap.topics ?? [];
   const recruits = snap.recruits ?? [];
-  // **Прячет дверь только «взяться не за что»** (§12.94): всё изучено или всех
-  // наняли — решения за ней не осталось.
+  // ⚠️ **Дверь не прячется никогда — она гаснет и пускает** (§12.151, отменяет
+  // §12.94 и часть §12.143). Прежде «взяться не за что» убирало кнопку совсем, и
+  // на старте партии игрок не видел ни «Науки», ни «Покупки»: игра молчала о
+  // том, что они у неё вообще есть. Скрытая дверь отвечает «этого нет», хотя
+  // правда — «этого пока нет», и разница между ними и есть весь смысл цели.
   //
-  // А вот «взяться **некому**» — это гашение с причиной, а не пропажа
-  // (§12.124): на базе нет кота, проходящего допуск хоть одной открытой темы
-  // (`TopicSnap::staffed`, считает ядро — второй экземпляр «кто может взяться»
-  // в JS разошёлся бы с `assign_research`, инвариант 14). Чинится это
-  // обучением, то есть решением, которое игрок может принять сейчас, — ровно
-  // тот случай, когда §12.100 велит называть нехватку словом, а не убирать
-  // строку. Гаснет классом, а не `disabled`: по такому элементу браузер не
-  // шлёт событий мыши, и подсказка не показывается никогда (§12.53).
+  // Дверь тусклая отвечает на «почему нельзя», открывшееся окно — на «чего
+  // ждать»: пустой список называет словом, что именно должно случиться. Это тот
+  // же выбор, который §12.137 уже сделал у витрины тем, а §12.150 — у витрины
+  // рынка; здесь он просто становится общим.
+  //
+  // Гаснут классом, а не `disabled`: по такому элементу браузер не шлёт событий
+  // мыши, и подсказка не показывается никогда (§12.53, §12.124).
+  //
+  // Кнопки **вовсе нет** ровно в одном случае — механики нет в рулсете
+  // (`meta.research`/`meta.recruits`/прайсы пусты, см. `buildToolbar`). Это не
+  // «пока нельзя», а «в этой игре такого не бывает», и ждать тут нечего.
   if (sciDoor) {
     // Индексы, а не сами темы: уровень допуска лежит в палитре (`meta.research`),
     // и связывает их только номер — тот же, что у кнопок в окне.
@@ -5931,7 +6024,6 @@ function syncDoors(snap) {
       (t) =>
         !t.known && !t.unlocked && (t.specimen ?? []).length > 0 && t.sighted,
     );
-    sciDoor.hidden = !open.length && !teasing;
     const staffed = open.some((i) => topics[i].staffed);
     // Свободных лабораторий нет — тоже гашение с причиной, а не пропажа
     // (§12.124, §12.132): чинится это окончанием идущей темы или второй
@@ -5955,7 +6047,13 @@ function syncDoors(snap) {
     liveTitle(
       sciDoor,
       !open.length
-        ? "Взяться пока не за что, но на складе лежит непонятное — загляните"
+        ? teasing
+          ? "Взяться пока не за что, но на складе лежит непонятное — загляните"
+          : // Ни одной открытой темы и смотреть не на что: на старте партии это
+            // норма, и назвать надо **следующий шаг**, а не факт пустоты
+            // (§12.151). Тема первой ступени ждёт образец, а образец приносят
+            // из-за периметра (§12.143).
+            "Науки пока нет: темы открываются находками — сходите на вылазку"
         : !staffed
           ? `Некому взяться: нужен кот с «Наукой» ${need} уровня — ` +
             "учат за партой — кликните по ней выбранным котом"
@@ -5964,7 +6062,36 @@ function syncDoors(snap) {
             : "За какую тему взяться и чего для этого не хватает",
     );
   }
-  if (hireDoor) hireDoor.hidden = !recruits.some((r) => !r.hired);
+  if (hireDoor) {
+    // Всех наняли — за дверью не осталось решения, но сама дверь остаётся
+    // (§12.151): пропавшая кнопка читается как поломка, а не как «готово».
+    const left = recruits.some((r) => !r.hired);
+    hireDoor.classList.toggle("off", !left);
+    liveTitle(
+      hireDoor,
+      left
+        ? "Кто откликнется на известность базы и чего он стоит"
+        : "Все кандидаты уже на базе — новых не появится",
+    );
+  }
+  // Дверь «Покупка» гаснет без торгового поста, но **пускает** (§12.150):
+  // тусклая она отвечает на «почему нельзя торговать», открытая — на «зачем мне
+  // торговый пост». Прячется дверь только тогда, когда снаружи не торгует никто,
+  // — та же граница, что у «Науки» (§12.124): нет механики вовсе прячем, нет
+  // ячейки называем словом. Занятые ячейки дверь **не** гасят: сделка сама
+  // скоро уедет, а посмотреть, почём что, можно и с занятым постом.
+  if (buyDoor) {
+    const noPost = !posts;
+    buyDoor.classList.toggle("off", noPost);
+    // Окно при этом не закрываем: дверь погашена, но открыта (см. `buildToolbar`).
+    liveTitle(
+      buyDoor,
+      noPost
+        ? "Торговать пока негде: постройте «Торговый пост» — " +
+            "через него и покупают, и продают"
+        : "Что продают снаружи, почём и до чего база ещё не доросла",
+    );
+  }
 }
 
 function syncNewsMarks() {
@@ -6257,6 +6384,192 @@ function buildHireWindow() {
   });
 }
 
+// --- окно «Покупка» (§12.150) -----------------------------------------------
+//
+// Витрина внешнего рынка: закладка на фракцию, строка на товар. Своё окно, а не
+// строка «Склада», по границе адресности §12.119 — но с уточнением, ради
+// которого оно и заведено: **ассортимент приходит от прайса, а не от склада**.
+// Строки окна «Склад» нет у предмета, которого база ни разу не видела (§12.131),
+// а покупка ровно про такой предмет и нужна: она второй вход в дерево
+// технологий, деньгами вместо риска. Скрытие §12.131 при этом не нарушено, а
+// получает границу: оно отвечает на «что у базы есть», прайс — на «что этот
+// продавец предлагает».
+//
+// «Купить» из окна «Склад» с §12.150 убрана: одно действие — одно место, тот же
+// довод, по которому §12.75 увела заказы вылазок из тулбара в штаб. В ленте
+// тикеров она осталась и там законна — это повторение уже принятого решения, и
+// цена написана в той же строке.
+//
+// Идиома окна общая (§12.118): строится один раз при открытии, дальше
+// синхронизируется на месте. Прокрутка тут будет с первой же новой фракции, а
+// `innerHTML` каждым кадром отматывает `scrollTop` и съедает клик (§12.84).
+let buyWinOpen = false;
+// Чья закладка раскрыта. Живёт в виде, а не в ядре: это вопрос «на что я сейчас
+// смотрю», а не решение о мире, — второй `Favorites` ради него заводить нечего.
+let buyFaction = 0;
+let buyList = null;
+let buyHeads = null;
+let buyWarnEl = null;
+// Закладки и строки, пока окно открыто. Строка — это `mkTool`, лежащий заодно в
+// общем `tradeButtons`: состояние, цену и причину отказа ей считает тот же
+// `syncTradeButtons`, что и ленте тикеров (§12.100).
+const buyTabs = [];
+const buyRows = [];
+
+function openBuyWindow() {
+  if (buyWinOpen) return;
+  closeOtherWindows("buy");
+  buyWinOpen = true;
+  buildBuyWindow();
+  syncBuyWindow();
+  buyWinEl.hidden = false;
+}
+
+function closeBuyWindow() {
+  if (!buyWinOpen) return;
+  buyWinOpen = false;
+  buyHeads = null;
+  buyWarnEl = null;
+  buyTabs.length = 0;
+  buyRows.length = 0;
+  // Строки окна лежали в общем массиве кнопок сделки — вынимаем ровно свои:
+  // лента тикеров живёт своей жизнью и после закрытия окна.
+  for (let i = tradeButtons.length - 1; i >= 0; i -= 1) {
+    if (tradeButtons[i].dataset.buywin) tradeButtons.splice(i, 1);
+  }
+  buyWinEl.hidden = true;
+  buyWinEl.innerHTML = "";
+  // По удалённому узлу `mouseleave` не приходит — подсказка осталась бы висеть
+  // над пустотой (§12.125).
+  hideLiveTip();
+}
+
+function buildBuyWindow() {
+  const { box, list } = mkWindow(
+    buyWinEl,
+    "Покупка",
+    () => closeBuyWindow(),
+    true,
+  );
+  buyList = list;
+  buyTabs.length = 0;
+  buyRows.length = 0;
+
+  // Красная строка в шапке: чего базе не хватает, чтобы показанное вообще
+  // работало (§12.100). Одна на окно, а не по строке на товар: «нет торгового
+  // поста» шесть раз подряд — это не шесть новостей (§12.80).
+  buyWarnEl = document.createElement("div");
+  buyWarnEl.className = "win-warn buy-warn";
+  buyWarnEl.hidden = true;
+  box.insertBefore(buyWarnEl, list);
+
+  // Закладки сторон. Своей полосой над списком, а не заголовками групп внутри:
+  // у каждой фракции свой курс на один и тот же товар, и склеенный список
+  // спрашивал бы «почём» дважды в соседних строках.
+  const tabs = document.createElement("div");
+  tabs.className = "buy-tabs";
+  (meta.factions ?? []).forEach((f, fi) => {
+    const t = mkTool(
+      `<i class="chip" style="background:${esc(f.color || "#888")}"></i><span>${esc(f.label || f.id)}</span>`,
+      () => {
+        buyFaction = fi;
+        syncBuyWindow();
+      },
+    );
+    t.classList.add("toggle");
+    buyTabs.push(t);
+    tabs.appendChild(t);
+  });
+  box.insertBefore(tabs, list);
+
+  buyHeads = mkRegistryHeads(list, true);
+
+  // Строка на **пару** «сторона + товар»: один и тот же предмет продают
+  // несколько сторон по разной цене, и склеить их в одну строку значило бы
+  // выбрать сторону за игрока (§12.88).
+  (meta.factions ?? []).forEach((f, fi) => {
+    for (const item of (meta.items ?? []).keys()) {
+      if (!sidesOf(item).includes(fi)) continue;
+      const row = mkTool(
+        `${itemGlyph(item)}<span class="buy-name"></span>` +
+          `<span class="buy-rate"></span><b class="qty">×5</b>`,
+        () => {
+          // Погашенная классом кнопка события мыши шлёт — тем и ценна (§12.53):
+          // отказ отсекаем сами, а причина уже написана подсказкой.
+          if (row.classList.contains("off")) return;
+          sendAction({
+            type: "trade",
+            faction: fi,
+            item,
+            count: dealSize(shiftHeld),
+            buying: true,
+          });
+        },
+      );
+      row.classList.add("toggle", "buy-row");
+      row.dataset.faction = fi;
+      row.dataset.item = item;
+      row.dataset.buying = "1";
+      // Метка «строка моего окна»: по ней `closeBuyWindow` вынимает из общего
+      // массива ровно свои узлы, не задев ленту тикеров.
+      row.dataset.buywin = "1";
+      buyRows.push({ row, fi, item });
+      tradeButtons.push(row);
+      list.appendChild(row);
+    }
+  });
+}
+
+function syncBuyWindow() {
+  if (!buyWinOpen || !buyHeads) return;
+  buyTabs.forEach((t, fi) => t.classList.toggle("on", fi === buyFaction));
+
+  for (const { row, fi, item } of buyRows) {
+    // Чужая закладка — строка прячется целиком; `orderLockedLast` уводит
+    // скрытые в хвост, как и в двух других реестрах.
+    row.hidden = fi !== buyFaction;
+    if (row.hidden) continue;
+    const q = quoteOf(fi, item);
+    // **Закрытая позиция стоит внизу группой, а не исчезает** (§12.137): её
+    // цена и есть ответ на «ради чего расти». Скрыть её значило бы отказать
+    // без причины — ровно то, что §12.53 запрещает.
+    row.classList.toggle("locked", !!q && !(q.unlocked && q.welcome));
+    const name = row.querySelector(".buy-name");
+    // Имя ровно то же, каким предмет зовётся в окне «Склад» (§12.131): не
+    // видели — «??», видели и не поняли — «Ткань(?)». Второго словаря имён
+    // заводить нельзя, иначе витрина познакомит игрока раньше, чем кот принесёт.
+    const label = itemKnownName(item);
+    if (name.textContent !== label) name.textContent = label;
+    const rate = row.querySelector(".buy-rate");
+    const html = rateText(q, true);
+    if (rate.innerHTML !== html) rate.innerHTML = html;
+  }
+
+  // Причина словом там, где она чинится стройкой, а не ростом (§12.100):
+  // технологии у поста нет — прячем, ячейки нет — называем.
+  // Причина словом там, где она чинится стройкой, а не ростом (§12.100). Обе
+  // сюда доходят: дверь погашена, но пускает (§12.150), и красная строка — это
+  // ровно то, ради чего пускает.
+  const why = !posts
+    ? "Нет торгового поста — покупать некуда: постройте его в разделе «Постройка»"
+    : !postFree
+      ? "Все ячейки постов заняты — разгрузите пост или постройте ещё один"
+      : "";
+  buyWarnEl.hidden = !why;
+  if (why && buyWarnEl.textContent !== why) buyWarnEl.textContent = why;
+
+  orderLockedLast(
+    buyList,
+    buyRows.map((r) => r.row),
+    buyHeads,
+  );
+  setEmptyLine(
+    buyHeads,
+    buyRows.map((r) => r.row),
+    "Эта сторона ничем не торгует",
+  );
+}
+
 // --- окно «Склад» (§12.100) -------------------------------------------------
 //
 // Всё имущество базы, курсы всех сторон и оба порога — одной таблицей: строка
@@ -6292,6 +6605,7 @@ function closeOtherWindows(keep) {
   if (keep !== "sci") closeSciWindow();
   if (keep !== "hire") closeHireWindow();
   if (keep !== "raid") closeRaidWindow();
+  if (keep !== "buy") closeBuyWindow();
 }
 
 function openStockWindow() {
@@ -6725,7 +7039,6 @@ function buildStockWindow() {
 
     let side = null;
     let rate = null;
-    let buy = null;
     let sell = null;
     let none = null;
     if (sides.length) {
@@ -6762,29 +7075,27 @@ function buildStockWindow() {
       rate.className = "ware-rate";
       trade.appendChild(rate);
 
-      for (const buying of [true, false]) {
-        const b = mkTool(
-          `<span>${buying ? "Купить" : "Продать"}</span><b class="qty">×5</b>`,
-          (ev) => {
-            // Клик — пять штук, Shift — полный контейнер (§12.90).
-            const count = dealSize(ev.shiftKey);
-            sendAction({
-              type: "trade",
-              faction: sideOf(item, sides),
-              item,
-              count,
-              buying,
-            });
-          },
-        );
-        b.classList.add("toggle");
-        b.dataset.item = item;
-        b.dataset.buying = buying ? "1" : "";
-        trade.appendChild(b);
-        tradeButtons.push(b);
-        if (buying) buy = b;
-        else sell = b;
-      }
+      // **Кнопка здесь одна, и это «Продать»** (§12.150). Покупка уехала в своё
+      // окно целиком: окно «Склад» отвечает на «что у базы есть и какие правила
+      // это двигают», а купить можно и то, чего база не видела ни разу, — такой
+      // строки здесь нет вовсе (§12.131). Две кнопки в двух окнах про одно
+      // действие — то же, что §12.75 убрала из тулбара.
+      sell = mkTool(`<span>Продать</span><b class="qty">×5</b>`, (ev) => {
+        // Клик — пять штук, Shift — полный контейнер (§12.90).
+        const count = dealSize(ev.shiftKey);
+        sendAction({
+          type: "trade",
+          faction: sideOf(item, sides),
+          item,
+          count,
+          buying: false,
+        });
+      });
+      sell.classList.add("toggle");
+      sell.dataset.item = item;
+      sell.dataset.buying = "";
+      trade.appendChild(sell);
+      tradeButtons.push(sell);
     } else {
       none = document.createElement("span");
       none.className = "ware-none";
@@ -6809,7 +7120,6 @@ function buildStockWindow() {
       tick,
       side,
       rate,
-      buy,
       sell,
       none,
       sides,
@@ -7293,7 +7603,7 @@ function syncStockWindow() {
     // Весь торговый блок — тикер, сторона, курс и кнопки — прячется вместе с
     // постом: торговать без него нельзя ничем, и шесть строк мёртвых кнопок
     // говорят меньше, чем одна красная строка наверху.
-    for (const node of [r.tick, r.side, r.rate, r.buy, r.sell, r.none])
+    for (const node of [r.tick, r.side, r.rate, r.sell, r.none])
       if (node) node.hidden = !canTrade;
 
     const onTicker = tickers.some((t) => t.item === r.item);
@@ -7326,9 +7636,7 @@ function syncStockWindow() {
     // Сторона у кнопок сделки — **не своя, а строкина**: её выбирают кликом, и
     // приколоченная в `dataset` при сборке она осталась бы от первой стороны.
     // `syncTradeButtons` читает именно `dataset`, поэтому обновляем перед ним.
-    if (who !== null) {
-      for (const b of [r.buy, r.sell]) if (b) b.dataset.faction = who;
-    }
+    if (who !== null && r.sell) r.sell.dataset.faction = who;
 
     if (r.rate) {
       const q = quoteOf(who, r.item);

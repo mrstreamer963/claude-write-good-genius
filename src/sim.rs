@@ -1259,6 +1259,7 @@ impl Sim {
             rs.recipes
                 .iter()
                 .map(|r| CraftRule {
+                    id: r.id.clone(),
                     work: r.work,
                     cost: r
                         .cost
@@ -1356,12 +1357,29 @@ impl Sim {
                     // недетерминированный обход ломает и тесты, и модель
                     // времени (§11, §12.21).
                     prices: {
-                        let mut list: Vec<(usize, Vec<i32>)> = f
+                        let mut list: Vec<(usize, PriceLine)> = f
                             .prices
                             .iter()
-                            .filter_map(|(id, phases)| item_index(id).map(|i| (i, phases.clone())))
+                            .filter_map(|(id, def)| {
+                                item_index(id).map(|i| {
+                                    // `needs` упорядочен по индексу фракции —
+                                    // дословно `needs` у вылазки и кандидата.
+                                    let mut needs: Vec<(usize, i32)> = def
+                                        .needs
+                                        .iter()
+                                        .filter_map(|(id, &n)| faction_index(id).map(|f| (f, n)))
+                                        .collect();
+                                    needs.sort_unstable_by_key(|&(f, _)| f);
+                                    let line = PriceLine {
+                                        phases: def.phases.clone(),
+                                        requires: def.requires,
+                                        needs,
+                                    };
+                                    (i, line)
+                                })
+                            })
                             .collect();
-                        list.sort_unstable_by_key(|&(i, _)| i);
+                        list.sort_unstable_by_key(|(i, _)| *i);
                         list
                     },
                 })
@@ -3021,6 +3039,24 @@ impl Sim {
         ) else {
             return false; // фракция этим предметом не торгует
         };
+        // **Ворота на товар закрывают только покупку** (§12.150). Ассортимент —
+        // это что продавец предлагает: дорос ли ты до этой вещи (известность) и
+        // станут ли с тобой о ней говорить (репутация). Сдать ему лом можно
+        // всегда — репутация умеет падать (§12.43), и ворота на продажу однажды
+        // сломали бы уже поставленное правило автопродажи.
+        if buying {
+            let gates = crate::trade::offer_gates(
+                self.world.resource::<FactionRules>(),
+                self.world.resource::<Fame>(),
+                self.world.resource::<Standing>(),
+                faction,
+                item,
+            );
+            match gates {
+                Some(g) if g.unlocked && g.welcome => {}
+                _ => return false,
+            }
+        }
         let lead = self
             .world
             .resource::<FactionRules>()
@@ -4423,6 +4459,7 @@ impl Sim {
             let tick = self.world.resource::<SimTime>().tick;
             let factions = self.world.resource::<FactionRules>();
             let standing = self.world.resource::<Standing>();
+            let fame = self.world.resource::<Fame>();
             let mut out = Vec::new();
             for (f, rule) in factions.0.iter().enumerate() {
                 let ahead = crate::trade::phase_left(rule, tick);
@@ -4437,7 +4474,13 @@ impl Sim {
                     // вперёд» — это тот же индекс, что «на одну назад».
                     // Длина цикла своя у каждого предмета: `quote` берёт её из
                     // его же списка фаз.
-                    let phases = rule.price_of(*item).map_or(1, |ph| ph.len().max(1));
+                    let phases = rule
+                        .price_of(*item)
+                        .map_or(1, |line| line.phases.len().max(1));
+                    // Ворота считает то же выражение, что и фасад: разойдись
+                    // они, витрина показала бы живой кнопку, которую
+                    // `Sim::trade` отклонит (инвариант 14).
+                    let gates = crate::trade::offer_gates(factions, fame, standing, f, *item);
                     let prev_tick = tick + rule.period * (phases as u64 - 1);
                     out.push(PriceSnap {
                         faction: f,
@@ -4449,6 +4492,8 @@ impl Sim {
                         next_in: ahead.unwrap_or(0),
                         prev_buy: at(prev_tick, true),
                         prev_sell: at(prev_tick, false),
+                        unlocked: gates.as_ref().is_none_or(|g| g.unlocked),
+                        welcome: gates.as_ref().is_none_or(|g| g.welcome),
                     });
                 }
             }

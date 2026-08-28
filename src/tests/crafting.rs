@@ -1265,8 +1265,12 @@ fn the_shipped_ruleset_opens_the_cloth_branch_in_order() {
             .unwrap_or_else(|| panic!("предмет `{id}`"))
     };
     let (suit, cloth, part) = (name("suit"), name("cloth"), name("part"));
-    let salvage = 1; // «Разбор комбинезона» в `recipes:`
-    let tailoring = 2; // «Пошив комбинезона»
+    let recipe = |id: &str| {
+        sim.recipe_index(id)
+            .unwrap_or_else(|| panic!("рецепт `{id}`"))
+    };
+    let salvage = recipe("salvage_suit");
+    let tailoring = recipe("tailoring");
     let shop = 8; // индекс `shop` в палитре тайлов
 
     assert!(!sim.start_craft(salvage, 1), "без мастерской рецепта нет");

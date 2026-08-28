@@ -48,7 +48,7 @@ pub(crate) fn quote(
     buying: bool,
 ) -> Option<i32> {
     let rule = factions.0.get(faction)?;
-    let phases = rule.price_of(item)?;
+    let phases = &rule.price_of(item)?.phases;
     if phases.is_empty() {
         return None;
     }
@@ -67,6 +67,48 @@ pub(crate) fn quote(
         true => base * (100 + rule.spread) / 100 * (100 - favor) / 100,
         false => base * (100 + favor) / 100,
     })
+}
+
+/// Ворота на строку прайса: пускают ли базу к этому товару (§12.150).
+///
+/// `None` — фракция этим предметом не торгует вовсе; это не отказ, а молчание
+/// прайса, и вид такую строку не показывает нигде.
+///
+/// Считается **отдельно от `quote`** намеренно. `quote` отвечает «почём»,
+/// ворота — «станут ли говорить»; сложи их в одно, и закрытая позиция поехала
+/// бы в снимок ценой `0¤`, тогда как «почём будет» — это и есть ответ на «ради
+/// чего расти». Выражение одно на фасад и на снимок, как сам `quote`
+/// (инвариант 14).
+///
+/// Закрывают они **только покупку** — см. `PriceDef`.
+pub(crate) fn offer_gates(
+    factions: &FactionRules,
+    fame: &Fame,
+    standing: &Standing,
+    faction: usize,
+    item: usize,
+) -> Option<OfferGates> {
+    let line = factions.0.get(faction)?.price_of(item)?;
+    if line.phases.is_empty() {
+        return None;
+    }
+    Some(OfferGates {
+        unlocked: fame.0 >= line.requires,
+        welcome: standing.covers(&line.needs),
+    })
+}
+
+/// Можно ли купить этот товар прямо сейчас — и если нет, то почему (§12.150).
+///
+/// Форма — `RaidGates` без третьего поля, и это не совпадение: вопросы те же
+/// два, «дорос ли ты вообще» и «станет ли с тобой говорить эта сторона»
+/// (§12.43). Причину кнопка обязана назвать словом (§12.53), поэтому наружу
+/// едут оба флага врозь, а не их «и».
+pub(crate) struct OfferGates {
+    /// Известности хватает.
+    pub(crate) unlocked: bool,
+    /// Репутация у всех названных сторон не ниже пола.
+    pub(crate) welcome: bool,
 }
 
 /// Сколько открытые продажи ещё **должны**: пары «предмет, штук», **без скидки
