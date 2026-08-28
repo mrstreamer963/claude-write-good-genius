@@ -5591,7 +5591,7 @@ function newsText(n) {
     // экране объяснить было бы нечем.
     const label = name(meta?.recipes, n.def);
     return n.opened
-      ? ["мастерская освоила", label]
+      ? ["теперь умеем делать", label]
       : ["рецепт закрылся", label];
   }
   if (n.kind === "tile") {
