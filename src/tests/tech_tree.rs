@@ -392,6 +392,7 @@ fn the_shipped_ruleset_lets_you_take_apart_what_you_opened() {
         "в рулсете нет ни одного разбора — сверять нечего",
     );
 
+    let shop = shop_tech(&rs);
     let mut sins: Vec<String> = Vec::new();
     for r in rs.recipes.iter().filter(|r| r.salvage) {
         for input in r.cost.keys() {
@@ -404,7 +405,18 @@ fn the_shipped_ruleset_lets_you_take_apart_what_you_opened() {
                 ));
                 continue;
             };
-            if r.requires != vec![opener.id.clone()] {
+            // Ворот у разбора **ровно двое**: тема-вскрытие («умеем») и
+            // мастерская («есть где»). Вскрытие сверяем поимённо, мастерскую
+            // пропускаем целым списком — она стоит у каждого рецепта и
+            // сторожится своим тестом ниже. Третье имя здесь — лишняя
+            // ступень между «разложили в лаборатории» и «умеем разобрать»,
+            // то есть отказ, который игроку не объяснить.
+            let extra: Vec<&String> = r
+                .requires
+                .iter()
+                .filter(|t| **t != opener.id && Some(t.as_str()) != shop.as_deref())
+                .collect();
+            if !r.requires.contains(&opener.id) || !extra.is_empty() {
                 sins.push(format!(
                     "«{}» закрыт {:?}, а вскрывает «{input}» тема «{}»: база \
                      разложила вещь в лаборатории и всё ещё «не умеет её \
@@ -414,6 +426,84 @@ fn the_shipped_ruleset_lets_you_take_apart_what_you_opened() {
             }
         }
     }
+
+    assert!(sins.is_empty(), "{}", sins.join("\n"));
+}
+
+/// Технология, открывающая **мастерскую**: её ищем по свойству тайла, а не по
+/// имени. Имя `workshops` живёт в контенте, и вшитое в тест оно молча
+/// разошлось бы с рулсетом на первом же переименовании.
+fn shop_tech(rs: &Ruleset) -> Option<String> {
+    rs.tiles
+        .iter()
+        .find(|t| t.shop && !t.tech.is_empty())
+        .map(|t| t.tech.clone())
+}
+
+/// **Ни один рецепт не открывается раньше мастерской.**
+///
+/// Заказ живёт в ячейке станка (§12.96), и разбор — тот же заказ наоборот
+/// (§12.114), значит место работы у всех рецептов одно. Рецепт, открытый
+/// раньше станка, даёт в окне «Склад» кнопку, которой негде сработать: причина
+/// у неё названа словом («нет мастерской», §12.94), но игрок услышит её от
+/// механики, о которой узнал секунду назад. Знание «как» и место «где» — двое
+/// ворот, и оба обязаны быть названы.
+///
+/// Считается по **замыканию** требований, а не по первому списку: рецепт,
+/// закрытый темой, которая сама стоит за мастерской, правило уже соблюдает —
+/// второе имя рядом было бы копипастой (так живёт «Производство аптечки»).
+#[test]
+fn the_shipped_ruleset_never_crafts_without_a_workshop() {
+    let rs = shipped();
+    let shop = shop_tech(&rs).expect("в рулсете есть мастерская со своей технологией");
+
+    // Замыкание требований темы: до неподвижной точки, как `depths`, — цикл в
+    // дереве иначе переполнил бы стек вместо того, чтобы назваться словом.
+    let mut closure: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    loop {
+        let mut grew = false;
+        for topic in &rs.research {
+            let mut set: BTreeSet<&str> = BTreeSet::new();
+            for r in &topic.requires {
+                set.insert(r.as_str());
+                if let Some(inner) = closure.get(r.as_str()) {
+                    set.extend(inner.iter().copied());
+                }
+            }
+            if closure.insert(topic.id.as_str(), set.clone()) != Some(set) {
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+
+    let sins: Vec<String> = rs
+        .recipes
+        .iter()
+        .filter(|r| {
+            !r.requires.iter().any(|t| {
+                t == &shop
+                    || closure
+                        .get(t.as_str())
+                        .is_some_and(|c| c.contains(shop.as_str()))
+            })
+        })
+        .map(|r| {
+            format!(
+                "рецепт «{}» закрыт {:?}, а мастерская — «{shop}»: кнопка \
+                 «{}» загорится раньше станка, на котором ей работать",
+                r.label,
+                r.requires,
+                if r.salvage {
+                    "Разобрать"
+                } else {
+                    "Произвести"
+                },
+            )
+        })
+        .collect();
 
     assert!(sins.is_empty(), "{}", sins.join("\n"));
 }
@@ -451,6 +541,7 @@ fn the_shipped_ruleset_keeps_its_three_time_scales_apart() {
         "ни одну вещь нельзя и сделать, и разобрать/вскрыть"
     );
 
+    let shop = shop_tech(&rs);
     let mut sins: Vec<String> = Vec::new();
     for r in rs.recipes.iter().filter(|r| r.salvage) {
         for input in r.cost.keys() {
