@@ -541,7 +541,6 @@ fn the_shipped_ruleset_keeps_its_three_time_scales_apart() {
         "ни одну вещь нельзя и сделать, и разобрать/вскрыть"
     );
 
-    let shop = shop_tech(&rs);
     let mut sins: Vec<String> = Vec::new();
     for r in rs.recipes.iter().filter(|r| r.salvage) {
         for input in r.cost.keys() {

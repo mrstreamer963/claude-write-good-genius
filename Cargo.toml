@@ -3,6 +3,8 @@ name = "sp_sim"
 version = "0.1.0"
 edition = "2024"
 description = "SP / Эсперы — simulation core (bevy_ecs -> WASM)"
+license = "MIT"
+repository = "https://github.com/mrstreamer963/claude-write-good-genius"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
