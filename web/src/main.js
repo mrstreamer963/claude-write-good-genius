@@ -4348,12 +4348,21 @@ let openSection = null;
 // месте.
 const TOOL_SECTIONS = new Set(["Постройка"]);
 
-function mkSection(el, title) {
+// `sw` — класс образца слева от заголовка, как у кнопок-дверей выше: раздел
+// стоит в одном столбце с ними, и заголовок без значка выпадает из ряда. Ряд
+// этот не декоративный — по цвету образца игрок и находит нужную строку.
+// Значка нет там, где красить нечем: «Правила» и «Партия» не про место на
+// карте и не про предмет, а глиф, обозначающий отвлечённое, — это уже не
+// существительное, а ярлык (§12.109).
+function mkSection(el, title, sw) {
   const sec = document.createElement("div");
   if (!TOOL_SECTIONS.has(title)) sec.classList.add("gated");
   const head = document.createElement("button");
   head.className = "sec-head";
-  head.innerHTML = `<span>${esc(title)}</span><span class="chev">›</span>`;
+  const mark = sw ? `<span class="sw ${sw}"></span>` : "";
+  head.innerHTML =
+    `<span class="sec-title">${mark}<span>${esc(title)}</span></span>` +
+    `<span class="chev">›</span>`;
   // Повторный клик по открытому разделу его закрывает: заголовок — это
   // переключатель, а не только «открыть». «Свёрнуто всё» и так законное
   // состояние (см. `openOnly`), просто попасть в него мышью было нельзя.
@@ -4472,7 +4481,7 @@ function buildToolbar() {
     el.appendChild(buyDoor);
   }
 
-  const build = mkSection(el, "Постройка");
+  const build = mkSection(el, "Постройка", "sw-build");
 
   tileButtons.length = 0;
   meta.palette.forEach((p, i) => {
@@ -4518,35 +4527,6 @@ function buildToolbar() {
   );
   build.appendChild(er);
 
-  // Правила симуляции — не режимы ввода, а тумблеры поведения котов, поэтому
-  // они живут отдельно от инструментов и своей подсветкой их не сбивают.
-  const rules = mkSection(el, "Правила");
-
-  // Подсветку кнопки ведёт снимок, а не сам клик (§12.96): правда о правиле
-  // живёт в ядре и переживает загрузку партии, а зеркало в виде — нет.
-  const auto = mkTool(
-    '<span class="sw sw-scrap"></span><span>Убирать сам</span>',
-    () => worker.postMessage({ type: "setAutoTidy", on: !autoTidy }),
-  );
-  auto.classList.add("toggle", "on");
-  liveTitle(auto, "Коты свозят лом на склад без разметки");
-  rules.appendChild(auto);
-  tidyBtn = auto;
-
-  // Второй порог усталости (§12.33). Выключено — коты доработают до нуля и
-  // свалятся где стоят: это осознанный выбор игрока гнать базу до упора.
-  const care = mkTool(
-    '<span class="sw sw-rest"></span><span>Беречь себя</span>',
-    () => {
-      autoRest = !autoRest;
-      care.classList.toggle("on", autoRest);
-      worker.postMessage({ type: "setAutoRest", on: autoRest });
-    },
-  );
-  care.classList.add("toggle", "on");
-  liveTitle(care, "На исходе сил кот бросает работу и уходит спать");
-  rules.appendChild(care);
-
   // Вылазки. Не режим ввода: клик — это сразу заявка (§12.22). Поэтому кнопки
   // не входят в общую подсветку инструментов.
   //
@@ -4556,7 +4536,7 @@ function buildToolbar() {
   // кнопки внутри ловятся делегированием парой `mousedown`/`mouseup`, как в
   // панелях (§12.57), а не своим `addEventListener` на узле-однодневке.
   if ((meta.missions ?? []).length) {
-    raidsEl = mkSection(el, "Вылазки");
+    raidsEl = mkSection(el, "Вылазки", "sw-gate");
     // Отправку заказом раздел больше не делает (§12.75): она вся в штабе, где
     // рядом стоят состав, прогноз и причина отказа. Здесь остаются только две
     // команды по уже принятому решению — снять правило и отозвать отряд.
@@ -4594,6 +4574,35 @@ function buildToolbar() {
     );
     renderRaidsSection();
   }
+
+  // Правила симуляции — не режимы ввода, а тумблеры поведения котов, поэтому
+  // они живут отдельно от инструментов и своей подсветкой их не сбивают.
+  const rules = mkSection(el, "Правила");
+
+  // Подсветку кнопки ведёт снимок, а не сам клик (§12.96): правда о правиле
+  // живёт в ядре и переживает загрузку партии, а зеркало в виде — нет.
+  const auto = mkTool(
+    '<span class="sw sw-scrap"></span><span>Убирать сам</span>',
+    () => worker.postMessage({ type: "setAutoTidy", on: !autoTidy }),
+  );
+  auto.classList.add("toggle", "on");
+  liveTitle(auto, "Коты свозят лом на склад без разметки");
+  rules.appendChild(auto);
+  tidyBtn = auto;
+
+  // Второй порог усталости (§12.33). Выключено — коты доработают до нуля и
+  // свалятся где стоят: это осознанный выбор игрока гнать базу до упора.
+  const care = mkTool(
+    '<span class="sw sw-rest"></span><span>Беречь себя</span>',
+    () => {
+      autoRest = !autoRest;
+      care.classList.toggle("on", autoRest);
+      worker.postMessage({ type: "setAutoRest", on: autoRest });
+    },
+  );
+  care.classList.add("toggle", "on");
+  liveTitle(care, "На исходе сил кот бросает работу и уходит спать");
+  rules.appendChild(care);
 
   // Разделов «Наука» и «Найм» здесь нет с §12.118: оба переехали в окна, как
   // раздел «Производство» до них (§12.105). Реестр — список, из которого

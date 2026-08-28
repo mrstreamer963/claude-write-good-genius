@@ -354,6 +354,14 @@ main#stage.mode-cursor #mode-banner {
   border-color: var(--line);
   background: rgba(255, 255, 255, 0.04);
 }
+/* Заголовок раздела с образцом: значок и слово идут одной группой, чтобы
+   `space-between` по-прежнему прижимал шеврон к правому краю. */
+.sec-head .sec-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
 .sec-head .chev {
   transition: transform 0.12s ease;
 }
@@ -483,6 +491,15 @@ main#stage.mode-cursor #mode-banner {
    место, куда товар приедет. */
 .sw-trade {
   background: linear-gradient(135deg, #b0a06a 0 50%, #7a6f4a 50% 100%);
+}
+
+/* Постройка: кладка — тем же серо-синим, что и построенный пол на карте.
+   Раздел про то, из чего база сложена, и красить его надо ею же. */
+.sw-build {
+  background:
+    linear-gradient(180deg, transparent 0 45%, rgba(0, 0, 0, 0.45) 45% 55%, transparent 55%),
+    linear-gradient(90deg, #4a5570 0 55%, #39435c 55%);
+  border-radius: 2px;
 }
 
 /* Известность: не предмет, но живёт в том же счётчике — она решает, что базе
