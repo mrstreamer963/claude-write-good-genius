@@ -2712,11 +2712,17 @@ function missionCard(m) {
     const on = (lastSnap?.entities ?? [])
       .filter((e) => e.job === "relay" && !e.moving)
       .map((e) => esc(e.id));
+    // Причин «связи нет» стало две, и путать их нельзя (§12.53, §12.152): рации
+    // в стартовой застройке больше нет, и «за рацией никто не сидит» на базе без
+    // единой рации — это совет посадить кота туда, чего не существует. Первая
+    // чинится кликом, вторая стройкой, и слова у них разные.
     const link = m.manned
       ? `на связи ${on.length ? on.join(" · ") : "дежурный"}`
       : m.comms > 0
         ? "связь оборвалась"
-        : "связи нет: за рацией никто не сидит";
+        : relays > 0
+          ? "связи нет: за рацией никто не сидит"
+          : "связи нет: рация не построена";
     const gain = m.comms > 0 ? ` · +${m.comms} к силе` : "";
     parts.push(`<div class="cat-sub">${link}${gain}</div>`);
   }
@@ -4376,7 +4382,10 @@ function mkSection(el, title, sw) {
   const sec = document.createElement("div");
   if (!TOOL_SECTIONS.has(title)) sec.classList.add("gated");
   const head = document.createElement("button");
-  head.className = "sec-head";
+  // `lit` — «этим можно пользоваться прямо сейчас», яркость кнопок-дверей.
+  // У раздела-инструмента она постоянна (нажать «Постройку» можно всегда), у
+  // «Вылазок» её каждым кадром ставит `syncDoors`: без гаража выйти некуда.
+  head.className = TOOL_SECTIONS.has(title) ? "sec-head lit" : "sec-head";
   const mark = sw ? `<span class="sw ${sw}"></span>` : "";
   head.innerHTML =
     `<span class="sec-title">${mark}<span>${esc(title)}</span></span>` +
@@ -6120,6 +6129,22 @@ function syncDoors(snap) {
         ? "Торговать пока негде: постройте «Торговый пост» — " +
             "через него и покупают, и продают"
         : "Что продают снаружи, почём и до чего база ещё не доросла",
+    );
+  }
+  // Заголовок «Вылазки» живёт по тому же правилу, что и двери (§12.151): есть
+  // хотя бы один гараж — горит наравне с ними, ни одного — гаснет и называет
+  // причину словом (§12.53). Раздел при этом **раскрывается** и погашенным: в
+  // нём стоят отряды и правила, и запертый он потерял бы ответ на «чего ждать».
+  // Причина — та же строка `gateHint`, что и над списком: второй её экземпляр
+  // разошёлся бы с первым.
+  const raidsHead = sections.find((sec) => sec.title === "Вылазки")?.head;
+  if (raidsHead) {
+    const nogate = gateHint();
+    raidsHead.classList.toggle("lit", !nogate);
+    raidsHead.classList.toggle("off", !!nogate);
+    liveTitle(
+      raidsHead,
+      nogate ?? "Кто в каком отряде, чем занят и когда вернётся",
     );
   }
 }
