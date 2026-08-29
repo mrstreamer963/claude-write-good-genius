@@ -682,6 +682,7 @@ worker.onmessage = (e) => {
     // всё уже закрытое «только что закрытым» (см. `goalsDoneSeen`).
     goalsDoneSeen = null;
     goalsOpen = true; // ...и свёрнутость панели: она про прошлый мир, а не про этот
+    goalsUi = null; // ...и каркас: палитра целей у нового мира своя (§12.118)
     buildToolbar();
     layout();
     drawMap(m.map);
@@ -3750,78 +3751,147 @@ function goalDef(def) {
   return (meta.goals ?? [])[def] ?? {};
 }
 
+// Каркас панели: узел на **каждую** цель палитры, включая скрытые (их строка
+// стоит спрятанной, пока ядро о цели молчит). Строится один раз на мир, дальше
+// только синхронизируется — идиома §12.118, та же, что у склада и штаба.
+//
+// Панель прокручиваемая (`max-height` в стилях), а `innerHTML` каждым кадром
+// отматывает `scrollTop` в ноль и срывает захват полосы мышью. До §12.158 целей
+// было семь и список почти помещался, поэтому расхождение с идиомой не резало;
+// восьмая цель увела строку под сгиб, и добраться до неё стало нельзя.
+let goalsUi = null;
+
+function buildGoalsPanel() {
+  const defs = meta?.goals ?? [];
+  goalsEl.innerHTML = "";
+  const title = document.createElement("div");
+  title.className = "cat-name";
+  title.textContent = "Цели";
+  goalsEl.appendChild(title);
+  const extraHead = document.createElement("div");
+  extraHead.className = "cat-sub goals-extra";
+  extraHead.textContent = "сверх того";
+  extraHead.hidden = true;
+  goalsEl.appendChild(extraHead);
+
+  const rows = defs.map((def) => {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.hidden = true;
+    row.innerHTML =
+      '<div class="cat-row"><span class="goal-label"></span>' +
+      '<b class="goal-meter"></b></div>' +
+      '<div class="cat-sub goal-hint"></div>' +
+      '<div class="cat-sub goal-when"></div>';
+    row.querySelector(".goal-label").textContent = def.label || def.id || "?";
+    row.querySelector(".goal-hint").textContent = def.hint || "";
+    goalsEl.appendChild(row);
+    return {
+      row,
+      meter: row.querySelector(".goal-meter"),
+      hint: row.querySelector(".goal-hint"),
+      when: row.querySelector(".goal-when"),
+    };
+  });
+  goalsUi = { rows, title, extraHead };
+}
+
+// Срок словами и в днях, как у записки: «через 21600» не переводится в решение,
+// а «через 6 дней» переводится. Считаем по номеру суток, а не делением остатка,
+// — иначе срок в конце дня показывался бы «сегодня» до самого утра.
+function goalDeadline(before, tick) {
+  if (!dayOf(tick)) return `через ${before}`;
+  const until = dayOf(before) - dayOf(tick);
+  if (until <= 0) return "сегодня";
+  if (until === 1) return "завтра";
+  return `через ${days(until)}`;
+}
+
 function renderGoalsPanel(goals, required, snap) {
-  if (!goals?.length) {
+  if (!goals?.length || !meta) {
     goalsToggleEl.hidden = true;
     goalsEl.hidden = true;
     return;
   }
+  if (!goalsUi) buildGoalsPanel();
   goalsToggleEl.hidden = false;
 
   // В счёт идут только обязательные: взятая скрытая или необязательная раздула
   // бы знаменатель, и «8 / 7» игрок прочтёт как поломку. Статус приезжает
   // словом (§12.158) — трёх состояний двумя флагами в JS не различить.
   const done = goals.filter((g) => g.done && g.kind === "required").length;
-  goalsToggleEl.textContent = `цели ${done}/${required}`;
+  const count = `цели ${done}/${required}`;
+  if (goalsToggleEl.textContent !== count) goalsToggleEl.textContent = count;
   goalsToggleEl.classList.toggle("done", done >= required);
 
-  const row = (g) => {
-    const def = goalDef(g.def);
-    const label = esc(def.label || def.id || "?");
+  const sync = (g) => {
+    const ui = goalsUi.rows[g.def];
+    if (!ui) return null;
+    ui.row.hidden = false;
+    // «Прошедшая» строка — и взятая, и просроченная: обе уже ничем не двинутся.
+    ui.row.classList.toggle("past", g.done || g.expired);
     if (g.done) {
-      const when = dayOf(g.at) ? `день ${dayOf(g.at)}` : "✓";
-      return `<div class="row past"><div class="cat-row"><span>${label}</span><b>${when}</b></div></div>`;
+      ui.meter.textContent = dayOf(g.at) ? `день ${dayOf(g.at)}` : "✓";
+      ui.meter.classList.remove("warn");
+      // Подсказка гаснет при взятии: она говорит, что надо сделать, а делать
+      // уже нечего (§12.58).
+      ui.hint.hidden = true;
+      ui.when.hidden = true;
+      return ui.row;
+    }
+    // Промах по сроку виден строкой, а не исчезновением цели (§12.158): ачивка
+    // тем и вызов, что о промахе сказано вслух. Молча оставленный счётчик
+    // читался бы поломкой — он больше не двинется, а почему, не сказано (§12.53).
+    ui.hint.hidden = false;
+    ui.meter.classList.toggle("warn", g.expired);
+    if (g.expired) {
+      ui.meter.textContent = "не успели";
+      ui.when.hidden = true;
+      return ui.row;
     }
     // Счётчик показываем только там, где есть что мерить: у двоичной цели
     // «0 / 1» — это шум, а не сведения.
-    const meter = g.need > 1 ? `<b>${g.have} / ${g.need}</b>` : "";
-    // Промах по сроку виден строкой, а не исчезновением цели (§12.158): ачивка
-    // тем и вызов, что о промахе сказано вслух. Молча оставленный счётчик
-    // читался бы поломкой — он больше не двинется, а почему, не сказано.
-    if (g.expired) {
-      return (
-        `<div class="row past"><div class="cat-row"><span>${label}</span>` +
-        `<b class="warn">не успели</b></div>` +
-        `<div class="cat-sub">${esc(def.hint || "")}</div></div>`
-      );
-    }
-    // Срок — в днях, как у записки: «через 5780» не переводится в решение, а
-    // «через 6 дней» переводится. Считаем по номеру суток, а не делением
-    // остатка, — иначе срок в конце дня показывался бы «сегодня» до утра.
-    const parts = [
-      `<div class="row"><div class="cat-row"><span>${label}</span>${meter}</div>`,
-      `<div class="cat-sub">${esc(def.hint || "")}</div>`,
-    ];
+    ui.meter.textContent = g.need > 1 ? `${g.have} / ${g.need}` : "";
+    ui.when.hidden = !g.before;
     if (g.before) {
-      const until = dayOf(g.before) - dayOf(snap.tick);
-      parts.push(
-        `<div class="cat-sub">срок: ` +
-          (!dayOf(snap.tick)
-            ? `через ${g.before}`
-            : until <= 0
-              ? "сегодня"
-              : until === 1
-                ? "завтра"
-                : `через ${days(until)}`) +
-          `</div>`,
-      );
+      ui.when.textContent = `срок: ${goalDeadline(g.before, snap.tick)}`;
     }
-    return `${parts.join("")}</div>`;
+    return ui.row;
   };
 
   // Скрытая сюда попадает только взятой — невзятую ядро наружу не отдаёт вовсе.
   // Необязательная стоит с ней в одной группе и по той же причине: обе не про
   // финал, а «сверх того» — это ровно про то, что партию не держит.
-  const open = goals.filter((g) => g.kind === "required");
-  const extra = goals.filter((g) => g.kind !== "required");
-  const rows = open.map(row);
-  if (extra.length) {
-    rows.push(
-      '<div class="cat-sub goals-extra">сверх того</div>',
-      ...extra.map(row),
-    );
+  const shown = new Set();
+  const open = [];
+  const extra = [];
+  for (const g of goals) {
+    const row = sync(g);
+    if (!row) continue;
+    shown.add(g.def);
+    (g.kind === "required" ? open : extra).push(row);
   }
-  goalsEl.innerHTML = `<div class="cat-name">Цели</div>${rows.join("")}`;
+  // Цель, пропавшая из снапшота, прячется, а не удаляется: её узел ещё
+  // понадобится — так уходит скрытая, пока ядро о ней молчит.
+  const rest = [];
+  goalsUi.rows.forEach((ui, def) => {
+    if (shown.has(def)) return;
+    ui.row.hidden = true;
+    rest.push(ui.row);
+  });
+  // Заголовка нет, пока нечего отделять: подпись над пустотой — это подпись к
+  // ничему (§12.73). Порядок — перестановкой **узлов** (`orderChildren`), и в
+  // список идут **все** дети, спрятанные в конце: сравнение длин в
+  // `orderChildren` иначе не сойдётся никогда, и он пересобирал бы порядок
+  // каждым кадром — ровно та работа, ради ухода от которой панель и переехала.
+  goalsUi.extraHead.hidden = !extra.length;
+  orderChildren(goalsEl, [
+    goalsUi.title,
+    ...open,
+    goalsUi.extraHead,
+    ...extra,
+    ...rest,
+  ]);
 
   // Оба перехода считаются по одному множеству — тому, что было в прошлом кадре.
   const doneNow = new Set(goals.filter((g) => g.done).map((g) => g.def));
