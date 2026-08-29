@@ -97,7 +97,7 @@ tiles:
   - { id: lab,     label: "Лаборатория", color: "#5a3a6e", cost: { scrap: 2, part: 2 }, lab: true, clean: true }
   - { id: garage,  label: "Гараж",       color: "#6e5a26", cost: { scrap: 2, part: 1 }, gate: true, noisy: true, dirty: true }
   - { id: bed,     label: "Лежанка",     color: "#3f5a3a", cost: { scrap: 1, part: 1 }, rest: 120,    wake: 24000, quiet: true }
-  - { id: desk,    label: "Парта",       color: "#4a4f7a", cost: { scrap: 2, part: 1 }, teaches: science }
+  - { id: desk,    label: "Парта",       color: "#4a4f7a", cost: { scrap: 2, part: 1 }, teaches: science, quiet: true }
   - { id: rack,    label: "Стеллаж",     color: "#2f6f8e", cost: { scrap: 4, part: 3 }, capacity: 60, solid: true, tech: racks, dirty: true }
   - { id: nest,    label: "Гнездо",      color: "#4d7a44", cost: { scrap: 2, part: 2 }, rest: 300,    tech: nests, quiet: true }
   - { id: shop,    label: "Мастерская",  color: "#8e6f2f", cost: { scrap: 3, part: 2 }, shop: true,   tech: workshops, noisy: true, dirty: true }
