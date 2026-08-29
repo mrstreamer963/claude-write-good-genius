@@ -1265,6 +1265,7 @@ fn the_shipped_ruleset_opens_the_cloth_branch_in_order() {
             .unwrap_or_else(|| panic!("предмет `{id}`"))
     };
     let (suit, cloth, part) = (name("suit"), name("cloth"), name("part"));
+    let sample = name("sample");
     let recipe = |id: &str| {
         sim.recipe_index(id)
             .unwrap_or_else(|| panic!("рецепт `{id}`"))
@@ -1333,7 +1334,23 @@ fn the_shipped_ruleset_opens_the_cloth_branch_in_order() {
     sim.tick_n(1200);
     assert!(sim.knows_tech("cloth_lore"), "вторая тема доведена");
 
-    assert!(sim.start_craft(tailoring, 1), "изучили ткань — шьём своё");
+    // Понимать ткань — ещё не уметь шить: третья ступень про **вещь**, а не про
+    // материал, и без неё кнопка пошива по-прежнему закрыта.
+    assert!(
+        !sim.start_craft(tailoring, 1),
+        "пошив закрыт своей темой, а не «Свойствами ткани»",
+    );
+    let tailor = sim
+        .topic_index("tailoring_lore")
+        .expect("тема `tailoring_lore`");
+    sim.put_item(store.0, store.1, sample, 3); // цена третьей темы
+    sim.put_item(store.0, store.1, cloth, 1); // ткань в цене — и лоскут на опыты
+    sim.tick_n(1);
+    assert!(sim.start_research(tailor), "ткань понята — тема открыта");
+    sim.tick_n(1200);
+    assert!(sim.knows_tech("tailoring_lore"), "третья тема доведена");
+
+    assert!(sim.start_craft(tailoring, 1), "научились шить — шьём своё");
 }
 
 /// **Разобрать можно только то, что есть** (§12.114d, §12.129). Заказ на пять
