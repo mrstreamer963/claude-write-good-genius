@@ -4,7 +4,7 @@
 WASM_OUT := web/src/wasm
 PORT     := 5173
 
-.PHONY: dev build wasm run web-install setup clean help
+.PHONY: dev build wasm run lint web-install setup clean help
 
 ## dev: собрать WASM и запустить dev-сервер (http://localhost:5173)
 dev: wasm web-install
@@ -22,9 +22,16 @@ wasm:
 run: web-install
 	npm --prefix web run dev
 
+## lint: clippy по всему крейту, любое замечание — ошибка
+# --all-targets обязателен: без него тесты не линтуются вовсе, а `src/tests/`
+# это треть кода — там уже жило одно из замечаний, схлопнутых в 99cfb3a.
+lint:
+	cargo clippy --all-targets -- -D warnings
+
 ## setup: одноразовая подготовка тулчейна (wasm-таргет + веб-зависимости)
 setup:
 	rustup target add wasm32-unknown-unknown
+	rustup component add clippy
 	npm --prefix web install
 
 ## clean: удалить сборочные артефакты
