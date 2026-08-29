@@ -625,3 +625,24 @@ fn the_shipped_ruleset_leaves_time_for_dated_goals() {
         }
     }
 }
+
+/// **Цель на пополнение не просит больше котов, чем их бывает.**
+///
+/// Больше стартовой тройки плюс всех кандидатов база не получит никогда: коты
+/// уникальны и нанимаются по разу (§12.24), а рулсет новых не порождает. Ошибка
+/// тихая — цель просто не закрывается, и отличить её от «ещё не дошёл» нечем.
+#[test]
+fn the_shipped_ruleset_never_asks_for_more_cats_than_exist() {
+    let mut sim = shipped();
+    let all = sim.unit_count() + sim.recruit_needs().len();
+    for (def, (_, tests, _)) in sim.goal_specs().iter().enumerate() {
+        for test in tests {
+            if let GoalTest::Cats(n) = test {
+                assert!(
+                    *n as usize <= all,
+                    "цель {def} просит {n} котов, а больше {all} база не соберёт",
+                );
+            }
+        }
+    }
+}
