@@ -27,6 +27,15 @@
 //! месте** — там, где событие происходит: `run_missions`, `work_craft`,
 //! `work_hauls`. Четвёртый обязан заводиться так же.
 //!
+//! # Три статуса и срок
+//!
+//! Цель либо **обязательна** (идёт в счёт «Цели N/7» и держит финал), либо
+//! **необязательна** (видна с начала, но партию не держит), либо **скрыта** (её
+//! не существует, пока не взята). Срок (`before`) бывает только у
+//! необязательной, и это не вкус: обязательная цель с просроченным сроком —
+//! молчаливый проигрыш по времени, а скрытая не даёт к сроку целиться (§12.158).
+//! Сторож на это стоит в `tests/goals.rs`.
+//!
 //! # Взятая цель не снимается
 //!
 //! `Goals` только растёт, как `Chronicle`, `Fame` и `Techs`. Потраченный лом не
@@ -48,7 +57,26 @@ use crate::map::BaseMap;
 ///
 /// У целей без числа возвращает `(0, 0)` либо `(1, 1)` — «нет» и «есть»: панели
 /// этого хватает, чтобы не рисовать полоску там, где мерить нечего.
-pub(crate) fn progress_of(test: &GoalTest, w: &WorldFacts) -> (i32, i32) {
+pub(crate) fn progress_of(tests: &[GoalTest], w: &WorldFacts) -> (i32, i32) {
+    // Узкое место всей связки — тем же выражением, каким `Stored` выбирает самый
+    // дальний предмет набора (§12.158). Полоска обязана показывать то, из-за
+    // чего цель ещё не взята, а не среднее по условиям: среднее у цели с пятью
+    // требованиями стоит на трёх четвертях, когда сделано ноль из последнего.
+    tests
+        .iter()
+        .map(|test| one_progress(test, w))
+        .min_by_key(narrowest)
+        .unwrap_or((0, 0))
+}
+
+/// Ключ «насколько далеко до этого условия»: доля от нужного, а не остаток.
+/// Остаток сравнил бы 900 недостающего лома с 40 недостающей репутации, хотя
+/// первого набирается вдесятеро больше за то же время.
+fn narrowest((have, need): &(i32, i32)) -> i32 {
+    (have * 100).checked_div(*need).unwrap_or(0)
+}
+
+fn one_progress(test: &GoalTest, w: &WorldFacts) -> (i32, i32) {
     match test {
         GoalTest::Tile(tile, count) => (w.tiles_built(*tile), *count),
         // Набор мерится по самому дальнему от цели предмету: пока не хватает
@@ -56,20 +84,28 @@ pub(crate) fn progress_of(test: &GoalTest, w: &WorldFacts) -> (i32, i32) {
         GoalTest::Stored(need) => need
             .iter()
             .map(|&(item, n)| (w.stored(item).min(n), n))
-            .min_by_key(|(have, n)| (have * 100).checked_div(*n).unwrap_or(0))
+            .min_by_key(narrowest)
             .unwrap_or((0, 0)),
         GoalTest::Tech(id) => (w.techs.knows(id) as i32, 1),
         GoalTest::Cats(n) => (w.cats, *n),
         GoalTest::Raid(def) => (w.raids.0.contains(def) as i32, 1),
         GoalTest::Craft(def) => (w.crafted.0.contains(def) as i32, 1),
         GoalTest::Earned(n) => (w.earned.0, *n),
+        // Репутация бывает отрицательной, и полоска на минусе — это «уже
+        // испортил», а не «ещё не начал». Наружу поэтому едет обрезанное снизу
+        // нулём: счёт показывает путь к цели, а не саму шкалу.
+        GoalTest::Standing(need) => need
+            .iter()
+            .map(|&(faction, n)| (w.standing.value_of(faction).clamp(0, n), n))
+            .min_by_key(narrowest)
+            .unwrap_or((0, 0)),
     }
 }
 
 /// Выполнено ли условие. Одно выражение на всё: «взято» и «сколько осталось» —
 /// это один и тот же счёт, и второго быть не должно.
-fn met(test: &GoalTest, w: &WorldFacts) -> bool {
-    let (have, need) = progress_of(test, w);
+fn met(tests: &[GoalTest], w: &WorldFacts) -> bool {
+    let (have, need) = progress_of(tests, w);
     have >= need
 }
 
@@ -84,6 +120,9 @@ pub(crate) struct WorldFacts<'a> {
     pub(crate) raids: &'a Raids,
     pub(crate) crafted: &'a Crafted,
     pub(crate) earned: &'a Earned,
+    /// Репутация по фракциям (§12.43). Знаковая: у цели на неё есть и «ещё не
+    /// дошёл», и «уже испортил».
+    pub(crate) standing: &'a Standing,
     /// Сколько котов у базы, считая ушедших и пленных: ушедший кот твой.
     /// §12.22 («мир не касается ушедших») — про усталость и голод, а не про
     /// принадлежность.
@@ -138,6 +177,7 @@ pub(crate) fn check_goals(
     raids: Res<Raids>,
     crafted: Res<Crafted>,
     earned: Res<Earned>,
+    standing: Res<Standing>,
     mut goals: ResMut<Goals>,
     stacks: Query<(&Position, &Stack)>,
     cats: Query<(), With<UnitId>>,
@@ -150,12 +190,20 @@ pub(crate) fn check_goals(
         raids: &raids,
         crafted: &crafted,
         earned: &earned,
+        standing: &standing,
         cats: cats.iter().count() as i32,
         stored: stored_counts(stacks.iter(), &map, &tiles),
         built: built_counts(&map),
     };
     for (def, rule) in rules.0.iter().enumerate() {
-        if goals.taken(def).is_none() && met(&rule.test, &facts) {
+        // Срок проверяется **до** условия и молча (§12.158): просроченная цель
+        // не отнимает ничего и никого не наказывает, она просто перестаёт
+        // браться. Второго исхода у неё нет и заводить его нельзя — это был бы
+        // проигрыш по времени, которого в игре не бывает.
+        if rule.before.is_some_and(|last| time.tick > last) {
+            continue;
+        }
+        if goals.taken(def).is_none() && met(&rule.tests, &facts) {
             goals.0.push(Taken { def, at: time.tick });
         }
     }

@@ -3758,9 +3758,10 @@ function renderGoalsPanel(goals, required, snap) {
   }
   goalsToggleEl.hidden = false;
 
-  // В счёт идут только обязательные: взятая скрытая раздула бы знаменатель, и
-  // «8 / 7» игрок прочтёт как поломку.
-  const done = goals.filter((g) => g.done && !g.hidden).length;
+  // В счёт идут только обязательные: взятая скрытая или необязательная раздула
+  // бы знаменатель, и «8 / 7» игрок прочтёт как поломку. Статус приезжает
+  // словом (§12.158) — трёх состояний двумя флагами в JS не различить.
+  const done = goals.filter((g) => g.done && g.kind === "required").length;
   goalsToggleEl.textContent = `цели ${done}/${required}`;
   goalsToggleEl.classList.toggle("done", done >= required);
 
@@ -3774,14 +3775,45 @@ function renderGoalsPanel(goals, required, snap) {
     // Счётчик показываем только там, где есть что мерить: у двоичной цели
     // «0 / 1» — это шум, а не сведения.
     const meter = g.need > 1 ? `<b>${g.have} / ${g.need}</b>` : "";
-    return (
-      `<div class="row"><div class="cat-row"><span>${label}</span>${meter}</div>` +
-      `<div class="cat-sub">${esc(def.hint || "")}</div></div>`
-    );
+    // Промах по сроку виден строкой, а не исчезновением цели (§12.158): ачивка
+    // тем и вызов, что о промахе сказано вслух. Молча оставленный счётчик
+    // читался бы поломкой — он больше не двинется, а почему, не сказано.
+    if (g.expired) {
+      return (
+        `<div class="row past"><div class="cat-row"><span>${label}</span>` +
+        `<b class="warn">не успели</b></div>` +
+        `<div class="cat-sub">${esc(def.hint || "")}</div></div>`
+      );
+    }
+    // Срок — в днях, как у записки: «через 5780» не переводится в решение, а
+    // «через 6 дней» переводится. Считаем по номеру суток, а не делением
+    // остатка, — иначе срок в конце дня показывался бы «сегодня» до утра.
+    const parts = [
+      `<div class="row"><div class="cat-row"><span>${label}</span>${meter}</div>`,
+      `<div class="cat-sub">${esc(def.hint || "")}</div>`,
+    ];
+    if (g.before) {
+      const until = dayOf(g.before) - dayOf(snap.tick);
+      parts.push(
+        `<div class="cat-sub">срок: ` +
+          (!dayOf(snap.tick)
+            ? `через ${g.before}`
+            : until <= 0
+              ? "сегодня"
+              : until === 1
+                ? "завтра"
+                : `через ${days(until)}`) +
+          `</div>`,
+      );
+    }
+    return `${parts.join("")}</div>`;
   };
 
-  const open = goals.filter((g) => !g.hidden);
-  const extra = goals.filter((g) => g.hidden); // сюда попадают только взятые
+  // Скрытая сюда попадает только взятой — невзятую ядро наружу не отдаёт вовсе.
+  // Необязательная стоит с ней в одной группе и по той же причине: обе не про
+  // финал, а «сверх того» — это ровно про то, что партию не держит.
+  const open = goals.filter((g) => g.kind === "required");
+  const extra = goals.filter((g) => g.kind !== "required");
   const rows = open.map(row);
   if (extra.length) {
     rows.push(
@@ -3838,7 +3870,7 @@ function showGoalToast(goal) {
   const node = document.createElement("div");
   node.className = "toast";
   node.innerHTML =
-    `<div class="toast-kind">${goal.hidden ? "скрытая цель" : "цель закрыта"}</div>` +
+    `<div class="toast-kind">${goal.kind === "hidden" ? "скрытая цель" : "цель закрыта"}</div>` +
     `<div class="toast-label">${esc(def.label || def.id || "?")}</div>`;
 
   // Уходит либо само, либо по клику — но убирается **одним** путём: иначе клик
@@ -3872,8 +3904,11 @@ function showFinale(goals, snap) {
   const scrap = snap.stock?.[0];
   const stored = scrap ? scrap.stored + scrap.loose : 0;
   const day = dayOf(snap.tick);
+  // Только обязательные: финал подводит итог тому, что партию держало.
+  // Необязательная ачивка стоит рядом со скрытой и сюда не идёт — невзятая, она
+  // напечаталась бы галочкой, которой не было (§12.158).
   const lines = goals
-    .filter((g) => !g.hidden)
+    .filter((g) => g.kind === "required")
     .map((g) => {
       const def = goalDef(g.def);
       const when = dayOf(g.at) ? `день ${dayOf(g.at)}` : "✓";

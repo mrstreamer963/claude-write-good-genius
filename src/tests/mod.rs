@@ -1738,6 +1738,23 @@ impl Sim {
             .map_or(0, |r| crate::missions::duration(r, paws))
     }
 
+    /// Сколько штук предмета в тик даёт лучшая по нему вылазка, при полном
+    /// отряде и полном успехе (§12.158). Верхняя оценка добычи: сторож меряет
+    /// ею срок, а не баланс, — вылазки не ходят без перерыва, коты спят и едят.
+    fn best_loot_rate(&self, item: usize) -> f64 {
+        self.world
+            .resource::<MissionRules>()
+            .0
+            .iter()
+            .enumerate()
+            .filter_map(|(def, rule)| {
+                let count = rule.loot.iter().find(|&&(i, _)| i == item)?.1;
+                let span = self.mission_span_of(def, rule.squad_max.max(1));
+                (span > 0).then(|| count as f64 / span as f64)
+            })
+            .fold(0.0, f64::max)
+    }
+
     /// Разведка (§12.113): сила отряда считается по лучшему, а опасность растёт
     /// с числом лап. В схеме `sim_from` таких заказов нет, как нет и вылазок.
     fn set_stealth_mission(&mut self, mission: usize) {
@@ -2270,18 +2287,32 @@ impl Sim {
 
     /// Завести цель партии; вернёт её индекс (§12.58).
     fn set_goal(&mut self, test: GoalTest) -> usize {
-        let mut rules = self.world.resource_mut::<GoalRules>();
-        rules.0.push(GoalRule {
-            test,
-            hidden: false,
-        });
-        rules.0.len() - 1
+        self.push_goal(vec![test], GoalKind::Required, None)
+    }
+
+    /// Цель из нескольких условий: выполнены обязаны быть все (§12.158).
+    fn set_goal_all(&mut self, tests: Vec<GoalTest>) -> usize {
+        self.push_goal(tests, GoalKind::Required, None)
     }
 
     /// Скрытая цель: в счёт не идёт и наружу не уходит, пока не взята.
     fn set_hidden_goal(&mut self, test: GoalTest) -> usize {
+        self.push_goal(vec![test], GoalKind::Hidden, None)
+    }
+
+    /// Необязательная цель со сроком — та самая ачивка-вызов (§12.158).
+    /// `before` — последний тик, на котором её ещё можно взять.
+    fn set_optional_goal(&mut self, tests: Vec<GoalTest>, before: Option<u64>) -> usize {
+        self.push_goal(tests, GoalKind::Optional, before)
+    }
+
+    fn push_goal(&mut self, tests: Vec<GoalTest>, kind: GoalKind, before: Option<u64>) -> usize {
         let mut rules = self.world.resource_mut::<GoalRules>();
-        rules.0.push(GoalRule { test, hidden: true });
+        rules.0.push(GoalRule {
+            tests,
+            kind,
+            before,
+        });
         rules.0.len() - 1
     }
 
@@ -2310,6 +2341,14 @@ impl Sim {
             .map(|g| (g.have, g.need))
     }
 
+    /// Вышел ли срок цели — так, как об этом говорит панель (§12.158).
+    fn goal_expired(&mut self, def: usize) -> bool {
+        self.goals()
+            .iter()
+            .find(|g| g.def == def)
+            .is_some_and(|g| g.expired)
+    }
+
     /// Уходит ли цель наружу вообще: скрытая и невзятая — нет.
     fn goal_is_visible(&mut self, def: usize) -> bool {
         self.goals().iter().any(|g| g.def == def)
@@ -2322,12 +2361,12 @@ impl Sim {
 
     /// Правила целей так, как их собрал рулсет: `(скрытая, условие)`.
     /// Нужны сторожу на боевом контенте (§12.58).
-    fn goal_specs(&self) -> Vec<(bool, GoalTest)> {
+    fn goal_specs(&self) -> Vec<(GoalKind, Vec<GoalTest>, Option<u64>)> {
         self.world
             .resource::<GoalRules>()
             .0
             .iter()
-            .map(|g| (g.hidden, g.test.clone()))
+            .map(|g| (g.kind, g.tests.clone(), g.before))
             .collect()
     }
 

@@ -612,10 +612,12 @@ impl Sim {
             raids: self.world.resource::<Raids>(),
             crafted: self.world.resource::<Crafted>(),
             earned: self.world.resource::<Earned>(),
+            standing: self.world.resource::<Standing>(),
             cats,
             stored,
             built,
         };
+        let tick = self.world.resource::<SimTime>().tick;
         let taken = self.world.resource::<Goals>();
         rules
             .iter()
@@ -624,17 +626,25 @@ impl Sim {
                 let done = taken.taken(def);
                 // Скрытая и невзятая наружу не уходит вовсе: прятать её в JS
                 // значит объявить её в devtools (§12.28).
-                if rule.hidden && done.is_none() {
+                if rule.kind == GoalKind::Hidden && done.is_none() {
                     return None;
                 }
-                let (have, need) = progress_of(&rule.test, &facts);
+                let (have, need) = progress_of(&rule.tests, &facts);
                 Some(GoalSnap {
                     def,
                     done: done.is_some(),
                     at: done.map_or(0, |t| t.at),
                     have,
                     need,
-                    hidden: rule.hidden,
+                    kind: match rule.kind {
+                        GoalKind::Required => "required",
+                        GoalKind::Optional => "optional",
+                        GoalKind::Hidden => "hidden",
+                    },
+                    before: rule.before.unwrap_or(0),
+                    // Просрочку считает ядро, а не панель: то же выражение, каким
+                    // `check_goals` перестаёт цель брать (инвариант 14).
+                    expired: done.is_none() && rule.before.is_some_and(|last| tick > last),
                 })
             })
             .collect()
@@ -1324,38 +1334,66 @@ impl Sim {
         let tile_index = |id: &str| rs.tiles.iter().position(|t| t.id == id);
         let mission_index = |id: &str| rs.missions.iter().position(|m| m.id == id);
         let recipe_index = |id: &str| rs.recipes.iter().position(|r| r.id == id);
+        let goal_faction = |id: &str| rs.factions.iter().position(|f| f.id == id);
         world.insert_resource(GoalRules(
             rs.goals
                 .iter()
                 .filter_map(|g| {
-                    // Условие — ровно одно из полей. Порядок веток здесь и есть
-                    // приоритет при случайно заполненных двух: описан он в
-                    // `GoalDef`, а спорную запись ловит `every_goal_is_reachable`.
-                    let test = if let Some(id) = &g.tile {
-                        GoalTest::Tile(tile_index(id)?, g.count.max(1))
-                    } else if !g.stored.is_empty() {
-                        GoalTest::Stored(
+                    // Условий столько, сколько заполненных полей (§12.158), и
+                    // выполнены обязаны быть все. Порядок здесь — порядок показа
+                    // в подсказке, а не приоритет: приоритета между условиями
+                    // одной цели не бывает.
+                    let mut tests = Vec::new();
+                    if let Some(id) = &g.tile {
+                        tests.push(GoalTest::Tile(tile_index(id)?, g.count.max(1)));
+                    }
+                    if !g.stored.is_empty() {
+                        tests.push(GoalTest::Stored(
                             g.stored
                                 .iter()
                                 .filter_map(|(id, &n)| item_index(id).map(|i| (i, n)))
                                 .collect(),
-                        )
-                    } else if let Some(id) = &g.tech {
-                        GoalTest::Tech(id.clone())
-                    } else if g.cats > 0 {
-                        GoalTest::Cats(g.cats)
-                    } else if let Some(id) = &g.raid {
-                        GoalTest::Raid(mission_index(id)?)
-                    } else if let Some(id) = &g.craft {
-                        GoalTest::Craft(recipe_index(id)?)
-                    } else if g.earned > 0 {
-                        GoalTest::Earned(g.earned)
-                    } else {
+                        ));
+                    }
+                    if let Some(id) = &g.tech {
+                        tests.push(GoalTest::Tech(id.clone()));
+                    }
+                    if g.cats > 0 {
+                        tests.push(GoalTest::Cats(g.cats));
+                    }
+                    if let Some(id) = &g.raid {
+                        tests.push(GoalTest::Raid(mission_index(id)?));
+                    }
+                    if let Some(id) = &g.craft {
+                        tests.push(GoalTest::Craft(recipe_index(id)?));
+                    }
+                    if g.earned > 0 {
+                        tests.push(GoalTest::Earned(g.earned));
+                    }
+                    if !g.standing.is_empty() {
+                        tests.push(GoalTest::Standing(
+                            g.standing
+                                .iter()
+                                .filter_map(|(id, &n)| goal_faction(id).map(|f| (f, n)))
+                                .collect(),
+                        ));
+                    }
+                    if tests.is_empty() {
                         return None; // цель без условия — не цель
+                    }
+                    // Скрытость сильнее необязательности: у скрытой цели «в счёт
+                    // не идёт» и так, а видимой она от `optional` не станет.
+                    let kind = if g.hidden {
+                        GoalKind::Hidden
+                    } else if g.optional {
+                        GoalKind::Optional
+                    } else {
+                        GoalKind::Required
                     };
                     Some(GoalRule {
-                        test,
-                        hidden: g.hidden,
+                        tests,
+                        kind,
+                        before: (g.before > 0).then_some(g.before),
                     })
                 })
                 .collect(),
