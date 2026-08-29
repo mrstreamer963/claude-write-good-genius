@@ -192,6 +192,12 @@ fn sim_from(rows: &[&str]) -> Sim {
             relay: false,
             comms: 0,
             tech: String::new(),
+            // Зонирования у схемы нет тоже (§12.157): все четыре свойства
+            // нули, комнаты кладутся вплотную. Включают `set_quiet` и родня.
+            quiet: false,
+            noisy: false,
+            clean: false,
+            dirty: false,
         }],
         items: Vec::new(),
         skills: Vec::new(),
@@ -426,6 +432,35 @@ impl Sim {
             .collect()
     }
 
+    /// Пары соседей на карте, которые не уживаются (§12.157). Читается ровно
+    /// как само правило, поэтому годится и сквозному тесту, и сторожу на
+    /// боевом рулсете. Считается по **карте**, а не по плану: вопрос в том,
+    /// законна ли уже стоящая база.
+    fn zoning_clashes(&self) -> Vec<((i32, i32), (i32, i32))> {
+        let map = self.world.resource::<BaseMap>();
+        let rules = self.world.resource::<TileRules>();
+        let hostile = |a: i16, b: i16| {
+            let pair = |x: fn(&TileRules, i16) -> bool, y: fn(&TileRules, i16) -> bool| {
+                (x(rules, a) && y(rules, b)) || (y(rules, a) && x(rules, b))
+            };
+            pair(TileRules::is_quiet, TileRules::is_noisy)
+                || pair(TileRules::is_clean, TileRules::is_dirty)
+        };
+        // Только вправо и вниз, углы включительно: пара считается один раз.
+        (0..map.height)
+            .flat_map(|y| (0..map.width).map(move |x| (x, y)))
+            .flat_map(|(x, y)| {
+                [
+                    ((x, y), (x + 1, y)),
+                    ((x, y), (x, y + 1)),
+                    ((x, y), (x + 1, y + 1)),
+                    ((x, y), (x + 1, y - 1)),
+                ]
+            })
+            .filter(|&(a, b)| hostile(map.tile_at(a.0, a.1), map.tile_at(b.0, b.1)))
+            .collect()
+    }
+
     /// Клетки с ролью, до которых коту не дойти: `role` отбирает интересные
     /// тайлы, старт — позиция первого кота (§12.142).
     ///
@@ -466,6 +501,25 @@ impl Sim {
     /// Заставить тайл доверху: пройти можно, остаться нельзя (§12.35).
     fn set_solid(&mut self, tile: i16, on: bool) {
         self.tile_rule(tile, |r| r.solid = on);
+    }
+
+    /// Зонирование (§12.157): чего тайл не терпит боком. В `sim_from` все
+    /// четыре свойства нули, то есть правила нет вовсе — как нет навыков,
+    /// вылазок и рынка.
+    fn set_quiet(&mut self, tile: i16, on: bool) {
+        self.tile_rule(tile, |r| r.quiet = on);
+    }
+
+    fn set_noisy(&mut self, tile: i16, on: bool) {
+        self.tile_rule(tile, |r| r.noisy = on);
+    }
+
+    fn set_clean(&mut self, tile: i16, on: bool) {
+        self.tile_rule(tile, |r| r.clean = on);
+    }
+
+    fn set_dirty(&mut self, tile: i16, on: bool) {
+        self.tile_rule(tile, |r| r.dirty = on);
     }
 
     fn tile_rule(&mut self, tile: i16, edit: impl FnOnce(&mut TileRule)) {

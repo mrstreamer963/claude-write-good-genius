@@ -32,7 +32,7 @@ use bevy_ecs::system::RunSystemOnce;
 use crate::components::*;
 use crate::goals::{WorldFacts, built_counts, progress_of};
 use crate::hauling::{plan_spend, stored_counts};
-use crate::jobs::{BUILD_WORK, Plan, access_ok};
+use crate::jobs::{BUILD_WORK, Plan, may_build};
 use crate::map::{BaseMap, rect_cells};
 use crate::missions::{
     crew_danger, crew_force, duration, gate_cells, gate_count, guide_cut, guide_of, guide_value,
@@ -1246,6 +1246,10 @@ impl Sim {
                     relay: t.relay,
                     comms: t.comms,
                     tech: t.tech.clone(),
+                    quiet: t.quiet,
+                    noisy: t.noisy,
+                    clean: t.clean,
+                    dirty: t.dirty,
                 })
                 .collect(),
         ));
@@ -1721,7 +1725,7 @@ impl Sim {
         serde_wasm_bindgen::to_value(&dto).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
-    /// Маска правила доступа (§12.111) для превью: по байту на клетку, `1` —
+    /// Маска ворот разметки (§12.111, §12.157) для превью: по байту на клетку, `1` —
     /// тайл здесь поставить можно, `0` — нельзя. **Пустой вектор значит
     /// «правило к этому тайлу не применимо»**, и рендер не красит ничего.
     ///
@@ -1738,7 +1742,7 @@ impl Sim {
     /// расхождение, ради которого маска и заводится.
     pub fn buildable(&mut self, tile: i32, rx: i32, ry: i32, rw: i32, rh: i32) -> Vec<u8> {
         let t = tile as i16;
-        if !self.world.resource::<TileRules>().is_solid(t) {
+        if !self.gated_by_placement(t) {
             return Vec::new();
         }
         let mut plan = self.plan();
@@ -1746,7 +1750,7 @@ impl Sim {
         let mut mask = vec![0u8; (self.width * self.height) as usize];
         let mut done = vec![false; mask.len()];
         for (cx, cy) in rect_cells(rx, ry, rw, rh) {
-            let ok = access_ok(&plan, rules, (cx, cy), t);
+            let ok = may_build(&plan, rules, (cx, cy), t);
             if ok {
                 plan.set(cx, cy, t);
             }
@@ -1759,11 +1763,24 @@ impl Sim {
             for x in 0..self.width {
                 let i = (y * self.width + x) as usize;
                 if !done[i] {
-                    mask[i] = u8::from(access_ok(&plan, rules, (x, y), t));
+                    mask[i] = u8::from(may_build(&plan, rules, (x, y), t));
                 }
             }
         }
         mask
+    }
+
+    /// Подчиняется ли тайл воротам разметки вообще: полка (§12.111) или клетка
+    /// со свойством зонирования (§12.157). Одно выражение на маску, потому что
+    /// «правило неприменимо» — это её пустой вектор, и ошибиться здесь значит
+    /// либо не показать креста, либо считать маску всей карты на каждый пол.
+    fn gated_by_placement(&self, tile: i16) -> bool {
+        let rules = self.world.resource::<TileRules>();
+        rules.is_solid(tile)
+            || rules.is_quiet(tile)
+            || rules.is_noisy(tile)
+            || rules.is_clean(tile)
+            || rules.is_dirty(tile)
     }
 
     /// Номер клетки в маске; `None` — за картой.
@@ -1787,12 +1804,12 @@ impl Sim {
         if !self.tech_allows(t) {
             return false;
         }
-        // Правило доступа — вторые ворота разметки и по тому же доводу (§12.111):
-        // у полки обязан быть проход, а чертёж, который встанет мебелью посреди
-        // собственной мебели, игрок прочтёт как поломку. Считается по плану, то
-        // есть с учётом уже размеченного, — иначе одна рамка соберёт монолит.
+        // Правило доступа (§12.111) и зонирование (§12.157) — вторые ворота
+        // разметки и по тому же доводу: у полки обязан быть проход, а лежанка
+        // вплотную к цеху — это спальня, в которой не спят. Считается по плану,
+        // то есть с учётом уже размеченного, — иначе одна рамка соберёт монолит.
         let plan = self.plan();
-        if !access_ok(&plan, self.world.resource::<TileRules>(), (x, y), t) {
+        if !may_build(&plan, self.world.resource::<TileRules>(), (x, y), t) {
             return false;
         }
         if self.world.resource::<BaseMap>().tile_at(x, y) == t {

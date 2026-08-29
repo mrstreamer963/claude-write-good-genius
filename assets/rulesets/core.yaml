@@ -85,26 +85,32 @@ items:
 # tech — технология, без которой тайл не построить. Пусто = доступен сразу.
 # Это вторые ворота прогрессии после известности: та открывает вылазки и котов,
 # эта — саму базу, и открывается только своей же наукой.
+# quiet/noisy и clean/dirty — зонирование (§12.157): клетка не встаёт боком к
+# тому, чего не терпит. «Здесь не выспаться» (лежанка и гнездо против цеха,
+# гаража, поста и рации) и «нужна чистота» (лазарет и лаборатория против цеха,
+# гаража, склада и стеллажа). Пары выбраны там, где игрок и правда хочет прижать
+# комнаты друг к другу ради короткой ходьбы: правило, запрещающее то, чего никто
+# не делает, — мёртвый контент.
 tiles:
   - { id: floor,   label: "Пол",         color: "#1b2a3f", cost: { scrap: 1 } }
-  - { id: storage, label: "Склад",       color: "#26506e", cost: { scrap: 2, part: 1 }, capacity: 20 }
-  - { id: lab,     label: "Лаборатория", color: "#5a3a6e", cost: { scrap: 2, part: 2 }, lab: true }
-  - { id: garage,  label: "Гараж",       color: "#6e5a26", cost: { scrap: 2, part: 1 }, gate: true }
-  - { id: bed,     label: "Лежанка",     color: "#3f5a3a", cost: { scrap: 1, part: 1 }, rest: 120,    wake: 24000 }
+  - { id: storage, label: "Склад",       color: "#26506e", cost: { scrap: 2, part: 1 }, capacity: 20, dirty: true }
+  - { id: lab,     label: "Лаборатория", color: "#5a3a6e", cost: { scrap: 2, part: 2 }, lab: true, clean: true }
+  - { id: garage,  label: "Гараж",       color: "#6e5a26", cost: { scrap: 2, part: 1 }, gate: true, noisy: true, dirty: true }
+  - { id: bed,     label: "Лежанка",     color: "#3f5a3a", cost: { scrap: 1, part: 1 }, rest: 120,    wake: 24000, quiet: true }
   - { id: desk,    label: "Парта",       color: "#4a4f7a", cost: { scrap: 2, part: 1 }, teaches: science }
-  - { id: rack,    label: "Стеллаж",     color: "#2f6f8e", cost: { scrap: 4, part: 3 }, capacity: 60, solid: true, tech: racks }
-  - { id: nest,    label: "Гнездо",      color: "#4d7a44", cost: { scrap: 2, part: 2 }, rest: 300,    tech: nests }
-  - { id: shop,    label: "Мастерская",  color: "#8e6f2f", cost: { scrap: 3, part: 2 }, shop: true,   tech: workshops }
+  - { id: rack,    label: "Стеллаж",     color: "#2f6f8e", cost: { scrap: 4, part: 3 }, capacity: 60, solid: true, tech: racks, dirty: true }
+  - { id: nest,    label: "Гнездо",      color: "#4d7a44", cost: { scrap: 2, part: 2 }, rest: 300,    tech: nests, quiet: true }
+  - { id: shop,    label: "Мастерская",  color: "#8e6f2f", cost: { scrap: 3, part: 2 }, shop: true,   tech: workshops, noisy: true, dirty: true }
   # Лазарет технологией не закрыт намеренно: раны приходят с первой же вылазки,
   # а наука — сильно позже, и запертая койка означала бы механику, которую
   # игрок сперва получает в лицо и только потом узнаёт (§12.37).
-  - { id: ward,    label: "Лазарет",     color: "#8e4a4a", cost: { scrap: 2, part: 2 }, heal: 60 }
+  - { id: ward,    label: "Лазарет",     color: "#8e4a4a", cost: { scrap: 2, part: 2 }, heal: 60, clean: true }
   # Торговый пост технологией не закрыт: это ранний мост «лишний лом → деталь»,
   # дорогой (около семи ломов за деталь против шести у мастерской) и медленный,
   # и к приходу «Материаловедения» он честно проигрывает цеху. Настоящие ворота
   # у него — деталь в цене: чтобы начать торговать, надо что-то снести (§12.44).
   # За постом никто не работает: это лицензия, а не рабочее место.
-  - { id: post,    label: "Торговый пост", color: "#7a6f4a", cost: { scrap: 3, part: 2 }, trade: true, lot: 25 }
+  - { id: post,    label: "Торговый пост", color: "#7a6f4a", cost: { scrap: 3, part: 2 }, trade: true, lot: 25, noisy: true }
   # Узел связи — прибавка к силе отряда, пока за ним дежурят (§12.60). Слота
   # вылазки он **не даёт** с §12.152 — тот держит гараж, — и в стартовой
   # застройке его поэтому нет вовсе: связь стала находкой, а не данностью.
@@ -112,7 +118,7 @@ tiles:
   # влияет на исход вылазки, и запирать это наукой значило бы прятать связь от
   # игрока дважды. Настоящие ворота у него те же, что у поста: деталь в цене,
   # то есть чтобы услышать отряд в поле, надо что-то снести.
-  - { id: relay,   label: "Узел связи",  color: "#2f8e7a", cost: { scrap: 3, part: 2 }, relay: true, comms: 1 }
+  - { id: relay,   label: "Узел связи",  color: "#2f8e7a", cost: { scrap: 3, part: 2 }, relay: true, comms: 1, noisy: true }
 
 # Начальная застройка: комнаты + коридоры (связная сеть, чтобы коты могли ходить).
 build:

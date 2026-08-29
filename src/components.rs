@@ -1202,6 +1202,14 @@ pub(crate) struct TileRule {
     pub(crate) comms: i32,
     /// Технология, открывающая постройку; пусто — доступен сразу (§12.27).
     pub(crate) tech: String,
+    /// Зонирование, пара «тишина» (§12.157): `quiet` не встаёт боком к `noisy`.
+    /// Одиннадцатый случай той же схемы — и второй после `solid`, который
+    /// говорит не о работе, а о том, что клетка вообще такое.
+    pub(crate) quiet: bool,
+    pub(crate) noisy: bool,
+    /// Зонирование, пара «чистота» (§12.157): `clean` не встаёт боком к `dirty`.
+    pub(crate) clean: bool,
+    pub(crate) dirty: bool,
 }
 
 impl TileRules {
@@ -1245,6 +1253,26 @@ impl TileRules {
     /// Можно ли на клетке **задержаться**; проходимость это не трогает (§12.35).
     pub(crate) fn is_solid(&self, tile: i16) -> bool {
         self.of(tile).is_some_and(|r| r.solid)
+    }
+
+    /// Требует тишины: не встаёт боком к шумному (§12.157).
+    pub(crate) fn is_quiet(&self, tile: i16) -> bool {
+        self.of(tile).is_some_and(|r| r.quiet)
+    }
+
+    /// Шумит: не пускает к себе боком того, кому нужна тишина (§12.157).
+    pub(crate) fn is_noisy(&self, tile: i16) -> bool {
+        self.of(tile).is_some_and(|r| r.noisy)
+    }
+
+    /// Требует чистоты (§12.157).
+    pub(crate) fn is_clean(&self, tile: i16) -> bool {
+        self.of(tile).is_some_and(|r| r.clean)
+    }
+
+    /// Грязнит (§12.157).
+    pub(crate) fn is_dirty(&self, tile: i16) -> bool {
+        self.of(tile).is_some_and(|r| r.dirty)
     }
 
     pub(crate) fn is_lab(&self, tile: i16) -> bool {

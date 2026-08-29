@@ -526,6 +526,194 @@ fn the_mask_counts_the_whole_stroke() {
     );
 }
 
+// --- зонирование: шум и грязь (§12.157) --------------------------------------
+
+/// Тайлы зонирования в этих тестах: спальня и цех.
+const BED: i16 = 2;
+const SHOP: i16 = 3;
+
+/// Готовая база с парой «тишина»: цех шумит, лежанке нужна тишина.
+fn sim_with_zones() -> Sim {
+    let mut sim = sim_from(&[
+        "#######", "#a....#", "#.....#", "#.....#", "#.....#", "#######",
+    ]);
+    sim.set_quiet(BED, true);
+    sim.set_noisy(SHOP, true);
+    sim
+}
+
+/// Лежанка не встаёт боком к цеху: спальня, в которой не спят, — это отказ
+/// механики, а не украшение.
+#[test]
+fn a_bed_is_refused_next_to_a_workshop() {
+    let mut sim = sim_with_zones();
+    sim.force_tile(3, 2, SHOP);
+
+    assert!(!sim.add_blueprint(3, 1, BED as i32), "сверху нельзя");
+    assert!(!sim.add_blueprint(2, 2, BED as i32), "и сбоку тоже");
+    assert!(sim.add_blueprint(3, 4, BED as i32), "через клетку — можно");
+}
+
+/// Правило про **пару**, а не про того, кого поставили вторым: запрет
+/// симметричен.
+#[test]
+fn zoning_is_symmetric() {
+    let mut sim = sim_with_zones();
+    sim.force_tile(3, 2, BED);
+
+    assert!(
+        !sim.add_blueprint(3, 1, SHOP as i32),
+        "цех к лежанке — тот же запрет, что лежанка к цеху",
+    );
+}
+
+/// Зазор от углов не растёт: полоски пола в одну клетку по-прежнему довольно —
+/// комната за ней соседом уже не считается.
+#[test]
+fn one_tile_of_floor_separates_the_zones() {
+    let mut sim = sim_with_zones();
+    sim.force_tile(2, 1, SHOP);
+    sim.force_tile(3, 1, SHOP);
+
+    assert!(
+        sim.add_blueprint(2, 3, BED as i32),
+        "через ряд пола — можно"
+    );
+    assert!(sim.add_blueprint(3, 3, BED as i32), "и соседняя тоже");
+}
+
+/// Углы считаются наравне со сторонами: цех наискосок от лежанки стоит к ней
+/// ближе, чем цех через клетку пола, и пропущенная пара читалась бы как дырка
+/// в правиле.
+#[test]
+fn a_corner_touch_is_refused_too() {
+    let mut sim = sim_with_zones();
+    sim.force_tile(2, 2, SHOP);
+
+    assert!(!sim.add_blueprint(3, 3, BED as i32), "угол к углу — нельзя");
+    assert!(
+        !sim.add_blueprint(1, 1, BED as i32),
+        "и с другой стороны тоже"
+    );
+}
+
+/// Одинаковые роли рядом законны: правило про несовместимую пару, а не про
+/// «любой тип не касается любого».
+#[test]
+fn the_same_role_packs_together() {
+    let mut sim = sim_with_zones();
+
+    assert!(
+        sim.add_blueprint_rect(2, 1, 3, 2, BED as i32),
+        "спальня целиком"
+    );
+    let planned = (1..3)
+        .flat_map(|y| (2..5).map(move |x| (x, y)))
+        .filter(|&(x, y)| sim.planned_tile(x, y) == Some(BED))
+        .count();
+    assert_eq!(planned, 6, "шесть лежанок из шести");
+}
+
+/// Чертёж считается наравне с построенным: иначе правило снимается за два
+/// клика — тем же мазком, ради которого оно и заводилось (§12.111).
+#[test]
+fn a_blueprint_counts_as_a_neighbour() {
+    let mut sim = sim_with_zones();
+
+    assert!(sim.add_blueprint(3, 2, SHOP as i32), "цех размечен");
+    assert!(
+        !sim.add_blueprint(3, 1, BED as i32),
+        "лежанка рядом с обещанным цехом отклонена — строить его ещё не начали",
+    );
+}
+
+/// Сноса ворота не касаются, как и у правила доступа (§12.27): у пустоты все
+/// четыре свойства нули.
+#[test]
+fn demolition_is_not_gated_by_zoning() {
+    let mut sim = sim_with_zones();
+    sim.force_tile(3, 2, SHOP);
+    sim.force_tile(3, 1, BED); // досталось от старого сохранения
+
+    assert!(sim.plan_demolish(3, 1), "снос планируется");
+}
+
+/// Маска говорит ровно то же, что ворота, — и считается теперь не только для
+/// полок: у тайла с зонированием она тоже есть.
+#[test]
+fn the_mask_says_what_the_zoning_gate_says() {
+    let mut sim = sim_with_zones();
+    sim.force_tile(3, 2, SHOP);
+
+    let mask = sim.buildable(BED as i32, 0, 0, 0, 0);
+    assert_eq!(mask.len(), 7 * 6, "по байту на клетку карты");
+    assert_eq!(mask[7 + 3], 0, "клетка над цехом закрыта");
+    assert_eq!(mask[4 * 7 + 3], 1, "клетка через одну открыта");
+    assert_eq!(
+        mask[7 + 3] == 1,
+        sim.add_blueprint(3, 1, BED as i32),
+        "маска и ворота отвечают одно",
+    );
+}
+
+/// Маска рамки считает мазок целиком и здесь, и это не формальность: мазок,
+/// проходящий **по самому цеху**, его же и стирает — значит клетки за ним
+/// перестают конфликтовать по ходу дела. Посчитай маска каждую клетку
+/// независимо, и превью перечеркнуло бы то, что разметка примет.
+#[test]
+fn the_zoning_mask_counts_the_whole_stroke() {
+    let mut sim = sim_with_zones();
+    sim.force_tile(2, 2, SHOP);
+
+    let mask = sim.buildable(BED as i32, 1, 2, 4, 1);
+    assert_eq!(mask[2 * 7 + 1], 0, "слева от цеха нельзя: он ещё стоит");
+    assert_eq!(mask[2 * 7 + 2], 1, "поверх самого цеха — можно");
+    assert_eq!(
+        mask[2 * 7 + 3],
+        1,
+        "а справа уже можно: этим же мазком цеха не станет",
+    );
+
+    sim.add_blueprint_rect(1, 2, 4, 1, BED as i32);
+    let planned: Vec<i32> = (1..5)
+        .map(|x| i32::from(sim.planned_tile(x, 2) == Some(BED)))
+        .collect();
+    assert_eq!(planned, vec![0, 1, 1, 1], "и разметка отвечает то же самое");
+}
+
+/// Правило не про роль клетки, а про её свойства: тайл без флагов маске не
+/// подчиняется вовсе, и красить у него нечего.
+#[test]
+fn a_tile_without_flags_has_no_mask() {
+    let mut sim = sim_with_zones();
+
+    assert!(
+        sim.buildable(0, 0, 0, 0, 0).is_empty(),
+        "у обычного пола ограничений нет вовсе",
+    );
+}
+
+/// Двое ворот на одном тайле не мешают друг другу: стеллаж и заставлен, и
+/// грязнит.
+#[test]
+fn both_gates_hold_on_one_tile() {
+    let mut sim = sim_from(&["#######", "#a....#", "#.....#", "#.....#", "#######"]);
+    sim.set_solid(RACK, true);
+    sim.set_dirty(RACK, true);
+    sim.set_clean(BED, true);
+    sim.force_tile(4, 2, BED); // лазарет по соседству
+
+    assert!(
+        !sim.add_blueprint(4, 1, RACK as i32),
+        "грязь к чистоте нельзя"
+    );
+    assert!(sim.add_blueprint(2, 1, RACK as i32), "в стороне — можно");
+    assert!(
+        !sim.add_blueprint(2, 2, RACK as i32) || sim.planned_tile(2, 2).is_some(),
+        "а правило доступа считается по-прежнему",
+    );
+}
+
 // --- боевой рулсет ----------------------------------------------------------
 
 /// В `core.yaml` заставленный тайл есть, и это склад: свойство `solid` без
@@ -553,6 +741,38 @@ fn the_shipped_ruleset_starts_with_every_shelf_reachable() {
         sim.solid_without_aisle().is_empty(),
         "к каждой заставленной клетке стартовой базы можно подойти",
     );
+}
+
+/// Стартовая застройка зонированию не противоречит (§12.157). Тот же сторож,
+/// что у правила доступа, и тот же довод: игрок видел бы на старте базу,
+/// которую сам построить не может, — а починить её пришлось бы сносом.
+#[test]
+fn the_shipped_ruleset_starts_without_zoning_clashes() {
+    let sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
+
+    let clashes = sim.zoning_clashes();
+    assert!(
+        clashes.is_empty(),
+        "стартовая база нарушает зонирование: {clashes:?}",
+    );
+}
+
+/// Правило не выключено молча: у каждой пары есть обе стороны. Односторонняя
+/// пара (одни шумные, ни одного, кому нужна тишина) — это механика, которая не
+/// срабатывает никогда, то есть мёртвый контент; довод тот же, что у сторожа
+/// непустого контейнера у поста (§12.90).
+#[test]
+fn the_shipped_ruleset_uses_both_sides_of_every_zoning_pair() {
+    let sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
+    let any = |f: fn(&TileRules, i16) -> bool| {
+        let rules = sim.world.resource::<TileRules>();
+        (0..rules.0.len()).any(|i| f(rules, i as i16))
+    };
+
+    assert!(any(TileRules::is_quiet), "кому-то нужна тишина");
+    assert!(any(TileRules::is_noisy), "и кто-то шумит");
+    assert!(any(TileRules::is_clean), "кому-то нужна чистота");
+    assert!(any(TileRules::is_dirty), "и кто-то грязнит");
 }
 
 /// Стартовая база **связна при непроходимых полках** (§12.142). Сторож на
