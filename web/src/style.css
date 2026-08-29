@@ -1131,6 +1131,15 @@ main#stage.mode-cursor #mode-banner {
 #goals .row:last-child {
   margin-bottom: 0;
 }
+/* Взятую ачивку открывают заново — в ней даты по частям, которых больше нигде
+   нет (§12.159). Курсор и подсветка говорят, что строка кликается; у обычной
+   цели рассказывать нечего, и класса на ней нет. */
+#goals .goal-openable.past {
+  cursor: pointer;
+}
+#goals .goal-openable.past:hover {
+  opacity: 0.75;
+}
 #goals .goals-extra {
   margin: 10px 0 6px;
   padding-top: 8px;

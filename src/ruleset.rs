@@ -8,6 +8,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::components::GoalTest;
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct Ruleset {
     pub(crate) grid: GridDef,
@@ -487,11 +489,23 @@ pub(crate) struct GoalDef {
     /// Сколько котоденег надо заработать продажей за партию.
     #[serde(default)]
     pub(crate) earned: i32,
+    /// Сколько котоденег должно лежать в казне (§12.159). Состояние, а не
+    /// журнал `earned`: «изобилие» — это то, что у базы есть в руках.
+    #[serde(default)]
+    pub(crate) money: i32,
     /// `{ фракция: сколько }` — репутация, до которой надо дойти (§12.158).
     /// Состояние: репутация знаковая и умеет падать, значит цель про «стоишь
     /// сейчас», а не «доходил хоть раз».
     #[serde(default)]
     pub(crate) standing: BTreeMap<String, i32>,
+
+    /// Условия связки так, как их собрало ядро, — **не поле рулсета**, а его
+    /// разбор, уезжающий в `meta` (§12.159). Вид называет каждое словом и ставит
+    /// напротив дату из `GoalSnap::parts`, а порядок и состав остаются одним
+    /// источником: `GoalRule::tests`. Собери вид список сам из полей выше — и на
+    /// первой же новой форме условия даты встали бы не напротив своих строк.
+    #[serde(default, skip_deserializing)]
+    pub(crate) parts: Vec<GoalTest>,
 }
 
 /// Сколько котов уходит на вылазку: `[минимум, предел]` либо одно число, если

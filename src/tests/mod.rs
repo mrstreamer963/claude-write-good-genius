@@ -162,6 +162,7 @@ fn sim_from(rows: &[&str]) -> Sim {
     // писать в них системы обязаны независимо от того, смотрит ли на них цель.
     world.insert_resource(GoalRules::default());
     world.insert_resource(Goals::default());
+    world.insert_resource(GoalHolds::default());
     world.insert_resource(Raids::default());
     world.insert_resource(Crafted::default());
     world.insert_resource(Earned::default());
@@ -2339,6 +2340,26 @@ impl Sim {
             .iter()
             .find(|g| g.def == def)
             .map(|g| (g.have, g.need))
+    }
+
+    /// Даты по условиям связки у взятой цели — так, как их видит поздравление
+    /// (§12.159). Пусто, пока цель не взята.
+    fn goal_parts(&mut self, def: usize) -> Vec<u64> {
+        self.goals()
+            .iter()
+            .find(|g| g.def == def)
+            .map(|g| g.parts.clone())
+            .unwrap_or_default()
+    }
+
+    /// Живые отметки: с какого тика держится каждое условие невзятой цели.
+    fn goal_holds(&self, def: usize) -> Vec<Option<u64>> {
+        self.world
+            .resource::<GoalHolds>()
+            .0
+            .get(def)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Вышел ли срок цели — так, как об этом говорит панель (§12.158).

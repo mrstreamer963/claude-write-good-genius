@@ -3774,7 +3774,7 @@ function buildGoalsPanel() {
   extraHead.hidden = true;
   goalsEl.appendChild(extraHead);
 
-  const rows = defs.map((def) => {
+  const rows = defs.map((def, defIndex) => {
     const row = document.createElement("div");
     row.className = "row";
     row.hidden = true;
@@ -3785,6 +3785,18 @@ function buildGoalsPanel() {
       '<div class="cat-sub goal-when"></div>';
     row.querySelector(".goal-label").textContent = def.label || def.id || "?";
     row.querySelector(".goal-hint").textContent = def.hint || "";
+    // Взятую ачивку можно открыть заново: даты по частям (§12.159) живут только
+    // в поздравлении, а всплыть оно успевает один раз — и, случись в тот же
+    // кадр финал, не всплывает вовсе. Слушатель вешается один раз вместе с
+    // узлом: панель с §12.118 больше не пересобирается, так что делегирование
+    // тут не нужно. У обычной цели рассказывать нечего — строка не кликается.
+    if (def.optional) {
+      row.classList.add("goal-openable");
+      row.addEventListener("click", () => {
+        const g = (lastSnap?.goals ?? []).find((x) => x.def === defIndex);
+        if (g?.done) showAchievement(g, lastSnap);
+      });
+    }
     goalsEl.appendChild(row);
     return {
       row,
@@ -3918,7 +3930,15 @@ function renderGoalsPanel(goals, required, snap) {
   // ради которого её прятали, и промолчать о нём значит спрятать её насовсем.
   // А вот вместе с финалом их не показываем: модал уже перечисляет всё разом, и
   // семь всплывающих поверх него — это шум, а не сведения.
-  if (!finale) fresh.forEach((g) => showGoalToast(g));
+  //
+  // У ачивки вместо тикера — **свой модал** (§12.159): у неё есть то, чего нет
+  // ни у одной другой цели, — даты по каждой части, и в семисекундную плашку
+  // они не помещаются. Тикер при этом не дублируется: одно событие — одно
+  // сообщение. Финал старше и забирает узел себе, но взятая ачивка остаётся
+  // кликабельной строкой, так что рассказ не теряется.
+  const award = finale ? null : fresh.find((g) => g.kind === "optional");
+  if (!finale) fresh.forEach((g) => g !== award && showGoalToast(g));
+  if (award) showAchievement(award, snap);
 
   goalsDoneSeen = doneNow;
   // В самом конце: до сюда `goalsOpen` мог свернуться и финалом, и первым кадром
@@ -4002,6 +4022,83 @@ function showFinale(goals, snap) {
   //
   // Игрок, поставивший паузу сам, сюда не попадёт: цели отмечает `check_goals`,
   // а он тикает вместе с миром — на паузе закрыться нечему.
+  setSpeed(0);
+}
+
+// Условие связки словом (§12.159). Описание приезжает **разобранным ядром** —
+// `meta.goals[def].parts` это сам словарь `GoalTest` с тегом и содержимым, — а
+// вид только называет его на языке своих палитр. Собери он список сам из полей
+// цели, и на первой же новой форме условия даты встали бы не напротив строк.
+function goalPartLabel(part) {
+  const need = part?.need;
+  switch (part?.kind) {
+    case "Tile":
+      return `${meta.palette?.[need[0]]?.label || "?"} ×${need[1]}`;
+    // Наборы ядро раскладывает по одному элементу на условие: у лома и образцов
+    // свои даты. Список тут всё равно перебираем — форма словаря общая.
+    case "Stored":
+      return need.map(([i, n]) => `${itemLabel(i)} ×${n}`).join(" · ");
+    case "Standing":
+      return need
+        .map(([f, n]) => `${(meta.factions ?? [])[f]?.label || "—"}: ${n}`)
+        .join(" · ");
+    case "Tech":
+      return techLabel(need);
+    case "Cats":
+      return `котов: ${need}`;
+    case "Raid":
+      return missionLabel(need);
+    case "Craft":
+      return recipeLabel(need);
+    case "Earned":
+      return `заработано ${need}¤`;
+    case "Money":
+      return `в казне ${need}¤`;
+    default:
+      return "?";
+  }
+}
+
+// Поздравление с ачивкой (§12.159): что было сделано и **когда каждая часть**.
+//
+// Отдельный экран нужен ровно из-за дат: в панели у цели одна строка и одно
+// число, а «лом — день 6, образцы — день 24, репутация — день 28» это рассказ о
+// партии, которого больше нигде нет. Разметка та же, что у финала, и узел тот
+// же: второго вида модального окна в игре нет (§12.101), а два разом — это
+// окно поверх окна.
+function showAchievement(g, snap) {
+  const def = goalDef(g.def);
+  const parts = def.parts ?? [];
+  const lines = parts
+    .map((part, i) => {
+      const at = g.parts?.[i];
+      const when = at !== undefined && dayOf(at) ? `день ${dayOf(at)}` : "✓";
+      return `<div class="cat-row"><span>${esc(goalPartLabel(part))}</span><b>${when}</b></div>`;
+    })
+    .join("");
+  const day = dayOf(g.at);
+  // Запас до срока, а не «день N из M»: `before` это тик, и его день —
+  // граница, а не длина, так что «из 31» при сроке «за 30 дней» читается
+  // опечаткой. Запас же отвечает на то, чем игрок и мерил себя.
+  const left = def.before ? dayOf(def.before) - day : 0;
+  const spare = !def.before
+    ? ""
+    : left > 1
+      ? ` · до срока оставалось ${days(left)}`
+      : left === 1
+        ? " · за день до срока"
+        : " · в последний день";
+  finaleEl.innerHTML =
+    `<div class="finale-box"><div class="finale-title">${esc(def.label || def.id)}</div>` +
+    `<div class="cat-sub">сделано всё разом, и вот когда сошлось</div>` +
+    `<div class="finale-list">${lines}</div>` +
+    `<div class="cat-sub">` +
+    (day ? `день ${day}` : "") +
+    spare +
+    `</div>` +
+    `<button class="finale-close">Играть дальше</button></div>`;
+  finaleEl.hidden = false;
+  // Пауза — как у финала: итог читают, а не догоняют глазами на ×10.
   setSpeed(0);
 }
 

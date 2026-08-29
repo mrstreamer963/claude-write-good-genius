@@ -91,6 +91,9 @@ fn one_progress(test: &GoalTest, w: &WorldFacts) -> (i32, i32) {
         GoalTest::Raid(def) => (w.raids.0.contains(def) as i32, 1),
         GoalTest::Craft(def) => (w.crafted.0.contains(def) as i32, 1),
         GoalTest::Earned(n) => (w.earned.0, *n),
+        // Казна прямо сейчас, а не журнал: «изобилие» — это то, что в руках
+        // (§12.159). Ниже нуля котоденьги не уходят, клампа тут не нужно.
+        GoalTest::Money(n) => (w.money.0, *n),
         // Репутация бывает отрицательной, и полоска на минусе — это «уже
         // испортил», а не «ещё не начал». Наружу поэтому едет обрезанное снизу
         // нулём: счёт показывает путь к цели, а не саму шкалу.
@@ -109,6 +112,13 @@ fn met(tests: &[GoalTest], w: &WorldFacts) -> bool {
     have >= need
 }
 
+/// Выполнено ли **одно** условие связки — тем же счётом, каким считается вся
+/// цель: даты в поздравлении обязаны сходиться с её взятием (§12.159).
+fn met_one(test: &GoalTest, w: &WorldFacts) -> bool {
+    let (have, need) = one_progress(test, w);
+    have >= need
+}
+
 /// Срез мира, по которому считаются все условия разом.
 ///
 /// Собирается один раз за тик и передаётся в `progress_of` — иначе снапшот,
@@ -120,6 +130,8 @@ pub(crate) struct WorldFacts<'a> {
     pub(crate) raids: &'a Raids,
     pub(crate) crafted: &'a Crafted,
     pub(crate) earned: &'a Earned,
+    /// Котоденьги в казне (§12.44). Состояние: расходуемо, как и склад.
+    pub(crate) money: &'a Money,
     /// Репутация по фракциям (§12.43). Знаковая: у цели на неё есть и «ещё не
     /// дошёл», и «уже испортил».
     pub(crate) standing: &'a Standing,
@@ -178,7 +190,9 @@ pub(crate) fn check_goals(
     crafted: Res<Crafted>,
     earned: Res<Earned>,
     standing: Res<Standing>,
+    money: Res<Money>,
     mut goals: ResMut<Goals>,
+    mut holds: ResMut<GoalHolds>,
     stacks: Query<(&Position, &Stack)>,
     cats: Query<(), With<UnitId>>,
 ) {
@@ -191,11 +205,34 @@ pub(crate) fn check_goals(
         crafted: &crafted,
         earned: &earned,
         standing: &standing,
+        money: &money,
         cats: cats.iter().count() as i32,
         stored: stored_counts(stacks.iter(), &map, &tiles),
         built: built_counts(&map),
     };
+    // Реестр отметок растёт под палитру целей, а не задаётся ею в конструкторе:
+    // тесты добавляют цели уже собранному миру (`set_goal`), и размер, снятый
+    // один раз, разошёлся бы с правилами молча.
+    if holds.0.len() < rules.0.len() {
+        holds.0.resize(rules.0.len(), Vec::new());
+    }
     for (def, rule) in rules.0.iter().enumerate() {
+        if goals.taken(def).is_some() {
+            continue; // взятая цель отметок больше не двигает: они заморожены
+        }
+        let held = &mut holds.0[def];
+        if held.len() != rule.tests.len() {
+            held.resize(rule.tests.len(), None);
+        }
+        // Отметки ведём **до** проверки срока: просроченная цель не даётся, но
+        // мир в ней продолжает жить, и снявшаяся отметка — это правда о нём.
+        for (i, test) in rule.tests.iter().enumerate() {
+            if met_one(test, &facts) {
+                held[i].get_or_insert(time.tick);
+            } else {
+                held[i] = None;
+            }
+        }
         // Срок проверяется **до** условия и молча (§12.158): просроченная цель
         // не отнимает ничего и никого не наказывает, она просто перестаёт
         // браться. Второго исхода у неё нет и заводить его нельзя — это был бы
@@ -203,8 +240,15 @@ pub(crate) fn check_goals(
         if rule.before.is_some_and(|last| time.tick > last) {
             continue;
         }
-        if goals.taken(def).is_none() && met(&rule.tests, &facts) {
-            goals.0.push(Taken { def, at: time.tick });
+        if met(&rule.tests, &facts) {
+            // Даты замораживаются здесь и больше не меняются: дальше склад
+            // тратят, а репутация падает (§12.159).
+            let parts = held.iter().map(|h| h.unwrap_or(time.tick)).collect();
+            goals.0.push(Taken {
+                def,
+                at: time.tick,
+                parts,
+            });
         }
     }
 }

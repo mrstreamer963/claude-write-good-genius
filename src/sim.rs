@@ -613,6 +613,7 @@ impl Sim {
             crafted: self.world.resource::<Crafted>(),
             earned: self.world.resource::<Earned>(),
             standing: self.world.resource::<Standing>(),
+            money: self.world.resource::<Money>(),
             cats,
             stored,
             built,
@@ -645,6 +646,7 @@ impl Sim {
                     // Просрочку считает ядро, а не панель: то же выражение, каким
                     // `check_goals` перестаёт цель брать (инвариант 14).
                     expired: done.is_none() && rule.before.is_some_and(|last| tick > last),
+                    parts: done.map(|t| t.parts.clone()).unwrap_or_default(),
                 })
             })
             .collect()
@@ -1347,13 +1349,16 @@ impl Sim {
                     if let Some(id) = &g.tile {
                         tests.push(GoalTest::Tile(tile_index(id)?, g.count.max(1)));
                     }
-                    if !g.stored.is_empty() {
-                        tests.push(GoalTest::Stored(
-                            g.stored
-                                .iter()
-                                .filter_map(|(id, &n)| item_index(id).map(|i| (i, n)))
-                                .collect(),
-                        ));
+                    // Набор раскладывается **по предмету на условие** (§12.159):
+                    // у каждого своя дата, а лом и образцы приходят на базу в
+                    // разное время. Счёт от этого не меняется — `progress_of`
+                    // берёт узкое место что по набору, что по списку условий, —
+                    // а поздравлению есть что сказать про каждую строку.
+                    // Порядок детерминирован: `BTreeMap` отсортирован по `id`.
+                    for (id, &n) in &g.stored {
+                        if let Some(item) = item_index(id) {
+                            tests.push(GoalTest::Stored(vec![(item, n)]));
+                        }
                     }
                     if let Some(id) = &g.tech {
                         tests.push(GoalTest::Tech(id.clone()));
@@ -1370,13 +1375,15 @@ impl Sim {
                     if g.earned > 0 {
                         tests.push(GoalTest::Earned(g.earned));
                     }
-                    if !g.standing.is_empty() {
-                        tests.push(GoalTest::Standing(
-                            g.standing
-                                .iter()
-                                .filter_map(|(id, &n)| goal_faction(id).map(|f| (f, n)))
-                                .collect(),
-                        ));
+                    if g.money > 0 {
+                        tests.push(GoalTest::Money(g.money));
+                    }
+                    // По фракции на условие — по тому же доводу, что и склад:
+                    // до одной стороны доходят раньше, чем до другой.
+                    for (id, &n) in &g.standing {
+                        if let Some(faction) = goal_faction(id) {
+                            tests.push(GoalTest::Standing(vec![(faction, n)]));
+                        }
                     }
                     if tests.is_empty() {
                         return None; // цель без условия — не цель
@@ -1399,6 +1406,7 @@ impl Sim {
                 .collect(),
         ));
         world.insert_resource(Goals::default());
+        world.insert_resource(GoalHolds::default());
         world.insert_resource(Raids::default());
         world.insert_resource(Crafted::default());
         world.insert_resource(Earned::default());
@@ -1636,6 +1644,19 @@ impl Sim {
         // экземпляр этого обхода разошёлся бы с первым на первой же правке.
         let _ = world.run_system_once(note_seen);
 
+        // Описание условий уезжает в `meta` **разобранным ядром** (§12.159): вид
+        // называет каждое словом и ставит напротив дату, а порядок остаётся один
+        // — тот, в котором стоят `GoalRule::tests`. Позиции сходятся по индексу,
+        // как и везде в протоколе (`GoalSnap::def` адресует ровно этот список);
+        // расхождение длин бывает только у сбитого рулсета и ловится сторожем
+        // `the_shipped_ruleset_keeps_every_goal`.
+        let mut goals = rs.goals;
+        for (def, rule) in world.resource::<GoalRules>().0.iter().enumerate() {
+            if let Some(g) = goals.get_mut(def) {
+                g.parts = rule.tests.clone();
+            }
+        }
+
         let schedule = build_schedule();
         Ok(Sim {
             world,
@@ -1651,7 +1672,7 @@ impl Sim {
             research: rs.research,
             recipes: rs.recipes,
             timeline: rs.timeline,
-            goals: rs.goals,
+            goals,
             width: w,
             height: h,
             day: rs.day,

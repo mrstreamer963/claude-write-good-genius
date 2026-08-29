@@ -449,6 +449,90 @@ fn an_optional_goal_is_visible_but_uncounted() {
     );
 }
 
+/// **Котоденьги мерятся казной, а не заработком** (§12.159): потратил — цель
+/// снова открыта. Этим условие и отличается от журнального `Earned`.
+#[test]
+fn a_money_goal_follows_the_purse() {
+    let mut sim = sim_from(&["#####", "#a..#", "#####"]);
+    let goal = sim.set_goal(GoalTest::Money(50));
+
+    sim.set_money(50);
+    sim.tick_n(1);
+    assert!(sim.goal_taken(goal), "денег хватает, а цель не взята");
+
+    // Взятая цель не снимается — `Goals` только растёт (§12.58).
+    sim.set_money(0);
+    sim.tick_n(1);
+    assert!(sim.goal_taken(goal), "трата отняла уже взятое");
+}
+
+/// **Дата ставится, когда условие стало держаться, и снимается, когда
+/// перестало** (§12.159): «набрал ещё в день 12», сказанное про склад, который
+/// потом слили и набрали заново, — неправда о том самом, чем игрок гордится.
+#[test]
+fn a_part_date_restarts_when_the_condition_breaks() {
+    let mut sim = sim_from(&["#####", "#a..#", "#####"]);
+    sim.set_items(2);
+    sim.set_capacity(0, 100);
+    let goal = sim.set_goal_all(vec![
+        GoalTest::Stored(vec![(SCRAP, 5)]),
+        GoalTest::Money(50),
+    ]);
+
+    sim.put_item(2, 1, SCRAP, 5);
+    sim.tick_n(2);
+    assert!(sim.goal_holds(goal)[0].is_some(), "склад набран, а отметки нет");
+
+    // Лом увезли: отметка снимается, и набранный заново склад получит новую дату.
+    sim.take_item(2, 1, SCRAP);
+    sim.tick_n(1);
+    assert_eq!(sim.goal_holds(goal)[0], None, "отметка пережила растрату");
+}
+
+/// **Даты замерзают в момент взятия и дальше не двигаются** (§12.159): дальше
+/// склад тратят, а репутация падает, и живая отметка к этому времени уже снята.
+#[test]
+fn part_dates_freeze_when_the_goal_is_taken() {
+    let mut sim = sim_from(&["#####", "#a..#", "#####"]);
+    sim.set_items(2);
+    sim.set_capacity(0, 100);
+    let goal = sim.set_goal_all(vec![
+        GoalTest::Stored(vec![(SCRAP, 5)]),
+        GoalTest::Money(50),
+    ]);
+
+    // Склад сходится рано, деньги — заметно позже: в поздравлении обязаны стоять
+    // две **разные** даты, иначе оно рассказывает не о партии, а о последнем тике.
+    sim.put_item(2, 1, SCRAP, 5);
+    sim.tick_n(5);
+    sim.set_money(50);
+    sim.tick_n(1);
+
+    let parts = sim.goal_parts(goal);
+    assert_eq!(parts.len(), 2, "дат столько же, сколько условий");
+    assert!(parts[0] < parts[1], "склад сошёлся раньше денег: {parts:?}");
+    assert_eq!(sim.goal_at(goal), Some(parts[1]), "цель взята по последнему");
+
+    // Всё растратили — даты стоят там же.
+    sim.take_item(2, 1, SCRAP);
+    sim.set_money(0);
+    sim.tick_n(3);
+    assert_eq!(sim.goal_parts(goal), parts, "даты поехали после взятия");
+}
+
+/// **Пока цель не взята, дат наружу нет вовсе.** Они ещё двигаются, и показывать
+/// их как итог нечего.
+#[test]
+fn part_dates_stay_home_until_the_goal_is_taken() {
+    let mut sim = sim_from(&["#####", "#a..#", "#####"]);
+    let goal = sim.set_goal_all(vec![GoalTest::Money(50), GoalTest::Cats(9)]);
+
+    sim.set_money(50);
+    sim.tick_n(2);
+    assert!(sim.goal_holds(goal)[0].is_some(), "живая отметка не встала");
+    assert!(sim.goal_parts(goal).is_empty(), "даты уехали до взятия");
+}
+
 // --- боевой рулсет ----------------------------------------------------------
 //
 // Сторож ловит рассогласование кода и контента, которого синтетика не увидит:

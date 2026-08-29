@@ -553,16 +553,32 @@ fn goals_and_their_logs_survive_a_save() {
     live.world
         .resource_mut::<Goals>()
         .0
-        .push(Taken { def: 1, at: 42 });
+        .push(Taken {
+            def: 1,
+            at: 42,
+            // Даты по условиям связки (§12.159) переносятся вместе с целью:
+            // без них поздравление после загрузки соврало бы.
+            parts: vec![40],
+        });
+    live.world
+        .resource_mut::<GoalHolds>()
+        .0
+        .push(vec![Some(7), None]);
     live.world.resource_mut::<Raids>().0.push(0);
     live.world.resource_mut::<Crafted>().0.push(3);
     live.world.resource_mut::<Earned>().0 = 137;
 
     let json = live.save().expect("снимок");
-    let loaded = Sim::load_from(CORE, &json).expect("загрузка");
+    let mut loaded = Sim::load_from(CORE, &json).expect("загрузка");
 
     assert!(loaded.goal_taken(1), "взятая цель осталась взятой");
     assert_eq!(loaded.goal_at(1), Some(42), "и помнит свой тик");
+    assert_eq!(loaded.goal_parts(1), vec![40], "и даты по условиям связки");
+    assert_eq!(
+        loaded.goal_holds(0),
+        vec![Some(7), None],
+        "живые отметки невзятой цели пережили снимок",
+    );
     assert_eq!(loaded.raids_done(), vec![0], "журнал вылазок");
     assert_eq!(loaded.crafted_done(), vec![3], "журнал производства");
     assert_eq!(loaded.earned(), 137, "журнал заработка");

@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 26;
+pub(crate) const FORMAT: u32 = 27;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -135,6 +135,10 @@ pub(crate) const SAVED: &[&str] = &[
     "Tickers",
     "Fame",
     "Money",
+    // Отметки по условиям связки (§12.159): с какого тика держится каждое.
+    // Не журнал и не правило — состояние мира, и без него поздравление
+    // соврало бы датами.
+    "GoalHolds",
     "Standing",
     "Techs",
     // Что база уже видела своими глазами (§12.131). Без этого загруженная
@@ -287,7 +291,12 @@ pub(crate) struct StateDto {
     pub(crate) chronicle: Vec<(usize, bool)>,
     /// Взятые цели: `(индекс цели, тик взятия)` (§12.58).
     #[serde(default)]
-    pub(crate) goals: Vec<(usize, u64)>,
+    pub(crate) goals: Vec<(usize, u64, Vec<u64>)>,
+    /// Живые отметки: с какого тика держится каждое условие каждой невзятой цели
+    /// (§12.159). Без них загруженная партия сказала бы в поздравлении, что всё
+    /// сошлось в день загрузки.
+    #[serde(default)]
+    pub(crate) goal_holds: Vec<Vec<Option<u64>>>,
     /// Три журнала совершённого. Без них цель, уже взятая игроком, после
     /// загрузки открылась бы заново — а `Goals` их и так переживёт, так что
     /// расхождение было бы тихим: панель права, а условие «ещё не было».
@@ -710,8 +719,9 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                 .resource::<Goals>()
                 .0
                 .iter()
-                .map(|t| (t.def, t.at))
+                .map(|t| (t.def, t.at, t.parts.clone()))
                 .collect(),
+            goal_holds: world.resource::<GoalHolds>().0.clone(),
             raids: world.resource::<Raids>().0.clone(),
             crafted: world.resource::<Crafted>().0.clone(),
             earned: world.resource::<Earned>().0,
@@ -843,7 +853,16 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
         .iter()
         .map(|&(def, ready)| Happened { def, ready })
         .collect();
-    world.resource_mut::<Goals>().0 = s.goals.iter().map(|&(def, at)| Taken { def, at }).collect();
+    world.resource_mut::<Goals>().0 = s
+        .goals
+        .iter()
+        .map(|(def, at, parts)| Taken {
+            def: *def,
+            at: *at,
+            parts: parts.clone(),
+        })
+        .collect();
+    world.resource_mut::<GoalHolds>().0 = s.goal_holds.clone();
     world.resource_mut::<Raids>().0 = s.raids.clone();
     world.resource_mut::<Crafted>().0 = s.crafted.clone();
     world.resource_mut::<Earned>().0 = s.earned;
