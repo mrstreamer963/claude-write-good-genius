@@ -1117,6 +1117,7 @@ function workCells(snap) {
       live: busy.has(`${c.x},${c.y}`),
       p: c.progress,
       t: c.total,
+      salvage: !!(meta.recipes ?? [])[c.def]?.salvage,
     });
   }
   for (const r of snap.research ?? []) {
@@ -1212,9 +1213,11 @@ function drawWork(snap) {
       n.src = src;
     }
     n.live = w.live;
+    n.salvage = !!w.salvage;
     const frac = w.t > 0 ? Math.max(0, Math.min(1, w.p / w.t)) : 0;
     if (n.frac !== frac) {
-      n.bar.scale.x = frac;
+      // Разбор идёт от целого к нулю — полоска пятится, а не растёт.
+      n.bar.scale.x = n.salvage ? 1 - frac : frac;
       n.frac = frac;
     }
   }
@@ -1868,7 +1871,10 @@ function stepUnits(ticker) {
   // умножается доля тика, поэтому на паузе мир и картинка встают вместе. Второй
   // копии «сколько сейчас идёт время» в проекте быть не должно (§12.140).
   for (const n of workNodes.values()) {
-    if (n.glyph && n.live) n.glyph.rotation += (ticker.deltaMS * speed) / 1400;
+    if (n.glyph && n.live) {
+      const dir = n.salvage ? -1 : 1;
+      n.glyph.rotation += (dir * ticker.deltaMS * speed) / 1400;
+    }
   }
 }
 
