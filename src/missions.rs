@@ -30,13 +30,19 @@ use bevy_ecs::system::SystemParam;
 use crate::components::*;
 use crate::hauling::spill;
 use crate::map::BaseMap;
-use crate::path::{Reach, find_path};
+use crate::path::find_path;
 use crate::relay::{duty_gain, relay_force};
 use crate::skills::{SKILL_RAID, SKILL_RELAY, level_of};
 
-/// Все клетки-шлюзы карты, в порядке обхода: он фиксирован, значит выбор
-/// шлюза детерминирован (§11).
-fn gate_cells<'a>(map: &'a BaseMap, rules: &'a TileRules) -> impl Iterator<Item = (i32, i32)> + 'a {
+/// Все клетки-шлюзы карты, в порядке обхода: он фиксирован, значит и номер
+/// отряда, и очередь заявок детерминированы (§11).
+///
+/// С §12.152 это же список **отрядов**: гараж держит состав и слот вылазки, —
+/// поэтому список нужен и фасаду, а не только счёту внутри модуля.
+pub(crate) fn gate_cells<'a>(
+    map: &'a BaseMap,
+    rules: &'a TileRules,
+) -> impl Iterator<Item = (i32, i32)> + 'a {
     (0..map.height)
         .flat_map(move |y| (0..map.width).map(move |x| (x, y)))
         .filter(move |&(x, y)| rules.is_gate(map.tile_at(x, y)))
@@ -246,7 +252,7 @@ pub(crate) fn gather_squad(
     map: Res<BaseMap>,
     tiles: Res<TileRules>,
     mut commands: Commands,
-    mut missions: Query<(Entity, &mut Mission)>,
+    missions: Query<(Entity, &Mission)>,
     crew: Query<
         (Entity, &Squad, &Position, Option<&Path>, Option<&Away>),
         // Спящего не трогаем: маршрут разбудил бы его, а истощение — не повод
@@ -262,7 +268,7 @@ pub(crate) fn gather_squad(
     }
     let map = &*map;
 
-    for (mission_e, mut mission) in &mut missions {
+    for (mission_e, mission) in &missions {
         // Кто в отряде и где он. Пустой маршрут считается пройденным:
         // `move_units` снимет его только следующим тиком.
         let mut left_base = false;
@@ -281,20 +287,24 @@ pub(crate) fn gather_squad(
             continue;
         }
 
-        // Шлюз мог уйти под ластиком, пока отряд собирался, — выбираем заново.
-        if mission
-            .gate
-            .is_some_and(|(x, y)| !tiles.is_gate(map.tile_at(x, y)))
-        {
-            mission.gate = None;
+        // **Снесённый гараж распускает собирающийся отряд** (§12.152). Правило
+        // то же, по которому снесённый станок уносит свой заказ (§12.96), а
+        // снесённая рация — правило автовылазки (§12.67): вылазка живёт в
+        // клетке, а клетки больше нет. До §12.152 здесь выбирался новый шлюз
+        // (`pick_gate` по ближайшему ко всем), и это было единственным, ради
+        // чего он пересматривался каждый тик; теперь дверь называет игрок, и
+        // подставлять ему другую — значит отменять его решение молча.
+        //
+        // Ушедшего отряда это не касается: он отсеян `left_base` выше и
+        // вернётся туда, откуда ушёл, даже если гараж успели снести (§12.22).
+        let gate = mission.gate;
+        if !tiles.is_gate(map.tile_at(gate.0, gate.1)) {
+            for &(cat_e, ..) in &squad {
+                commands.entity(cat_e).remove::<(Squad, Path, Stride)>();
+            }
+            commands.entity(mission_e).despawn();
+            continue;
         }
-        if mission.gate.is_none() {
-            let at: Vec<(i32, i32)> = squad.iter().map(|&(_, at, _)| at).collect();
-            mission.gate = pick_gate(map, &tiles, &at);
-        }
-        let Some(gate) = mission.gate else {
-            continue; // шлюза нет или до него не добраться всем разом
-        };
 
         for &(cat_e, at, walking) in &squad {
             if walking || at == gate {
@@ -307,30 +317,15 @@ pub(crate) fn gather_squad(
     }
 }
 
-/// Сколько на базе шлюзов — ровно те клетки, среди которых выбирает
-/// `pick_gate`. Наружу едет числом (§12.53): снесённый гараж делает вылазку
-/// невозможной, и молчащая кнопка «Отправить» читается как поломка.
+/// Сколько на базе шлюзов — и, с §12.152, **потолок одновременных вылазок**:
+/// гараж это дверь, отряд и лицензия разом. До §12.152 потолок держала рация
+/// (§12.59), а шлюз подбирался автоматом; счётность при этом никуда не делась,
+/// только переехала на ту клетку, которую игрок и нажимает.
+///
+/// Наружу едет числом (§12.53): снесённый гараж делает вылазку невозможной, и
+/// молчащая кнопка «Отправить» читается как поломка.
 pub(crate) fn gate_count(map: &BaseMap, tiles: &TileRules) -> usize {
     gate_cells(map, tiles).count()
-}
-
-/// Шлюз, к которому отряду суммарно ближе всего идти.
-///
-/// Клетки, до которых дойдут не все, отбрасываются: состав фиксирован, и шлюз,
-/// отрезанный от одного из бойцов, значит вылазку, которая никогда не тронется.
-/// Ничьи разрешает порядок обхода карты, то есть детерминированно.
-pub(crate) fn pick_gate(map: &BaseMap, tiles: &TileRules, at: &[(i32, i32)]) -> Option<(i32, i32)> {
-    let reaches: Vec<Reach> = at.iter().map(|&p| Reach::all(map, tiles, p)).collect();
-    gate_cells(map, tiles)
-        .filter_map(|(x, y)| {
-            let mut total = 0;
-            for r in &reaches {
-                total += r.dist_at(x, y)?;
-            }
-            Some((total, (x, y)))
-        })
-        .min_by_key(|&(total, _)| total)
-        .map(|(_, cell)| cell)
 }
 
 /// Есть ли на базе силы прийти за пленным — считается **до** того, как его
@@ -426,13 +421,26 @@ pub(crate) fn run_missions(
     // может не один отряд (§12.59). Без этого счётчика два провала подряд
     // оставили бы двоих там, где база тянет только одного.
     let mut lost_this_tick = 0usize;
+    // **Связь общая** (§12.152): дежурная рация кроет все идущие вылазки разом,
+    // и слагаемое за тик у всех отрядов одно. До §12.152 она была именной —
+    // дежурный сидел у рации **своего** отряда (§12.60), потому что рация и
+    // держала слот; с переездом слота на гараж этой привязки не стало, и
+    // считать её заново было бы вторым реестром без владельца.
+    //
+    // Считается **один раз за тик**, до цикла по миссиям: внутри него то же
+    // выражение размножилось бы по числу отрядов (инвариант 14).
+    let duty_total: i32 = duty
+        .iter()
+        .map(|(_, on_duty, skills)| duty_gain(&tiles, &map, &skill_rules, skills, on_duty.spot))
+        .sum();
+    // Есть ли кому платить опытом: домен «Связь» растёт от дежурства, но только
+    // пока в поле кто-то есть — пустой эфир это не работа (§12.17, §12.60).
+    let mut anyone_away = false;
     for (mission_e, mut mission) in &mut missions {
         let Some(rule) = rules.0.get(mission.def) else {
             continue;
         };
-        let Some(gate) = mission.gate else {
-            continue; // шлюз ещё не выбран
-        };
+        let gate = mission.gate;
 
         let squad: Vec<(Entity, (i32, i32), bool, bool, i32, i32)> = crew
             .iter()
@@ -467,21 +475,13 @@ pub(crate) fn run_missions(
                     commands.entity(cat_e).insert(Worked(skill));
                 }
             }
-            // Связь копится **за каждый тик**, пока на узле сидит дежурный
-            // (§12.60). Одним замером её мерить нельзя: на уходе хватило бы
-            // посадить кота на тик, а на возвращении бонус повис бы на том, кто
-            // случайно оказался у рации в последний тик, — это уже не решение
-            // игрока, а расписание. Дежурному тоже капает опыт: домен «Связь»
-            // растёт от работы, как и все остальные (§12.17).
-            for (cat_e, on_duty, skills) in &duty {
-                if on_duty.spot != mission.node {
-                    continue;
-                }
-                mission.covered += duty_gain(&tiles, &map, &skill_rules, skills, on_duty.spot);
-                if let Some(skill) = comms {
-                    commands.entity(cat_e).insert(Worked(skill));
-                }
-            }
+            // Связь копится **за каждый тик**, пока где-то на базе сидит
+            // дежурный (§12.60, §12.152). Одним замером её мерить нельзя: на
+            // уходе хватило бы посадить кота на тик, а на возвращении бонус
+            // повис бы на том, кто случайно оказался у рации в последний тик, —
+            // это уже не решение игрока, а расписание.
+            anyone_away = true;
+            mission.covered += duty_total;
 
             mission.left -= 1;
             if mission.left > 0 {
@@ -660,6 +660,17 @@ pub(crate) fn run_missions(
             for &(cat_e, ..) in &squad {
                 commands.entity(cat_e).insert(Away);
             }
+        }
+    }
+
+    // Опыт дежурным — **один раз за тик и на всех** (§12.152). Он не свойство
+    // конкретной вылазки: связист держит эфир, а не отряд, — поэтому и стоит
+    // здесь, за циклом, а не внутри него, где начислялся бы по разу на каждую
+    // идущую вылазку. Пустой эфир работой не считается: некому помогать —
+    // нечему и расти (§12.17).
+    if anyone_away && let Some(skill) = comms {
+        for (cat_e, ..) in &duty {
+            commands.entity(cat_e).insert(Worked(skill));
         }
     }
 }

@@ -17,7 +17,6 @@ use super::*;
 fn gate_world(rows: &[&str], gate: (i32, i32)) -> Sim {
     let mut sim = sim_from(rows);
     sim.set_gate(1, true);
-    sim.set_relay(1, true);
     sim.force_tile(gate.0, gate.1, 1);
     sim
 }
@@ -90,7 +89,7 @@ fn no_one_is_left_behind_when_no_one_could_come_for_him() {
 /// Плен не зависит от того, сколько отрядов сейчас в поле (§12.59).
 ///
 /// `rescue_is_possible` считала «кто дома», то есть котов **без** `Away`, — и с
-/// двумя узлами связи второй отряд выпадал из счёта. Получалась бесплатная
+/// двумя гаражами второй отряд выпадал из счёта. Получалась бесплатная
 /// страховка: отправь заодно второй отряд, и первый никого не потеряет. Теперь
 /// считается личный состав целиком за вычетом пленных: кот в поле — твой кот,
 /// он вернётся и сходит за товарищем.
@@ -100,14 +99,16 @@ fn captivity_does_not_depend_on_the_second_squad() {
         &["##########", "#a.b.c.d.#", "#........#", "##########"],
         (2, 1),
     );
-    sim.set_relay(3, true);
-    sim.force_tile(1, 2, 3); // второй узел: два отряда разом
+    sim.force_tile(1, 2, 1); // второй гараж: два отряда разом
     sim.set_rescue_mission(3, 5, 0); // спасать пришлось бы втроём
     let doomed = sim.set_risky_mission(1, 5, 100, 0, &[]);
     let long = sim.set_mission(1, 200, &[]);
 
     assert!(sim.launch(doomed, squad(&["a"])));
-    assert!(sim.launch(long, squad(&["d"])), "второй узел принял заявку");
+    assert!(
+        sim.launch(long, squad(&["d"])),
+        "второй гараж принял заявку"
+    );
     sim.tick_n(30);
 
     assert!(sim.is_away("d"), "второй отряд ещё в поле");

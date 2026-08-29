@@ -202,6 +202,109 @@ fn a_broken_link_keeps_what_it_earned() {
     assert_eq!(after, mid, "накопленное не отнимается");
 }
 
+// --- связь общая (§12.152) ---------------------------------------------------
+
+/// Мир с двумя гаражами в (1,2) и (2,2), одной рацией в (3,2) силой `power` и
+/// котами `a`, `b`, `c`, `d`. Вылазки на одного.
+///
+/// До §12.152 такой схемы не могло быть вовсе: слот держала рация, и двум
+/// отрядам полагались две рации, каждая со своим дежурным.
+fn sim_with_two_gates_one_radio(power: i32, ticks: i32) -> (Sim, usize) {
+    let mut sim = sim_from(&["#########", "#a.b.c.d#", "#.......#", "#########"]);
+    sim.set_gate(1, true);
+    sim.force_tile(1, 2, 1);
+    sim.force_tile(2, 2, 1);
+    sim.set_relay(3, true);
+    sim.set_comms(3, power);
+    sim.force_tile(3, 2, 3);
+    let mission = sim.set_mission(1, ticks, &[(0, 5)]);
+    (sim, mission)
+}
+
+/// **Одна дежурная рация кроет обе идущие вылазки** — это и есть весь §12.152.
+///
+/// До него связь была именной: дежурный сидел у рации **своего** отряда, потому
+/// что рация и держала слот. Слот уехал на гараж, приписки «эта рация ведёт эту
+/// вылазку» не стало, и второй реестр ради неё заводить было бы нечем — у рации
+/// нет владельца.
+#[test]
+fn one_radio_covers_every_raid_at_once() {
+    let (mut sim, first) = sim_with_two_gates_one_radio(2, 200);
+    let second = sim.set_mission(1, 200, &[(0, 5)]);
+    sim.enlist("a", 1, 2);
+    sim.enlist("b", 2, 2);
+    sim.post_relay("d", 3, 2);
+
+    assert!(sim.launch_node(first, 1, 2), "первый гараж отправил отряд");
+    assert!(sim.launch_node(second, 2, 2), "второй тоже");
+    sim.tick_n(30);
+    assert_eq!(sim.duty_of("d"), Some((3, 2)), "связист на месте");
+
+    let one = sim.covered_of(first).expect("первая идёт");
+    let two = sim.covered_of(second).expect("вторая идёт");
+    assert!(one > 0, "связь копится у первой вылазки");
+    assert_eq!(
+        one, two,
+        "и ровно та же — у второй: рация не выбирает, кому"
+    );
+}
+
+/// Вторая рация складывается с первой: связь у обеих вылазок растёт вдвое
+/// быстрее. Строить рации по-прежнему есть зачем — просто не ради слота.
+#[test]
+fn a_second_manned_radio_doubles_the_link() {
+    let one = {
+        let (mut sim, m) = sim_with_two_gates_one_radio(2, 200);
+        sim.enlist("a", 1, 2);
+        sim.post_relay("d", 3, 2);
+        sim.launch_node(m, 1, 2);
+        sim.tick_n(40);
+        sim.covered_of(m).expect("идёт")
+    };
+    let two = {
+        let (mut sim, m) = sim_with_two_gates_one_radio(2, 200);
+        sim.force_tile(4, 2, 3); // вторая рация рядом
+        sim.enlist("a", 1, 2);
+        sim.post_relay("d", 3, 2);
+        sim.post_relay("c", 4, 2);
+        sim.launch_node(m, 1, 2);
+        sim.tick_n(40);
+        sim.covered_of(m).expect("идёт")
+    };
+
+    assert!(two > one, "две рации дают больше одной: {two} против {one}");
+}
+
+/// Пустой эфир — законное состояние: вылазка уходит без бонуса, как уходила до
+/// §12.60. Дежурного нет — связь не копится ни у кого.
+#[test]
+fn an_empty_ether_costs_nothing_but_the_bonus() {
+    let (mut sim, m) = sim_with_two_gates_one_radio(2, 200);
+    sim.enlist("a", 1, 2);
+    sim.launch_node(m, 1, 2);
+    sim.tick_n(40);
+
+    assert_eq!(sim.covered_of(m), Some(0), "связи нет, а вылазка идёт");
+}
+
+/// Дежурный встаёт, когда в поле не осталось **ни одной** вылазки, а не когда
+/// кончилась «его». Своей у него больше нет.
+#[test]
+fn duty_outlasts_the_first_raid_and_ends_with_the_last() {
+    let (mut sim, short) = sim_with_two_gates_one_radio(2, 30);
+    let long = sim.set_mission(1, 400, &[(0, 5)]);
+    sim.enlist("a", 1, 2);
+    sim.enlist("b", 2, 2);
+    sim.post_relay("d", 3, 2);
+    sim.launch_node(short, 1, 2);
+    sim.launch_node(long, 2, 2);
+    sim.tick_n(60);
+
+    assert_eq!(sim.raid_left(short), None, "короткая вылазка закрылась");
+    assert!(sim.raid_left(long).is_some(), "длинная ещё идёт");
+    assert_eq!(sim.duty_of("d"), Some((3, 2)), "и связист сидит дальше");
+}
+
 // --- приписка игроком -------------------------------------------------------
 
 /// Игрок сажает связиста сам, и раздатчик уважает его выбор.
@@ -260,19 +363,18 @@ fn a_posting_needs_a_node() {
     assert_eq!(sim.post_of("c"), None);
 }
 
-// --- постоянный состав отряда на узле (§12.61) -------------------------------
+// --- постоянный состав отряда на гараже (§12.61, §12.152) --------------------
 
-/// Мир с двумя узлами: рации в (1,2) и (2,2), шлюз в (2,1), коты `a`, `b`, `c`.
+/// Мир с двумя гаражами в (1,2) и (2,2), коты `a`, `b`, `c`.
 ///
-/// Дежурство здесь выключено (`comms` = 0): состав отряда к нему отношения не
-/// имеет, а сидящий у рации кот — лишний шум в проверке того, кто ушёл.
+/// Раций здесь нет вовсе: с §12.152 состав и слот держит гараж, а связь — это
+/// отдельная прибавка к силе, и сидящий у рации кот был бы лишним шумом в
+/// проверке того, кто ушёл.
 fn sim_with_two_nodes() -> (Sim, usize) {
     let mut sim = sim_from(&["#######", "#a.b.c#", "#.....#", "#######"]);
     sim.set_gate(1, true);
-    sim.force_tile(2, 1, 1);
-    sim.set_relay(3, true);
-    sim.force_tile(1, 2, 3);
-    sim.force_tile(2, 2, 3);
+    sim.force_tile(1, 2, 1);
+    sim.force_tile(2, 2, 1);
     let mission = sim.set_mission(1, 40, &[(0, 5)]);
     (sim, mission)
 }

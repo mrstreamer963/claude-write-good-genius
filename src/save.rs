@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 25;
+pub(crate) const FORMAT: u32 = 26;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -524,13 +524,16 @@ pub(crate) struct DealDto {
 #[derive(Serialize, Deserialize)]
 pub(crate) struct MissionDto {
     pub(crate) def: usize,
-    pub(crate) gate: Option<(i32, i32)>,
+    /// Клетка гаража: и дверь, и слот вылазки (§12.152). До §12.152 полей было
+    /// два — `gate` (шлюз, подобранный автоматом, оттого `Option`) и `node`
+    /// (рация, державшая слот), — и §12.152 схлопнула их в одно. Старый снимок
+    /// разобрался бы **молча и наполовину**: `node` пропал бы, а `gate` приехал
+    /// бы `None`, то есть отряд без двери. Это и есть тот случай, ради которого
+    /// `FORMAT` поднимают руками, — поднят до 26.
+    pub(crate) gate: (i32, i32),
     pub(crate) left: i32,
-    /// Узел связи, который держит слот, и набежавшая связь (§12.60). Оба —
-    /// состояние вылазки, а не правило: без них загруженная партия теряла бы
-    /// накопленный бонус и занятость узла.
-    #[serde(default)]
-    pub(crate) node: (i32, i32),
+    /// Набежавшая связь (§12.60). Состояние вылазки, а не правило: без него
+    /// загруженная партия теряла бы накопленный бонус.
     #[serde(default)]
     pub(crate) covered: i32,
     /// Замороженный на уходе срок вылазки (§12.70). Состояние, а не правило:
@@ -662,7 +665,6 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                     gate: m.gate,
                     left: m.left,
                     span: m.span,
-                    node: m.node,
                     covered: m.covered,
                 }),
             }
@@ -1057,7 +1059,6 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
         }
         if let Some(m) = &dto.mission {
             e.insert(Mission {
-                node: m.node,
                 covered: m.covered,
                 def: m.def,
                 gate: m.gate,

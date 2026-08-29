@@ -35,8 +35,8 @@ use crate::hauling::{plan_spend, stored_counts};
 use crate::jobs::{BUILD_WORK, Plan, access_ok};
 use crate::map::{BaseMap, rect_cells};
 use crate::missions::{
-    crew_danger, crew_force, duration, gate_count, guide_cut, guide_of, guide_value, outcome,
-    pick_gate,
+    crew_danger, crew_force, duration, gate_cells, gate_count, guide_cut, guide_of, guide_value,
+    outcome,
 };
 use crate::movement::{Busy, is_stuck};
 use crate::path::find_path;
@@ -897,51 +897,71 @@ impl Sim {
         cell.map_or(0, |c| self.lot_at(c))
     }
 
-    /// Сколько на базе узлов связи — потолок одновременных вылазок (§12.59).
+    /// Сколько на базе гаражей — потолок одновременных вылазок (§12.152).
     ///
-    /// Третье применение «комната = слот» после мастерской и поста, и **вторая
-    /// лицензия**: за узлом никто не работает, товар к нему не едет, кот на нём
-    /// не стоит. Он только считается — и ровно этим переводит потолок
-    /// параллельных вылазок из числа в коде в строительное решение (§12.55).
-    fn relay_nodes(&mut self) -> usize {
-        self.relay_cells().len()
+    /// Третье применение «комната = слот» после мастерской и поста. До §12.152
+    /// счёт вела рация (§12.59) — чистая лицензия, за которой никто не работает
+    /// и к которой ничего не возят, — а гараж был просто дверью, выбираемой
+    /// автоматом. Отряд принадлежит двери: слот, состав и шлюз съехались на одну
+    /// клетку, ту самую, которую игрок и нажимает.
+    fn gate_nodes(&mut self) -> usize {
+        self.gate_cells_of().len()
     }
 
-    /// Клетки узлов связи в порядке обхода карты — он фиксирован, значит выбор
-    /// узла детерминирован (§11), как и выбор шлюза в `pick_gate`.
+    /// Клетки гаражей в порядке обхода карты — он фиксирован, значит и номер
+    /// отряда, и очередь заявок детерминированы (§11). Список один на фасад и
+    /// на систему: считает его `missions::gate_cells`.
+    pub(crate) fn gate_cells_of(&mut self) -> Vec<(i32, i32)> {
+        let map = self.world.resource::<BaseMap>();
+        let rules = self.world.resource::<TileRules>();
+        gate_cells(map, rules).collect()
+    }
+
+    /// Клетки раций в порядке обхода карты. С §12.152 они больше не считают
+    /// слоты и не держат состав — только связь (§12.60), — но список нужен
+    /// снимку: панель говорит, сколько раций есть и сколько из них с дежурным.
     pub(crate) fn relay_cells(&mut self) -> Vec<(i32, i32)> {
         let map = self.world.resource::<BaseMap>();
         let rules = self.world.resource::<TileRules>();
-        (0..map.height)
-            .flat_map(|y| (0..map.width).map(move |x| (x, y)))
-            .filter(|&(x, y)| rules.is_relay_node(map.tile_at(x, y)))
-            .collect()
+        crate::relay::relay_cells(map, rules).collect()
     }
 
-    /// Узел, за которым сейчас нет вылазки. Занятость держит сама `Mission`
-    /// (`Mission::node`), отдельного реестра нет — ровно как ячейку станка
-    /// держит `Craft::cell`, а лежанку `Rest::spot` (§12.55, §12.60, §12.96).
-    fn free_relay_node(&mut self) -> Option<(i32, i32)> {
+    /// Гараж, за которым сейчас нет вылазки. Занятость держит сама `Mission`
+    /// (`Mission::gate`), отдельного реестра нет — ровно как ячейку станка
+    /// держит `Craft::cell`, а лежанку `Rest::spot` (§12.55, §12.96, §12.152).
+    ///
+    /// **Куча добычи на гараже занятостью не считается** (§12.152). Проверка
+    /// «клетка пуста» есть ровно у торгового поста (§12.98) и заведена под его
+    /// контейнер; здесь она заперла бы вылазки насмерть при полном складе —
+    /// уборке некуда везти, а команды «выбросить» в игре нет.
+    fn free_gate_cell(&mut self) -> Option<(i32, i32)> {
         let taken: Vec<(i32, i32)> = {
             let mut q = self.world.query::<&Mission>();
-            q.iter(&self.world).map(|m| m.node).collect()
+            q.iter(&self.world).map(|m| m.gate).collect()
         };
-        self.relay_cells()
+        self.gate_cells_of()
             .into_iter()
             .find(|cell| !taken.contains(cell))
     }
 
-    /// Узел ли в этой клетке.
+    /// Гараж ли в этой клетке.
+    fn is_gate_at(&mut self, x: i32, y: i32) -> bool {
+        let map = self.world.resource::<BaseMap>();
+        let rules = self.world.resource::<TileRules>();
+        rules.is_gate(map.tile_at(x, y))
+    }
+
+    /// Рация ли в этой клетке.
     fn is_relay_at(&mut self, x: i32, y: i32) -> bool {
         let map = self.world.resource::<BaseMap>();
         let rules = self.world.resource::<TileRules>();
         rules.is_relay_node(map.tile_at(x, y))
     }
 
-    /// Свободен ли **этот** узел: вылазки за ним сейчас нет.
+    /// Свободен ли **этот** гараж: вылазки за ним сейчас нет.
     fn node_is_free(&mut self, x: i32, y: i32) -> bool {
         let mut q = self.world.query::<&Mission>();
-        !q.iter(&self.world).any(|m| m.node == (x, y))
+        !q.iter(&self.world).any(|m| m.gate == (x, y))
     }
 
     /// Постоянный состав отряда этого узла, по `id` (§12.61).
@@ -1963,24 +1983,26 @@ impl Sim {
         self.launch_at(def, units, None)
     }
 
-    /// Отправить в вылазку отряд, приписанный к узлу `(x, y)` (§12.61).
+    /// Отправить в вылазку отряд, приписанный к гаражу `(x, y)` (§12.61,
+    /// §12.152).
     ///
-    /// **Узел заменяет выбор отряда**, и это вся суть этапа: состав хранится на
+    /// **Гараж заменяет выбор отряда**, и это вся суть этапа: состав хранится на
     /// клетке (`Enlisted`), а не собирается кликами перед каждым уходом. Отсюда и
-    /// адресация по узлу, а не по отряду: узлов может быть несколько, и кнопка
-    /// вылазки обязана знать, чей отряд идёт. Отвергнуто «оба способа разом»
-    /// (выделенные коты перекрывают приписку): два источника правды о том, кто
-    /// идёт, — и игрок не знает, какой сработает.
+    /// адресация по клетке, а не по отряду: гаражей может быть несколько, и
+    /// кнопка вылазки обязана знать, чей отряд идёт. Отвергнуто «оба способа
+    /// разом» (выделенные коты перекрывают приписку): два источника правды о
+    /// том, кто идёт, — и игрок не знает, какой сработает.
     ///
-    /// Слот берётся **именно этот**, а не первый свободный: узел, который игрок
-    /// нажал, и узел, который поведёт вылазку, обязаны совпадать — иначе
-    /// дежурный сядет не к той рации, а игрок этого не поймёт.
+    /// Слот берётся **именно этот**, а не первый свободный: гараж, который игрок
+    /// нажал, и дверь, из которой отряд уйдёт, обязаны совпадать. До §12.152
+    /// слот брала рация, а дверь подбирал `pick_gate` — и совпадать им было
+    /// нечем.
     ///
-    /// Вернёт false, если в клетке не узел связи, узел уже занят вылазкой или
-    /// его отряд не подходит заказу — всё то же, что и у `launch`.
+    /// Вернёт false, если в клетке не гараж, гараж уже занят вылазкой или его
+    /// отряд не подходит заказу — всё то же, что и у `launch`.
     pub fn launch_node(&mut self, def: usize, x: i32, y: i32) -> bool {
         note(&mut self.world, format!("launch_node {def} {x} {y}"));
-        if !self.is_relay_at(x, y) || !self.node_is_free(x, y) {
+        if !self.is_gate_at(x, y) || !self.node_is_free(x, y) {
             return false;
         }
         // **Идут все или никто** (§12.148). Отряд, собранный наполовину, ушёл
@@ -2186,7 +2208,7 @@ impl Sim {
         if units.len() > rule.squad_max {
             return false;
         }
-        if self.raids_running() >= self.relay_nodes() || self.mission_of(def).is_some() {
+        if self.raids_running() >= self.gate_nodes() || self.mission_of(def).is_some() {
             return false;
         }
         // Известность — ворота: за дело, о котором ещё не слышали, не берутся,
@@ -2242,34 +2264,31 @@ impl Sim {
             return false;
         }
 
-        let at: Vec<(i32, i32)> = crew.iter().map(|&(_, p)| p).collect();
-        let Some(gate) = pick_gate(
-            self.world.resource::<BaseMap>(),
-            self.world.resource::<TileRules>(),
-            &at,
-        ) else {
-            return false; // шлюза нет или до общего не добраться всем разом
-        };
-
-        // Узел, который держит этот слот. Свободный берётся в порядке обхода
-        // карты, то есть детерминированно (§11). С §12.60 лицензия стала
-        // **именной**: дежурному надо знать, чьей вылазке он помогает, а
-        // «какой-то из узлов» на этот вопрос не отвечает.
-        let node = match node {
+        // Гараж, который держит этот слот, — он же дверь и дом отряда
+        // (§12.152). Свободный берётся в порядке обхода карты, то есть
+        // детерминированно (§11); это путь для теста и для `launch`, а игрок
+        // называет клетку сам.
+        //
+        // До §12.152 здесь звался `pick_gate`: слот брался у рации, а шлюз
+        // подбирался ближайший ко всем сразу — то есть дверь выбирал алгоритм.
+        // Проверки «до шлюза доберутся все» вместе с ним не стало намеренно:
+        // отряд приписан к своему гаражу заранее, и подменять его другим на
+        // основании того, что кто-то заперт, значит отменять решение игрока
+        // молча. Не дошедший до двери держит сбор — это видно и чинится.
+        let gate = match node {
             Some(spot) => spot,
-            None => match self.free_relay_node() {
+            None => match self.free_gate_cell() {
                 Some(spot) => spot,
                 None => return false,
             },
         };
         let mission_e = self.world.spawn(Mission {
             def,
-            gate: Some(gate),
+            gate,
             // Срок пока неизвестен: он зависит от того, сколько лап дойдёт до
             // шлюза, и замерзает в момент ухода (§12.70).
             left: 0,
             span: 0,
-            node,
             covered: 0,
         });
         let mission_e = mission_e.id();
@@ -2335,7 +2354,7 @@ impl Sim {
         if self.crew_of(mission_e).iter().any(|&(_, away)| away) {
             return false;
         }
-        let node = self.world.get::<Mission>(mission_e).map(|m| m.node);
+        let node = self.world.get::<Mission>(mission_e).map(|m| m.gate);
         if let Some((x, y)) = node {
             self.world.resource_mut::<AutoRaids>().set_on(x, y, false);
         }
@@ -2378,13 +2397,9 @@ impl Sim {
             return false;
         }
 
-        // Отряда нет, поэтому «ближайший» вырождается в первый по обходу карты —
-        // детерминированно, и этого достаточно: новичок просто приходит.
-        let Some(gate) = pick_gate(
-            self.world.resource::<BaseMap>(),
-            self.world.resource::<TileRules>(),
-            &[],
-        ) else {
+        // Первый гараж по обходу карты — детерминированно (§11), и этого
+        // достаточно: новичок просто приходит, отряда за ним нет.
+        let Some(gate) = self.gate_cells_of().into_iter().next() else {
             return false; // шлюза нет — новичку неоткуда взяться
         };
         if !self.spend_from_storage(&rule.cost) {
@@ -2727,17 +2742,17 @@ impl Sim {
     /// снятое правило новых вылазок не заводит, но **идущую не отзывает** —
     /// отряд уже в поле, и отзыва оттуда не бывает вовсе (§12.22).
     ///
-    /// Правило висит на **узле**, а не на отряде: состав и так приписан к
-    /// клетке (§12.61), а слот вылазки — это сам узел (§12.59). Один узел — один
-    /// заказ: очередь заказов это уже план, который база выполняет за игрока, а
-    /// не повторение его решения (§12.64).
+    /// Правило висит на **гараже**, а не на отряде: состав и так приписан к
+    /// клетке (§12.61), а слот вылазки — это сам гараж (§12.152). Один гараж —
+    /// один заказ: очередь заказов это уже план, который база выполняет за
+    /// игрока, а не повторение его решения (§12.64).
     ///
-    /// Вернёт false, если в клетке не узел связи или такого заказа нет. Отряд не
+    /// Вернёт false, если в клетке не гараж или такого заказа нет. Отряд не
     /// в сборе, закрытые ворота и раненый боец отказом **не** являются: правило
     /// ждёт готовности, как порог ждёт материала (§12.30).
     pub fn set_auto_raid(&mut self, def: i32, x: i32, y: i32) -> bool {
         note(&mut self.world, format!("auto_raid {def} {x} {y}"));
-        if !self.is_relay_at(x, y) {
+        if !self.is_gate_at(x, y) {
             return false;
         }
         // Ворота автоматики (§12.93); снятие (`def < 0`) проходит всегда.
@@ -2776,11 +2791,11 @@ impl Sim {
     /// Идущую вылазку пауза **не отзывает**, ровно как и снятие: отряд уже в
     /// поле, а оттуда не отзывают вовсе (§12.22).
     ///
-    /// Вернёт false, если в клетке не узел связи или правила на нём нет: будить
+    /// Вернёт false, если в клетке не гараж или правила на нём нет: будить
     /// нечего, а заводить правило умеет только `set_auto_raid`.
     pub fn set_auto_raid_on(&mut self, x: i32, y: i32, on: bool) -> bool {
         note(&mut self.world, format!("auto_raid_on {x} {y} {on}"));
-        if !self.is_relay_at(x, y) {
+        if !self.is_gate_at(x, y) {
             return false;
         }
         self.world.resource_mut::<AutoRaids>().set_on(x, y, on)
@@ -2808,7 +2823,7 @@ impl Sim {
     /// идущий заказ проверяет `launch_at` — второй экземпляр этих проверок
     /// однажды разошёлся бы с кнопкой (§12.24).
     ///
-    /// Правило на снесённой рации **убирает за собой само**: узла нет — нет и
+    /// Правило на снесённом гараже **убирает за собой само**: двери нет — нет и
     /// строки. Это та же оговорка, из-за которой §12.65 пришлось убирать заказ
     /// снятого порога: у быстрого выхода обязана быть уборка.
     fn run_auto_raids(&mut self) {
@@ -2817,7 +2832,7 @@ impl Sim {
             return;
         }
         for (x, y, def, on) in rules {
-            if !self.is_relay_at(x, y) {
+            if !self.is_gate_at(x, y) {
                 self.world.resource_mut::<AutoRaids>().clear(x, y);
                 continue;
             }
@@ -3684,12 +3699,7 @@ impl Sim {
     /// Вернёт false, если кота нет, он не на базе или в клетке не узел связи.
     pub fn post_relay(&mut self, unit_id: &str, x: i32, y: i32) -> bool {
         note(&mut self.world, format!("post_relay {unit_id} {x} {y}"));
-        let is_node = {
-            let map = self.world.resource::<BaseMap>();
-            let rules = self.world.resource::<TileRules>();
-            rules.is_relay_node(map.tile_at(x, y))
-        };
-        if !is_node {
+        if !self.is_relay_at(x, y) {
             return false;
         }
         let Some(cat_e) = self.unit_on_base(unit_id) else {
@@ -3751,23 +3761,23 @@ impl Sim {
         true
     }
 
-    /// Зачислить кота в отряд узла связи (§12.61).
+    /// Зачислить кота в отряд гаража (§12.61, §12.152).
     ///
     /// Состав хранится на клетке и **переживает вылазку**: вернувшийся отряд
     /// остаётся отрядом, и второй раз его собирать не надо. Это конфигурация, а
     /// не задача, — как приписка связиста (§12.60): зачисленный работает как все,
     /// пока не подана заявка.
     ///
-    /// Кот числится **не более чем в одном отряде**: зачисление ко второму узлу
-    /// снимает первое молча. Отказывать было бы хуже — игрок не видит, где кот
-    /// числился раньше, и кнопка молчала бы без объяснения (§12.53).
+    /// Кот числится **не более чем в одном отряде**: зачисление ко второму
+    /// гаражу снимает первое молча. Отказывать было бы хуже — игрок не видит,
+    /// где кот числился раньше, и кнопка молчала бы без объяснения (§12.53).
     ///
-    /// Вернёт false, если в клетке не узел, кота нет на базе или он уже подан в
+    /// Вернёт false, если в клетке не гараж, кота нет на базе или он уже подан в
     /// заявку (`Squad`): состав вышедшего отряда не переигрывают — для этого
     /// есть отзыв (`cancel_mission`).
     pub fn enlist(&mut self, unit_id: &str, x: i32, y: i32) -> bool {
         note(&mut self.world, format!("enlist {unit_id} {x} {y}"));
-        if !self.is_relay_at(x, y) {
+        if !self.is_gate_at(x, y) {
             return false;
         }
         let Some(cat_e) = self.unit_on_base(unit_id) else {
@@ -3851,12 +3861,7 @@ impl Sim {
         // отсюда уйдёт вылазка (§12.76), — поэтому приписка тут и уместна:
         // «иди туда» на рации не значит ровно ничего, кот постоит и уйдёт.
         {
-            let node = {
-                let map = self.world.resource::<BaseMap>();
-                let tiles = self.world.resource::<TileRules>();
-                tiles.is_relay_node(map.tile_at(x, y))
-            };
-            if node && self.post_relay(unit_id, x, y) {
+            if self.is_relay_at(x, y) && self.post_relay(unit_id, x, y) {
                 return true;
             }
         }
@@ -4377,8 +4382,8 @@ impl Sim {
                 let out = outcome(danger, force);
                 missions.push(MissionSnap {
                     def: m.def,
-                    x: m.gate.map_or(-1, |(x, _)| x),
-                    y: m.gate.map_or(-1, |(_, y)| y),
+                    x: m.gate.0,
+                    y: m.gate.1,
                     left: m.left,
                     total: span,
                     squad: mine().map(|(_, id, ..)| id.clone()).collect(),
@@ -4411,9 +4416,7 @@ impl Sim {
                     // спасательной вылазки читается как «половина кота» (§12.40).
                     rescue: rule.is_some_and(|r| r.rescue),
                     comms,
-                    manned: manned.contains(&m.node),
-                    node_x: m.node.0,
-                    node_y: m.node.1,
+                    manned: !manned.is_empty(),
                 });
             }
         }
@@ -4547,20 +4550,33 @@ impl Sim {
         // (§12.90). Считает ядро тем же выражением, что и `trade`: разойдись
         // они, и Shift на кнопке обещал бы объём, который фасад отклоняет.
         let post_lot = self.post_lot();
-        // У узлов связи наружу едет только счёт (§12.59): ворота у них с §12.61
-        // поузловые и живут в `NodeSnap::busy` — «занят ли этот», а не
-        // «свободен ли хоть один».
-        let relays = self.relay_nodes() as i32;
-        // Дверь наружу: без единого шлюза `pick_gate` не найдёт цели, и заявка
-        // отклоняется молча — причину обязано назвать ядро (§12.53).
+        // У раций наружу едет только счёт: с §12.152 они не держат ни слота, ни
+        // состава, и поузловых ворот у них не осталось.
+        let relays = self.relay_cells().len() as i32;
+        // Дверь наружу — и она же слот, и она же отряд (§12.152). Без единого
+        // гаража уйти некуда, и заявка отклоняется молча: причину обязано
+        // назвать ядро (§12.53).
         let gates = gate_count(
             self.world.resource::<BaseMap>(),
             self.world.resource::<TileRules>(),
         ) as i32;
-        // Узлы поимённо: с §12.61 у каждого свой состав, и панель обязана
-        // называть его словом — иначе кнопка вылазки берёт отряд ниоткуда.
+        // Что связь даёт прямо сейчас — сумма вкладов дошедших дежурных
+        // (§12.152). Тем же `duty_gain`, каким копит `run_missions`.
+        let comms_now: i32 = {
+            let mut q = self
+                .world
+                .query_filtered::<(&OnDuty, Option<&Skills>), Without<Path>>();
+            let map = self.world.resource::<BaseMap>();
+            let tiles = self.world.resource::<TileRules>();
+            let skills = self.world.resource::<SkillRules>();
+            q.iter(&self.world)
+                .map(|(d, sk)| crate::relay::duty_gain(tiles, map, skills, sk, d.spot))
+                .sum()
+        };
+        // Отряды поимённо: с §12.152 у каждого гаража свой состав, и панель
+        // обязана называть его словом — иначе кнопка вылазки берёт отряд ниоткуда.
         let nodes: Vec<NodeSnap> = {
-            let cells = self.relay_cells();
+            let cells = self.gate_cells_of();
             cells
                 .into_iter()
                 .map(|(x, y)| {
@@ -4595,11 +4611,6 @@ impl Sim {
                         auto_share,
                         auto_fail,
                         fit,
-                        comms: {
-                            let map = self.world.resource::<BaseMap>();
-                            let tiles = self.world.resource::<TileRules>();
-                            tiles.comms_of(map.tile_at(x, y))
-                        },
                     }
                 })
                 .collect()
@@ -4891,6 +4902,7 @@ impl Sim {
             raids,
             relays,
             gates,
+            comms_now,
             nodes,
             desks,
             fame,

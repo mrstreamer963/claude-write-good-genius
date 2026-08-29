@@ -19,7 +19,7 @@ use bevy_ecs::prelude::*;
 use crate::components::*;
 use crate::hauling::spill;
 use crate::map::BaseMap;
-use crate::missions::pick_gate;
+use crate::missions::gate_cells;
 
 /// Проступили ли детали события к этому тику («туман предзнания», §4.6).
 ///
@@ -74,7 +74,11 @@ pub(crate) fn run_timeline(
         }
         // Груз ложится кучей на шлюз — оттуда его разнесёт обычная уборка
         // (§12.16), ровно как добычу с вылазки.
-        let Some(gate) = pick_gate(&map, &tiles, &[]) else {
+        // Первый гараж по обходу карты — детерминированно (§11), и этого
+        // довольно: мир кладёт груз у любой двери, а не выбирает ближайшую к
+        // кому-то. До §12.152 тут звался `pick_gate` с пустым списком котов, то
+        // есть ровно то же самое, только через выражение про отряд.
+        let Some(gate) = gate_cells(&map, &tiles).next() else {
             continue; // шлюза нет — миру не через что дотянуться до базы
         };
         for &(item, count) in &rule.gift {
