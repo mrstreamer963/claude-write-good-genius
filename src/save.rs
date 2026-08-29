@@ -770,15 +770,15 @@ fn restore_seen(world: &mut World, file: &SaveFile) {
         }
     }
     for dto in &file.entities {
-        if let Some((item, count)) = dto.stack {
-            if count > 0 {
-                seen.mark(item);
-            }
+        if let Some((item, count)) = dto.stack
+            && count > 0
+        {
+            seen.mark(item);
         }
-        if let Some((item, count)) = dto.carrying {
-            if count > 0 {
-                seen.mark(item);
-            }
+        if let Some((item, count)) = dto.carrying
+            && count > 0
+        {
+            seen.mark(item);
         }
         if let Some(gear) = &dto.gear {
             for &item in gear {

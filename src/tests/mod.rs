@@ -1856,12 +1856,12 @@ impl Sim {
         needs: &[(usize, i32)],
     ) {
         let mut rules = self.world.resource_mut::<FactionRules>();
-        if let Some(rule) = rules.0.get_mut(faction) {
-            if let Some((_, line)) = rule.prices.iter_mut().find(|(i, _)| *i == item) {
-                line.requires = requires;
-                line.needs = needs.to_vec();
-                line.needs.sort_unstable_by_key(|(f, _)| *f);
-            }
+        if let Some(rule) = rules.0.get_mut(faction)
+            && let Some((_, line)) = rule.prices.iter_mut().find(|(i, _)| *i == item)
+        {
+            line.requires = requires;
+            line.needs = needs.to_vec();
+            line.needs.sort_unstable_by_key(|(f, _)| *f);
         }
     }
 
