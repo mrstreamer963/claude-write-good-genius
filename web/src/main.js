@@ -1431,7 +1431,28 @@ function renderSnapshot(snap) {
     c.woundMark.visible = lying;
     // Учёба — потраченное котовремя, и это вся её цена (§12.18): не видно её —
     // игрок просто недосчитается рабочих лап.
-    c.studyMark.visible = e.job === "study" && !e.moving;
+    const studying = e.job === "study" && !e.moving;
+    c.studyMark.visible = studying;
+    // Полоска редка не потому, что жалко перерисовки (навык растёт каждый
+    // тик и полосе положено меняться), а по тому же счёту, что у стройки и
+    // заказа станка: своё выражение прогресса, а не поворот самого глифа.
+    c.studyProgress.visible = studying;
+    if (studying) {
+      const sk = e.skills?.[e.study];
+      const p = sk && sk.next > 0 ? Math.min(1, sk.xp / sk.next) : 1;
+      // Низ, как у заказа станка (§12.96): та же дорожка-и-заливка, то же
+      // место относительно фигуры — под лапами, а не над головой рядом с
+      // книжкой, где стоят состояния, а не счётный прогресс.
+      c.studyProgress.clear();
+      c.studyProgress
+        .rect(-TILE * 0.35, TILE * 0.34, TILE * 0.7, 3)
+        .fill({ color: 0x000000, alpha: 0.45 });
+      if (p > 0) {
+        c.studyProgress
+          .rect(-TILE * 0.35, TILE * 0.34, TILE * 0.7 * p, 3)
+          .fill({ color: COLORS.study });
+      }
+    }
     // Медик — только дошедший: лечит он с соседней клетки, и до неё ещё надо
     // добраться. Иначе пустой крест ехал бы через полбазы, обещая лечение.
     c.medicMark.visible = e.job === "treat" && !e.moving;
@@ -1739,6 +1760,11 @@ function createUnit(e) {
     .lineTo(0, -TILE * 0.54)
     .stroke({ color: 0x000000, width: 1 });
   studyMark.visible = false;
+  // Полоска прогресса под книжкой — докуда доведёт текущий урок (§12.84):
+  // очков опыта в домене к порогу следующего уровня. Книжку саму не крутим —
+  // прогресс читается по этой полоске, как у стройки и заказа станка.
+  const studyProgress = new Graphics();
+  studyProgress.visible = false;
   // Красный крест — на месте «зззз» и книжки: три состояния «кот занят не
   // базой» читаются одинаково и не совмещаются (§12.37).
   const woundMark = new Graphics();
@@ -1764,6 +1790,7 @@ function createUnit(e) {
   c.addChild(load);
   c.addChild(sleepMark);
   c.addChild(studyMark);
+  c.addChild(studyProgress);
   c.addChild(woundMark);
   c.addChild(medicMark);
   c.selectRing = selectRing;
@@ -1795,6 +1822,7 @@ function createUnit(e) {
   c.y = c.fromY;
   c.sleepMark = sleepMark;
   c.studyMark = studyMark;
+  c.studyProgress = studyProgress;
   c.woundMark = woundMark;
   c.medicMark = medicMark;
   unitLayer.addChild(c);
