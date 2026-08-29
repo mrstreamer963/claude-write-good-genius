@@ -21,6 +21,7 @@ const COLORS = {
   scrap: 0xc9a227, // материал по умолчанию, если палитра предметов пуста
   rest: 0x7fd6b5, // сон: бодрость в панели и «зззз» над спящим котом
   study: 0xb08fde, // учёба: книжка над котом, сидящим за партой
+  craft: 0x6ee0e8, // производство: полоска прогресса в ячейке станка (§12.155)
   wound: 0xff5566, // ранение: крест над лежачим — тот же красный, что у стирания
   unit: {
     cat_excellent: 0xe0c060,
@@ -401,12 +402,18 @@ const scrapLayer = new Container(); // кучи лома на полу
 const bpLayer = new Container(); // чертежи (призраки будущих тайлов)
 const dealLayer = new Container(); // контейнеры сделок в ячейках постов (§12.68)
 const unitLayer = new Container();
+// Работа в ячейке (§12.30, §12.96, §12.132): что именно тут делают и докуда
+// дошли. Слой стоит **поверх котов** намеренно: мастер стоит ровно на той
+// клетке, о которой речь, и под ним значок был бы виден только тогда, когда
+// кот от станка ушёл, — то есть когда работа как раз и не идёт.
+const workLayer = new Container();
 const overlay = new Container();
 world.addChild(tileLayer);
 world.addChild(scrapLayer);
 world.addChild(bpLayer);
 world.addChild(dealLayer);
 world.addChild(unitLayer);
+world.addChild(workLayer);
 world.addChild(overlay);
 app.stage.addChild(world);
 
@@ -1066,6 +1073,158 @@ function drawDeals(list) {
   }
 }
 
+// Что делается в ячейке станка и лаборатории — и докуда дошло (§12.30,
+// §12.132).
+//
+// До этого карта о работе молчала: над мастером висел молоток, а что именно он
+// делает, отвечала панель клетки — то есть по клику. Отвечать обязана сама
+// клетка, и вот почему адресат — она, а не кот: заказ живёт в ячейке
+// (`Craft::cell`, §12.96), мастера у него сменяются, а оплаченная штука
+// остаётся на станке. Полоска под котом уехала бы вместе с ним туда, где не
+// делают ничего, и пропала бы со станка, где работа стоит.
+//
+// Словарь тот же, что у сделки (`drawDeals`): глиф — «что», полоска — «сколько
+// сделано». Вращается глиф потому, что заказ — это **идущая** работа: ждущий
+// материала стоит (`supplied`), и разница видна без цифр и без клика.
+//
+// Разбор назван **входом**, а не выходом (§12.114): решение игрока звучит
+// «разобрать комбинезон». Тема-вскрытие названа образцом — тем же предметом,
+// который к ней везли ногами (§12.133); у темы без образца показывать нечего,
+// и остаётся одна полоска.
+const workNodes = new Map();
+function workCells(snap) {
+  // Крутится глиф, только когда над заказом **стоят и работают** (§12.30):
+  // ячейка занята с первой штуки и до последней, а мастера у неё сменяются —
+  // спит, ест, ушёл в поле, ждёт материала. Вращение без кота обещало бы, что
+  // работа идёт, ровно там, где она стоит, то есть отвечало бы неправдой на
+  // единственный вопрос, ради которого движение и заведено.
+  //
+  // «На месте» спрашивается у **ядра** (`x`/`y` плюс `moving`), а не у
+  // нарисованной клетки: кот числится в той, из которой вышел, пока не дойдёт
+  // (§12.140), а работа начинается по приходу.
+  const busy = new Set();
+  for (const e of snap.entities ?? []) {
+    if (e.moving) continue;
+    if (e.job === "craft" || e.job === "research") busy.add(`${e.x},${e.y}`);
+  }
+  const out = [];
+  for (const c of snap.crafting ?? []) {
+    out.push({
+      x: c.x,
+      y: c.y,
+      item: craftItem(c.def),
+      tile: -1,
+      live: busy.has(`${c.x},${c.y}`),
+      p: c.progress,
+      t: c.total,
+    });
+  }
+  for (const r of snap.research ?? []) {
+    const spec = itemsIn((meta?.research ?? [])[r.def]?.specimen);
+    const item = (meta?.items ?? []).findIndex((it) => spec.includes(it.id));
+    // Тема без образца показывать нечего — крутится сама колба, глиф клетки, в
+    // которой идёт работа. Вещи у такой темы и правда нет: изучают знание, а не
+    // предмет, — и колба говорит ровно это. Берётся она с тайла под ногами, а не
+    // по имени «лаборатория»: искать тайл по `id` значило бы завести в виде
+    // второй экземпляр знания о том, где живёт наука.
+    out.push({
+      x: r.x,
+      y: r.y,
+      item,
+      tile: item < 0 ? (mapCells?.[r.y * meta.width + r.x] ?? -1) : -1,
+      live: busy.has(`${r.x},${r.y}`),
+      p: r.progress,
+      t: r.total,
+    });
+  }
+  return out;
+}
+
+// Предмет, которым называется заказ. То же правило, что у `craftLabel`: разбор
+// адресуется входом, остальное — выходом; второго правила заводить нельзя,
+// иначе подпись в окне и значок на карте однажды покажут разное.
+function craftItem(def) {
+  const r = (meta?.recipes ?? [])[def];
+  if (!r) return -1;
+  const side = r.salvage ? itemsIn(r.cost) : itemsIn(r.gives);
+  return (meta?.items ?? []).findIndex((it) => side.includes(it.id));
+}
+
+function drawWork(snap) {
+  if (!meta) return;
+  const live = new Set();
+  for (const w of workCells(snap)) {
+    const key = `${w.x},${w.y}`;
+    live.add(key);
+    let n = workNodes.get(key);
+    if (!n) {
+      n = new Container();
+      // Полоска по низу клетки: тёмная дорожка и заливка поверх. Дорожка —
+      // чтобы «почти ничего не сделано» отличалось от «работы тут нет вовсе».
+      const track = new Graphics()
+        .rect(0, 0, TILE * 0.7, 3)
+        .fill({ color: 0x000000, alpha: 0.45 });
+      track.x = TILE * 0.15;
+      track.y = TILE * 0.84;
+      const bar = new Graphics()
+        .rect(0, 0, TILE * 0.7, 3)
+        .fill({ color: COLORS.craft });
+      bar.x = TILE * 0.15;
+      bar.y = TILE * 0.84;
+      bar.scale.x = 0;
+      n.addChild(track);
+      n.addChild(bar);
+      n.bar = bar;
+      n.glyph = null;
+      n.src = "";
+      n.frac = -1;
+      workLayer.addChild(n);
+      workNodes.set(key, n);
+    }
+    n.x = w.x * TILE;
+    n.y = w.y * TILE;
+    // Глиф пересобирается только на смене предмета, а не каждым кадром: узел
+    // строится командами рисования, и безусловная пересборка — те же грабли,
+    // что у покадровых `sync*` (§12.84).
+    const src = w.item >= 0 ? `item:${w.item}` : `tile:${w.tile}`;
+    if (n.src !== src) {
+      if (n.glyph) n.glyph.destroy();
+      n.glyph = null;
+      const ctx =
+        w.item >= 0
+          ? itemGlyphContext(w.item)
+          : w.tile >= 0
+            ? tileGlyphContext(w.tile)
+            : null;
+      if (ctx) {
+        // Общий контекст принимается **только конструктором**: присваивание
+        // `.context` живому узлу молча не рисует ничего.
+        const g = new Graphics(ctx);
+        g.pivot.set(12, 12); // вращаемся вокруг середины глифа, а не угла
+        g.scale.set((TILE * 0.52) / 24);
+        // Верхний левый угол клетки: кот стоит в середине, и значок в углу он
+        // собой не закрывает.
+        g.x = TILE * 0.3;
+        g.y = TILE * 0.3;
+        n.addChild(g);
+        n.glyph = g;
+      }
+      n.src = src;
+    }
+    n.live = w.live;
+    const frac = w.t > 0 ? Math.max(0, Math.min(1, w.p / w.t)) : 0;
+    if (n.frac !== frac) {
+      n.bar.scale.x = frac;
+      n.frac = frac;
+    }
+  }
+  for (const [key, n] of workNodes) {
+    if (live.has(key)) continue;
+    n.destroy({ children: true });
+    workNodes.delete(key);
+  }
+}
+
 function drawBlueprints(list) {
   bpLayer.removeChildren();
   if (!list || !list.length) return;
@@ -1176,6 +1335,7 @@ function renderSnapshot(snap) {
   drawScrap(snap.stacks);
   drawBlueprints(snap.blueprints);
   drawDeals(snap.deals);
+  drawWork(snap);
   const seen = new Set();
   for (const e of snap.entities) {
     seen.add(e.id);
@@ -1675,6 +1835,12 @@ function stepUnits(ticker) {
     const k = Math.min(1, (c.stepSpan - c.stepLeft + tickFrac) / c.stepSpan);
     c.x = c.fromX + (c.toX - c.fromX) * k;
     c.y = c.fromY + (c.toY - c.fromY) * k;
+  }
+  // Глиф работы крутится здесь же, а не в своём тикере: `speed` — то самое, чем
+  // умножается доля тика, поэтому на паузе мир и картинка встают вместе. Второй
+  // копии «сколько сейчас идёт время» в проекте быть не должно (§12.140).
+  for (const n of workNodes.values()) {
+    if (n.glyph && n.live) n.glyph.rotation += (ticker.deltaMS * speed) / 1400;
   }
 }
 
