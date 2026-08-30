@@ -702,8 +702,13 @@ main#stage.mode-cursor #mode-banner {
 }
 
 /* Координаты клетки — в заголовке, но приглушённо: они опознают клетку, когда
-   маркер на карте уехал за край экрана, и не спорят с названием тайла. */
-.cell-at {
+   маркер на карте уехал за край экрана, и не спорят с названием тайла.
+
+   Тем же приглушённым тут же и размер пачки заказов (§12.164): он занял тот же
+   слот заголовка, из которого схлопывание убрало координаты, и роль у него та
+   же — опознать, о скольких ячейках речь, не споря с названием рецепта. */
+.cell-at,
+.pack-n {
   color: var(--muted);
   font-weight: 400;
   font-variant-numeric: tabular-nums;
@@ -876,7 +881,7 @@ main#stage.mode-cursor #mode-banner {
 #craft[hidden] {
   display: none;
 }
-#craft .craft-cancel {
+#craft .crafts-cancel {
   width: 100%;
   margin-top: 8px;
   justify-content: center;
