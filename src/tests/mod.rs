@@ -574,6 +574,20 @@ impl Sim {
         .len()
     }
 
+    /// Индекс штампа в палитре объектов по его id.
+    fn structure_index(&self, id: &str) -> Option<usize> {
+        self.structures.iter().position(|d| d.id == id)
+    }
+
+    /// Клетки штампа, поставленного якорем сюда: `(x, y, тайл)`.
+    fn stamp_of(&self, def: usize, x: i32, y: i32, rot: u8) -> Vec<(i32, i32, i16)> {
+        self.world.resource::<StructureRules>().0[def]
+            .stamp((x, y), rot)
+            .into_iter()
+            .map(|((cx, cy), t)| (cx, cy, t))
+            .collect()
+    }
+
     /// Сколько объектов-штампов стоит на базе.
     fn structures_count(&mut self) -> usize {
         let mut q = self.world.query::<&Structure>();

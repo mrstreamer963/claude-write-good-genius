@@ -2147,7 +2147,7 @@ impl Sim {
     /// Линейный поиск по `Structure`, как `blueprint_at` по чертежам: объектов
     /// на базе десятки, а второй реестр «клетка → объект» разошёлся бы с картой
     /// на первом же сносе.
-    fn structure_at(&mut self, x: i32, y: i32) -> Option<(Entity, Vec<(i32, i32)>)> {
+    fn structure_at(&mut self, x: i32, y: i32) -> Option<(Entity, Vec<((i32, i32), i16)>)> {
         let mut q = self.world.query::<(Entity, &Structure)>();
         let found: Vec<(Entity, usize, (i32, i32), u8)> = q
             .iter(&self.world)
@@ -2156,7 +2156,7 @@ impl Sim {
         for (e, def, anchor, rot) in found {
             let cells = self.stamp_cells(def, anchor.0, anchor.1, rot)?;
             if cells.iter().any(|&(xy, _)| xy == (x, y)) {
-                return Some((e, cells.into_iter().map(|(xy, _)| xy).collect()));
+                return Some((e, cells));
             }
         }
         None
@@ -2183,22 +2183,47 @@ impl Sim {
     /// безопаснее — отмена ничего не разрушает.
     pub fn plan_demolish_rect(&mut self, x: i32, y: i32, w: i32, h: i32) -> bool {
         note(&mut self.world, format!("erase_rect {x} {y} {w} {h}"));
-        // Клетка объекта тянет за собой весь объект (§12.160): половина
-        // лаборатории — это не лаборатория на полтора места, а мусор. Рамка
-        // поэтому расширяется до всех клеток задетых штампов **до** решения,
-        // иначе «сперва отмена» разобралась бы только с попавшей под ластик
-        // частью, а остальное осталось бы стоять чертежами.
-        let mut cells: Vec<(i32, i32)> = rect_cells(x, y, w, h).collect();
+        // Объект убирается **целиком и одним решением** (§12.160): половина
+        // лаборатории — не лаборатория на полтора места, а мусор.
+        //
+        // ⚠️ Правило «сперва отмена, и если было что отменять — выходим» к нему
+        // не применяется, и это не мелочь. У недостроенного объекта часть клеток
+        // стоит чертежами, а часть уже построена: отмена сняла бы первые и
+        // вышла, оставив вторые стоять, — а сущность объекта к тому моменту уже
+        // despawn'нута, и каждый следующий ластик работал бы поклеточно. Ровно
+        // так лаборатория и разбиралась по кусочкам.
+        //
+        // Поэтому у объекта отмена и снос — не альтернативы, а две половины
+        // одного решения: спланированные клетки снимаются, построенные встают в
+        // снос, и после жеста от объекта не остаётся ничего.
+        let mut done: Vec<(i32, i32)> = Vec::new();
+        let mut changed = false;
         for (cx, cy) in rect_cells(x, y, w, h) {
-            if let Some((e, whole)) = self.structure_at(cx, cy) {
-                self.world.despawn(e);
-                for xy in whole {
-                    if !cells.contains(&xy) {
-                        cells.push(xy);
-                    }
+            if done.contains(&(cx, cy)) {
+                continue;
+            }
+            let Some((e, whole)) = self.structure_at(cx, cy) else {
+                continue;
+            };
+            self.world.despawn(e);
+            for (xy, tile) in whole {
+                changed |= self.cancel_blueprint(xy.0, xy.1);
+                // Снос планируется только тому, что объект **успел построить**:
+                // клетка, до которой стройка не дошла, так и осталась полом, и
+                // сносить под ней нечего — жест отменяет постройку, а не
+                // выкапывает яму на её месте.
+                if self.world.resource::<BaseMap>().tile_at(xy.0, xy.1) == tile {
+                    changed |= self.add_blueprint(xy.0, xy.1, -1);
                 }
+                done.push(xy);
             }
         }
+
+        // Остальная рамка — прежним правилом: сперва отмена, и только если
+        // снимать было нечего, планируем снос.
+        let cells: Vec<(i32, i32)> = rect_cells(x, y, w, h)
+            .filter(|c| !done.contains(c))
+            .collect();
         let mut cancelled = false;
         for &(cx, cy) in &cells {
             cancelled |= self.cancel_blueprint(cx, cy);
@@ -2206,7 +2231,7 @@ impl Sim {
         if cancelled {
             return true;
         }
-        let mut planned = false;
+        let mut planned = changed;
         for &(cx, cy) in &cells {
             planned |= self.add_blueprint(cx, cy, -1);
         }

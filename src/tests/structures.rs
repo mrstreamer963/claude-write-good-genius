@@ -358,3 +358,99 @@ fn an_internal_tile_cannot_be_marked_on_its_own() {
     assert!(!sim.add_blueprint(2, 1, 1), "внутренность — не постройка");
     assert_eq!(sim.planned_tile(2, 1), None);
 }
+
+#[test]
+fn erasing_a_built_object_condemns_all_of_its_cells() {
+    // Снос объекта — **одно решение**, и ворота ему считаются по всему объекту
+    // разом. Поклеточно он отбивается сам о себя: убрать клетку места значит
+    // отнять подход у глухой клетки над ней (§12.111), и от лаборатории
+    // оставался огрызок.
+    // Над объектом **пустота** — как в игре: единственный подход у глухого ряда
+    // это ряд мест под ним. С полом сверху тест зелёный и не проверяет ничего.
+    let mut sim = sim_from(&["######", "#....#", "#....#", "#....#", "######"]);
+    let def = lab_object(&mut sim, 3);
+    built(&mut sim, def, 1, 1, 0);
+
+    assert!(sim.plan_demolish(2, 2), "ластик по одному месту");
+
+    for x in 1..4 {
+        assert_eq!(sim.planned_tile(x, 1), Some(-1), "глухой ряд в ({x}, 1)");
+        assert_eq!(sim.planned_tile(x, 2), Some(-1), "ряд мест в ({x}, 2)");
+    }
+}
+
+/// Тот же снос, но на боевом рулсете и на настоящей «Большой лаборатории».
+/// Синтетическая схема этого не ловит: в ней у тайлов нет ни зонирования, ни
+/// цены, а ломается снос именно на них.
+#[test]
+fn the_shipped_ruleset_erases_a_big_lab_in_one_go() {
+    let mut sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
+    sim.set_tech("big_labs");
+    let def = sim
+        .structure_index("big_lab")
+        .expect("«Большая лаборатория» в палитре объектов");
+
+    // Чистая площадка подальше от стартовой застройки.
+    let floor = sim.tile_index("floor").expect("пол");
+    for y in 9..14 {
+        for x in 14..20 {
+            sim.force_tile(x, y, floor);
+        }
+    }
+    // Тайлы кладём **до** разметки: тогда чертежей не заводится вовсе, и снос
+    // проверяется у готового объекта. Наоборот — и `plan_demolish` снимет
+    // оставшиеся чертежи вместо того, чтобы планировать снос.
+    let cells = sim.stamp_of(def, 15, 10, 0);
+    assert_eq!(cells.len(), 6, "штамп из шести клеток: {cells:?}");
+    for &(x, y, t) in &cells {
+        sim.force_tile(x, y, t);
+    }
+    assert!(sim.place_structure(def as i32, 15, 10, 0), "объект встал");
+
+    assert!(sim.plan_demolish(15, 11), "ластик по одному месту");
+
+    for &(x, y, _) in &cells {
+        assert_eq!(
+            sim.planned_tile(x, y),
+            Some(-1),
+            "клетка ({x}, {y}) обязана уйти вместе с объектом",
+        );
+    }
+}
+
+#[test]
+fn erasing_a_half_built_object_leaves_nothing_behind() {
+    // Тот самый случай, в котором лаборатория разбиралась по кусочкам: часть
+    // клеток уже построена, часть ещё стоит чертежами. Правило «сперва отмена,
+    // и если было что отменять — выходим» снимало вторые и выходило, оставив
+    // первые стоять, — а сущность объекта к тому моменту уже была снята, и
+    // каждый следующий ластик работал поклеточно.
+    let mut sim = sim_from(&["######", "#....#", "#....#", "#....#", "######"]);
+    let def = lab_object(&mut sim, 3);
+    // Верхний ряд уже стоит, нижний — нет: `place_structure` заведёт чертежи
+    // только на недостающие клетки, то есть ровно наполовину построенный объект.
+    for x in 1..4 {
+        sim.force_tile(x, 1, 1);
+    }
+    assert!(sim.place_structure(def as i32, 1, 1, 0));
+    for x in 1..4 {
+        assert_eq!(sim.planned_tile(x, 1), None, "верхний ряд уже построен");
+        assert_eq!(sim.planned_tile(x, 2), Some(2), "нижний ряд размечен");
+    }
+
+    assert!(sim.plan_demolish(2, 2), "ластик по одной клетке");
+
+    for x in 1..4 {
+        assert_eq!(
+            sim.planned_tile(x, 1),
+            Some(-1),
+            "построенное ({x}, 1) уходит в снос",
+        );
+        assert_eq!(
+            sim.planned_tile(x, 2),
+            None,
+            "а недостроенное ({x}, 2) просто снимается",
+        );
+    }
+    assert_eq!(sim.structures_count(), 0, "объекта больше нет");
+}
