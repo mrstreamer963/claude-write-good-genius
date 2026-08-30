@@ -75,6 +75,47 @@ impl Owners {
     fn at(&self, x: i32, y: i32) -> i32 {
         self.index(x, y).map_or(NONE, |i| self.cells[i])
     }
+
+    /// Клетки объекта `n` в порядке обхода карты.
+    fn cells_of(&self, n: i32) -> Vec<(i32, i32)> {
+        (0..self.height)
+            .flat_map(|y| (0..self.width).map(move |x| (x, y)))
+            .filter(|&(x, y)| self.at(x, y) == n)
+            .collect()
+    }
+}
+
+/// Места у ячейки: клетки роли того же объекта, **на которых можно стоять**
+/// (§12.163).
+///
+/// Число мест нигде не написано числом — оно и есть форма объекта: сколько в
+/// лаборатории проходимых клеток роли, столько учёных над темой и работает.
+/// Второе поле «сколько мест» разошлось бы с формой на первой же правке
+/// контента, а глухие клетки штампа отсекаются сами — в клетке, на которой не
+/// стоят, некому и работать (§12.142).
+///
+/// Клетка вне объекта даёт одно место — себя: она и есть объект из одной
+/// клетки, и лаборатория, выложенная рамкой, ведёт себя ровно как до §12.160.
+pub(crate) fn seats_at(
+    map: &BaseMap,
+    tiles: &TileRules,
+    owners: &Owners,
+    at: (i32, i32),
+    role: fn(&TileRules, i16) -> bool,
+) -> Vec<(i32, i32)> {
+    let standable = |(x, y): (i32, i32)| {
+        let t = map.tile_at(x, y);
+        role(tiles, t) && !tiles.is_solid(t)
+    };
+    let owner = owners.at(at.0, at.1);
+    if owner == NONE {
+        return if standable(at) { vec![at] } else { Vec::new() };
+    }
+    owners
+        .cells_of(owner)
+        .into_iter()
+        .filter(|&xy| standable(xy))
+        .collect()
 }
 
 /// Клетки роли в порядке обхода карты, схлопнутые по объектам (§12.161).

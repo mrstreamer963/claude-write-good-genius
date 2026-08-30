@@ -51,7 +51,7 @@ use crate::seen::note_seen;
 use crate::skills::{
     SKILL_RAID, SKILL_SCIENCE, desk_cap, level_cap_of, level_of, nearest_desk, xp_ceiling,
 };
-use crate::slots::{Owners, slot_cells};
+use crate::slots::{Owners, seats_at, slot_cells};
 use crate::snapshot::{
     AutoGateNames, BaseMapDto, BlueprintSnap, CraftSnap, DealSnap, DeskSnap, EntitySnap, GoalSnap,
     MapMeta, MissionSnap, NeedSnap, NewsSnap, NodeSnap, NoteSnap, PriceSnap, RaidGates, RaidSnap,
@@ -709,7 +709,7 @@ impl Sim {
         if let Some(topic_e) = self.world.get::<Researching>(cat).map(|r| r.0)
             && let Some(mut topic) = self.world.get_mut::<Research>(topic_e)
         {
-            topic.assignee = None;
+            topic.assignees.retain(|&e| e != cat);
         }
         // У заказа освобождаем **только исполнителя**: ячейка станка — свойство
         // самого заказа, а не задачи кота (§12.96), и снятая здесь потеряла бы
@@ -1276,6 +1276,7 @@ impl Sim {
                     relay: t.relay,
                     comms: t.comms,
                     tech: t.tech.clone(),
+                    internal: t.internal,
                     quiet: t.quiet,
                     noisy: t.noisy,
                     clean: t.clean,
@@ -1696,52 +1697,51 @@ impl Sim {
         }
 
         let structures = {
-                // Силуэты считаются **один раз, здесь**, всеми четырьмя
-                // четвертями сразу (§12.162): поворот — правило, и второй его
-                // экземпляр в JS однажды нарисует рамку, которую фасад
-                // отклонит (инвариант 14).
-                let rules = world.resource::<StructureRules>();
-                let tiles = world.resource::<TileRules>();
-                rs.structures
-                    .iter()
-                    .enumerate()
-                    .map(|(i, d)| {
-                        let rule = &rules.0[i];
-                        let shapes = (0..4)
-                            .map(|rot| {
-                                let cells = rule.stamp((0, 0), rot);
-                                // Якорь — левый верхний угол занятого
-                                // прямоугольника, поэтому силуэт нормализуется
-                                // к нулю: у повёрнутой сетки смещения бывают
-                                // отрицательными.
-                                let minx = cells.iter().map(|&((x, _), _)| x).min().unwrap_or(0);
-                                let miny = cells.iter().map(|&((_, y), _)| y).min().unwrap_or(0);
-                                cells
-                                    .into_iter()
-                                    .map(|((x, y), t)| (x - minx, y - miny, t))
-                                    .collect()
-                            })
-                            .collect();
-                        let mut cost: Vec<(usize, i32)> = Vec::new();
-                        for (_, _, t) in rule.stamp((0, 0), 0).iter().map(|&((x, y), t)| (x, y, t))
-                        {
-                            for &(item, n) in tiles.cost_of(t) {
-                                match cost.iter_mut().find(|(i, _)| *i == item) {
-                                    Some(slot) => slot.1 += n,
-                                    None => cost.push((item, n)),
-                                }
+            // Силуэты считаются **один раз, здесь**, всеми четырьмя
+            // четвертями сразу (§12.162): поворот — правило, и второй его
+            // экземпляр в JS однажды нарисует рамку, которую фасад
+            // отклонит (инвариант 14).
+            let rules = world.resource::<StructureRules>();
+            let tiles = world.resource::<TileRules>();
+            rs.structures
+                .iter()
+                .enumerate()
+                .map(|(i, d)| {
+                    let rule = &rules.0[i];
+                    let shapes = (0..4)
+                        .map(|rot| {
+                            let cells = rule.stamp((0, 0), rot);
+                            // Якорь — левый верхний угол занятого
+                            // прямоугольника, поэтому силуэт нормализуется
+                            // к нулю: у повёрнутой сетки смещения бывают
+                            // отрицательными.
+                            let minx = cells.iter().map(|&((x, _), _)| x).min().unwrap_or(0);
+                            let miny = cells.iter().map(|&((_, y), _)| y).min().unwrap_or(0);
+                            cells
+                                .into_iter()
+                                .map(|((x, y), t)| (x - minx, y - miny, t))
+                                .collect()
+                        })
+                        .collect();
+                    let mut cost: Vec<(usize, i32)> = Vec::new();
+                    for (_, _, t) in rule.stamp((0, 0), 0).iter().map(|&((x, y), t)| (x, y, t)) {
+                        for &(item, n) in tiles.cost_of(t) {
+                            match cost.iter_mut().find(|(i, _)| *i == item) {
+                                Some(slot) => slot.1 += n,
+                                None => cost.push((item, n)),
                             }
                         }
-                        cost.sort_unstable();
-                        StructureSnap {
-                            id: d.id.clone(),
-                            label: d.label.clone(),
-                            tech: d.tech.clone(),
-                            cost,
-                            shapes,
-                        }
-                    })
-                    .collect()
+                    }
+                    cost.sort_unstable();
+                    StructureSnap {
+                        id: d.id.clone(),
+                        label: d.label.clone(),
+                        tech: d.tech.clone(),
+                        cost,
+                        shapes,
+                    }
+                })
+                .collect()
         };
         let schedule = build_schedule();
         Ok(Sim {
@@ -1949,6 +1949,14 @@ impl Sim {
         // прочтёт как поломку, а не как «сперва изучите». У сноса ворот нет —
         // разбирать можно что угодно и всегда.
         if !self.tech_allows(t) {
+            return false;
+        }
+        // Внутренность объекта поодиночке не ставится (§12.163): сама по себе
+        // она не постройка, а деталь другой постройки. В палитре её нет, но
+        // ворота обязаны быть здесь — правило, которое держит только вид, это
+        // правило, которого нет (инвариант 14). Штампа это не касается: он
+        // кладёт свои клетки сам, через `place_structure`.
+        if self.world.resource::<TileRules>().is_internal(t) {
             return false;
         }
         // Правило доступа (§12.111) и зонирование (§12.157) — вторые ворота
@@ -2832,7 +2840,7 @@ impl Sim {
         self.world.spawn(Research {
             def,
             progress: 0,
-            assignee: None,
+            assignees: Vec::new(),
             cell,
             delivered: Vec::new(),
         });
@@ -2856,7 +2864,13 @@ impl Sim {
         let Some(topic_e) = self.topic_of(def) else {
             return false;
         };
-        if let Some(cat_e) = self.world.get::<Research>(topic_e).and_then(|t| t.assignee) {
+        // Тема бросается целиком, значит расходятся **все** её учёные (§12.163).
+        let crew: Vec<Entity> = self
+            .world
+            .get::<Research>(topic_e)
+            .map(|t| t.assignees.clone())
+            .unwrap_or_default();
+        for cat_e in crew {
             self.world
                 .entity_mut(cat_e)
                 .remove::<(Researching, Path, Stride)>();
@@ -4987,6 +5001,7 @@ impl Sim {
         };
         let mut research = Vec::new();
         {
+            let owners = self.owners();
             let mut q = self.world.query::<&Research>();
             let names: Vec<(Entity, String)> = {
                 let mut cats = self.world.query::<(Entity, &UnitId)>();
@@ -5001,11 +5016,24 @@ impl Sim {
                     def: topic.def,
                     progress: topic.progress,
                     total: rules.0.get(topic.def).map_or(0, |r| r.work),
+                    // Кто над темой работает — **первый по списку**, и рядом
+                    // сколько их всего (§12.163): в строку панели помещается
+                    // имя, а «сколько мест занято» это другой вопрос.
                     unit: topic
-                        .assignee
-                        .and_then(|e| names.iter().find(|&&(cat, _)| cat == e))
+                        .assignees
+                        .first()
+                        .and_then(|&e| names.iter().find(|&&(cat, _)| cat == e))
                         .map(|(_, id)| id.clone())
                         .unwrap_or_default(),
+                    crew: topic.assignees.len() as i32,
+                    seats: seats_at(
+                        self.world.resource::<BaseMap>(),
+                        self.world.resource::<TileRules>(),
+                        &owners,
+                        topic.cell,
+                        TileRules::is_lab,
+                    )
+                    .len() as i32,
                     x: topic.cell.0,
                     y: topic.cell.1,
                     home: home_science.contains(&topic.def),

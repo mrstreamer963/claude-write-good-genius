@@ -444,10 +444,10 @@ fn links_of(sim: &Sim) -> Vec<String> {
         {
             out.push(format!("site {},{} <- {}", b.x, b.y, name(a)));
         }
-        if let Some(r) = e.get::<Research>()
-            && let Some(a) = r.assignee
-        {
-            out.push(format!("topic {} <- {}", r.def, name(a)));
+        if let Some(r) = e.get::<Research>() {
+            for &a in &r.assignees {
+                out.push(format!("topic {} <- {}", r.def, name(a)));
+            }
         }
         if let Some(c) = e.get::<Craft>()
             && let Some(a) = c.assignee

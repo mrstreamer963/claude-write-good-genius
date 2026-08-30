@@ -243,3 +243,118 @@ fn a_demolished_object_gives_its_cells_back_as_separate_slots() {
     assert_eq!(sim.structures_count(), 0);
     assert_eq!(sim.lab_slots(), 2);
 }
+
+// --- Места: несколько учёных над одной темой (§12.163) ---
+
+/// Лаборатория-штамп: глухой ряд сверху, ряд мест снизу — дословно §12.160.
+/// Тайл 1 — глухая часть (в ней стоит машина, встать нельзя), тайл 2 — место.
+/// Оба несут роль лаборатории: мест столько, сколько **проходимых** клеток.
+fn lab_object(sim: &mut Sim, seats: usize) -> usize {
+    sim.set_skill("science", &[100, 400]);
+    sim.set_lab(1, true);
+    sim.set_solid(1, true);
+    sim.set_lab(2, true);
+    sim.set_structure(vec![vec![Some(1); seats], vec![Some(2); seats]])
+}
+
+#[test]
+fn a_three_seat_lab_seats_three_scientists_on_one_topic() {
+    let mut sim = sim_from(&["######", "#abc.#", "#....#", "#....#", "######"]);
+    let def = lab_object(&mut sim, 3);
+    built(&mut sim, def, 1, 2, 0);
+    let topic = sim.set_topic("materials", 0, 100000, &[], &[]);
+    assert!(sim.start_research(topic), "тема взята");
+
+    sim.tick_n(30);
+
+    assert_eq!(sim.topic_crew(), 3, "все три места заняты");
+    assert_eq!(sim.researchers_busy(), 1, "и тема при этом одна");
+}
+
+#[test]
+fn three_scientists_work_three_times_faster() {
+    // Скорость — сумма вкладов, а не число от размера лаборатории (§12.163).
+    let progress = |rows: &[&str]| {
+        let mut sim = sim_from(rows);
+        let def = lab_object(&mut sim, 3);
+        built(&mut sim, def, 1, 2, 0);
+        let topic = sim.set_topic("materials", 0, 100000, &[], &[]);
+        assert!(sim.start_research(topic));
+        sim.tick_n(40);
+        sim.research_progress().unwrap_or(0)
+    };
+    let one = progress(&["######", "#a...#", "#....#", "#....#", "######"]);
+    let three = progress(&["######", "#abc.#", "#....#", "#....#", "######"]);
+
+    assert!(one > 0, "одиночка всё-таки работает: {one}");
+    assert!(
+        three > one * 2,
+        "трое обязаны обогнать одного втрое: {three} против {one}",
+    );
+}
+
+#[test]
+fn an_undermanned_lab_just_works_slower() {
+    // Недобор — законное состояние, а не отказ: лаборатория работает вполсилы,
+    // и это ровно та причина, по которой второго учёного стоит выучить.
+    let mut sim = sim_from(&["######", "#a...#", "#....#", "#....#", "######"]);
+    let def = lab_object(&mut sim, 3);
+    built(&mut sim, def, 1, 2, 0);
+    let topic = sim.set_topic("materials", 0, 100000, &[], &[]);
+    assert!(sim.start_research(topic));
+
+    sim.tick_n(30);
+
+    assert_eq!(sim.topic_crew(), 1, "занято одно место из трёх");
+    assert!(
+        sim.research_progress().is_some_and(|p| p > 0),
+        "и тема всё-таки движется",
+    );
+}
+
+#[test]
+fn a_scientist_joins_a_topic_already_under_way() {
+    // Доучившийся кот подсаживается к идущей теме, а не ждёт следующей: иначе
+    // связка с партой откладывалась бы на сотни тиков (§12.163).
+    let mut sim = sim_from(&["######", "#ab..#", "#....#", "#....#", "######"]);
+    let def = lab_object(&mut sim, 3);
+    built(&mut sim, def, 1, 2, 0);
+    sim.set_skill_level("a", "science", 1);
+    // Теме нужен допуск: «b» его пока не дорос.
+    let topic = sim.set_topic("materials", 1, 100000, &[], &[]);
+    assert!(sim.start_research(topic));
+    sim.tick_n(30);
+    assert_eq!(sim.topic_crew(), 1, "работает только допущенный");
+
+    sim.set_skill_level("b", "science", 1);
+    sim.tick_n(30);
+
+    assert_eq!(sim.topic_crew(), 2, "доучившийся подсел к идущей теме");
+}
+
+#[test]
+fn a_loose_lab_cell_still_seats_exactly_one() {
+    // Клетка вне объекта — одно место: она и есть объект из одной клетки, и
+    // лаборатория, выложенная рамкой, ведёт себя ровно как до §12.160.
+    let mut sim = sim_from(&["######", "#abc.#", "#....#", "######"]);
+    sim.set_skill("science", &[100, 400]);
+    sim.set_lab(2, true);
+    sim.force_tile(1, 2, 2);
+    let topic = sim.set_topic("materials", 0, 100000, &[], &[]);
+    assert!(sim.start_research(topic));
+
+    sim.tick_n(30);
+
+    assert_eq!(sim.topic_crew(), 1, "одна клетка — одно место");
+}
+
+#[test]
+fn an_internal_tile_cannot_be_marked_on_its_own() {
+    // Правило, которое держит только палитра, — это правило, которого нет:
+    // ворота обязаны стоять в ядре (§12.163, инвариант 14).
+    let mut sim = sim_from(&["#####", "#...#", "#####"]);
+    sim.set_internal(1, true);
+
+    assert!(!sim.add_blueprint(2, 1, 1), "внутренность — не постройка");
+    assert_eq!(sim.planned_tile(2, 1), None);
+}

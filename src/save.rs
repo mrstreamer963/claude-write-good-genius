@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 28;
+pub(crate) const FORMAT: u32 = 29;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -500,7 +500,12 @@ pub(crate) struct BlueprintDto {
 pub(crate) struct ResearchDto {
     pub(crate) def: usize,
     pub(crate) progress: i32,
-    pub(crate) assignee: Option<u32>,
+    /// Учёные над темой (§12.163). Список, а не один: `#[serde(default)]` тут
+    /// уместен — снимок формата до §12.163 разберётся в тему без исполнителей,
+    /// и раздатчик посадит их заново тем же тиком. Это не то же, что `cell`
+    /// ниже: там пропавшее поле молча убивало оплаченную тему.
+    #[serde(default)]
+    pub(crate) assignees: Vec<u32>,
     /// Ячейка лаборатории, в которой стоит тема (§12.132).
     ///
     /// ⚠️ **`#[serde(default)]` тут ставить нельзя.** Снимок формата до §12.132
@@ -668,7 +673,7 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                 research: e.get::<Research>().map(|r| ResearchDto {
                     def: r.def,
                     progress: r.progress,
-                    assignee: r.assignee.and_then(at),
+                    assignees: r.assignees.iter().filter_map(|&e| at(e)).collect(),
                     cell: r.cell,
                     delivered: r.delivered.clone(),
                 }),
@@ -1077,7 +1082,7 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
             e.insert(Research {
                 def: r.def,
                 progress: r.progress,
-                assignee: r.assignee.and_then(at),
+                assignees: r.assignees.iter().filter_map(|&n| at(n)).collect(),
                 cell: r.cell,
                 delivered: r.delivered.clone(),
             });

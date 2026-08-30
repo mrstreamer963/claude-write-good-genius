@@ -23,7 +23,7 @@ use crate::jobs::WORK_RATE;
 use crate::map::BaseMap;
 use crate::path::Reach;
 use crate::skills::{SKILL_SCIENCE, level_of};
-use crate::slots::{Owners, slot_cells};
+use crate::slots::{Owners, owners_of, seats_at, slot_cells};
 
 /// Первая свободная **ячейка** лаборатории по обходу карты; `None` — нет.
 ///
@@ -67,6 +67,8 @@ pub(crate) fn assign_research(
     mut commands: Commands,
     mut topics: Query<(Entity, &mut Research)>,
     mut stacks: Query<(Entity, &Position, &mut Stack)>,
+    structs: Res<StructureRules>,
+    placed: Query<&Structure>,
     free_cats: Query<
         (Entity, &UnitId, &Position, Option<&Skills>),
         (
@@ -90,6 +92,7 @@ pub(crate) fn assign_research(
     >,
 ) {
     let science = skill_rules.index_of(SKILL_SCIENCE);
+    let owners = owners_of(&map, &structs, &placed);
 
     // Первый проход — только про сами темы: снесённая лаборатория уносит свою,
     // остальные встают в список открытых. Раздача идёт **списками**, дословно
@@ -103,15 +106,12 @@ pub(crate) fn assign_research(
         // на клетку (§12.31, инвариант 8): материал не горит.
         if !tiles.is_lab(map.tile_at(topic.cell.0, topic.cell.1)) {
             spill_delivered(&mut commands, &mut stacks, topic.cell, &topic.delivered);
-            if let Some(cat_e) = topic.assignee {
+            for &cat_e in &topic.assignees {
                 commands
                     .entity(cat_e)
                     .remove::<(Researching, Path, Stride)>();
             }
             commands.entity(topic_e).despawn();
-            continue;
-        }
-        if topic.assignee.is_some() {
             continue;
         }
         let Some(rule) = rules.0.get(topic.def) else {
@@ -122,7 +122,20 @@ pub(crate) fn assign_research(
         if !topic_supplied(&rules, &topic) {
             continue;
         }
-        open.push((topic_e, topic.cell, rule.level));
+        // Мест у темы столько, сколько в её лаборатории проходимых клеток роли
+        // (§12.163), и тема встаёт в очередь **по разу на каждое свободное**:
+        // так один и тот же раздатчик, ничего о местах не зная, набирает
+        // сколько нужно, а недобор остаётся законным состоянием — лаборатория
+        // просто работает медленнее.
+        // В очередь едет **место**, а не клетка темы: у штампа клетка темы
+        // бывает глухой (в ней стоит машина), и расстояние до неё не считается
+        // вовсе. Мест столько, сколько у лаборатории проходимых клеток роли, и
+        // тема встаёт по разу на каждое свободное — так один и тот же раздатчик,
+        // ничего о местах не зная, набирает сколько нужно.
+        let seats = seats_at(&map, &tiles, &owners, topic.cell, TileRules::is_lab);
+        for &seat in seats.iter().skip(topic.assignees.len()) {
+            open.push((topic_e, seat, rule.level));
+        }
     }
     if open.is_empty() {
         return;
@@ -169,8 +182,12 @@ pub(crate) fn assign_research(
 
         let (_, cat_e, _, reach) = idle.remove(ci);
         let (topic_e, _, _) = open.remove(ti);
+        // Оставшиеся места той же темы уходят из очереди: их номера сдвинулись,
+        // и заново раздаст их следующий тик. Без этого двое в один тик поехали
+        // бы на одно место — в клетке помещается один (§12.32).
+        open.retain(|&(e, _, _)| e != topic_e);
         if let Ok((_, mut topic)) = topics.get_mut(topic_e) {
-            topic.assignee = Some(cat_e);
+            topic.assignees.push(cat_e);
         }
         let path = reach.path_to(cell.0, cell.1).unwrap_or_default();
         commands
@@ -199,8 +216,13 @@ pub(crate) fn work_research(
     )>,
     mut topics: Query<&mut Research>,
     mut stacks: Query<(Entity, &Position, &mut Stack)>,
+    map: Res<BaseMap>,
+    tiles: Res<TileRules>,
+    structs: Res<StructureRules>,
+    placed: Query<&Structure>,
 ) {
     let science = skill_rules.index_of(SKILL_SCIENCE);
+    let owners = owners_of(&map, &structs, &placed);
     for (cat_e, pos, task, path, skills) in &cats {
         let Ok(mut topic) = topics.get_mut(task.0) else {
             commands.entity(cat_e).remove::<Researching>();
@@ -209,18 +231,37 @@ pub(crate) fn work_research(
         let Some(rule) = rules.0.get(topic.def).cloned() else {
             continue;
         };
+        let seats = seats_at(&map, &tiles, &owners, topic.cell, TileRules::is_lab);
 
-        if (pos.x, pos.y) != topic.cell {
-            // Кот ещё идёт — или его сбили с маршрута (сон, рана, приказ).
-            // Тему при этом не трогаем: комната принадлежит ей (§12.132), а
-            // снос уносит её целиком, и делает это раздатчик.
-            if path.is_none() {
-                topic.assignee = None;
-                commands.entity(cat_e).remove::<Researching>();
-            }
+        // Тема уже доработана другим учёным в этом же тике: очки его засчитаны,
+        // а вещи и технология выданы — второй раз ни того, ни другого (§12.163).
+        // Проверяется до всего остального, потому что `despawn` отложен до конца
+        // тика, и `get_mut` здесь по-прежнему отдаёт живую тему.
+        if topic.progress >= rule.work {
+            commands.entity(cat_e).remove::<Researching>();
             continue;
         }
 
+        // Кот работает **на своём месте**, а не на клетке темы (§12.163): мест у
+        // лаборатории столько, сколько проходимых клеток роли, и стоять втроём
+        // в одной клетке нельзя (§12.32). Что кот дошёл, значит снятый маршрут.
+        if path.is_some() {
+            continue; // ещё идёт
+        }
+        if !seats.contains(&(pos.x, pos.y)) {
+            // Сбили с маршрута (сон, рана, приказ) — уходит **только он**,
+            // остальные места остаются занятыми. Комнату при этом не трогаем:
+            // она принадлежит теме (§12.132), а снос уносит её целиком, и
+            // делает это раздатчик.
+            topic.assignees.retain(|&e| e != cat_e);
+            commands.entity(cat_e).remove::<Researching>();
+            continue;
+        }
+
+        // Каждый учёный кладёт **свои** очки: скорость темы — сумма вкладов, а
+        // не число, зависящее от размера лаборатории (§12.163, инвариант 9).
+        // Новой арифметики тут нет — это ровно то же, чем отряд вырабатывает
+        // `work` вылазки по очку за тик на лапу (§12.70).
         let level = science.map_or(0, |s| level_of(&skill_rules, skills, s));
         topic.progress += WORK_RATE + level;
         if let Some(skill) = science {

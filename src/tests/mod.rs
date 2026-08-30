@@ -201,6 +201,9 @@ fn sim_from(rows: &[&str]) -> Sim {
             noisy: false,
             clean: false,
             dirty: false,
+            // Внутренних тайлов у схемы нет (§12.163): штампов в ней тоже нет,
+            // и прятать из палитры нечего.
+            internal: false,
         }],
         // Штампов у схемы нет (§12.160): объекты ставит только `set_structure`,
         // как рынок включает `set_market`, а вылазки — `set_gate`.
@@ -575,6 +578,16 @@ impl Sim {
     fn structures_count(&mut self) -> usize {
         let mut q = self.world.query::<&Structure>();
         q.iter(&self.world).count()
+    }
+
+    fn set_internal(&mut self, tile: i16, on: bool) {
+        self.tile_rule(tile, |r| r.internal = on);
+    }
+
+    /// Внутренность объекта: в палитру не идёт, ставится только штампом
+    /// (§12.163).
+    fn is_internal(&self, tile: i16) -> bool {
+        self.world.resource::<TileRules>().is_internal(tile)
     }
 
     /// Ёмкость тайла палитры.
@@ -1281,7 +1294,10 @@ impl Sim {
     /// Кто сейчас за темой; `None` — исполнителя нет или темы нет.
     fn researcher(&mut self) -> Option<String> {
         let mut q = self.world.query::<&Research>();
-        let assignee = q.iter(&self.world).next().and_then(|t| t.assignee)?;
+        let assignee = q
+            .iter(&self.world)
+            .next()
+            .and_then(|t| t.assignees.first().copied())?;
         self.world.get::<UnitId>(assignee).map(|u| u.0.clone())
     }
 
@@ -1297,10 +1313,19 @@ impl Sim {
         self.has_scientist_home(level)
     }
 
+    /// Сколько учёных сейчас работает над темой (§12.163): мест у лаборатории
+    /// столько, сколько в ней проходимых клеток роли.
+    fn topic_crew(&mut self) -> usize {
+        let mut q = self.world.query::<&Research>();
+        q.iter(&self.world).next().map_or(0, |t| t.assignees.len())
+    }
+
     /// Сколько тем сейчас с исполнителями (§12.132).
     fn researchers_busy(&mut self) -> usize {
         let mut q = self.world.query::<&Research>();
-        q.iter(&self.world).filter(|t| t.assignee.is_some()).count()
+        q.iter(&self.world)
+            .filter(|t| !t.assignees.is_empty())
+            .count()
     }
 
     /// Кот учится — сидит за партой или идёт к ней.
