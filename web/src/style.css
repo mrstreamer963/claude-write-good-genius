@@ -1608,6 +1608,13 @@ main#stage.mode-cursor #mode-banner {
 .raidwin-verdict .bad {
   color: var(--bad);
 }
+/* Неготовый кот в шапке отряда — красным, и в строке «ведёт …» тоже (§12.189).
+   Перечень ниже это уже умел (`.cat-sub .bad`), а проводник в нём не стоит
+   вовсе (§12.187): без своего правила единственный неготовый кот отряда,
+   который как раз ведёт, не был бы помечен нигде в шапке. */
+.raidwin-sumtext .bad {
+  color: var(--bad);
+}
 .raidwin-loot {
   display: flex;
   align-items: center;
