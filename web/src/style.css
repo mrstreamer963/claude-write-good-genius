@@ -881,11 +881,6 @@ main#stage.mode-cursor #mode-banner {
 #craft[hidden] {
   display: none;
 }
-#craft .crafts-cancel {
-  width: 100%;
-  margin-top: 8px;
-  justify-content: center;
-}
 
 /* Факты заказа в штабе (§12.109): «о чём» слева, «что» справа. Шесть фактов,
    склеенных через `·`, читались одним длинным предложением — формула срока,
