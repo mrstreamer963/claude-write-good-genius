@@ -2589,6 +2589,11 @@ function crewList(snap, x, y) {
   // решает, кого `launch` возьмёт. Второй экземпляр этого правила в JS («спит,
   // значит не идёт») однажды разойдётся с ядром на первом же новом состоянии.
   const ready = new Set(node?.ready ?? []);
+  // Кто ведёт **ушедший** отряд, знает сама вылазка: `node.guide` считается по
+  // готовым идти сейчас, а ушедшие все `away`, то есть у отряда в поле он пуст.
+  // Проводник при этом никуда не делся — он замёрз вместе с составом (§12.22).
+  const raid = missionsOut.find((m) => m.x === x && m.y === y);
+  const guide = (node?.busy ? raid?.guide : node?.guide) ?? null;
   const rows = cats.map((e) => {
     const mine = here(e);
     // Группа кота — та же четвёрка, что и `rank`, но с учётом готовности: идут,
@@ -2656,7 +2661,7 @@ function crewList(snap, x, y) {
       // встал бы над ними четвёртой строкой.
       '<span class="crew-text">' +
       `<span class="crew-id">${esc(e.id)}${where ? `<i class="crew-at">${where}</i>` : ""}</span>` +
-      fieldLine(e, led, node) +
+      fieldLine(e, led, node, guide) +
       (note
         ? `<i class="crew-note${idle ? " bad" : ""}">${esc(note)}</i>`
         : "") +
@@ -2727,7 +2732,7 @@ function crewList(snap, x, y) {
 // Все три приезжают из ядра (`raid_force`, `guide_step`, `stat_steps`): сила
 // отряда считается одним выражением на прогноз и на уход (инвариант 14), а
 // какой параметр делает проводника — знание ядра, а не JS.
-function fieldLine(e, led, node) {
+function fieldLine(e, led, node, guide) {
   const parts = [
     `<b data-tip="${esc(forceSplit(e))}">+${e.raid_force ?? 0}</b> сила`,
   ];
@@ -2755,7 +2760,7 @@ function fieldLine(e, led, node) {
   // Возражение против сырого числа (7 работает как 5) этим и снимается — оно
   // стоит не вместо следствия, а рядом с ним, и следствие его объясняет.
   const gi = meta.guide_stat ?? -1;
-  const leads = node?.guide === e.id;
+  const leads = guide === e.id;
   if (gi >= 0) {
     const st = (meta.stats ?? [])[gi];
     parts.push(
@@ -2764,7 +2769,14 @@ function fieldLine(e, led, node) {
     );
   }
   const cut = e.guide_cut ?? 0;
-  if (leads) {
+  // Ушедший отряд состав не переигрывает (§12.22), поэтому вся арифметика
+  // «кого добавить» ему не адресована (§12.179): проводник называется словом —
+  // он тот же, что в шапке, — а вычета сложности при нём нет. Само число живёт
+  // в карточке вылазки строкой «сила 18 против сложности 9», уже применённым;
+  // «−34 %» слева было бы прогнозом для решения, которого больше не принимают.
+  if (node?.busy) {
+    if (leads) parts.push("<u>ведёт</u>");
+  } else if (leads) {
     parts.push(`<u>ведёт</u> — сложность <b class="cut">−${cut} %</b>`);
   } else if ((e.guide_step ?? 0) > led) {
     // Именно это и есть ответ на «кого добавить»: у отряда уже есть какой-то
