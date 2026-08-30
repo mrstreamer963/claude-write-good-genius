@@ -31,6 +31,7 @@ mod save;
 mod seen;
 mod skills;
 mod stats;
+mod structures;
 mod study;
 mod tech_tree;
 mod terrain;
@@ -169,6 +170,7 @@ fn sim_from(rows: &[&str]) -> Sim {
     world.insert_resource(ItemRules::default());
     world.insert_resource(LoadoutRules::default());
     world.insert_resource(UnitRules::default());
+    world.insert_resource(StructureRules::default());
     Sim {
         world,
         schedule: build_schedule(),
@@ -200,6 +202,9 @@ fn sim_from(rows: &[&str]) -> Sim {
             clean: false,
             dirty: false,
         }],
+        // Штампов у схемы нет (§12.160): объекты ставит только `set_structure`,
+        // как рынок включает `set_market`, а вылазки — `set_gate`.
+        structures: Vec::new(),
         items: Vec::new(),
         skills: Vec::new(),
         stats: Vec::new(),
@@ -492,6 +497,45 @@ impl Sim {
         q.iter(&self.world)
             .find(|bp| bp.x == x && bp.y == y)
             .map(|bp| bp.tile)
+    }
+
+    /// Завести штамп (§12.160): сетка тайлов по строкам, `None` — клетку не
+    /// трогаем. В `sim_from` штампов нет вовсе (`StructureRules` пуст) — как
+    /// нет навыков, вылазок и рынка.
+    fn set_structure(&mut self, cells: Vec<Vec<Option<i16>>>) -> usize {
+        let mut rules = self.world.resource_mut::<StructureRules>();
+        rules.0.push(StructureRule {
+            cells,
+            tech: String::new(),
+        });
+        rules.0.len() - 1
+    }
+
+    /// Закрыть штамп технологией (§12.160). Ворота свои, сверх ворот тайлов.
+    fn set_structure_tech(&mut self, def: usize, tech: &str) {
+        self.world.resource_mut::<StructureRules>().0[def].tech = tech.to_string();
+    }
+
+    /// Стоит ли на карте объект-штамп, которому принадлежит клетка.
+    fn structure_here(&mut self, x: i32, y: i32) -> bool {
+        let mut q = self.world.query::<&Structure>();
+        let found: Vec<(usize, (i32, i32), u8)> = q
+            .iter(&self.world)
+            .map(|s| (s.def, s.anchor, s.rot))
+            .collect();
+        let rules = self.world.resource::<StructureRules>();
+        found.iter().any(|&(def, anchor, rot)| {
+            rules.0[def]
+                .stamp(anchor, rot)
+                .iter()
+                .any(|&(xy, _)| xy == (x, y))
+        })
+    }
+
+    /// Сколько объектов-штампов стоит на базе.
+    fn structures_count(&mut self) -> usize {
+        let mut q = self.world.query::<&Structure>();
+        q.iter(&self.world).count()
     }
 
     /// Ёмкость тайла палитры.

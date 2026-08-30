@@ -552,3 +552,33 @@ pub(crate) fn work_jobs(
         }
     }
 }
+
+/// Объект, который перестал быть собой, перестаёт быть объектом (§12.160).
+///
+/// Штамп держится на сущности `Structure`, а мир — на клетках карты, и
+/// разъехаться им не дают здесь: клетка не та, какой её положил штамп, и
+/// чертежа на неё нет — значит объект разобрали, и считать его слотом больше
+/// нельзя. Стоит сразу за `work_jobs`, потому что тайлы меняет именно он.
+///
+/// Своей системы объекту хватает одной, и она наблюдатель: мир она не меняет,
+/// только убирает сущность, которой в нём уже нет соответствия.
+pub(crate) fn prune_structures(
+    map: Res<BaseMap>,
+    rules: Res<StructureRules>,
+    mut commands: Commands,
+    structures: Query<(Entity, &Structure)>,
+    blueprints: Query<&Blueprint>,
+) {
+    for (e, s) in &structures {
+        let Some(rule) = rules.0.get(s.def) else {
+            commands.entity(e).despawn();
+            continue;
+        };
+        let gone = rule.stamp(s.anchor, s.rot).into_iter().any(|((x, y), t)| {
+            map.tile_at(x, y) != t && !blueprints.iter().any(|b| (b.x, b.y) == (x, y))
+        });
+        if gone {
+            commands.entity(e).despawn();
+        }
+    }
+}

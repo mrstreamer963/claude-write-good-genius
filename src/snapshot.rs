@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::ruleset::{
     FactionDef, GoalDef, ItemDef, MissionDef, PerkDef, RecipeDef, RecruitDef, ResearchDef,
-    SkillDef, StatDef, TileDef,
+    SkillDef, StatDef, StructureDef, TileDef,
 };
 
 #[derive(Serialize)]
@@ -22,6 +22,12 @@ pub(crate) struct MapMeta {
     /// по тому же доводу, что и `day`: это подача, и ядро её не исполняет.
     pub(crate) news: u64,
     pub(crate) palette: Vec<TileDef>,
+    /// Палитра объектов-штампов (§12.160): своя, потому что в клетках карты
+    /// лежит индекс `palette`, а штамп в карту не кладётся никогда. Сетка едет
+    /// как есть — вид рисует по ней рамку и превью, а геометрию поворота
+    /// считает ядро (`Sim::structure_buildable`), иначе рамка разошлась бы с
+    /// воротами фасада (инвариант 14).
+    pub(crate) structures: Vec<StructureDef>,
     /// Палитра предметов: тип в снапшоте — это её индекс (§12.21).
     pub(crate) items: Vec<ItemDef>,
     /// Палитра навыков: имена и подписи уходят один раз, как палитра тайлов, —

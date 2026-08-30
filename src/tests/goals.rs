@@ -481,7 +481,10 @@ fn a_part_date_restarts_when_the_condition_breaks() {
 
     sim.put_item(2, 1, SCRAP, 5);
     sim.tick_n(2);
-    assert!(sim.goal_holds(goal)[0].is_some(), "склад набран, а отметки нет");
+    assert!(
+        sim.goal_holds(goal)[0].is_some(),
+        "склад набран, а отметки нет"
+    );
 
     // Лом увезли: отметка снимается, и набранный заново склад получит новую дату.
     sim.take_item(2, 1, SCRAP);
@@ -511,7 +514,11 @@ fn part_dates_freeze_when_the_goal_is_taken() {
     let parts = sim.goal_parts(goal);
     assert_eq!(parts.len(), 2, "дат столько же, сколько условий");
     assert!(parts[0] < parts[1], "склад сошёлся раньше денег: {parts:?}");
-    assert_eq!(sim.goal_at(goal), Some(parts[1]), "цель взята по последнему");
+    assert_eq!(
+        sim.goal_at(goal),
+        Some(parts[1]),
+        "цель взята по последнему"
+    );
 
     // Всё растратили — даты стоят там же.
     sim.take_item(2, 1, SCRAP);

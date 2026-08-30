@@ -12,7 +12,7 @@ use crate::gear::{assign_equip, work_equip};
 use crate::goals::check_goals;
 use crate::hauling::{assign_hauls, assign_tidy, mark_loose_scrap, settle_stacks, work_hauls};
 use crate::health::{assign_heal, assign_treat, heal};
-use crate::jobs::{assign_jobs, work_jobs};
+use crate::jobs::{assign_jobs, prune_structures, work_jobs};
 use crate::missions::{gather_squad, run_missions};
 use crate::movement::{escape_voids, move_units, retry_orders, spread_units};
 use crate::needs::{assign_nap, assign_rest, collapse_exhausted, doze, sleep, tire};
@@ -186,6 +186,7 @@ pub(crate) fn build_schedule() -> Schedule {
         work_equip,
         work_eat,
         work_jobs,
+        prune_structures,
         work_research,
         work_craft,
         study,

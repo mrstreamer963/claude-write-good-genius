@@ -43,7 +43,7 @@ use crate::path::find_path;
 use crate::relay::relay_force;
 use crate::ruleset::{
     EventDef, FactionDef, GoalDef, ItemDef, MissionDef, PerkDef, RecipeDef, RecruitDef,
-    ResearchDef, Ruleset, SkillDef, StatDef, TileDef,
+    ResearchDef, Ruleset, SkillDef, StatDef, StructureDef, TileDef,
 };
 use crate::save::{FORMAT, SaveFile, capture, fingerprint, note, restore};
 use crate::schedule::build_schedule;
@@ -64,6 +64,7 @@ pub struct Sim {
     pub(crate) world: World,
     pub(crate) schedule: Schedule,
     pub(crate) palette: Vec<TileDef>,
+    pub(crate) structures: Vec<StructureDef>,
     pub(crate) items: Vec<ItemDef>,
     pub(crate) skills: Vec<SkillDef>,
     pub(crate) stats: Vec<StatDef>,
@@ -1265,6 +1266,26 @@ impl Sim {
                 })
                 .collect(),
         ));
+        // Штампы (§12.160). Пропавший id тайла схлопывается в `None`, то есть
+        // «эту клетку штамп не трогает», — ровно как `filter_map` глотает
+        // пропавшие id в других палитрах; сторож дерева на это и заведён.
+        world.insert_resource(StructureRules(
+            rs.structures
+                .iter()
+                .map(|d| StructureRule {
+                    cells: d
+                        .cells
+                        .iter()
+                        .map(|row| {
+                            row.iter()
+                                .map(|c| c.as_deref().and_then(&tile_index))
+                                .collect()
+                        })
+                        .collect(),
+                    tech: d.tech.clone(),
+                })
+                .collect(),
+        ));
         world.insert_resource(ResearchRules(
             rs.research
                 .iter()
@@ -1662,6 +1683,7 @@ impl Sim {
             world,
             schedule,
             palette: rs.tiles,
+            structures: rs.structures,
             items: rs.items,
             skills: rs.skills,
             stats: rs.stats,
@@ -1719,6 +1741,7 @@ impl Sim {
             day: self.day,
             news: self.news,
             palette: self.palette.clone(),
+            structures: self.structures.clone(),
             items: self.items.clone(),
             skills: self.skills.clone(),
             stats: self.stats.clone(),
@@ -1907,6 +1930,165 @@ impl Sim {
         changed
     }
 
+    /// Клетки штампа `def`, поставленного якорем в `(x, y)` с поворотом `rot`.
+    /// `None` — такого штампа нет или он вылезает за карту.
+    ///
+    /// Одно выражение на всех потребителей — постановку, маску превью и снос
+    /// (инвариант 14): второй экземпляр геометрии в JS однажды покажет зелёной
+    /// рамку, которую фасад отклонит.
+    fn stamp_cells(&self, def: usize, x: i32, y: i32, rot: u8) -> Option<Vec<((i32, i32), i16)>> {
+        let rule = self.world.resource::<StructureRules>().0.get(def)?;
+        let cells = rule.stamp((x, y), rot);
+        cells
+            .iter()
+            .all(|&((cx, cy), _)| self.in_bounds(cx, cy))
+            .then_some(cells)
+    }
+
+    /// Влезает ли штамп сюда целиком: ворота те же, что у одиночного тайла
+    /// (§12.27, §12.111, §12.157), но спрашиваются **по всему штампу разом**.
+    ///
+    /// План собирается со **всеми** клетками штампа сразу, и только потом
+    /// каждая проверяется. Иначе результат зависел бы от порядка обхода: глухой
+    /// ряд лаборатории отнимал бы подход сам у себя, пока ряд мест под ним ещё
+    /// не размечен, — и штамп отклонялся бы в зависимости от того, с какого
+    /// угла его собирать.
+    fn stamp_fits(&mut self, def: usize, cells: &[((i32, i32), i16)]) -> bool {
+        if cells.is_empty() {
+            return false;
+        }
+        // Ворота у объекта **двое**: своя технология и технология каждого тайла
+        // штампа. Первая — то, ради чего лаборатория на три места вообще стоит
+        // в дереве науки; вторая осталась там же, где была, потому что штамп не
+        // должен уметь протащить в мир закрытый тайл в обход §12.27.
+        let own = self
+            .world
+            .resource::<StructureRules>()
+            .0
+            .get(def)
+            .map(|r| r.tech.clone());
+        match own.as_deref() {
+            None => return false,
+            Some("") => {}
+            Some(tech) => {
+                if !self.world.resource::<Techs>().knows(tech) {
+                    return false;
+                }
+            }
+        }
+        if !cells.iter().all(|&(_, t)| self.tech_allows(t)) {
+            return false;
+        }
+        let mut plan = self.plan();
+        for &((cx, cy), t) in cells {
+            plan.set(cx, cy, t);
+        }
+        let rules = self.world.resource::<TileRules>();
+        cells
+            .iter()
+            .all(|&((cx, cy), t)| may_build(&plan, rules, (cx, cy), t))
+    }
+
+    /// Маска превью для штампа: влезает ли он якорем в каждую клетку рамки.
+    ///
+    /// Байт на клетку, как у `buildable`, но отвечает он не «можно ли сюда
+    /// тайл», а «встанет ли отсюда весь штамп»: у объекта запрещённой бывает
+    /// только постановка целиком, и красить половину рамки было бы враньём.
+    pub fn structure_buildable(
+        &mut self,
+        def: i32,
+        rx: i32,
+        ry: i32,
+        rw: i32,
+        rh: i32,
+        rot: i32,
+    ) -> Vec<u8> {
+        let (def, rot) = (def.max(0) as usize, rot.rem_euclid(4) as u8);
+        if def >= self.world.resource::<StructureRules>().0.len() {
+            return Vec::new();
+        }
+        let mut out = vec![0u8; (self.width * self.height) as usize];
+        for (cx, cy) in rect_cells(rx, ry, rw, rh) {
+            let ok = self
+                .stamp_cells(def, cx, cy, rot)
+                .is_some_and(|cells| self.stamp_fits(def, &cells));
+            if let Some(i) = self.cell_index(cx, cy) {
+                out[i] = u8::from(ok);
+            }
+        }
+        out
+    }
+
+    /// Поставить объект-штамп якорем в `(x, y)` с поворотом `rot` (§12.160).
+    ///
+    /// Решение **атомарно**: либо весь штамп размечен, либо не поставлено
+    /// ничего. Это единственное, чем штамп отличается от рамки тайлов, где
+    /// частичный успех — норма: рамка это N решений игрока, а штамп одно.
+    ///
+    /// Чертежей заводится по одному на клетку, поэтому стройку, подвоз и снос
+    /// ведёт вся прежняя машинерия; сущность `Structure` нужна ровно затем,
+    /// чтобы объект можно было снести целиком и посчитать слотом.
+    pub fn place_structure(&mut self, def: i32, x: i32, y: i32, rot: i32) -> bool {
+        note(&mut self.world, format!("place {def} {x} {y} {rot}"));
+        if def < 0 {
+            return false;
+        }
+        let (d, rot) = (def as usize, rot.rem_euclid(4) as u8);
+        let Some(cells) = self.stamp_cells(d, x, y, rot) else {
+            return false;
+        };
+        if !self.stamp_fits(d, &cells) {
+            return false;
+        }
+        for &((cx, cy), t) in &cells {
+            if self.world.resource::<BaseMap>().tile_at(cx, cy) == t {
+                continue; // эта клетка уже такая — чертежу нечего делать
+            }
+            if let Some(e) = self.blueprint_at(cx, cy) {
+                let mut bp = self.world.get_mut::<Blueprint>(e).unwrap();
+                if bp.tile != t {
+                    bp.tile = t;
+                    bp.progress = 0;
+                }
+                continue;
+            }
+            self.world.spawn(Blueprint {
+                x: cx,
+                y: cy,
+                tile: t,
+                progress: 0,
+                assignee: None,
+                delivered: Vec::new(),
+            });
+        }
+        self.world.spawn(Structure {
+            def: d,
+            anchor: (x, y),
+            rot,
+        });
+        true
+    }
+
+    /// Штамп, которому принадлежит клетка: `(сущность, его клетки)`.
+    ///
+    /// Линейный поиск по `Structure`, как `blueprint_at` по чертежам: объектов
+    /// на базе десятки, а второй реестр «клетка → объект» разошёлся бы с картой
+    /// на первом же сносе.
+    fn structure_at(&mut self, x: i32, y: i32) -> Option<(Entity, Vec<(i32, i32)>)> {
+        let mut q = self.world.query::<(Entity, &Structure)>();
+        let found: Vec<(Entity, usize, (i32, i32), u8)> = q
+            .iter(&self.world)
+            .map(|(e, s)| (e, s.def, s.anchor, s.rot))
+            .collect();
+        for (e, def, anchor, rot) in found {
+            let cells = self.stamp_cells(def, anchor.0, anchor.1, rot)?;
+            if cells.iter().any(|&(xy, _)| xy == (x, y)) {
+                return Some((e, cells.into_iter().map(|(xy, _)| xy).collect()));
+            }
+        }
+        None
+    }
+
     /// Ластик игрока: отменить чертёж, либо запланировать снос построенного тайла.
     ///
     /// Отмена плана мгновенна — строить ещё не начинали, и большая часть «ой, не
@@ -1928,7 +2110,22 @@ impl Sim {
     /// безопаснее — отмена ничего не разрушает.
     pub fn plan_demolish_rect(&mut self, x: i32, y: i32, w: i32, h: i32) -> bool {
         note(&mut self.world, format!("erase_rect {x} {y} {w} {h}"));
-        let cells: Vec<(i32, i32)> = rect_cells(x, y, w, h).collect();
+        // Клетка объекта тянет за собой весь объект (§12.160): половина
+        // лаборатории — это не лаборатория на полтора места, а мусор. Рамка
+        // поэтому расширяется до всех клеток задетых штампов **до** решения,
+        // иначе «сперва отмена» разобралась бы только с попавшей под ластик
+        // частью, а остальное осталось бы стоять чертежами.
+        let mut cells: Vec<(i32, i32)> = rect_cells(x, y, w, h).collect();
+        for (cx, cy) in rect_cells(x, y, w, h) {
+            if let Some((e, whole)) = self.structure_at(cx, cy) {
+                self.world.despawn(e);
+                for xy in whole {
+                    if !cells.contains(&xy) {
+                        cells.push(xy);
+                    }
+                }
+            }
+        }
         let mut cancelled = false;
         for &(cx, cy) in &cells {
             cancelled |= self.cancel_blueprint(cx, cy);

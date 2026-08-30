@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 27;
+pub(crate) const FORMAT: u32 = 28;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -108,6 +108,7 @@ pub(crate) const SAVED: &[&str] = &[
     "Captive",
     // Объекты мира: разметка работы, кучи и сделки.
     "Blueprint",
+    "Structure",
     "Stack",
     "ToStore",
     "Research",
@@ -173,6 +174,10 @@ pub(crate) const SKIPPED: &[(&str, &str)] = &[
     ("SkillRules", "правила: пересобирает `Sim::new` из рулсета"),
     ("StatRules", "правила: пересобирает `Sim::new` из рулсета"),
     ("TileRules", "правила: пересобирает `Sim::new` из рулсета"),
+    (
+        "StructureRules",
+        "правила: пересобирает `Sim::new` из рулсета",
+    ),
     ("ItemRules", "правила: пересобирает `Sim::new` из рулсета"),
     (
         "LoadoutRules",
@@ -418,6 +423,11 @@ pub(crate) struct EntityDto {
     // Объекты мира.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) blueprint: Option<BlueprintDto>,
+    /// Объект-штамп (§12.160). Ссылок на сущности в нём нет: клетки объект
+    /// считает сам по якорю и повороту, а чертежи его не знают — связь идёт
+    /// в обратную сторону, через карту.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) structure: Option<StructureDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) stack: Option<(usize, i32)>,
     /// Пометка «на склад» — чистый флаг: носильщика она не держит (§12.48).
@@ -467,6 +477,13 @@ pub(crate) struct HealingDto {
     pub(crate) spot: Option<(i32, i32)>,
     pub(crate) medic: Option<u32>,
     pub(crate) kit: i32,
+}
+
+#[derive(Serialize, Deserialize)]
+pub(crate) struct StructureDto {
+    pub(crate) def: usize,
+    pub(crate) anchor: (i32, i32),
+    pub(crate) rot: u8,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -640,6 +657,11 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                     progress: b.progress,
                     assignee: b.assignee.and_then(at),
                     delivered: b.delivered.clone(),
+                }),
+                structure: e.get::<Structure>().map(|s| StructureDto {
+                    def: s.def,
+                    anchor: s.anchor,
+                    rot: s.rot,
                 }),
                 stack: e.get::<Stack>().map(|s| (s.item, s.count)),
                 to_store: e.contains::<ToStore>(),
@@ -1036,6 +1058,13 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
                 progress: b.progress,
                 assignee: b.assignee.and_then(at),
                 delivered: b.delivered.clone(),
+            });
+        }
+        if let Some(s) = &dto.structure {
+            e.insert(Structure {
+                def: s.def,
+                anchor: s.anchor,
+                rot: s.rot,
             });
         }
         if let Some((item, count)) = dto.stack {
