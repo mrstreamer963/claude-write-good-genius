@@ -23,8 +23,13 @@ use crate::jobs::WORK_RATE;
 use crate::map::BaseMap;
 use crate::path::Reach;
 use crate::skills::{SKILL_SCIENCE, level_of};
+use crate::slots::{Owners, slot_cells};
 
-/// Первая свободная клетка лаборатории по обходу карты; `None` — свободных нет.
+/// Первая свободная **ячейка** лаборатории по обходу карты; `None` — нет.
+///
+/// С §12.161 ячейка — это **объект**, а не клетка: лаборатория-штамп из трёх
+/// клеток даёт одну тему на три места, а не три темы. Одиночная клетка при этом
+/// по-прежнему сама себе ячейка — она и есть объект из одной клетки.
 ///
 /// Близнец `crafting::free_shop` (§12.96, §12.132): с §12.132 тема, как заказ и
 /// сделка, рождается **в ячейке** и держит её до последнего очка работы. Обход
@@ -40,11 +45,11 @@ use crate::skills::{SKILL_SCIENCE, level_of};
 pub(crate) fn free_lab(
     map: &BaseMap,
     tiles: &TileRules,
+    owners: &Owners,
     taken: &[(i32, i32)],
 ) -> Option<(i32, i32)> {
-    (0..map.height)
-        .flat_map(|y| (0..map.width).map(move |x| (x, y)))
-        .filter(|&(x, y)| tiles.is_lab(map.tile_at(x, y)))
+    slot_cells(map, tiles, owners, TileRules::is_lab)
+        .into_iter()
         .find(|xy| !taken.contains(xy))
 }
 

@@ -29,6 +29,7 @@ use crate::jobs::WORK_RATE;
 use crate::map::BaseMap;
 use crate::path::Reach;
 use crate::skills::{SKILL_CRAFT, level_of};
+use crate::slots::{Owners, owners_of, slot_cells};
 
 /// Первая свободная клетка мастерской по обходу карты; `None` — свободных нет.
 ///
@@ -46,11 +47,11 @@ use crate::skills::{SKILL_CRAFT, level_of};
 pub(crate) fn free_shop(
     map: &BaseMap,
     tiles: &TileRules,
+    owners: &Owners,
     taken: &[(i32, i32)],
 ) -> Option<(i32, i32)> {
-    (0..map.height)
-        .flat_map(|y| (0..map.width).map(move |x| (x, y)))
-        .filter(|&(x, y)| tiles.is_shop(map.tile_at(x, y)))
+    slot_cells(map, tiles, owners, TileRules::is_shop)
+        .into_iter()
         .find(|xy| !taken.contains(xy))
 }
 
@@ -166,6 +167,10 @@ pub(crate) fn plan_craft(
     mut stacks: Query<(Entity, &Position, &mut Stack)>,
     loads: Query<&Carrying>,
     deals: Query<&Deal>,
+    // Разметка по объектам (§12.161): станок-штамп — один слот, а не столько,
+    // сколько в нём клеток.
+    structs: Res<StructureRules>,
+    placed: Query<&Structure>,
 ) {
     // Дешёвый выход для мира без правил (все тесты чужих механик и начало
     // партии). **Заказы правила он обязан учитывать**: снятый порог — это ноль,
@@ -186,6 +191,7 @@ pub(crate) fn plan_craft(
     // игрока. Ведём список вручную: `commands` отложены до конца тика, и
     // заведённый выше заказ на втором витке выглядел бы несуществующим.
     let mut taken: Vec<(i32, i32)> = orders.iter().map(|(_, o)| o.cell).collect();
+    let owners = owners_of(&map, &structs, &placed);
 
     // **Сперва рецепты, у которых станка нет вовсе** (§12.97), при равенстве —
     // по палитре. Без этого чинить нечего: у базы с четырьмя порогами и тремя
@@ -284,7 +290,7 @@ pub(crate) fn plan_craft(
         if short <= 0 {
             continue;
         }
-        let Some(cell) = free_shop(&map, &tiles, &taken) else {
+        let Some(cell) = free_shop(&map, &tiles, &owners, &taken) else {
             continue;
         };
         commands.spawn(Craft {
@@ -329,11 +335,14 @@ pub(crate) fn spread_craft(
     tiles: Res<TileRules>,
     mut commands: Commands,
     mut orders: Query<(Entity, &mut Craft)>,
+    structs: Res<StructureRules>,
+    placed: Query<&Structure>,
 ) {
+    let owners = owners_of(&map, &structs, &placed);
     let mut taken: Vec<(i32, i32)> = orders.iter().map(|(_, o)| o.cell).collect();
     // Витков не больше, чем свободных ячеек: каждый занимает одну, а делённый
     // заказ уменьшается вдвое — цикл сходится сам.
-    while let Some(cell) = free_shop(&map, &tiles, &taken) {
+    while let Some(cell) = free_shop(&map, &tiles, &owners, &taken) {
         let Some((order_e, _, _)) = orders
             .iter()
             .filter(|(_, o)| o.left > RULE_BATCH)

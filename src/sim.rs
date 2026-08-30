@@ -51,6 +51,7 @@ use crate::seen::note_seen;
 use crate::skills::{
     SKILL_RAID, SKILL_SCIENCE, desk_cap, level_cap_of, level_of, nearest_desk, xp_ceiling,
 };
+use crate::slots::{Owners, slot_cells};
 use crate::snapshot::{
     AutoGateNames, BaseMapDto, BlueprintSnap, CraftSnap, DealSnap, DeskSnap, EntitySnap, GoalSnap,
     MapMeta, MissionSnap, NeedSnap, NewsSnap, NodeSnap, NoteSnap, PriceSnap, RaidGates, RaidSnap,
@@ -758,6 +759,21 @@ impl Sim {
         Plan::of(self.world.resource::<BaseMap>(), planned.into_iter())
     }
 
+    /// Разметка карты по объектам (§12.161). Близнец `plan()`: тот собирает
+    /// «как будет» по чертежам, этот — «чьё это» по штампам.
+    fn owners(&mut self) -> Owners {
+        let mut q = self.world.query::<&Structure>();
+        let list: Vec<(usize, (i32, i32), u8)> = q
+            .iter(&self.world)
+            .map(|s| (s.def, s.anchor, s.rot))
+            .collect();
+        Owners::of(
+            self.world.resource::<BaseMap>(),
+            self.world.resource::<StructureRules>(),
+            list.into_iter(),
+        )
+    }
+
     /// Открыта ли постройка этого тайла: технология изучена или не нужна.
     fn tech_allows(&self, tile: i16) -> bool {
         let rules = self.world.resource::<TileRules>();
@@ -831,12 +847,10 @@ impl Sim {
     /// выбор ячейки детерминирован (§11), как и выбор узла связи в
     /// `relay_cells`.
     fn post_cells(&mut self) -> Vec<(i32, i32)> {
+        let owners = self.owners();
         let map = self.world.resource::<BaseMap>();
         let rules = self.world.resource::<TileRules>();
-        (0..map.height)
-            .flat_map(|y| (0..map.width).map(move |x| (x, y)))
-            .filter(|&(x, y)| rules.is_trade_post(map.tile_at(x, y)))
-            .collect()
+        slot_cells(map, rules, &owners, TileRules::is_trade_post)
     }
 
     /// Сколько на базе торговых постов — **счёт, а не факт** (§12.55).
@@ -925,9 +939,10 @@ impl Sim {
     /// отряда, и очередь заявок детерминированы (§11). Список один на фасад и
     /// на систему: считает его `missions::gate_cells`.
     pub(crate) fn gate_cells_of(&mut self) -> Vec<(i32, i32)> {
+        let owners = self.owners();
         let map = self.world.resource::<BaseMap>();
         let rules = self.world.resource::<TileRules>();
-        gate_cells(map, rules).collect()
+        gate_cells(map, rules, &owners)
     }
 
     /// Клетки раций в порядке обхода карты. С §12.152 они больше не считают
@@ -1020,9 +1035,10 @@ impl Sim {
             let mut q = self.world.query::<&Research>();
             q.iter(&self.world).map(|t| t.cell).collect()
         };
+        let owners = self.owners();
         let map = self.world.resource::<BaseMap>();
         let rules = self.world.resource::<TileRules>();
-        crate::research::free_lab(map, rules, &taken)
+        crate::research::free_lab(map, rules, &owners, &taken)
     }
 
     /// Свободная ячейка под новый заказ — первая по обходу карты, или `None`.
@@ -1038,9 +1054,10 @@ impl Sim {
             let mut q = self.world.query::<&Craft>();
             q.iter(&self.world).map(|c| c.cell).collect()
         };
+        let owners = self.owners();
         let map = self.world.resource::<BaseMap>();
         let rules = self.world.resource::<TileRules>();
-        crate::crafting::free_shop(map, rules, &taken)
+        crate::crafting::free_shop(map, rules, &owners, &taken)
     }
 
     /// Ячейка, в которую встанет **ручной** заказ: свободная, а если свободных
@@ -4829,10 +4846,14 @@ impl Sim {
         // Дверь наружу — и она же слот, и она же отряд (§12.152). Без единого
         // гаража уйти некуда, и заявка отклоняется молча: причину обязано
         // назвать ядро (§12.53).
-        let gates = gate_count(
-            self.world.resource::<BaseMap>(),
-            self.world.resource::<TileRules>(),
-        ) as i32;
+        let gates = {
+            let owners = self.owners();
+            gate_count(
+                self.world.resource::<BaseMap>(),
+                self.world.resource::<TileRules>(),
+                &owners,
+            ) as i32
+        };
         // Что связь даёт прямо сейчас — сумма вкладов дошедших дежурных
         // (§12.152). Тем же `duty_gain`, каким копит `run_missions`.
         let comms_now: i32 = {

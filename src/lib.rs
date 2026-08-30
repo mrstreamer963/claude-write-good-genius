@@ -73,6 +73,7 @@ mod schedule;
 mod seen;
 mod sim;
 mod skills;
+mod slots;
 mod snapshot;
 mod timeline;
 mod trade;

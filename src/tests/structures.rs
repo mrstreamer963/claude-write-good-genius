@@ -155,3 +155,91 @@ fn a_locked_object_does_not_go_up_even_when_its_tiles_are_open() {
     assert!(sim.place_structure(def as i32, 2, 1, 0), "тема изучена");
     assert_eq!(sim.planned_tile(2, 1), Some(1));
 }
+
+// --- Счётность: слот — это объект, а не клетка (§12.161) ---
+
+/// Ставит на карту готовый объект: тайлы кладутся сразу, чертежей не заводится.
+/// Так проверяется счётность построенного, а не стройка.
+fn built(sim: &mut Sim, def: usize, x: i32, y: i32, rot: i32) {
+    let cells = {
+        let rules = sim.world.resource::<StructureRules>();
+        rules.0[def].stamp((x, y), rot.rem_euclid(4) as u8)
+    };
+    for ((cx, cy), t) in cells {
+        sim.force_tile(cx, cy, t);
+    }
+    assert!(sim.place_structure(def as i32, x, y, rot), "объект встал");
+}
+
+#[test]
+fn one_object_is_one_slot_however_many_cells_it_has() {
+    let mut sim = sim_from(&["#######", "#.....#", "#.....#", "#######"]);
+    sim.set_lab(1, true);
+    // Штамп из трёх клеток лаборатории: одна тема на три места, а не три темы.
+    let def = sim.set_structure(vec![vec![Some(1), Some(1), Some(1)]]);
+
+    built(&mut sim, def, 2, 1, 0);
+
+    assert_eq!(sim.lab_slots(), 1, "три клетки одного объекта — один слот");
+}
+
+#[test]
+fn loose_cells_still_count_one_by_one() {
+    // Клетка вне объекта — слот сама по себе: она и есть объект из одной клетки.
+    // На этом держится вся стартовая застройка, выложенная рамкой.
+    let mut sim = sim_from(&["#######", "#.....#", "#.....#", "#######"]);
+    sim.set_lab(1, true);
+    for x in 2..5 {
+        sim.force_tile(x, 1, 1);
+    }
+
+    assert_eq!(sim.lab_slots(), 3, "три отдельные клетки — три слота");
+}
+
+#[test]
+fn two_objects_are_two_slots() {
+    let mut sim = sim_from(&["#######", "#.....#", "#.....#", "#######"]);
+    sim.set_shop(1, true);
+    let def = sim.set_structure(vec![vec![Some(1), Some(1)]]);
+
+    built(&mut sim, def, 2, 1, 0);
+    built(&mut sim, def, 2, 2, 0);
+
+    assert_eq!(sim.shop_slots(), 2, "второй объект — второй слот");
+}
+
+#[test]
+fn a_hall_laid_as_one_object_does_not_multiply_raids() {
+    // Ровно то, ради чего §12.161 и заведена: гараж, заложенный залом 6×2
+    // штампом, даёт одну вылазку, а не двенадцать (§12.59, §12.152).
+    let mut sim = sim_from(&["########", "#......#", "#......#", "########"]);
+    sim.set_gate(1, true);
+    let def = sim.set_structure(vec![vec![Some(1); 6], vec![Some(1); 6]]);
+
+    built(&mut sim, def, 1, 1, 0);
+
+    assert_eq!(
+        sim.gate_count(),
+        1,
+        "зал одним объектом — один слот вылазки"
+    );
+}
+
+#[test]
+fn a_demolished_object_gives_its_cells_back_as_separate_slots() {
+    // Объект перестал быть объектом (`prune_structures`), а тайлы остались:
+    // клетки снова считаются поодиночке. Это не дыра, а то же правило —
+    // «клетка без объекта сама себе слот», — и оно обязано быть проверяемым.
+    let mut sim = sim_from(&["#######", "#.....#", "#.....#", "#######"]);
+    sim.set_lab(1, true);
+    let def = sim.set_structure(vec![vec![Some(1), Some(1), Some(1)]]);
+    built(&mut sim, def, 2, 1, 0);
+    assert_eq!(sim.lab_slots(), 1);
+
+    // Ломаем одну клетку: объекта больше нет, две оставшиеся — два слота.
+    sim.force_tile(3, 1, 0);
+    sim.tick_n(1);
+
+    assert_eq!(sim.structures_count(), 0);
+    assert_eq!(sim.lab_slots(), 2);
+}

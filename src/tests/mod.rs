@@ -532,6 +532,45 @@ impl Sim {
         })
     }
 
+    /// Разметка карты по объектам — как её видит ядро (§12.161). Считать
+    /// счётность с пустой разметкой значило бы проверять не то, что в игре.
+    fn owners_now(&mut self) -> crate::slots::Owners {
+        let mut q = self.world.query::<&Structure>();
+        let list: Vec<(usize, (i32, i32), u8)> = q
+            .iter(&self.world)
+            .map(|s| (s.def, s.anchor, s.rot))
+            .collect();
+        crate::slots::Owners::of(
+            self.world.resource::<BaseMap>(),
+            self.world.resource::<StructureRules>(),
+            list.into_iter(),
+        )
+    }
+
+    /// Сколько ячеек роли база считает слотами (§12.161): клетки одного объекта
+    /// дают один слот, одиночная клетка — слот сама по себе.
+    fn lab_slots(&mut self) -> usize {
+        let owners = self.owners_now();
+        crate::slots::slot_cells(
+            self.world.resource::<BaseMap>(),
+            self.world.resource::<TileRules>(),
+            &owners,
+            TileRules::is_lab,
+        )
+        .len()
+    }
+
+    fn shop_slots(&mut self) -> usize {
+        let owners = self.owners_now();
+        crate::slots::slot_cells(
+            self.world.resource::<BaseMap>(),
+            self.world.resource::<TileRules>(),
+            &owners,
+            TileRules::is_shop,
+        )
+        .len()
+    }
+
     /// Сколько объектов-штампов стоит на базе.
     fn structures_count(&mut self) -> usize {
         let mut q = self.world.query::<&Structure>();
@@ -1643,9 +1682,11 @@ impl Sim {
     /// Сколько на базе шлюзов — то же число, что уезжает в снимок (`gates`) и
     /// служит виду причиной словом (§12.53): снесли все гаражи — уйти некуда.
     fn gate_count(&mut self) -> usize {
+        let owners = self.owners_now();
         crate::missions::gate_count(
             self.world.resource::<BaseMap>(),
             self.world.resource::<TileRules>(),
+            &owners,
         )
     }
 

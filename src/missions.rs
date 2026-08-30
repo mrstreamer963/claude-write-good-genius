@@ -33,19 +33,15 @@ use crate::map::BaseMap;
 use crate::path::find_path;
 use crate::relay::{duty_gain, relay_force};
 use crate::skills::{SKILL_RAID, SKILL_RELAY, level_of};
+use crate::slots::{Owners, slot_cells};
 
 /// Все клетки-шлюзы карты, в порядке обхода: он фиксирован, значит и номер
 /// отряда, и очередь заявок детерминированы (§11).
 ///
 /// С §12.152 это же список **отрядов**: гараж держит состав и слот вылазки, —
 /// поэтому список нужен и фасаду, а не только счёту внутри модуля.
-pub(crate) fn gate_cells<'a>(
-    map: &'a BaseMap,
-    rules: &'a TileRules,
-) -> impl Iterator<Item = (i32, i32)> + 'a {
-    (0..map.height)
-        .flat_map(move |y| (0..map.width).map(move |x| (x, y)))
-        .filter(move |&(x, y)| rules.is_gate(map.tile_at(x, y)))
+pub(crate) fn gate_cells(map: &BaseMap, rules: &TileRules, owners: &Owners) -> Vec<(i32, i32)> {
+    slot_cells(map, rules, owners, TileRules::is_gate)
 }
 
 /// Чем кончится вылазка. Считается и на возвращении, и каждый кадр для панели:
@@ -324,8 +320,8 @@ pub(crate) fn gather_squad(
 ///
 /// Наружу едет числом (§12.53): снесённый гараж делает вылазку невозможной, и
 /// молчащая кнопка «Отправить» читается как поломка.
-pub(crate) fn gate_count(map: &BaseMap, tiles: &TileRules) -> usize {
-    gate_cells(map, tiles).count()
+pub(crate) fn gate_count(map: &BaseMap, tiles: &TileRules, owners: &Owners) -> usize {
+    gate_cells(map, tiles, owners).len()
 }
 
 /// Есть ли на базе силы прийти за пленным — считается **до** того, как его
