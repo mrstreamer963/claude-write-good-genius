@@ -2459,6 +2459,37 @@ impl Sim {
         crew
     }
 
+    /// Состав узла для **прогноза** — сущность и клетка (§12.184).
+    ///
+    /// Не то же, что `ready_crew`. С §12.148 узел уходит **всем составом или
+    /// никак**, значит уйдёт ровно `roster_of`, и прогноз обязан считаться по
+    /// нему: сила, проводник и срок — те самые числа, которые игрок получит,
+    /// когда спящие проснутся. Считанный по готовым, он говорил «идут 0 из 4 ·
+    /// проводника нет · в отряде никого» про полный отряд, прилёгший поспать,
+    /// — то есть описывал вылазку, которой не бывает: наполовину узел не ходит.
+    ///
+    /// Фильтр остаётся один — `Away`: кота нет на базе вовсе, и вернуть его в
+    /// расчёт значило бы обещать силу пленного. Сбор при этом всё равно не
+    /// состоится (`squad_is_fit`), и причина названа словом отдельно.
+    fn node_crew(&mut self, units: &[String]) -> Vec<(Entity, (i32, i32))> {
+        let mut crew: Vec<(Entity, (i32, i32))> = Vec::new();
+        let mut q = self
+            .world
+            .query::<(Entity, &UnitId, &Position, Option<&Away>)>();
+        for id in units {
+            let found = q
+                .iter(&self.world)
+                .find(|(_, u, _, away)| u.0 == *id && away.is_none())
+                .map(|(e, _, p, _)| (e, (p.x, p.y)));
+            if let Some(cat) = found
+                && !crew.iter().any(|&(e, _)| e == cat.0)
+            {
+                crew.push(cat);
+            }
+        }
+        crew
+    }
+
     /// Срок каждого заказа для отряда этого узла (§12.70) — цена до нажатия.
     /// Тем же выражением, каким срок замёрзнет на уходе.
     fn node_spans(&mut self, x: i32, y: i32) -> Vec<i32> {
@@ -2489,7 +2520,7 @@ impl Sim {
     /// силу, с которой отряд уйдёт (инвариант 14).
     fn node_forces(&mut self, x: i32, y: i32) -> Vec<i32> {
         let roster = self.roster_of(x, y);
-        let crew = self.ready_crew(&roster);
+        let crew = self.node_crew(&roster);
         let raid = self.world.resource::<SkillRules>().index_of(SKILL_RAID);
         let skill_rules = self.world.resource::<SkillRules>();
         let items = self.world.resource::<ItemRules>();
@@ -2526,7 +2557,7 @@ impl Sim {
     /// Ступень проводника среди готовых уйти — лучшая «Реакция» (§12.70).
     fn node_guide_step(&mut self, x: i32, y: i32) -> i32 {
         let roster = self.roster_of(x, y);
-        let crew = self.ready_crew(&roster);
+        let crew = self.node_crew(&roster);
         let stats = self.world.resource::<StatRules>();
         crew.iter()
             .map(|&(e, _)| guide_of(stats, self.world.get::<Stats>(e)))
@@ -2541,7 +2572,7 @@ impl Sim {
             return String::new();
         }
         let roster = self.roster_of(x, y);
-        let crew = self.ready_crew(&roster);
+        let crew = self.node_crew(&roster);
         let stats = self.world.resource::<StatRules>();
         // Ничью по ступени решает **сырая реакция**, и только потом `id`
         // (§11, §12.70): ступень грубая, у реакции 5 и 7 она одна, и назвать
@@ -2562,7 +2593,7 @@ impl Sim {
     /// Порядок тот же, что у состава: игрок читает оба списка рядом.
     fn ready_roster_of(&mut self, x: i32, y: i32) -> Vec<String> {
         let roster = self.roster_of(x, y);
-        let ready = self.ready_crew(&roster);
+        let ready = self.node_crew(&roster);
         ready
             .into_iter()
             .filter_map(|(e, _)| self.world.get::<UnitId>(e).map(|u| u.0.clone()))
@@ -3282,32 +3313,43 @@ impl Sim {
     /// выбор, которого у него не просили. Ровно поэтому правило ждёт полного
     /// состава, хотя кнопка ждать перестала.
     pub(crate) fn squad_is_fit(&mut self, x: i32, y: i32) -> bool {
+        !self.roster_of(x, y).is_empty() && self.unfit_of(x, y).is_empty()
+    }
+
+    /// Кто из состава держит сбор, по `id` и по алфавиту (§12.184).
+    ///
+    /// **То же выражение, что и ворота** (`squad_is_fit` считается по нему):
+    /// панель обязана называть поимённо ровно тех, из-за кого кнопка погашена,
+    /// а второй перечень «кто не готов» разошёлся бы с ней на первом же новом
+    /// состоянии — та же болезнь, из-за которой исход считает одно место
+    /// (инвариант 14). До §12.184 вид выводил его вычитанием `ready` из
+    /// состава, и с прогнозом по всему составу такое вычитание даёт пусто.
+    pub(crate) fn unfit_of(&mut self, x: i32, y: i32) -> Vec<String> {
         let hurt = self.world.resource::<HealthRules>().hurt;
         let tired = self.world.resource::<NeedRules>().tired;
         let mut q = self.world.query::<(
+            &UnitId,
             &Enlisted,
             Option<&Away>,
             Option<&Health>,
             Option<&Rest>,
             Option<&Energy>,
         )>();
-        let mut crew = 0;
-        for (spot, away, health, rest, energy) in q.iter(&self.world) {
-            if spot.spot != (x, y) {
-                continue;
-            }
-            crew += 1;
-            let fit = away.is_none()
-                && health.is_none_or(|h: &Health| h.0 > hurt)
-                && rest.is_none()
-                // Порога усталости может не быть вовсе (`NeedRules` пуст в
-                // синтетических схемах) — тогда бодрость никого не держит.
-                && energy.is_none_or(|e: &Energy| e.0 > tired);
-            if !fit {
-                return false;
-            }
-        }
-        crew > 0
+        let mut out: Vec<String> = q
+            .iter(&self.world)
+            .filter(|(_, spot, ..)| spot.spot == (x, y))
+            .filter(|(_, _, away, health, rest, energy)| {
+                !(away.is_none()
+                    && health.is_none_or(|h: &Health| h.0 > hurt)
+                    && rest.is_none()
+                    // Порога усталости может не быть вовсе (`NeedRules` пуст в
+                    // синтетических схемах) — тогда бодрость никого не держит.
+                    && energy.is_none_or(|e: &Energy| e.0 > tired))
+            })
+            .map(|(id, ..)| id.0.clone())
+            .collect();
+        out.sort_unstable();
+        out
     }
 
     /// Отменить заказ на рецепт `def`, освободить мастера и станок.
@@ -5000,6 +5042,7 @@ impl Sim {
                         auto_share,
                         auto_fail,
                         fit,
+                        unfit: self.unfit_of(x, y),
                     }
                 })
                 .collect()

@@ -1560,3 +1560,40 @@ fn without_a_gate_no_raid_leaves_and_the_count_says_so() {
     );
     assert_eq!(sim.raid_count(), 0);
 }
+
+/// **Прогноз узла считается по всему составу, а не по готовым сию минуту**
+/// (§12.184). С §12.148 узел уходит целиком или никак, значит уйдёт весь
+/// состав — и сила, проводник и срок обязаны быть его. По готовым полный
+/// отряд, прилёгший поспать, описывался как «идут 0 · проводника нет», то есть
+/// как вылазка, которой у этого узла не бывает.
+#[test]
+fn a_sleeping_squad_still_shows_its_full_strength() {
+    let mut sim = sim_with_nodes(1);
+    let def = sim.set_risky_mission(1, 30, 2, 0, &[(0, 5)]);
+    sim.set_squad_range(def, 1, 3);
+    sim.set_needs(100, 20, 1);
+    assert!(sim.enlist("a", 1, 2));
+    assert!(sim.enlist("b", 1, 2));
+    assert!(sim.set_auto_raid(def as i32, 1, 2));
+    let (share, failed, fit) = sim.auto_hold_at(1, 2);
+    assert_eq!((share, failed, fit), (100, false, true));
+
+    // Один укладывается спать: сбор он держит, но прогноз не меняет — уйдут всё
+    // равно оба, когда он выспится.
+    sim.set_energy("b", 1);
+    sim.tick_n(2);
+    assert!(sim.is_resting("b"), "кот ушёл спать");
+    let (share, failed, fit) = sim.auto_hold_at(1, 2);
+    assert_eq!(
+        (share, failed),
+        (100, false),
+        "доля прежняя: состав тот же, просто выйдет позже",
+    );
+    assert!(!fit, "а вот сбор он держит");
+    assert_eq!(
+        sim.unfit_at(1, 2),
+        vec!["b".to_string()],
+        "и панель называет его поимённо — тем же списком, каким гаснет кнопка",
+    );
+    assert_eq!(sim.raid_count(), 0, "правило ждёт");
+}

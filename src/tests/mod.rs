@@ -2559,6 +2559,13 @@ impl Sim {
         (share, failed, self.squad_is_fit(x, y))
     }
 
+    /// Кто из состава узла держит сбор (§12.184) — тем же выражением, каким
+    /// ядро гасит кнопку. Панель называет этот список поимённо, и снапшот на
+    /// хосте не собрать.
+    fn unfit_at(&mut self, x: i32, y: i32) -> Vec<String> {
+        self.unfit_of(x, y)
+    }
+
     /// Журнал успешных вылазок: индексы миссий.
     fn raids_done(&self) -> Vec<usize> {
         self.world.resource::<Raids>().0.clone()
