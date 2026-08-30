@@ -1083,47 +1083,79 @@ function drawScrap(list) {
 // наполняется на глазах и уезжает целиком.
 function drawDeals(list) {
   dealLayer.removeChildren();
-  if (!list || !list.length) return;
-  const g = new Graphics();
-  for (const d of list) {
-    const x = d.x * TILE;
-    const y = d.y * TILE;
-    const pad = TILE * 0.18;
-    const side = TILE - pad * 2;
-    const filled = d.buying ? 0 : d.count > 0 ? d.delivered / d.count : 0;
-    if (filled > 0) {
-      const h = side * Math.min(1, filled);
-      g.rect(x + pad, y + pad + (side - h), side, h).fill({
-        color: itemColor(d.item),
-        alpha: 0.55,
+  if (list && list.length) {
+    const g = new Graphics();
+    for (const d of list) {
+      const x = d.x * TILE;
+      const y = d.y * TILE;
+      const pad = TILE * 0.18;
+      const side = TILE - pad * 2;
+      const filled = d.buying ? 0 : d.count > 0 ? d.delivered / d.count : 0;
+      if (filled > 0) {
+        const h = side * Math.min(1, filled);
+        g.rect(x + pad, y + pad + (side - h), side, h).fill({
+          color: itemColor(d.item),
+          alpha: 0.55,
+        });
+      }
+      g.rect(x + pad, y + pad, side, side).stroke({
+        width: 1.5,
+        color: COLORS.select,
+        alpha: 0.9,
       });
     }
-    g.rect(x + pad, y + pad, side, side).stroke({
-      width: 1.5,
-      color: COLORS.select,
-      alpha: 0.9,
-    });
+    dealLayer.addChild(g);
   }
-  dealLayer.addChild(g);
   // Цифра — только когда срок реально идёт. У неполной продажи его нет вовсе
   // (§12.68), и ноль на карте читался бы как «вот-вот уедет».
-  for (const d of list) {
+  //
+  // ⚠️ Узел цифры живёт по клетке и переживает кадр (`dealLabels`), как узел
+  // работы (`workNodes`). Пересоздавать `Text` каждым кадром нельзя: он
+  // печётся в текстуру, то есть кадр стоит одной растеризации на сделку, а
+  // снятый `removeChildren` текстуру не освобождает — при десятке отгрузок
+  // это видно тормозами. Шестое лицо граблей §12.84. Меняется в цифре только
+  // само число (и разрешение — на смене `world.scale`), их и пишем.
+  const live = new Set();
+  for (const d of list ?? []) {
     if (d.left <= 0) continue;
-    const label = new Text({
-      text: String(d.left),
-      style: { fontFamily: "monospace", fontSize: 10, fill: COLORS.select },
-      // Текст — единственное, что внутри `world` не векторное: он печётся в
-      // текстуру один раз, и растянутый `world.scale` мылит его. Печём сразу в
-      // том разрешении, в каком он окажется на экране. Пересоздаётся он каждым
-      // кадром, так что смену масштаба подхватывает сам.
-      resolution: app.renderer.resolution * worldScale,
-    });
-    label.anchor.set(0.5);
-    label.x = d.x * TILE + TILE / 2;
-    label.y = d.y * TILE + TILE / 2;
-    dealLayer.addChild(label);
+    const key = `${d.x},${d.y}`;
+    live.add(key);
+    const text = String(d.left);
+    let n = dealLabels.get(key);
+    const res = app.renderer.resolution * worldScale;
+    if (n && n.res !== res) {
+      n.destroy();
+      dealLabels.delete(key);
+      n = null;
+    }
+    if (!n) {
+      n = new Text({
+        text,
+        style: { fontFamily: "monospace", fontSize: 10, fill: COLORS.select },
+        // Текст — единственное, что внутри `world` не векторное: он печётся в
+        // текстуру один раз, и растянутый `world.scale` мылит его. Печём сразу
+        // в том разрешении, в каком он окажется на экране.
+        resolution: res,
+      });
+      n.res = res;
+      n.anchor.set(0.5);
+      dealLabels.set(key, n);
+    } else if (n.text !== text) {
+      n.text = text;
+    }
+    n.x = d.x * TILE + TILE / 2;
+    n.y = d.y * TILE + TILE / 2;
+    dealLayer.addChild(n);
+  }
+  for (const [key, n] of dealLabels) {
+    if (live.has(key)) continue;
+    n.destroy();
+    dealLabels.delete(key);
   }
 }
+
+// Цифры сроков сделок, по клетке. См. `drawDeals`.
+const dealLabels = new Map();
 
 // Что делается в ячейке станка и лаборатории — и докуда дошло (§12.30,
 // §12.132).
