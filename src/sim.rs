@@ -43,7 +43,7 @@ use crate::path::find_path;
 use crate::relay::relay_force;
 use crate::ruleset::{
     EventDef, FactionDef, GoalDef, ItemDef, MissionDef, PerkDef, RecipeDef, RecruitDef,
-    ResearchDef, Ruleset, SkillDef, StatDef, StructureDef, TileDef,
+    ResearchDef, Ruleset, SkillDef, StatDef, TileDef,
 };
 use crate::save::{FORMAT, SaveFile, capture, fingerprint, note, restore};
 use crate::schedule::build_schedule;
@@ -56,7 +56,7 @@ use crate::snapshot::{
     AutoGateNames, BaseMapDto, BlueprintSnap, CraftSnap, DealSnap, DeskSnap, EntitySnap, GoalSnap,
     MapMeta, MissionSnap, NeedSnap, NewsSnap, NodeSnap, NoteSnap, PriceSnap, RaidGates, RaidSnap,
     RecipeSnap, RecruitSnap, ResearchSnap, SaleSnap, SkillSnap, Snapshot, StackSnap, StockSnap,
-    TickerSnap, TopicSnap,
+    StructureSnap, TickerSnap, TopicSnap,
 };
 use crate::timeline::{ready_for, revealed};
 
@@ -65,7 +65,7 @@ pub struct Sim {
     pub(crate) world: World,
     pub(crate) schedule: Schedule,
     pub(crate) palette: Vec<TileDef>,
-    pub(crate) structures: Vec<StructureDef>,
+    pub(crate) structures: Vec<StructureSnap>,
     pub(crate) items: Vec<ItemDef>,
     pub(crate) skills: Vec<SkillDef>,
     pub(crate) stats: Vec<StatDef>,
@@ -1695,12 +1695,60 @@ impl Sim {
             }
         }
 
+        let structures = {
+                // Силуэты считаются **один раз, здесь**, всеми четырьмя
+                // четвертями сразу (§12.162): поворот — правило, и второй его
+                // экземпляр в JS однажды нарисует рамку, которую фасад
+                // отклонит (инвариант 14).
+                let rules = world.resource::<StructureRules>();
+                let tiles = world.resource::<TileRules>();
+                rs.structures
+                    .iter()
+                    .enumerate()
+                    .map(|(i, d)| {
+                        let rule = &rules.0[i];
+                        let shapes = (0..4)
+                            .map(|rot| {
+                                let cells = rule.stamp((0, 0), rot);
+                                // Якорь — левый верхний угол занятого
+                                // прямоугольника, поэтому силуэт нормализуется
+                                // к нулю: у повёрнутой сетки смещения бывают
+                                // отрицательными.
+                                let minx = cells.iter().map(|&((x, _), _)| x).min().unwrap_or(0);
+                                let miny = cells.iter().map(|&((_, y), _)| y).min().unwrap_or(0);
+                                cells
+                                    .into_iter()
+                                    .map(|((x, y), t)| (x - minx, y - miny, t))
+                                    .collect()
+                            })
+                            .collect();
+                        let mut cost: Vec<(usize, i32)> = Vec::new();
+                        for (_, _, t) in rule.stamp((0, 0), 0).iter().map(|&((x, y), t)| (x, y, t))
+                        {
+                            for &(item, n) in tiles.cost_of(t) {
+                                match cost.iter_mut().find(|(i, _)| *i == item) {
+                                    Some(slot) => slot.1 += n,
+                                    None => cost.push((item, n)),
+                                }
+                            }
+                        }
+                        cost.sort_unstable();
+                        StructureSnap {
+                            id: d.id.clone(),
+                            label: d.label.clone(),
+                            tech: d.tech.clone(),
+                            cost,
+                            shapes,
+                        }
+                    })
+                    .collect()
+        };
         let schedule = build_schedule();
         Ok(Sim {
             world,
             schedule,
+            structures,
             palette: rs.tiles,
-            structures: rs.structures,
             items: rs.items,
             skills: rs.skills,
             stats: rs.stats,

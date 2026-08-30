@@ -491,6 +491,12 @@ let itemColors = []; // number[] — цвет предмета по индекс
 let mapCells = null; // Int-массив состояния карты
 let mode = "cursor"; // 'cursor' | 'build'
 let buildTile = 0; // индекс палитры, или -1 = стереть (в режиме build)
+// Объект-штамп в руке (§12.162): -1 = игрок держит тайл или ластик. Тайл и
+// объект взаимно исключают друг друга — в руке всегда одно.
+let buildStruct = -1;
+// Четверть оборота у объекта в руке. Крутит её `R`; сбрасывается вместе с
+// выбором инструмента, потому что «повёрнутая» — свойство жеста, а не объекта.
+let buildRot = 0;
 // Маска правила доступа (§12.111) на текущий инструмент: байт на клетку, `1` —
 // поставить можно. Считает её **ядро** и присылает каждым кадром вместе со
 // снимком; `null` значит «правило к этому тайлу не применимо» (полке проход
@@ -649,6 +655,10 @@ let buyDoor = null;
 let stocking = [];
 const tileButtons = []; // кнопки палитры, закрытые технологией (§12.27)
 const tileHints = []; // все кнопки палитры: причина отказа словом (§12.157)
+// Кнопки объектов-штампов, закрытых технологией (§12.162): прячет их тот же
+// код, что прячет закрытые тайлы, — палитра это инструмент, а не витрина
+// (§12.126).
+const structButtons = [];
 
 // --- worker ---------------------------------------------------------------
 
@@ -4461,6 +4471,18 @@ function cssColor(n) {
 // «я в режиме»), и тёмный пол в этой роли не работает.
 function modeChrome() {
   if (mode === "build") {
+    if (buildStruct >= 0) {
+      const d = meta?.structures?.[buildStruct];
+      const name = d ? d.label || d.id : buildStruct;
+      // Четверть оборота названа словом прямо в плашке: у объекта поворот —
+      // половина решения, и «R — повернуть» игрок обязан прочесть до клика.
+      return {
+        key: "build",
+        label: `СТРОЙКА: ${name} · R — повернуть (${buildRot * 90}°)`,
+        color: COLORS.build,
+        tint: COLORS.build,
+      };
+    }
     if (buildTile < 0) {
       return { key: "erase", label: "СНОС", color: COLORS.erase, tint: null };
     }
@@ -4503,16 +4525,47 @@ function applyModeChrome() {
 // накоплением, как при самой разметке, — иначе превью обещало бы девять полок
 // из мазка три на три, а разметилось бы восемь.
 //
+// Силуэт объекта в руке, уже повёрнутый: `[[dx, dy, тайл], ...]` от левого
+// верхнего угла. Считает его **ядро** и присылает все четыре четверти разом
+// (§12.162) — поворот это правило, и посчитанный второй раз здесь он однажды
+// нарисует рамку, которую фасад отклонит (инвариант 14).
+function structShape() {
+  const d = buildStruct >= 0 && meta?.structures?.[buildStruct];
+  return d ? d.shapes[buildRot % 4] : null;
+}
+
+// Прямоугольник, который объект займёт, поставленный якорем в клетку.
+function structRect(shape, tx, ty) {
+  let w = 0;
+  let h = 0;
+  for (const [dx, dy] of shape) {
+    if (dx + 1 > w) w = dx + 1;
+    if (dy + 1 > h) h = dy + 1;
+  }
+  return { x: tx, y: ty, w, h };
+}
+
 // Шлём только на изменение: `pointermove` частит, а лишнее сообщение заставляет
 // воркер считать маску, которую он уже посчитал.
 function askBuildMask(r) {
-  const tile = mode === "build" ? buildTile : -1;
+  const build = mode === "build";
+  const structure = build ? buildStruct : -1;
+  // Объект и тайл взаимно исключают друг друга, и ядро спрашивают по-разному:
+  // у тайла «можно ли сюда его», у объекта «встанет ли отсюда весь штамп».
+  const tile = build && structure < 0 ? buildTile : -1;
   const rect = r ? [r.x, r.y, r.w, r.h] : [0, 0, 0, 0];
-  const key = `${tile}:${rect.join(",")}`;
+  const key = `${tile}:${structure}:${buildRot}:${rect.join(",")}`;
   if (key === maskAsked) return;
   maskAsked = key;
-  if (tile < 0) buildMask = null; // курсор и ластик правилу не подчиняются
-  worker.postMessage({ type: "setBuildTile", tile, rect });
+  // Курсор и ластик правилу не подчиняются.
+  if (tile < 0 && structure < 0) buildMask = null;
+  worker.postMessage({
+    type: "setBuildTile",
+    tile,
+    rect,
+    structure,
+    rot: buildRot,
+  });
 }
 
 // Та же маска или другая. Байт на клетку — сравнить её дешевле, чем перерисовать
@@ -4528,6 +4581,46 @@ function updateHover(global) {
   hoverAt = { x: global.x, y: global.y };
   const t = tileAt(global);
   hoverRect.clear();
+
+  // Объект рисуется **силуэтом**, а не рамкой: у него своя форма, и Г-образный
+  // штамп, показанный прямоугольником, обещал бы клетки, которых он не займёт.
+  // Рамкой при этом остаётся ответ ворот: у объекта запрещена только постановка
+  // целиком, и красить половину силуэта было бы враньём (§12.160).
+  const shape = structShape();
+  if (shape) {
+    const r = t && structRect(shape, t.tx, t.ty);
+    askBuildMask(r);
+    if (!r) return;
+    const ok = buildMask ? buildMask[r.y * meta.width + r.x] : 1;
+    const m = modeChrome();
+    const col = m.tint ?? m.color;
+    for (const [dx, dy, tile] of shape) {
+      const px = (r.x + dx) * TILE;
+      const py = (r.y + dy) * TILE;
+      hoverRect
+        .rect(px, py, TILE, TILE)
+        .fill({ color: paletteColors[tile] ?? col, alpha: 0.32 })
+        .stroke({ color: col, width: 2, alpha: 0.85 });
+    }
+    if (!ok) {
+      // Крест один на весь объект, а не по клетке: отказ у него один.
+      for (const [dx, dy] of shape) {
+        const px = (r.x + dx) * TILE;
+        const py = (r.y + dy) * TILE;
+        hoverRect
+          .rect(px + 1, py + 1, TILE - 2, TILE - 2)
+          .fill({ color: COLORS.erase, alpha: 0.3 });
+      }
+      hoverRect
+        .moveTo(r.x * TILE + 6, r.y * TILE + 6)
+        .lineTo((r.x + r.w) * TILE - 6, (r.y + r.h) * TILE - 6)
+        .moveTo((r.x + r.w) * TILE - 6, r.y * TILE + 6)
+        .lineTo(r.x * TILE + 6, (r.y + r.h) * TILE - 6)
+        .stroke({ color: COLORS.erase, width: 3, alpha: 0.95 });
+    }
+    return;
+  }
+
   // Во время протяжки показываем всю рамку — даже если курсор ушёл за карту.
   const r = dragFrom
     ? rectOf(dragFrom, dragTo)
@@ -4576,6 +4669,18 @@ app.stage.on("pointerdown", (e) => {
   }
   const t = tileAt(e.global);
   if (!t) return;
+  // Объект ставится одним кликом: размер у него свой, и тянуть его рамкой
+  // значило бы дать игроку выбрать то, что уже выбрано в рулсете (§12.162).
+  if (buildStruct >= 0) {
+    worker.postMessage({
+      type: "place",
+      structure: buildStruct,
+      x: t.tx,
+      y: t.ty,
+      rot: buildRot,
+    });
+    return;
+  }
   dragFrom = t;
   dragTo = t;
   dragUnit = unitAt(t.tx, t.ty);
@@ -4676,6 +4781,17 @@ window.addEventListener("keydown", (e) => {
   if (e.target instanceof HTMLInputElement) return;
   if (e.key === "Shift") setShift(true);
   if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+  // Поворот объекта в руке (§12.162). До «Escape», потому что своей ветки не
+  // делит ни с чем: буквенная часть клавиатуры в игре свободна целиком.
+  // Маску и силуэт пересчитываем сразу, по последней позиции курсора: без
+  // этого повёрнутый объект появился бы, только когда игрок дёрнет мышь.
+  if (e.code === "KeyR" && buildStruct >= 0) {
+    buildRot = (buildRot + 1) % 4;
+    applyModeChrome();
+    askBuildMask(null);
+    if (hoverAt) updateHover(hoverAt);
+    return;
+  }
   if (e.code === "Escape" || e.key === "Escape") {
     // Модальные окна закрываются первыми: они поверх всего, и пока открыто
     // такое окно, «отменить» может значить только «закрыть его» (§12.71).
@@ -4978,8 +5094,30 @@ function buildToolbar() {
     // Закрытый технологией тайл в палитре не показывается вовсе (§12.126), а
     // его появление объявляет лента новостей — иначе список молча становится
     // длиннее. Номер записи нужен ровно для этого: новость адресуется им.
-    if (p.tech)
-      tileButtons.push({ btn: b, def: i, tech: p.tech });
+    if (p.tech) tileButtons.push({ btn: b, def: i, tech: p.tech });
+    build.appendChild(b);
+  });
+
+  // Объекты-штампы идут **после тайлов и перед ластиком** (§12.162): это та же
+  // палитра построек, только крупными вещами, и заводить им свой раздел значило
+  // бы делить один вопрос («что я сейчас строю») на два места.
+  structButtons.length = 0;
+  (meta.structures ?? []).forEach((d, i) => {
+    const glyph = TILE_GLYPHS[d.id]
+      ? glyphHtml(`g-struct-${d.id}`, COLORS.build, "sw-glyph")
+      : `<span class="sw" style="background:${COLORS.build}"></span>`;
+    // Цену всего объекта считает ядро (§12.162): складывать цены его клеток
+    // здесь значило бы завести второе место, знающее, из чего он состоит.
+    const b = mkTool(
+      `${glyph}<span>${d.label || d.id}</span>${costChips(new Map(d.cost.map(([it, n]) => [meta.items[it]?.id ?? it, n])))}`,
+      () => {
+        if (b.classList.contains("off")) return;
+        selectStructure(i, b);
+      },
+    );
+    liveTitle(b, "Ставится одним кликом · R — повернуть");
+    // Закрытый технологией объект прячется ровно как закрытый тайл (§12.126).
+    if (d.tech) structButtons.push({ btn: b, def: i, tech: d.tech });
     build.appendChild(b);
   });
 
@@ -5695,6 +5833,10 @@ function syncTileButtons(techs) {
     liveTitle(btn, placementHint(meta.palette[def], known));
   }
   for (const { btn, tech } of tileButtons) {
+    btn.hidden = !known.includes(tech);
+  }
+  // Объекты — та же палитра и то же правило (§12.126, §12.162).
+  for (const { btn, tech } of structButtons) {
     btn.hidden = !known.includes(tech);
   }
 }
@@ -9023,10 +9165,24 @@ function selectCursor() {
 function selectBuild(i, btn) {
   mode = "build";
   buildTile = i;
+  buildStruct = -1;
   activate(btn);
   applyModeChrome();
   // Маску заказываем сразу, не дожидаясь движения мыши: игрок выбрал полку и
   // ведёт курсор на карту уже зная, куда её ставить нельзя.
+  askBuildMask(null);
+}
+
+// Выбрать объект-штамп. Поворот сбрасывается: «повёрнутая» — свойство жеста,
+// а не объекта, и подхваченная от прошлого инструмента четверть читалась бы
+// как поломка (§12.162).
+function selectStructure(i, btn) {
+  mode = "build";
+  buildTile = -1;
+  buildStruct = i;
+  buildRot = 0;
+  activate(btn);
+  applyModeChrome();
   askBuildMask(null);
 }
 

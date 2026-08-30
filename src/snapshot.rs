@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::ruleset::{
     FactionDef, GoalDef, ItemDef, MissionDef, PerkDef, RecipeDef, RecruitDef, ResearchDef,
-    SkillDef, StatDef, StructureDef, TileDef,
+    SkillDef, StatDef, TileDef,
 };
 
 #[derive(Serialize)]
@@ -23,11 +23,8 @@ pub(crate) struct MapMeta {
     pub(crate) news: u64,
     pub(crate) palette: Vec<TileDef>,
     /// Палитра объектов-штампов (§12.160): своя, потому что в клетках карты
-    /// лежит индекс `palette`, а штамп в карту не кладётся никогда. Сетка едет
-    /// как есть — вид рисует по ней рамку и превью, а геометрию поворота
-    /// считает ядро (`Sim::structure_buildable`), иначе рамка разошлась бы с
-    /// воротами фасада (инвариант 14).
-    pub(crate) structures: Vec<StructureDef>,
+    /// лежит индекс `palette`, а штамп в карту не кладётся никогда.
+    pub(crate) structures: Vec<StructureSnap>,
     /// Палитра предметов: тип в снапшоте — это её индекс (§12.21).
     pub(crate) items: Vec<ItemDef>,
     /// Палитра навыков: имена и подписи уходят один раз, как палитра тайлов, —
@@ -79,6 +76,29 @@ pub(crate) struct AutoGateNames {
     pub(crate) sales: String,
     pub(crate) crafting: String,
     pub(crate) raids: String,
+}
+
+/// Объект-штамп для вида (§12.162): силуэт **уже повёрнутый**, все четыре
+/// четверти сразу.
+///
+/// Сетка тайлов наружу не едет вовсе, и это не экономия: поворот — правило, а
+/// не данные, и посчитанный второй раз в JS он однажды нарисует рамку, которую
+/// фасад отклонит (инвариант 14). Вид получает готовые смещения и рисует по
+/// ним, ничего не выводя.
+#[derive(Serialize, Clone)]
+pub(crate) struct StructureSnap {
+    pub(crate) id: String,
+    pub(crate) label: String,
+    /// Технология, открывающая объект; пусто — доступен сразу. Прячет закрытый
+    /// объект из палитры тот же код, что прячет закрытый тайл (§12.126).
+    pub(crate) tech: String,
+    /// Цена всего объекта — сумма цен его клеток: `(предмет, сколько)`.
+    /// Считает ядро, потому что складывать её в JS значило бы завести второе
+    /// место, знающее, из чего состоит штамп.
+    pub(crate) cost: Vec<(usize, i32)>,
+    /// Силуэт по четвертям оборота: `shapes[rot]` — список `(dx, dy, тайл)`
+    /// от левого верхнего угла занятого прямоугольника.
+    pub(crate) shapes: Vec<Vec<(i32, i32, i16)>>,
 }
 
 #[derive(Serialize)]
