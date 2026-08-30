@@ -2397,6 +2397,25 @@ impl Sim {
         q.iter(&self.world).next().map(|m| m.left)
     }
 
+    /// Где отряд сейчас (§12.168) — тем же выражением, каким стадию считает
+    /// снимок. `None` — миссии нет или отряд ещё не ушёл: до ухода дороги нет,
+    /// и стадии тоже.
+    fn mission_phase(&mut self) -> Option<&'static str> {
+        let mut q = self.world.query::<&Mission>();
+        let (def, span, left) = q
+            .iter(&self.world)
+            .next()
+            .map(|m| (m.def, m.span, m.left))?;
+        if span == 0 {
+            return None;
+        }
+        let rules = self.world.resource::<MissionRules>();
+        rules
+            .0
+            .get(def)
+            .map(|r| crate::missions::phase(r, span, left).tag())
+    }
+
     /// Гараж миссии; `None` — миссии нет.
     fn mission_gate(&mut self) -> Option<(i32, i32)> {
         let mut q = self.world.query::<&Mission>();

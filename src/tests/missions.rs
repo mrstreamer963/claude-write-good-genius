@@ -190,6 +190,65 @@ fn the_span_is_frozen_when_the_squad_leaves() {
     );
 }
 
+/// Стадия вылазки — дорога туда, работа на месте, дорога назад (§12.168), и
+/// считает её ядро тем же разложением срока, каким его сложил `duration`.
+///
+/// Проверяется прогоном, а не арифметикой на месте: стадия обязана меняться в
+/// живом мире по мере того, как тикает `left`, — второй экземпляр этого
+/// разложения в виде однажды скажет «работают» про отряд, который ещё в пути
+/// (инвариант 14).
+#[test]
+fn a_raid_reports_its_phase() {
+    let rows = &["########", "#a.....#", "########"];
+    // Дорога 40 (по 20 в конец), работа 40 очков: соло делает её за 40 тиков.
+    let (mut sim, m) = sim_with_gate(rows, (6, 1), 1, 40);
+    sim.set_mission_work(m, 40);
+    assert!(sim.launch(m, squad(&["a"])));
+    assert_eq!(sim.mission_phase(), None, "до ухода стадии нет");
+
+    while !sim.is_away("a") {
+        sim.tick_n(1);
+    }
+    assert_eq!(sim.mission_span(), Some(80), "40 дороги и 40 работы");
+    assert_eq!(sim.mission_phase(), Some("travel"), "первым делом дорога");
+
+    // Дорога в один конец — половина всей дороги.
+    while sim.mission_left().is_some_and(|left| left > 80 - 20) {
+        sim.tick_n(1);
+    }
+    assert_eq!(sim.mission_phase(), Some("work"), "дошли — работают");
+
+    while sim.mission_left().is_some_and(|left| left > 80 - 60) {
+        sim.tick_n(1);
+    }
+    assert_eq!(sim.mission_phase(), Some("back"), "отработали — назад");
+}
+
+/// Работы на месте может не быть вовсе (`work: 0`, поведение до §12.70) — тогда
+/// отряд разворачивается на середине дороги, и «работают» не наступает никогда.
+/// Стадия обязана это выдержать: пустой отрезок между двумя дорогами — не повод
+/// сообщать о нём словом.
+#[test]
+fn a_raid_without_work_never_reports_working() {
+    let rows = &["########", "#a.....#", "########"];
+    let (mut sim, m) = sim_with_gate(rows, (6, 1), 1, 40);
+    assert!(sim.launch(m, squad(&["a"])));
+    while !sim.is_away("a") {
+        sim.tick_n(1);
+    }
+
+    let mut seen = Vec::new();
+    while sim.mission_left().is_some_and(|left| left > 0) {
+        if let Some(p) = sim.mission_phase()
+            && seen.last() != Some(&p)
+        {
+            seen.push(p);
+        }
+        sim.tick_n(1);
+    }
+    assert_eq!(seen, vec!["travel", "back"], "работать на месте нечего");
+}
+
 /// Занятость отрядом — это фильтры: пропущенный `Without<Squad>` тихо уводит
 /// бойца на стройку, и отряд не соберётся никогда (инвариант занятости).
 #[test]

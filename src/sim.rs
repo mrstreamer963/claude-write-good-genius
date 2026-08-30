@@ -36,7 +36,7 @@ use crate::jobs::{BUILD_WORK, Plan, may_build};
 use crate::map::{BaseMap, rect_cells};
 use crate::missions::{
     crew_danger, crew_force, duration, gate_cells, gate_count, guide_cut, guide_of, guide_value,
-    outcome,
+    outcome, phase,
 };
 use crate::movement::{Busy, is_stuck};
 use crate::path::find_path;
@@ -4766,6 +4766,14 @@ impl Sim {
                     squad: mine().map(|(_, id, ..)| id.clone()).collect(),
                     size: rule.map_or(0, |r| r.squad),
                     away: mine().any(|&(_, _, away, ..)| away),
+                    // Стадия — только у ушедшего отряда: пока он собирается у
+                    // шлюза, никакой дороги ещё нет, а «идут к месту» под
+                    // стоящей на базе бригадой читается как поломка — ровно та
+                    // же, из-за которой рядом живёт `resting`.
+                    phase: match (rule, mine().any(|&(_, _, away, ..)| away)) {
+                        (Some(r), true) => phase(r, span, m.left).tag(),
+                        _ => "",
+                    },
                     // Ждать отряд может только на базе: за шлюзом не спят.
                     resting: mine().any(|&(.., resting, _, _)| resting),
                     strength: out.strength,
