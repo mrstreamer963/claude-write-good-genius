@@ -8921,6 +8921,7 @@ function summaryHtml(raid, node) {
   const away = !!raid?.away;
   const crew = away ? raid.squad : (node.ready ?? []);
   const guide = (away ? raid.guide : node.guide) || "";
+  const unfit = away ? [] : (node.unfit ?? []);
   // Строки «не в сборе: ждём brick, iodine…» здесь нет (§12.186). Список
   // неготовых — это в точности состав ниже: каждый такой кот обведён рамкой, и
   // под именем у него написано словом, что с ним («спит», «ранен»). Повторить
@@ -8934,8 +8935,21 @@ function summaryHtml(raid, node) {
     '<div class="raidwin-sumtext">' +
     `<div>${guide ? `ведёт ${esc(guide)}` : "проводника нет"}</div>` +
     `<div class="cat-sub">${
-      [...crew.map(esc), ...(away ? commsPart(raid) : [])].join(" · ") ||
-      "в отряде никого"
+      [
+        // Проводник назван строкой выше, и второй раз в перечне он тот же
+        // ответ без своего вопроса (§12.187): список отвечает на «кто ещё».
+        // Неготовые — красным: то же состояние, что рамка на строке кота
+        // слева, тем же цветом, — а имена их в шапке не перечисляются
+        // (§12.186), они и есть эти имена.
+        ...crew
+          .filter((id) => id !== guide)
+          .map((id) =>
+            unfit.includes(id)
+              ? `<span class="bad">${esc(id)}</span>`
+              : esc(id),
+          ),
+        ...(away ? commsPart(raid) : []),
+      ].join(" · ") || "в отряде никого"
     }</div>` +
     "</div>"
   );
