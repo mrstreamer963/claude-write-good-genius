@@ -848,12 +848,6 @@ main#stage.mode-cursor #mode-banner {
 #mission[hidden] {
   display: none;
 }
-#mission .mission-cancel {
-  width: 100%;
-  margin-top: 8px;
-  justify-content: center;
-}
-
 /* Панель темы — той же колонкой, ниже миссии: работа идёт молча в комнате, и
    без панели видно только кота, который «зачем-то стоит в лаборатории». */
 #research {
