@@ -350,6 +350,22 @@ fn an_undermanned_squad_goes_and_pays_for_it() {
     assert!(!sim.is_away("b") && !sim.is_away("c"), "остальные дома");
 }
 
+/// Прогноз считает по тем лапам, которые заказ **и правда** уведёт: сверх
+/// `squad_max` в поле не выходит никто (§12.113), и срок, посчитанный по всему
+/// перекомплектованному составу узла, обещал бы работу впятером там, где
+/// пойдут четверо.
+#[test]
+fn a_span_never_counts_more_paws_than_the_order_takes() {
+    let (mut sim, m) = sim_with_gate(&["#######", "#a.c.b#", "#######"], (3, 1), 1, 50);
+    sim.set_squad_range(m, 1, 2);
+    sim.set_mission_work(m, 40);
+
+    let full = sim.mission_span_of(m, 2);
+    assert_eq!(sim.mission_span_of(m, 3), full, "третья лапа срок не режет");
+    assert_eq!(sim.mission_span_of(m, 9), full, "и девятая тоже");
+    assert!(sim.mission_span_of(m, 1) > full, "а недобор платит сроком");
+}
+
 /// Заявка снимает начатую работу — как приказ игрока (§12.15): решение послать
 /// кота в поле весомее его текущей стройки, и чертёж при этом освобождается.
 #[test]

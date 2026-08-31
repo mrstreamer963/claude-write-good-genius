@@ -9128,7 +9128,7 @@ function syncRaidCards(raid, node) {
 // вылазке рисуем **наверху один раз**, а её карточку в списке ниже прячем, —
 // значит эти строки обязаны быть в обеих, и вторым экземпляром текста они быть
 // не должны.
-function missionCostFacts(def) {
+function missionCostFacts(def, share) {
   const facts = [];
   // Бодрость и здоровье укрупнены вдесятеро ради ступени «Выносливости»
   // (§12.70), и сырые «−12000» не значат для игрока ничего. Долей от полной
@@ -9136,9 +9136,22 @@ function missionCostFacts(def) {
   // из самого кота, а не из второго экземпляра рулсета в JS.
   // Обе платы — одной строкой: и бодрость, и раны это то, чем база расплатится
   // за заказ, и разводить их по двум подписям значило бы называть одно дважды.
+  //
+  // ⚠️ **Раны считаются той же долей, что и добыча** (§12.37), поэтому у отряда
+  // с полным прогнозом их не будет вовсе, — и «раны при провале» под словами
+  // «вся добыча» это цена, которую никто не заплатит. Прогноз известен —
+  // пишем ровно то, что снимут (тем же выражением, что и подсказка строки
+  // отряда), и ноль не пишем; неизвестен — остаётся полное число с оговоркой.
+  const harm =
+    share == null
+      ? def.harm ?? 0
+      : Math.floor(((def.harm ?? 0) * (100 - share)) / 100);
   const cost = [
     def.toll ? `бодрости −${scaleText(def.toll, "energy_max")}` : "",
-    def.harm ? `раны при провале ${scaleText(def.harm, "health_max")}` : "",
+    harm
+      ? `раны${share == null ? " при провале" : ""} ` +
+        scaleText(harm, "health_max")
+      : "",
   ].filter(Boolean);
   if (cost.length) facts.push(["цена", cost.join(" · ")]);
   if (def.fame) facts.push(["награда", `известность +${def.fame}`]);
@@ -9275,7 +9288,13 @@ function raidCard(i, node) {
     } else {
       facts.push([
         "срок",
-        `${spanText(g.span)} = ${road} + работа ${work} / ${pawsWord(g.paws)}`,
+        // Лап в разкладке столько, сколько заказ **уведёт**: сверх предела в
+        // поле не выходит никто (§12.113), и ядро срок по ним уже не считает
+        // (`capped_paws`). Это не второй экземпляр обрезки, а её подпись:
+        // «работа 480 / 5 котов» под пределом в четыре объясняло бы число,
+        // которого в сроке нет.
+        `${spanText(g.span)} = ${road} + работа ${work} / ` +
+          pawsWord(Math.min(g.paws, g.most)),
       ]);
     }
   }
@@ -9283,7 +9302,7 @@ function raidCard(i, node) {
     "состав",
     g.need === g.most ? `нужно котов ${g.need}` : `котов ${g.need}—${g.most}`,
   ]);
-  facts.push(...missionCostFacts(def));
+  facts.push(...missionCostFacts(def, empty ? null : g.share));
   rows.push(
     '<div class="raid-facts">' +
       facts.map(([k, v]) => `<i>${k}</i><span>${v}</span>`).join("") +
@@ -9435,7 +9454,7 @@ function busyCard(raid, node) {
           ? "ждут, пока выспится боец — пойдёт с ухода"
           : "собираются у шлюза — пойдёт с ухода",
     ],
-    ...missionCostFacts(def),
+    ...missionCostFacts(def, raid.share),
   ];
   rows.push(
     '<div class="raid-facts">' +
