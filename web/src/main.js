@@ -7275,7 +7275,13 @@ function opensOf(topic, known = []) {
         meta.research,
         (r) =>
           (r.requires ?? []).includes(id) &&
-          !(r.specimen ?? []).length &&
+          // ⚠️ `specimen` тут приезжает **`Map`**, а не массивом: это `meta`,
+          // а не снимок (в `TopicSnap` он список индексов). `.length` у `Map`
+          // — `undefined`, то есть фильтр пропускал **все** темы-вскрытия
+          // разом, и «Мастерская» палила «Вскрыть аптечку» ещё до того, как
+          // база увидела первую аптечку. Идиома чтения наборов одна на проект
+          // — `pairsIn` (§12.192).
+          !pairsIn(r.specimen).length &&
           opensAfter(r.requires, id, known),
       ),
     ],
