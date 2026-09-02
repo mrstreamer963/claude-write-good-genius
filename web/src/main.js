@@ -5490,6 +5490,24 @@ function openOnly(title) {
   }
 }
 
+// Кнопка верхнего уровня складывает раскрытый раздел (§12.194). Тулбар — один
+// столбец, и раскрытая «Постройка» стоит теми же двадцатью строками, что и до
+// клика: у двери она остаётся под накрывшим её окном (§12.101), а у «Курсора» —
+// под рукой, которая только что сказала «я тут закончил». Заголовки разделов
+// друг друга закрывают с самого начала (`openOnly` держит раскрытым ровно
+// один), и кнопки, стоящие с ними в одном столбце, обязаны вести себя так же:
+// столбец один, значит и правило у него одно.
+//
+// Дверь наружу при этом по-прежнему одна на все способы уйти — сам `openOnly`:
+// метка новостей гаснет и инструмент кладётся из рук ровно там же, где при
+// клике по заголовку.
+function folds(go) {
+  return () => {
+    openOnly(null);
+    go();
+  };
+}
+
 function buildToolbar() {
   const el = document.getElementById("toolbar");
   el.innerHTML = "";
@@ -5499,7 +5517,7 @@ function buildToolbar() {
   // не размечаю», и оно нужно из любого раздела.
   const cursorBtn = mkTool(
     '<span class="sw sw-cursor"></span><span>Курсор</span>',
-    () => selectCursor(),
+    folds(() => selectCursor()),
   );
   el.appendChild(cursorBtn);
 
@@ -5508,7 +5526,7 @@ function buildToolbar() {
   // склад на базе один, выбирать в списке нечего.
   const ware = mkTool(
     '<span class="sw sw-scrap"></span><span>Склад</span>',
-    () => openStockWindow(),
+    folds(() => openStockWindow()),
   );
   liveTitle(
     ware,
@@ -5534,15 +5552,17 @@ function buildToolbar() {
     // окно на «чего ждать», и запертая теряет второй ответ. Гасим классом, а не
     // `disabled`: по выключенному элементу браузер не шлёт событий мыши, и
     // причина не показалась бы ни разу (§12.53, §12.124).
-    sciDoor = mkTool('<span class="sw sw-lab"></span><span>Наука</span>', () =>
-      openSciWindow(),
+    sciDoor = mkTool(
+      '<span class="sw sw-lab"></span><span>Наука</span>',
+      folds(() => openSciWindow()),
     );
     liveTitle(sciDoor, "За какую тему взяться и чего для этого не хватает");
     el.appendChild(sciDoor);
   }
   if ((meta.recruits ?? []).length) {
-    hireDoor = mkTool('<span class="sw sw-hire"></span><span>Найм</span>', () =>
-      openHireWindow(),
+    hireDoor = mkTool(
+      '<span class="sw sw-hire"></span><span>Найм</span>',
+      folds(() => openHireWindow()),
     );
     liveTitle(hireDoor, "Кто откликнется на известность базы и чего он стоит");
     el.appendChild(hireDoor);
@@ -5571,7 +5591,7 @@ function buildToolbar() {
     // (§12.53, §12.124).
     buyDoor = mkTool(
       '<span class="sw sw-trade"></span><span>Покупка</span>',
-      () => openBuyWindow(),
+      folds(() => openBuyWindow()),
     );
     liveTitle(
       buyDoor,
@@ -5659,7 +5679,7 @@ function buildToolbar() {
   if ((meta.missions ?? []).length) {
     raidDoor = mkTool(
       '<span class="sw sw-gate"></span><span>Вылазки</span>',
-      () => openRaidWindow(),
+      folds(() => openRaidWindow()),
     );
     liveTitle(raidDoor, "Кто в каком отряде, чем занят и куда его отправить");
     el.appendChild(raidDoor);
