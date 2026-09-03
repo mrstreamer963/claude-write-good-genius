@@ -5351,26 +5351,9 @@ window.addEventListener("keydown", (e) => {
   if (e.code === "Escape" || e.key === "Escape") {
     // Модальные окна закрываются первыми: они поверх всего, и пока открыто
     // такое окно, «отменить» может значить только «закрыть его» (§12.71).
-    if (stockWinOpen) {
-      closeStockWindow();
-      return;
-    }
-    if (sciWinOpen) {
-      closeSciWindow();
-      return;
-    }
-    if (hireWinOpen) {
-      closeHireWindow();
-      return;
-    }
-    if (raidWinOpen) {
-      closeRaidWindow();
-      return;
-    }
-    if (binWinOpen) {
-      closeBinWindow();
-      return;
-    }
+    // Список у них общий с `closeOtherWindows` — второй экземпляр уже однажды
+    // разошёлся с первым и оставил «Покупку» без Escape.
+    if (closeAnyWindow()) return;
     if (dragFrom) {
       endDrag(false);
       return;
@@ -7867,6 +7850,24 @@ let busyEl = null;
 // узлы в нём переиспользуются, и на этом держится вся работа порогов.
 const wareRows = [];
 
+// ⚠️ **Список модальных окон — один на всех, кто их закрывает.** Их закрывают
+// двое: соседняя дверь (`closeOtherWindows`) и Escape, — и пока списка было
+// два, они разошлись: «Покупка» (§12.150) попала в первый и не попала во
+// второй, то есть единственная из шести не закрывалась клавишей. Заметить это
+// нечем — окно работает, просто «отменить» в нём не значит ничего.
+//
+// Ключ нужен только `closeOtherWindows`: «закрой всех, кроме того, кого я сейчас
+// открываю». Escape ключа не знает и закрывает первое открытое — открытым
+// бывает ровно одно, за этим и следит `closeOtherWindows`.
+const WINDOWS = [
+  ["stock", () => stockWinOpen, () => closeStockWindow()],
+  ["sci", () => sciWinOpen, () => closeSciWindow()],
+  ["hire", () => hireWinOpen, () => closeHireWindow()],
+  ["raid", () => raidWinOpen, () => closeRaidWindow()],
+  ["buy", () => buyWinOpen, () => closeBuyWindow()],
+  ["bin", () => binWinOpen, () => closeBinWindow()],
+];
+
 // Окно модальное, значит второго рядом не бывает. До §12.120 столкнуться им
 // было негде — в каждое вёл свой вход, — а теперь в окно ведёт ещё и тикер, и
 // клик по нему из открытого «Склада» положил бы «Найм» поверх него. Закрываем
@@ -7877,12 +7878,18 @@ function closeOtherWindows(keep) {
   // модалом незачем — карта под ним всё равно не отвечает. Кладём его тем же
   // `selectCursor`, что и `openOnly`: плашка режима уходит вместе с ним.
   if (mode !== "cursor") selectCursor();
-  if (keep !== "stock") closeStockWindow();
-  if (keep !== "sci") closeSciWindow();
-  if (keep !== "hire") closeHireWindow();
-  if (keep !== "raid") closeRaidWindow();
-  if (keep !== "buy") closeBuyWindow();
-  if (keep !== "bin") closeBinWindow();
+  for (const [key, , close] of WINDOWS) {
+    if (key !== keep) close();
+  }
+}
+
+/// Закрыть открытое окно, если оно есть. Вернёт `true`, если закрыли, — по
+/// этому признаку Escape решает, съел он нажатие или пропускает дальше.
+function closeAnyWindow() {
+  const open = WINDOWS.find(([, isOpen]) => isOpen());
+  if (!open) return false;
+  open[2]();
+  return true;
 }
 
 function openStockWindow() {
