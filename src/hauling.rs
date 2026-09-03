@@ -516,25 +516,68 @@ pub(crate) fn assign_hauls(
 
 // --- уборка ----------------------------------------------------------------
 
-/// Держит пометки уборки в согласии с картой.
+/// Держит пометки уборки в согласии с картой: помечает всё, что лежит **не
+/// там, где ему место**, и снимает пометку с того, что уже дома.
 ///
-/// При включённой автоуборке помечает всё, что валяется вне склада. Снимает
-/// пометку с куч **на складе** в любом режиме: без этого доставленный лом
-/// сразу становился бы задачей на самого себя и коты гоняли бы его по кругу.
+/// «Не там» — это три случая, и до §12.195 существовал только первый:
+///
+/// - **(а)** клетка не хранилище вовсе (`capacity` ноль) — лом на полу;
+/// - **(б)** хранилище этот тип **не принимает** — ящик, которому сменили набор,
+///   отдаёт назад то, что набралось до настройки;
+/// - **(в)** есть хранилище **строго выше** ярусом, которое этот тип принимает и
+///   куда влезет, — та самая дозаправка ящика у потребителя.
+///
+/// **Циклов не бывает по построению, а не по проверке.** (в) требует строго
+/// большего яруса, значит между равными ничего не ездит; (б) уводит вещь только
+/// оттуда, где её не примут обратно. Это тот же довод, которым §12.16
+/// обосновывал одностороннее движение материала.
+///
+/// Снятие пометки идёт **в любом режиме**: без него доставленный лом сразу
+/// становился бы задачей на самого себя и коты гоняли бы его по кругу. А вот
+/// проставление — только при автоуборке: (б) и (в) это такое же «коты убирают
+/// сами», как и (а), и выключивший автоуборку игрок отказался от всех трёх
+/// разом. Руками помеченное при этом по-прежнему уезжает в лучший ящик — выбор
+/// адресата живёт в `nearest_store` и от режима не зависит.
+///
+/// ⚠️ Здесь же **уборка за снесённым ящиком**: запись набора на клетке, которая
+/// перестала быть ящиком, выбрасывается. Прецедент дословный — `run_auto_raids`
+/// (§12.67): «у быстрого выхода обязана быть уборка».
 pub(crate) fn mark_loose_scrap(
     map: Res<BaseMap>,
     rules: Res<TileRules>,
     auto: Res<AutoTidy>,
+    mut bins: ResMut<Bins>,
     mut commands: Commands,
-    stacks: Query<(Entity, &Position, Option<&ToStore>), With<Stack>>,
+    stacks: Query<(Entity, &Position, &Stack, Option<&ToStore>)>,
 ) {
-    for (e, pos, mark) in &stacks {
-        let in_store = rules.capacity_of(map.tile_at(pos.x, pos.y)) > 0;
-        match (in_store, mark.is_some()) {
-            (true, true) => {
+    bins.0
+        .retain(|&(x, y, _)| rules.priority_of(map.tile_at(x, y)) > 0);
+
+    let stock = stock_grid(
+        &map,
+        stacks.iter().map(|(_, p, s, _)| ((p.x, p.y), s.count)),
+    );
+    // Типы считаем по тому, что в мире и правда лежит: палитра предметов ядру
+    // здесь не нужна, а список выходит короче неё.
+    let mut items: Vec<usize> = stacks.iter().map(|(_, _, s, _)| s.item).collect();
+    items.sort_unstable();
+    items.dedup();
+    let best = best_tiers(&map, &rules, &bins, &stock, &items);
+
+    for (e, pos, stack, mark) in &stacks {
+        let tile = map.tile_at(pos.x, pos.y);
+        let tier = rules.priority_of(tile);
+        let misplaced = rules.capacity_of(tile) <= 0
+            || !bins.accepts(pos.x, pos.y, stack.item)
+            || best
+                .iter()
+                .find(|&&(item, _)| item == stack.item)
+                .is_some_and(|&(_, top)| top.is_some_and(|t| t > tier));
+        match (misplaced, mark.is_some()) {
+            (false, true) => {
                 commands.entity(e).remove::<ToStore>();
             }
-            (false, false) if auto.0 => {
+            (true, false) if auto.0 => {
                 commands.entity(e).insert(ToStore);
             }
             _ => {}
@@ -567,6 +610,7 @@ pub(crate) fn mark_loose_scrap(
 pub(crate) fn assign_tidy(
     map: Res<BaseMap>,
     rules: Res<TileRules>,
+    bins: Res<Bins>,
     mut commands: Commands,
     marks: Query<(Entity, &Position), With<ToStore>>,
     going: Query<(&Haul, Option<&Carrying>, Option<&Carry>)>,
@@ -615,11 +659,11 @@ pub(crate) fn assign_tidy(
     let mut empty: Vec<(&str, Entity, Option<&Carry>, Reach)> = Vec::new();
     for (cat_e, id, pos, load, carry) in &free_cats {
         let reach = Reach::all(map, &rules, (pos.x, pos.y));
-        if load.is_none() {
+        let Some(load) = load else {
             empty.push((id.0.as_str(), cat_e, carry, reach));
             continue;
-        }
-        if let Some(((_, spot), _)) = nearest_store(map, &rules, &reach, &stock) {
+        };
+        if let Some(((_, spot), _)) = nearest_store(map, &rules, &bins, &reach, &stock, load.item) {
             let path = reach.path_to(spot.0, spot.1).unwrap_or_default();
             commands.entity(cat_e).insert((
                 Haul {
@@ -667,13 +711,29 @@ pub(crate) fn assign_tidy(
     // Куча остаётся в списке, пока в ней есть необещанное, — тогда её разбирают
     // несколько котов разом (§12.48). Четвёртое поле — очередь (§12.98): куча в
     // ячейке торгового поста разбирается вперёд всех прочих.
+    // Куче нужен не просто свободный склад, а склад, **принимающий её тип**
+    // (§12.195): иначе на базе с полным складом и пустым ящиком образцов коты
+    // бесконечно ходили бы за ломом, которому податься некуда. Общий бюджет
+    // `room` этого не ловит — он про место вообще, а не про место для этого.
+    let mut items: Vec<usize> = marks
+        .iter()
+        .filter_map(|(e, _)| stacks.get(e).ok().map(|(_, _, s)| s.item))
+        .collect();
+    items.sort_unstable();
+    items.dedup();
+    let best = best_tiers(map, &rules, &bins, &stock, &items);
+
     let mut open: Vec<(Entity, (i32, i32), i32, u8)> = marks
         .iter()
         .filter_map(|(e, p)| {
-            let count = stacks.get(e).map_or(0, |(_, _, s)| s.count);
-            let left = count - claimed(&promised, e);
+            let (_, _, stack) = stacks.get(e).ok()?;
+            let welcome = best
+                .iter()
+                .find(|&&(item, _)| item == stack.item)
+                .is_some_and(|&(_, top)| top.is_some());
+            let left = stack.count - claimed(&promised, e);
             let rank = u8::from(!rules.is_trade_post(map.tile_at(p.x, p.y)));
-            (left > 0).then_some((e, (p.x, p.y), left, rank))
+            (welcome && left > 0).then_some((e, (p.x, p.y), left, rank))
         })
         .collect();
     // Порядок обхода ECS в поведение протекать не должен (§11): при равном
@@ -741,6 +801,7 @@ fn claimed(promised: &[(Entity, i32)], pile: Entity) -> i32 {
 pub(crate) fn work_hauls(
     map: Res<BaseMap>,
     rules: Res<TileRules>,
+    bins: Res<Bins>,
     mut commands: Commands,
     cats: Query<(
         Entity,
@@ -783,6 +844,27 @@ pub(crate) fn work_hauls(
     // Кого сгонять нельзя (§12.103): сдающий груз выбирает клетку тем же
     // `build_spot`, что и строитель.
     let held = held_cells(standing.iter());
+
+    // ⚠️ **Заполненность клеток считается один раз на тик и правится по ходу.**
+    // Пересчёт по запросу на каждого кота врёт: `spill` кладёт груз в
+    // существующую кучу через мутабельный запрос (это видно сразу), а на пустой
+    // клетке **спавнит новую через `Commands`** — то есть до конца тика её не
+    // видит никто. Двое, шагнувших на пустой ящик одним тиком (`spread_units`
+    // разводит их уже после, §12.32), считали его пустым оба и сдавали полные
+    // лапы каждый: «занято 16 / 10». Общий бюджет места в `assign_tidy` это
+    // прикрывал, пока адресатом была ближайшая клетка с местом — коты
+    // расходились по большому складу, — но с ярусами (§12.195) все сходятся в
+    // один маленький ящик, и бюджет, считающий место по базе целиком, его
+    // больше не ограничивает.
+    //
+    // Отсюда обязанность: **всякое взятие и всякая сдача правят `stock` тут
+    // же**. Второй способ узнать, сколько лежит на клетке, разойдётся с первым.
+    let mut stock = stock_grid(&map, stacks.iter().map(|(_, p, s)| ((p.x, p.y), s.count)));
+    let note = |stock: &mut Vec<i32>, at: (i32, i32), delta: i32| {
+        if let Some(i) = map.index(at.0, at.1) {
+            stock[i] += delta;
+        }
+    };
 
     for (cat_e, pos, haul, load, path, carry) in &cats {
         match haul.to {
@@ -1107,10 +1189,20 @@ pub(crate) fn work_hauls(
                     // заполниться, пока кот шёл. Складов нет или все полны —
                     // куча остаётся лежать на виду, а не переезжает в лапы,
                     // откуда игрок её уже не достанет.
+                    //
+                    // Тип спрашивается у самой кучи, а не у поднятого груза:
+                    // с §12.195 адресат зависит от типа, а поднимать до выбора
+                    // адресата нельзя — кот встал бы с ломом, которому некуда.
+                    let Some((from, item)) = pile_e
+                        .and_then(|e| stacks.get(e).ok())
+                        .map(|(_, p, s)| ((p.x, p.y), s.item))
+                    else {
+                        commands.entity(cat_e).remove::<Haul>();
+                        continue;
+                    };
                     let reach = Reach::all(&map, &rules, (pos.x, pos.y));
-                    let stock =
-                        stock_grid(&map, stacks.iter().map(|(_, p, s)| ((p.x, p.y), s.count)));
-                    let Some(((cell, spot), _)) = nearest_store(&map, &rules, &reach, &stock)
+                    let Some(((cell, spot), _)) =
+                        nearest_store(&map, &rules, &bins, &reach, &stock, item)
                     else {
                         commands.entity(cat_e).remove::<Haul>();
                         continue;
@@ -1120,7 +1212,7 @@ pub(crate) fn work_hauls(
                     // остаток честнее оставить на полу, чем таскать по базе.
                     // Берём именно ту кучу, за которой шли: на клетке могут
                     // лежать разные типы, а помечена была одна (§12.21).
-                    let free = portion(carry, free_space(&map, &rules, &stock, cell));
+                    let free = portion(carry, free_space(&map, &rules, &bins, &stock, cell, item));
                     let taken = take_from_pile(
                         &mut commands,
                         &mut stacks,
@@ -1132,6 +1224,10 @@ pub(crate) fn work_hauls(
                         commands.entity(cat_e).remove::<Haul>();
                         continue;
                     };
+                    // Куча могла лежать в хранилище (переезд по ярусам, §12.195):
+                    // снятое освобождает место, и следующий сдающий обязан это
+                    // увидеть тем же тиком.
+                    note(&mut stock, from, -taken);
                     let path = reach.path_to(spot.0, spot.1).unwrap_or_default();
                     commands
                         .entity(cat_e)
@@ -1144,14 +1240,14 @@ pub(crate) fn work_hauls(
                 // полку не встать, груз кладут с прохода. Клетка выбирается
                 // здесь, а не при раздаче: пока кот шёл, склад мог заполниться,
                 // и эта проверка тут была всегда.
-                let stock = stock_grid(&map, stacks.iter().map(|(_, p, s)| ((p.x, p.y), s.count)));
                 let cell = worked_cells(&map, &rules, (pos.x, pos.y))
                     .into_iter()
-                    .find(|&c| free_space(&map, &rules, &stock, c) > 0);
+                    .find(|&c| free_space(&map, &rules, &bins, &stock, c, load.item) > 0);
                 if let Some(cell) = cell {
-                    let free = free_space(&map, &rules, &stock, cell);
+                    let free = free_space(&map, &rules, &bins, &stock, cell, load.item);
                     let given = load.count.min(free);
                     spill(&mut commands, &mut stacks, cell, load.item, given);
+                    note(&mut stock, cell, given);
                     keep_rest(&mut commands, cat_e, load.item, load.count - given);
                 }
                 commands.entity(cat_e).remove::<Haul>();
@@ -1387,37 +1483,96 @@ fn stock_grid(map: &BaseMap, piles: impl Iterator<Item = ((i32, i32), i32)>) -> 
     grid
 }
 
-/// Сколько ещё влезет на клетку. Склад — это тайл с ёмкостью, отдельного
-/// слоя зон нет (§12.16); у обычного пола ёмкость нулевая.
-fn free_space(map: &BaseMap, rules: &TileRules, stock: &[i32], at: (i32, i32)) -> i32 {
+/// Сколько ещё влезет на клетку **этого типа**. Склад — это тайл с ёмкостью,
+/// отдельного слоя зон нет (§12.16); у обычного пола ёмкость нулевая.
+///
+/// Набор принимаемого (§12.195) режет ёмкость до нуля, а не заводит вторую
+/// проверку рядом: «сюда не влезет» и «сюда не положат» — для всех, кто ищет
+/// место, один и тот же ответ.
+fn free_space(
+    map: &BaseMap,
+    rules: &TileRules,
+    bins: &Bins,
+    stock: &[i32],
+    at: (i32, i32),
+    item: usize,
+) -> i32 {
+    if !bins.accepts(at.0, at.1, item) {
+        return 0;
+    }
     map.index(at.0, at.1)
         .map_or(0, |i| rules.capacity_of(map.cells[i]) - stock[i])
 }
 
-/// Ближайшая клетка склада, куда влезет хоть сколько-то лома, и **клетка, с
-/// которой кот на неё сдаёт**, с ценой в шагах.
+/// Лучший ярус хранения для каждого из типов: докуда вещь этого типа ещё
+/// доедет (§12.195). `None` в паре — места нет вовсе.
+///
+/// Считается **одним проходом по карте на тик**, а не обходом на каждую кучу:
+/// спрашивает это `mark_loose_scrap` про все кучи разом, и обход внутри обхода
+/// стоил бы карту в квадрате. Порядок row-major — детерминизм цел (§11).
+fn best_tiers(
+    map: &BaseMap,
+    rules: &TileRules,
+    bins: &Bins,
+    stock: &[i32],
+    items: &[usize],
+) -> Vec<(usize, Option<i32>)> {
+    let mut best: Vec<(usize, Option<i32>)> = items.iter().map(|&i| (i, None)).collect();
+    for y in 0..map.height {
+        for x in 0..map.width {
+            let tile = map.tile_at(x, y);
+            if rules.capacity_of(tile) <= 0 {
+                continue;
+            }
+            let tier = rules.priority_of(tile);
+            for (item, top) in &mut best {
+                if top.is_some_and(|t| t >= tier) {
+                    continue;
+                }
+                if free_space(map, rules, bins, stock, (x, y), *item) > 0 {
+                    *top = Some(tier);
+                }
+            }
+        }
+    }
+    best
+}
+
+/// Куда сдать груз этого типа и **с какой клетки кот на неё сдаёт**, с ценой
+/// в шагах.
 ///
 /// Возвращает пару (куда класть, где стоять): с §12.142 они расходятся —
 /// на полку не встать, груз кладут с соседней клетки. Цена меряется шагами до
 /// места стояния, иначе стеллаж выглядел бы недостижимым (`dist_at` по нему
 /// пусто) и склад молча перестал бы существовать.
+///
+/// **Ярус важнее расстояния** (§12.195): ключ — `(−priority, шаги)`, то есть
+/// ящик у лаборатории обыгрывает склад через полбазы, а внутри одного яруса
+/// решает расстояние и §12.14 цел. Материал ходит только вверх — обратно его
+/// уводит уже не этот выбор, а `mark_loose_scrap`, заметивший, что клетка
+/// перестала принимать.
 fn nearest_store(
     map: &BaseMap,
     rules: &TileRules,
+    bins: &Bins,
     reach: &Reach,
     stock: &[i32],
+    item: usize,
 ) -> Option<(((i32, i32), (i32, i32)), i32)> {
     let mut best: Option<(((i32, i32), (i32, i32)), i32)> = None;
+    let mut best_key = (0, 0);
     for y in 0..map.height {
         for x in 0..map.width {
-            if free_space(map, rules, stock, (x, y)) <= 0 {
+            if free_space(map, rules, bins, stock, (x, y), item) <= 0 {
                 continue;
             }
             let Some((spot, d)) = work_spot(map, rules, reach, (x, y), &[]) else {
                 continue;
             };
-            if best.is_none_or(|(_, bd)| d < bd) {
+            let key = (-rules.priority_of(map.tile_at(x, y)), d);
+            if best.is_none() || key < best_key {
                 best = Some((((x, y), spot), d));
+                best_key = key;
             }
         }
     }

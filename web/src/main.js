@@ -222,6 +222,7 @@ const stockWinEl = document.getElementById("stockwin");
 const sciWinEl = document.getElementById("sciwin");
 const hireWinEl = document.getElementById("hirewin");
 const buyWinEl = document.getElementById("buywin");
+const binWinEl = document.getElementById("binwin");
 const toastsEl = document.getElementById("toasts");
 const newsEl = document.getElementById("news");
 const liveTipEl = document.getElementById("livetip");
@@ -315,6 +316,13 @@ onPanelClick(cellEl, ".craft-cancel", cancelCraftAt);
 // Ключ — сам кот: за партами одного домена их бывает несколько.
 onPanelClick(cellEl, ".study-off", (node) =>
   sendAction({ type: "unteach", id: node.dataset.id }),
+);
+// Дверь в окно набора ящика (§12.195). Идёт **мимо `sendAction`**: это осмотр,
+// а не команда (§12.57) — мир она не меняет, и гасить выделение клетки ей
+// незачем, ведь закрыв окно игрок вернётся ровно к этой карточке. Тот же путь,
+// что у строки «Отряд N», ведущей в штаб (§12.166).
+onPanelClick(cellEl, ".bin-edit", (node) =>
+  openBinWindow(Number(node.dataset.x), Number(node.dataset.y)),
 );
 // Отмены в панели «Заказы» нет вовсе (§12.165, сужает §12.122): карточка там
 // одна на пачку, и кнопка целилась разом во все её ячейки — то есть отменяла
@@ -1716,6 +1724,7 @@ function renderSnapshot(snap) {
   syncSciWindow();
   syncHireWindow();
   syncBuyWindow();
+  syncBinWindow();
   renderNews(snap);
   syncDoors(snap);
   syncNewsMarks();
@@ -2500,6 +2509,11 @@ function renderCellPanel(snap) {
   // Ученик за партой — тем же порядком (§12.147). До него о приписке говорила
   // кнопка раздела «Обучение», то есть колонка, которая про клетку не знает.
   if (def?.teaches) parts.push(...deskCell(snap, x, y, def));
+
+  // Набор ящика — тем же порядком (§12.195). Стоит **после** полоски «Занято»
+  // и списка куч: сперва что здесь лежит, потом что здесь держать, — иначе
+  // настройка отвечает на вопрос, которого игрок ещё не задал.
+  if (def?.priority > 0) parts.push(...binCell(snap, x, y));
 
   // Что здесь идёт **сейчас**. Без этого функциональная клетка называла себя
   // («мастерская») и замолкала, а работа в ней шла молча — та же беда, из-за
@@ -3748,6 +3762,37 @@ function deskCell(snap, x, y, def) {
       (state ? `<div class="cat-sub">${state}</div>` : "") +
       `<button class="tool study-off" data-key="unteach@${esc(cat.id)}" ` +
       `data-id="${esc(cat.id)}"><span>Снять с учёбы</span></button>` +
+      "</div>",
+  ];
+}
+
+/// Набор ящика (§12.195): что игрок велел здесь держать.
+///
+/// В карточке — **только имена выбранного словами** и дверь в окно. Выбранного
+/// всегда единицы, поэтому длина карточки не зависит от размера рулсета: сам
+/// список предметов — контент, его заводят в рулсете без спроса у вида, и
+/// перечислять его здесь значило бы растить панель клетки строкой на каждый
+/// новый ресурс. Глифами имена не заменены намеренно: три-четыре значка ещё
+/// читаются, но узнавать их приходится по памяти, а строка «Образец, Паёк»
+/// сканируется сразу.
+///
+/// Кнопка — **дверь, а не решение**, поэтому §12.80 к ней не применим: открыть
+/// окно ничего не стоит и отменяется закрытием. Правило же остаётся адресным
+/// клетке (§12.119), и дверь к нему стоит у самого адресата — как «Снять с
+/// учёбы» у парты (§12.147).
+function binCell(snap, x, y) {
+  const accepts =
+    (snap.bins ?? []).find((b) => b.x === x && b.y === y)?.accepts ?? [];
+  // Пустой набор — это «принимает всё», и говорится это словом: пустое место
+  // читалось бы как «не принимает ничего», то есть как поломка (§12.53).
+  const what = accepts.length
+    ? `держим: ${accepts.map((i) => esc(itemLabel(i))).join(", ")}`
+    : "принимает всё: не выбрано, что держать";
+  return [
+    '<div class="cat-skill">' +
+      `<div class="cat-sub">${what}</div>` +
+      `<button class="tool bin-edit" data-key="binwin@${x},${y}" ` +
+      `data-x="${x}" data-y="${y}"><span>Назначить</span></button>` +
       "</div>",
   ];
 }
@@ -5258,6 +5303,10 @@ const KEEPS_CELL = new Set([
   // пометку» недостижимой, у заказа — спрятало бы ответ («станок свободен»).
   "store",
   "cancelCraft",
+  // Набор ящика (§12.195) — там же и по тому же доводу: значки стоят в панели
+  // самой клетки, и снятое выделение закрыло бы её тем же кликом, которым
+  // игрок только что выбрал предмет. А выбирают тут по нескольку подряд.
+  "setBin",
   // Снятие с учёбы (§12.147) — там же и по тому же доводу: кнопка стоит в
   // панели парты, и снятое выделение спрятало бы ответ («парта свободна»).
   "unteach",
@@ -5316,6 +5365,10 @@ window.addEventListener("keydown", (e) => {
     }
     if (raidWinOpen) {
       closeRaidWindow();
+      return;
+    }
+    if (binWinOpen) {
+      closeBinWindow();
       return;
     }
     if (dragFrom) {
@@ -7604,6 +7657,140 @@ function buildBuyWindow() {
   });
 }
 
+// --- окно «Что держать в ящике» (§12.195) -----------------------------------
+//
+// Единственное окно, чья дверь стоит **в панели клетки**, а не в тулбаре:
+// решение адресно клетке, и §12.119 велит держать такие у самого адресата.
+// §12.101 при этом цел — модал открывает не клик по карте, а отдельная кнопка
+// в уже открытой карточке, то есть второй осознанный жест; а §12.80 к двери не
+// применим вовсе: открыть окно ничего не стоит и отменяется закрытием.
+//
+// ⚠️ **Окно уносит контекст с собой** — адрес ящика в заголовке и что в нём
+// лежит строкой под ним. Без этого модал накрыл бы ровно ту карточку, за
+// ответом от которой игрок в него и пошёл: та же беда, из-за которой §12.110
+// перенесла сводку сделок внутрь окна «Склад».
+//
+// Строка на предмет, а не сетка глифов: имена сканируются, а два десятка
+// незнакомых контуров — нет. В карточке клетки при этом остаются только имена
+// выбранного (их всегда единицы), поэтому её длина от размера рулсета не
+// зависит вовсе.
+let binWinOpen = false;
+// Чей ящик открыт. Клетка, а не индекс строки: ящик могут снести, пока окно
+// открыто, — тогда окно закрывается само.
+let binWinAt = null;
+let binHeadEl = null;
+let binHintEl = null;
+// Строка на **каждый** предмет палитры, невиданные спрятаны (§12.131). Узел на
+// всю палитру, а не на видимые: `Seen` растёт прямо во время партии, и список,
+// собранный по видимым, пришлось бы пересобирать — то есть терять прокрутку и
+// съедать клик (§12.118).
+const binRows = [];
+
+function openBinWindow(x, y) {
+  closeOtherWindows("bin");
+  binWinOpen = true;
+  binWinAt = { x, y };
+  buildBinWindow();
+  syncBinWindow();
+  binWinEl.hidden = false;
+}
+
+function closeBinWindow() {
+  if (!binWinOpen) return;
+  binWinOpen = false;
+  binWinAt = null;
+  binHeadEl = null;
+  binHintEl = null;
+  binRows.length = 0;
+  binWinEl.hidden = true;
+  binWinEl.innerHTML = "";
+  // По удалённому узлу `mouseleave` не приходит — подсказка осталась бы висеть
+  // над пустотой (§12.125).
+  hideLiveTip();
+}
+
+function buildBinWindow() {
+  const { box, list } = mkWindow(
+    binWinEl,
+    `Ящик ${binWinAt.x}, ${binWinAt.y}`,
+    () => closeBinWindow(),
+    true,
+  );
+  binRows.length = 0;
+
+  // Что в ящике сейчас — под заголовком, до списка: это тот самый ответ,
+  // который модал накрыл собой в панели клетки.
+  binHeadEl = document.createElement("div");
+  binHeadEl.className = "cat-sub bin-head";
+  box.insertBefore(binHeadEl, list);
+
+  (meta.items ?? []).forEach((_, item) => {
+    const row = mkTool(
+      `${itemGlyph(item)}<span class="bin-name"></span>`,
+      // Ворота считает ядро (§12.195): клик уходит всегда, а отклонит его фасад,
+      // если клетка перестала быть ящиком. Второй экземпляр этой проверки в JS
+      // однажды покажет живую строку там, где ядро откажет (инвариант 14).
+      () =>
+        sendAction({
+          type: "setBin",
+          x: binWinAt.x,
+          y: binWinAt.y,
+          item,
+          on: !row.classList.contains("on"),
+        }),
+    );
+    row.classList.add("toggle", "bin-row");
+    binRows.push({ row, item });
+    list.appendChild(row);
+  });
+
+  // «Ничего не выбрано» — словом, а не пустотой (§12.53, прецедент §12.112):
+  // погашенный список читается как «не принимает ничего», то есть как поломка,
+  // хотя правда ровно обратная.
+  binHintEl = document.createElement("div");
+  binHintEl.className = "cat-sub bin-hint";
+  box.appendChild(binHintEl);
+}
+
+function syncBinWindow() {
+  if (!binWinOpen || !binWinAt) return;
+  const { x, y } = binWinAt;
+  // Ящик снесли, пока окно открыто, — закрываемся. Ярус спрашиваем у палитры
+  // тем же способом, что и панель клетки: второго знания о том, что такое
+  // ящик, в виде быть не должно.
+  if (!(tileDefAt(x, y)?.priority > 0)) {
+    closeBinWindow();
+    return;
+  }
+  const snap = lastSnap;
+  const accepts = new Set(
+    (snap?.bins ?? []).find((b) => b.x === x && b.y === y)?.accepts ?? [],
+  );
+  const piles = (snap?.stacks ?? []).filter((s) => s.x === x && s.y === y);
+  const held = piles.reduce((sum, s) => sum + s.count, 0);
+  const cap = tileDefAt(x, y)?.capacity ?? 0;
+  const what = piles.length
+    ? piles.map((s) => `${esc(itemLabel(s.item))} ${s.count}`).join(" · ")
+    : "пусто";
+  setHtml(binHeadEl, `Занято ${held} / ${cap} · ${what}`);
+
+  for (const { row, item } of binRows) {
+    // Невиданный предмет прячется целиком (§12.131): строка ящика стала бы
+    // первым местом, где игра называет вещь, о существовании которой склад
+    // молчит. Считает «видели» ядро (`stock[i].seen`), как и везде.
+    row.hidden = !(snap?.stock ?? [])[item]?.seen;
+    if (row.hidden) continue;
+    row.classList.toggle("on", accepts.has(item));
+    setHtml(row.querySelector(".bin-name"), esc(itemLabel(item)));
+  }
+  setHtml(
+    binHintEl,
+    accepts.size
+      ? "остальное коты увезут отсюда"
+      : "принимает всё: пока ничего не выбрано",
+  );
+}
+
 function syncBuyWindow() {
   if (!buyWinOpen || !buyHeads) return;
   buyTabs.forEach((t, fi) => t.classList.toggle("on", fi === buyFaction));
@@ -7695,6 +7882,7 @@ function closeOtherWindows(keep) {
   if (keep !== "hire") closeHireWindow();
   if (keep !== "raid") closeRaidWindow();
   if (keep !== "buy") closeBuyWindow();
+  if (keep !== "bin") closeBinWindow();
 }
 
 function openStockWindow() {

@@ -53,10 +53,10 @@ use crate::skills::{
 };
 use crate::slots::{Owners, seats_at, slot_cells};
 use crate::snapshot::{
-    AutoGateNames, BaseMapDto, BlueprintSnap, CraftSnap, DealSnap, DeskSnap, EntitySnap, GoalSnap,
-    MapMeta, MissionSnap, NeedSnap, NewsSnap, NodeSnap, NoteSnap, PriceSnap, RaidGates, RaidSnap,
-    RecipeSnap, RecruitSnap, ResearchSnap, SaleSnap, SkillSnap, Snapshot, StackSnap, StockSnap,
-    StructureSnap, TickerSnap, TopicSnap,
+    AutoGateNames, BaseMapDto, BinSnap, BlueprintSnap, CraftSnap, DealSnap, DeskSnap, EntitySnap,
+    GoalSnap, MapMeta, MissionSnap, NeedSnap, NewsSnap, NodeSnap, NoteSnap, PriceSnap, RaidGates,
+    RaidSnap, RecipeSnap, RecruitSnap, ResearchSnap, SaleSnap, SkillSnap, Snapshot, StackSnap,
+    StockSnap, StructureSnap, TickerSnap, TopicSnap,
 };
 use crate::timeline::{ready_for, revealed};
 
@@ -1263,6 +1263,7 @@ impl Sim {
                         .filter_map(|(id, &n)| item_index(id).map(|i| (i, n)))
                         .collect(),
                     capacity: t.capacity,
+                    priority: t.priority,
                     rest: t.rest,
                     wake: t.wake,
                     heal: t.heal,
@@ -1584,6 +1585,10 @@ impl Sim {
         // И автовылазок тоже: узел, только что построенный, никуда сам не ходит
         // (§12.67). Правило — решение игрока, а не свойство рации.
         world.insert_resource(AutoRaids::default());
+        // И наборов у ящиков: свежий ящик принимает всё, потому что «принимает
+        // всё» и «не выбрано ничего» — одно состояние (§12.195). Пустой список
+        // здесь значит именно это, а не «ни один ящик ничего не берёт».
+        world.insert_resource(Bins::default());
         // И автопродажи: база, которая с первого тика сбывает «излишки», сама
         // решала бы, что излишек, — а сделка не отменяется (§12.44, §12.87).
         world.insert_resource(Selling::default());
@@ -2314,6 +2319,40 @@ impl Sim {
                 _ => {}
             }
         }
+        true
+    }
+
+    /// Включить предмет в набор ящика на клетке `(x, y)` или выключить (§12.195).
+    ///
+    /// **Ящик — обычный тайл с ненулевым `priority`**, и в этом всё правило:
+    /// материал ходит только вверх по ярусам, а набор говорит, какой именно
+    /// материал сюда пускают. Записи нет — клетка принимает всё, поэтому первый
+    /// включённый предмет **сужает**, а снятие последнего возвращает «принимает
+    /// всё»: два представления одного состояния однажды разъехались бы.
+    ///
+    /// Ворота одни — **у клетки должен быть ярус**. Настроить склад нельзя
+    /// намеренно: он и так вместительнее (20 против 10), и адресный склад побил
+    /// бы ящик разом по всем осям, а развилка «плотность против близости»
+    /// исчезла бы вместе с ним. Технологических ворот у команды нет: их
+    /// заменяет `tech` самого тайла — нет ящика, нечего и настраивать (тем же
+    /// доводом §12.96 обошёлся без проверки «заказов не больше, чем
+    /// мастерских»). Под `automation:` (§12.93) правило не идёт: там то, что
+    /// база делает без присмотра, а набор лишь перенаправляет идущую уборку.
+    ///
+    /// Вернёт false, если в клетке не ящик или предмета такого нет.
+    pub fn set_bin(&mut self, x: i32, y: i32, item: usize, on: bool) -> bool {
+        note(&mut self.world, format!("bin {x} {y} {item} {on}"));
+        let tile = self.world.resource::<BaseMap>().tile_at(x, y);
+        if self.world.resource::<TileRules>().priority_of(tile) <= 0 {
+            return false;
+        }
+        // Палитра, а не `ItemRules`: индекс приезжает из вида, и мерить его надо
+        // тем же списком, по которому вид его и назвал. Молчаливая запись
+        // несуществующего типа пережила бы сохранение — ящик принимал бы ничто.
+        if self.items.len() <= item {
+            return false;
+        }
+        self.world.resource_mut::<Bins>().set(x, y, item, on);
         true
     }
 
@@ -4901,6 +4940,19 @@ impl Sim {
             out.sort_by_key(|d| (d.y, d.x));
             out
         };
+        // Наборы ящиков едут как есть: ресурс уже отсортирован по клетке, и
+        // второй порядок наружу заводить не на чем (§12.195).
+        let bins: Vec<BinSnap> = self
+            .world
+            .resource::<Bins>()
+            .0
+            .iter()
+            .map(|(x, y, items)| BinSnap {
+                x: *x,
+                y: *y,
+                accepts: items.clone(),
+            })
+            .collect();
         // Курсы считаются тем же `quote`, которым посчитается заказ, — двух
         // арифметик цены быть не должно (§12.44).
         let prices: Vec<PriceSnap> = {
@@ -5373,6 +5425,7 @@ impl Sim {
             standing,
             money,
             deals,
+            bins,
             prices,
             sales,
             favorites,

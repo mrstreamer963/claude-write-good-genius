@@ -1727,7 +1727,8 @@ main#stage.mode-cursor #mode-banner {
 #stockwin,
 #sciwin,
 #hirewin,
-#buywin {
+#buywin,
+#binwin {
   position: fixed;
   inset: 0;
   display: flex;
@@ -1740,7 +1741,8 @@ main#stage.mode-cursor #mode-banner {
 #stockwin[hidden],
 #sciwin[hidden],
 #hirewin[hidden],
-#buywin[hidden] {
+#buywin[hidden],
+#binwin[hidden] {
   display: none;
 }
 .win-box {
@@ -2333,4 +2335,29 @@ main#stage.mode-cursor #mode-banner {
    одинаково. */
 .tool.buy-row.locked {
   opacity: 0.75;
+}
+
+/* Окно «что держать в ящике» (§12.195). Строка на предмет, как в реестрах:
+   имена сканируются, а сетка из двух десятков незнакомых глифов — нет. */
+.bin-row .glyph {
+  filter: grayscale(1);
+  opacity: 0.5;
+}
+.bin-row.on .glyph {
+  filter: none;
+  opacity: 1;
+}
+/* Что в ящике сейчас — под заголовком окна, до списка. Модал накрывает
+   карточку клетки, и без этой строки он спрятал бы ровно тот ответ, за
+   которым игрок в него пошёл (§12.110). */
+.bin-head {
+  margin: 0 0 8px;
+}
+.bin-hint {
+  margin-top: 8px;
+}
+/* Дверь в окно, в карточке клетки. Своей строкой под именами: это не выбор
+   предмета, а уход в список, и стоять в одном ряду с ними она не должна. */
+.bin-edit {
+  margin-top: 6px;
 }

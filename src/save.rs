@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 29;
+pub(crate) const FORMAT: u32 = 30;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -128,6 +128,10 @@ pub(crate) const SAVED: &[&str] = &[
     // Автопродажа излишков — третье правило того же рода (§12.87). Забыть его
     // тише всех: партия грузится, база копит лом, и не происходит ничего.
     "Selling",
+    // Наборы ящиков — четвёртое (§12.195). Забыть его ещё тише: ящики остаются
+    // на карте и продолжают работать, только принимают снова всё, и разложенная
+    // игроком база молча перемешивается за десяток тиков.
+    "Bins",
     // Закладки игрока в окне «Склад» (§12.100). Не правила — сами по себе они
     // ничего не делают, — но состояние партии: игрок решил, что держать на
     // виду, и после загрузки это решение обязано быть на месте. Держать их в JS
@@ -262,6 +266,10 @@ pub(crate) struct StateDto {
     /// загрузка молча возвращает отряд в поле.
     #[serde(default)]
     pub(crate) auto_raids: Vec<(i32, i32, usize, bool)>,
+    /// Наборы ящиков: клетка и что игрок велел в ней держать (§12.195). Пустых
+    /// наборов здесь не бывает — «принимает всё» это отсутствие записи.
+    #[serde(default)]
+    pub(crate) bins: Vec<(i32, i32, Vec<usize>)>,
     /// Правило излишка: предмет, **куда** его девать и сколько штук база
     /// придерживает (§12.87, §12.88, §12.115).
     ///
@@ -722,6 +730,7 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
             auto_rest: world.resource::<AutoRest>().0,
             stocking: world.resource::<Stocking>().0.clone(),
             auto_raids: world.resource::<AutoRaids>().0.clone(),
+            bins: world.resource::<Bins>().0.clone(),
             selling: world
                 .resource::<Selling>()
                 .0
@@ -860,6 +869,7 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
     world.resource_mut::<AutoRest>().0 = s.auto_rest;
     world.resource_mut::<Stocking>().0 = s.stocking.clone();
     world.resource_mut::<AutoRaids>().0 = s.auto_raids.clone();
+    world.resource_mut::<Bins>().0 = s.bins.clone();
     world.resource_mut::<Selling>().0 = s
         .selling
         .iter()
