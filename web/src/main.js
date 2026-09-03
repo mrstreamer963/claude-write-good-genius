@@ -223,6 +223,7 @@ const sciWinEl = document.getElementById("sciwin");
 const hireWinEl = document.getElementById("hirewin");
 const buyWinEl = document.getElementById("buywin");
 const binWinEl = document.getElementById("binwin");
+const dossierEl = document.getElementById("dossier");
 const toastsEl = document.getElementById("toasts");
 const newsEl = document.getElementById("news");
 const liveTipEl = document.getElementById("livetip");
@@ -314,6 +315,10 @@ onPanelClick(cellEl, ".craft-cancel", cancelCraftAt);
 // «Снять с учёбы» (§12.147) — третья кнопка панели клетки после «на склад» и
 // «Отменить», и по тому же правилу: она стоит у той клетки, о которой говорит.
 // Ключ — сам кот: за партами одного домена их бывает несколько.
+// Дверь в «Личное дело» из панели кота. Осмотр, а не команда: мимо
+// `sendAction`, выделение не трогаем (§12.57). Делегированием — панель живёт
+// один кадр (§12.84).
+onPanelClick(catEl, ".cat-file", (node) => openDossier(node.dataset.id));
 onPanelClick(cellEl, ".study-off", (node) =>
   sendAction({ type: "unteach", id: node.dataset.id }),
 );
@@ -1713,6 +1718,9 @@ function renderSnapshot(snap) {
   // от щелчка по коту, и увидеть это игрок должен сразу, а не после закрытия.
   // Но **синхронизируется, а не пересобирается** (§12.118) — см. `buildRaidWindow`.
   renderRaidWindow();
+  // Дело — тем же кадром и по тому же доводу: опыт растёт на глазах, а ворота
+  // обучения меняются от постройки парты, и увидеть это игрок должен сразу.
+  syncDossier();
   renderResearchPanel(snap.research);
   renderCraftPanel(snap.crafting);
   renderTickers();
@@ -2125,46 +2133,53 @@ function renderCatPanel(entities) {
   // Врождённое — до навыков: оно объясняет их пределы, а не наоборот (§12.42).
   // Опыт кот доберёт работой, а эти числа даны ему навсегда, и ровно поэтому
   // коты остаются разными после того, как бригада выработалась.
-  const stats = (meta.stats ?? [])
+  // Врождённое и перки — **одной строкой**: и то и другое дано коту навсегда,
+  // и стоят они до навыков, потому что объясняют их пределы, а не наоборот
+  // (§12.42). Опыт кот доберёт работой, а эти числа даны ему при рождении —
+  // ровно поэтому коты остаются разными после того, как бригада выработалась.
+  const born = (meta.stats ?? [])
     .map((st, i) => `${esc(st.label || st.id)} ${e.stats?.[i] ?? 0}`)
-    .join(" · ");
-  if (stats) parts.push(`<div class="cat-sub">${stats}</div>`);
-  for (let i = 0; i < defs.length; i++) {
-    const s = e.skills?.[i];
-    if (!s) continue;
-    // Нулевой навык, за который ещё не капнуло ни очка опыта, — это не факт о
-    // коте, а пустая строка: доменов будет много, и список из них скрывает те,
-    // что игроку действительно интересны. Появится опыт — появится и полоска.
-    if (s.level === 0 && s.xp === 0) continue;
-    const levels = defs[i].levels ?? [];
-    const from = s.level > 0 ? levels[s.level - 1] : 0;
-    // Врождённый предел — это не потолок навыка: полоска, вставшая на месте,
-    // обязана назвать причину, иначе игрок прочтёт её как поломку (§12.42).
-    const capped = s.cap > 0 && s.level >= s.cap;
-    const born = capped && s.cap < levels.length;
-    // next = 0 — навык на потолке: полоска полная, порога дальше нет.
-    const pct =
-      capped || s.next <= from
-        ? 100
-        : Math.round(((s.xp - from) / (s.next - from)) * 100);
-    const note = born
-      ? `предел: ${esc(statLabel(defs[i].stat))} ${e.stats?.[statIndex(defs[i].stat)] ?? 0}`
-      : capped || s.next <= 0
-        ? "потолок"
-        : `${s.xp} / ${s.next}`;
+    .concat((e.perks ?? []).map((id) => esc(perkLabel(id))));
+  if (born.length) parts.push(`<div class="cat-sub">${born.join(" · ")}</div>`);
+  // **Один** навык, тот, что растёт сейчас, — а не список из шести полосок, в
+  // котором единственная движущаяся тонет. Какой именно, решает ядро
+  // (`training`): вывести домен из занятия в JS нельзя — у учёбы он приходит из
+  // приписки, а лечение растит «Медицину», а не домен пациента (инвариант 14).
+  //
+  // Строка **не исчезает**, когда рост встал: она приглушается и говорит об
+  // этом словом. Исчезай она — соседи по колонке прыгали бы дважды за каждую
+  // ходку кота к месту работы, ровно как §12.172 ругает пропадающую полоску.
+  // Полный список навыков и потолки живут в «Личном деле».
+  const inner =
+    e.training >= 0 && defs[e.training]
+      ? skillBlock(
+          e,
+          defs[e.training],
+          e.training,
+          e.training_now ? undefined : "сейчас не растёт",
+        )
+      : "";
+  if (inner) {
     parts.push(
-      '<div class="cat-skill">' +
-        `<div class="cat-row"><span>${esc(defs[i].label || defs[i].id)}</span><b>${s.level}</b></div>` +
-        `<div class="bar"><i class="${born ? "capped" : ""}" style="width:${pct}%"></i></div>` +
-        `<div class="cat-sub">${note}</div>` +
-        "</div>",
+      `<div class="cat-skill${e.training_now ? "" : " quiet"}">${inner}</div>`,
+    );
+  } else {
+    // Кот ещё ни за что не брался — говорим это словом (§12.53). Пустое место
+    // там, где у соседа полоска, читается как «навыков у него нет», хотя правда
+    // ровно обратная: они есть, просто нулевые, и все они в «Личном деле».
+    parts.push(
+      '<div class="cat-sub">ещё ни за что не брался — навыки в деле</div>',
     );
   }
+
   // У бодрости два порога, и они забирают кота по-разному (§12.33): выше
   // `tired` он работает, ниже — уходит спать освободившись, ниже `critical` —
   // бросает начатое. Оба надо назвать словами: без них полоска на 30 % и
   // полоска на 10 % выглядят одинаково, а кот с них ведёт себя по-разному.
-  if (e.energy_max > 0) {
+  // **Только когда просели** (§12.53): полная шкала не отвечает ни на один
+  // вопрос игрока, а три полных полоски подряд прячут ту одну, которая и
+  // объясняет, почему кот ведёт себя странно.
+  if (e.energy_max > 0 && e.energy < e.energy_max) {
     const pct = Math.round((e.energy / e.energy_max) * 100);
     const spent = e.energy_critical > 0 && e.energy <= e.energy_critical;
     const note = spent
@@ -2183,7 +2198,7 @@ function renderCatPanel(entities) {
   // Сытость — вторая потребность (§12.36). Цена голода списывается с бодрости,
   // а не со шкалы рядом, поэтому «голоден» надо назвать словом: иначе игрок
   // видит, что коты всё время спят, и не связывает это с пустым складом.
-  if (e.fed_max > 0) {
+  if (e.fed_max > 0 && e.fed < e.fed_max) {
     const pct = Math.round((e.fed / e.fed_max) * 100);
     const starving = e.fed <= 0;
     const note = starving
@@ -2203,7 +2218,7 @@ function renderCatPanel(entities) {
   // просевшая полоска всегда означает «этот кот только что вернулся с плохой
   // вылазки», а порог надо назвать словом: ниже него кота не берут в отряд, и
   // без подписи игрок прочитает молчащую кнопку как поломку.
-  if (e.health_max > 0) {
+  if (e.health_max > 0 && e.health < e.health_max) {
     const pct = Math.round((e.health / e.health_max) * 100);
     const hurt = e.health <= e.health_hurt;
     const note = hurt
@@ -2224,28 +2239,16 @@ function renderCatPanel(entities) {
   if (e.captive)
     parts.push('<div class="cat-sub">в плену: нужна вылазка за своим</div>');
   else if (e.away) parts.push('<div class="cat-sub">на вылазке</div>');
-  // Надетое: снаряжение молча прибавляет отряду силы, и без этой строки игрок
-  // не свяжет пропавший со склада комбинезон с выросшим прогнозом вылазки
-  // (§12.29). Пустой комплект показываем тоже — иначе непонятно, что он бывает.
-  const gear = e.gear ?? [];
-  const force = gear.reduce(
-    (sum, i) => sum + ((meta.items ?? [])[i]?.force ?? 0),
-    0,
-  );
+  // Надетое и лапы — состояние, а не история, поэтому остаются здесь и
+  // дублируются в «Личном деле» намеренно. Оба выражения общие с ним.
+  parts.push(`<div class="cat-sub">${gearLine(e)}</div>`);
+  parts.push(`<div class="cat-sub">${pawsLine(e)}</div>`);
+  // Дверь в «Личное дело» — осмотр, а не команда (§12.57), и потому мимо
+  // `sendAction`. Панель переписывается `innerHTML` каждым кадром, значит
+  // слушатель у кнопки только делегированный (`onPanelClick`, §12.84).
   parts.push(
-    '<div class="cat-sub">' +
-      (gear.length
-        ? `надето: ${gear.map((i) => esc(itemLabel(i))).join(" · ")} (+${force} к силе)`
-        : "не экипирован") +
-      "</div>",
+    `<button class="tool cat-file" data-key="file@${esc(e.id)}" data-id="${esc(e.id)}"><span>Личное дело</span></button>`,
   );
-  const held = e.carrying > 0 ? ` ${esc(itemLabel(e.carrying_item))}` : "";
-  const paws =
-    (e.carry_max > 0
-      ? `лапы ${e.carrying}/${e.carry_max}`
-      : `в лапах ${e.carrying}`) + held;
-  const tags = (e.perks ?? []).map((id) => esc(perkLabel(id)));
-  parts.push(`<div class="cat-sub">${[paws, ...tags].join(" · ")}</div>`);
   catEl.innerHTML = parts.join("");
   catEl.hidden = false;
 }
@@ -4676,6 +4679,71 @@ function recipeLabel(def) {
 
 // Название вылазки по индексу палитры — панели узла и миссии говорят о ней
 // одним и тем же словом.
+// Полоска домена: уровень, прогресс до следующего порога и причина, если он
+// упёрся. **Одно выражение на панель кота и на «Личное дело»** — иначе они
+// разойдутся в том, что считают потолком (§12.42).
+function skillBlock(e, def, i, note) {
+  const s = e.skills?.[i];
+  if (!s) return "";
+  const levels = def.levels ?? [];
+  const from = s.level > 0 ? levels[s.level - 1] : 0;
+  // Врождённый предел — это не потолок навыка: полоска, вставшая на месте,
+  // обязана назвать причину, иначе игрок прочтёт её как поломку (§12.42).
+  const capped = s.cap > 0 && s.level >= s.cap;
+  const born = capped && s.cap < levels.length;
+  // next = 0 — навык на потолке: полоска полная, порога дальше нет.
+  const pct =
+    capped || s.next <= from
+      ? 100
+      : Math.round(((s.xp - from) / (s.next - from)) * 100);
+  const why = born
+    ? `предел: ${esc(statLabel(def.stat))} ${e.stats?.[statIndex(def.stat)] ?? 0}`
+    : capped || s.next <= 0
+      ? "потолок"
+      : `${s.xp} / ${s.next}`;
+  return (
+    `<div class="cat-row"><span>${esc(def.label || def.id)}</span><b>${s.level}</b></div>` +
+    `<div class="bar"><i class="${born ? "capped" : ""}" style="width:${pct}%"></i></div>` +
+    `<div class="cat-sub">${note ?? why}</div>`
+  );
+}
+
+// Номер отряда по клетке его гаража — порядок `nodes` (§12.66). Пустая строка:
+// кот ни в чьём отряде не числится либо гараж снесли.
+function nodeNameAt(x, y) {
+  if (x < 0 || y < 0) return "";
+  const i = (lastSnap?.nodes ?? []).findIndex((o) => o.x === x && o.y === y);
+  return i >= 0 ? `Отряд ${i + 1}` : "";
+}
+
+// Надетое: снаряжение молча прибавляет отряду силы, и без этой строки игрок не
+// свяжет пропавший со склада комбинезон с выросшим прогнозом вылазки (§12.29).
+// Пустой комплект показываем тоже — иначе непонятно, что он бывает.
+function gearLine(e) {
+  const gear = e.gear ?? [];
+  const force = gear.reduce(
+    (sum, i) => sum + ((meta.items ?? [])[i]?.force ?? 0),
+    0,
+  );
+  return gear.length
+    ? `надето: ${gear.map((i) => esc(itemLabel(i))).join(" · ")} (+${force} к силе)`
+    : "не экипирован";
+}
+
+// Что в лапах. Строка остаётся в панели, и `jobLabel` её не заменяет: «несёт
+// Лом» он говорит только пока `job === "haul"`, а груз задачу переживает —
+// усталость и рана отпускают кота вместе с ношей (§12.106), роняет её только
+// заявка на вылазку (§12.38). У спящего с ломом в лапах панель иначе не
+// сказала бы ничего, а лом при этом числится «валяющимся» в шапке.
+function pawsLine(e) {
+  const held = e.carrying > 0 ? ` ${esc(itemLabel(e.carrying_item))}` : "";
+  return (
+    (e.carry_max > 0
+      ? `лапы ${e.carrying}/${e.carry_max}`
+      : `в лапах ${e.carrying}`) + held
+  );
+}
+
 function missionLabel(def) {
   const d = (meta.missions ?? [])[def];
   return d?.label || d?.id || "вылазка";
@@ -5720,6 +5788,16 @@ function buildToolbar() {
     liveTitle(raidDoor, "Кто в каком отряде, чем занят и куда его отправить");
     el.appendChild(raidDoor);
   }
+
+  // «Личные дела» (§12.N). Дверь не гаснет никогда: без котов партии не бывает,
+  // значит ни ветки в `syncDoors`, ни `.off` ей не нужно. Кота окно выбирает
+  // само — выделенного, иначе первого по `id`, — а дальше их листают вкладками.
+  const files = mkTool(
+    '<span class="sw sw-desk"></span><span>Личные дела</span>',
+    folds(() => openDossier(null)),
+  );
+  liveTitle(files, "Кто каков, что с ним было и чему его выучить");
+  el.appendChild(files);
 
   // Правила симуляции — не режимы ввода, а тумблеры поведения котов, поэтому
   // они живут отдельно от инструментов и своей подсветкой их не сбивают.
@@ -7859,6 +7937,266 @@ const wareRows = [];
 // Ключ нужен только `closeOtherWindows`: «закрой всех, кроме того, кого я сейчас
 // открываю». Escape ключа не знает и закрывает первое открытое — открытым
 // бывает ровно одно, за этим и следит `closeOtherWindows`.
+// --- окно «Личное дело» (§12.N) ---------------------------------------------
+//
+// Что мир помнит про **этого** кота и чему его можно выучить. Дверей две, и обе
+// вне карты (§12.101): кнопка в панели кота — на выделенного, пункт тулбара —
+// на кого придётся.
+//
+// Окно про конкретного кота — исключение из §12.119, где адресное живёт у
+// самого адресата (парта, гараж, ящик). Работает оно потому, что **кота
+// выбирают не с карты, а вкладкой внутри окна**: дословно то, что §12.166
+// сделала с гаражами, убрав раздел «Вылазки» и отдав выбор узла вкладкам штаба.
+//
+// Идиома складская (§12.118): каркас строится один раз, дальше только
+// синхронизируется. ⚠️ Строка домена тикает каждым тиком (растёт `xp`), а в ней
+// стоит кнопка: собери строку одним `setHtml` — и `mousedown` придётся в один
+// узел, а `mouseup` в другой, уже несуществующий (§12.84). Поэтому живая часть
+// и кнопка — **разные узлы**, и у кнопки меняются только подпись, класс и
+// подсказка.
+let dossierOpen = false;
+// Чьё дело открыто — `id` кота. Кот может уйти в поле или попасть в плен, пока
+// окно открыто: это не повод его закрывать, дело от этого не исчезает.
+let dossierAt = null;
+// Ссылки на живые узлы и подпись, по которой видно, что каркас устарел.
+let dossierUi = null;
+
+function openDossier(id) {
+  closeOtherWindows("dossier");
+  dossierOpen = true;
+  dossierAt = id ?? dossierAt ?? pickDossierCat();
+  dossierUi = null;
+  syncDossier();
+  dossierEl.hidden = false;
+}
+
+function closeDossier() {
+  if (!dossierOpen) return;
+  dossierOpen = false;
+  dossierUi = null;
+  dossierEl.hidden = true;
+  dossierEl.innerHTML = "";
+  // По удалённому узлу `mouseleave` не приходит — подсказка осталась бы висеть
+  // над пустотой (§12.125).
+  hideLiveTip();
+}
+
+// На ком открыться, если игрок не назвал кота: на выделенном, иначе на первом
+// по `id`. Пустого дела не бывает — котов в партии всегда хоть один.
+function pickDossierCat() {
+  const last = selectedUnits[selectedUnits.length - 1];
+  if (last) return last;
+  return dossierRoster()[0]?.id ?? null;
+}
+
+// Все коты партии по `id`: порядок обхода в снимке идёт от ECS, а вкладки не
+// должны переставляться под курсором.
+function dossierRoster() {
+  return [...(lastSnap?.entities ?? [])].sort((a, b) =>
+    a.id.localeCompare(b.id),
+  );
+}
+
+function buildDossier(roster) {
+  const { box, list } = mkWindow(dossierEl, "Личное дело", () =>
+    closeDossier(),
+  );
+  const ui = {
+    at: dossierAt,
+    roster: roster.map((e) => e.id).join(","),
+    rows: [],
+  };
+
+  // Вкладки — между шапкой и списком, чтобы не уезжали при прокрутке: там же,
+  // где они стоят в штабе.
+  ui.tabs = document.createElement("div");
+  ui.tabs.className = "dos-tabs";
+  ui.tabEls = roster.map((e) => {
+    const tab = mkTool("<span></span>", () => {
+      // Осмотр, а не команда: выделение не трогаем (§12.57).
+      dossierAt = e.id;
+      dossierUi = null;
+      syncDossier();
+    });
+    tab.className = "tool dos-tab";
+    ui.tabs.appendChild(tab);
+    return { tab, id: e.id };
+  });
+  box.insertBefore(ui.tabs, list);
+
+  ui.head = document.createElement("div");
+  ui.head.className = "dos-head";
+  list.appendChild(ui.head);
+
+  ui.born = document.createElement("div");
+  ui.born.className = "cat-sub";
+  list.appendChild(ui.born);
+
+  ui.life = document.createElement("div");
+  ui.life.className = "cat-sub";
+  list.appendChild(ui.life);
+
+  // Навыки — все домены палитры, включая нулевые: в панели их прячут, потому
+  // что там место одному, а здесь спрашивают «каков этот кот целиком».
+  (meta.skills ?? []).forEach((def, i) => {
+    const row = document.createElement("div");
+    row.className = "dos-skill";
+    const live = document.createElement("div");
+    live.className = "dos-live";
+    row.appendChild(live);
+    const btn = mkTool("<span></span>", () => {
+      if (btn.classList.contains("off")) return;
+      const me = (lastSnap?.entities ?? []).find((e) => e.id === dossierAt);
+      if (me?.study === i) sendAction({ type: "unteach", id: dossierAt });
+      else
+        sendAction({
+          type: "teach",
+          id: dossierAt,
+          skill: (meta.skills ?? [])[i]?.id,
+        });
+    });
+    btn.className = "tool dos-teach";
+    row.appendChild(btn);
+    list.appendChild(row);
+    ui.rows.push({ row, live, btn, def, i });
+  });
+
+  ui.kit = document.createElement("div");
+  ui.kit.className = "cat-sub";
+  list.appendChild(ui.kit);
+
+  ui.log = document.createElement("div");
+  ui.log.className = "dos-log";
+  list.appendChild(ui.log);
+
+  dossierUi = ui;
+}
+
+// Слово по тегу ворот обучения (§12.53). **Единственное место в JS, где тег
+// превращается в текст**: считает их ядро одним выражением с `Sim::teach`
+// (инвариант 14), а вид только называет.
+const TEACH_WHY = {
+  untaught: "Этому за партой не учат: домен растёт только работой",
+  away: "Его нет на базе — учить некого",
+  topped: "Парта его уже ничему не научит: дальше только практика",
+  nodesk: "Парт этого домена на базе нет — постройте класс",
+  taken: "Все парты этого домена заняты или до них не дойти",
+};
+
+function syncDossier() {
+  if (!dossierOpen) return;
+  const roster = dossierRoster();
+  if (!roster.length) return;
+  // Кот мог пропасть только вместе с партией: держимся за первого по `id`.
+  if (!roster.some((e) => e.id === dossierAt)) dossierAt = roster[0].id;
+  const sig = roster.map((e) => e.id).join(",");
+  if (!dossierUi || dossierUi.at !== dossierAt || dossierUi.roster !== sig) {
+    buildDossier(roster);
+  }
+  const ui = dossierUi;
+  const e = roster.find((c) => c.id === dossierAt);
+  if (!e) return;
+
+  for (const { tab, id } of ui.tabEls) {
+    const who = roster.find((c) => c.id === id);
+    const mark = who?.captive ? " · в плену" : who?.away ? " · в поле" : "";
+    setHtml(tab.firstChild, esc(id) + mark);
+    tab.classList.toggle("on", id === dossierAt);
+  }
+
+  // Шапка: кто это, в каком отряде и чем занят прямо сейчас. Занятие берём тем
+  // же `jobLabel`, что и панель, — второго словаря занятий не заводим.
+  const squad = nodeNameAt(e.crew_x, e.crew_y);
+  const job = e.stuck ? "не может дойти" : jobLabel(e);
+  setHtml(
+    ui.head,
+    portraitHtml(e.sprite) +
+      `<div><div class="cat-name">${esc(e.id)}${squad ? ` · ${esc(squad)}` : ""}</div>` +
+      (job ? `<div class="cat-sub">${job}</div>` : "") +
+      "</div>",
+  );
+
+  // Врождённое и перки — одной строкой: и то и другое дано коту навсегда.
+  const stats = (meta.stats ?? [])
+    .map((st, i) => `${esc(st.label || st.id)} ${e.stats?.[i] ?? 0}`)
+    .concat((e.perks ?? []).map((id) => esc(perkLabel(id))));
+  setHtml(ui.born, stats.join(" · "));
+
+  // Когда пришёл. Тик разворачивает в день сам вид (§12.46) — тем же
+  // календарём, что и всё остальное.
+  const day = dayOf(e.joined);
+  const now = dayOf(lastSnap?.tick ?? 0);
+  setHtml(
+    ui.life,
+    day > 0
+      ? `на базе с ${day}-го дня · ${days(Math.max(0, now - day))} здесь`
+      : "на базе с самого начала",
+  );
+
+  for (const { live, btn, def, i } of ui.rows) {
+    const s = e.skills?.[i];
+    if (!s) continue;
+    const levels = def.levels ?? [];
+    const from = s.level > 0 ? levels[s.level - 1] : 0;
+    const capped = s.cap > 0 && s.level >= s.cap;
+    const born = capped && s.cap < levels.length;
+    const pct =
+      capped || s.next <= from
+        ? 100
+        : Math.round(((s.xp - from) / (s.next - from)) * 100);
+    const note = born
+      ? `предел: ${esc(statLabel(def.stat))} ${e.stats?.[statIndex(def.stat)] ?? 0}`
+      : capped || s.next <= 0
+        ? "потолок"
+        : `${s.xp} / ${s.next}`;
+    const schooled = (e.schooled ?? []).includes(i)
+      ? " · доучен за партой"
+      : "";
+    setHtml(
+      live,
+      `<div class="cat-row"><span>${esc(def.label || def.id)}</span><b>${s.level}</b></div>` +
+        `<div class="bar"><i class="${born ? "capped" : ""}" style="width:${pct}%"></i></div>` +
+        `<div class="cat-sub">${note}${schooled}</div>`,
+    );
+
+    // Кнопка — стабильный узел: меняются только подпись, класс и подсказка.
+    // Пересобери её разметку кадром — и клик перестанет доходить (§12.84).
+    const learning = e.study === i;
+    const why = learning ? null : TEACH_WHY[s.teach];
+    setHtml(btn.firstChild, learning ? "Снять с учёбы" : "Учить");
+    btn.classList.toggle("off", !learning && !!why);
+    liveTitle(
+      btn,
+      why ??
+        (learning
+          ? "Отменить приписку: за партой он больше не нужен"
+          : `Посадить за парту: доведёт до ${s.desk} очков опыта`),
+    );
+  }
+
+  // Надетое и лапы — те же строки, что и в панели: это состояние, а не
+  // история, и дублируются они намеренно.
+  setHtml(ui.kit, `${gearLine(e)} · ${pawsLine(e)}`);
+
+  // История. Пустая говорит словом, а не пустотой (§12.53): «ничего не
+  // случилось» и «панель сломалась» иначе выглядят одинаково.
+  const been = (e.raids_done ?? [])
+    .map((t) => `${esc(missionLabel(t.def))} ×${t.count}`)
+    .join(" · ");
+  const log = [];
+  if (been) log.push(`Вылазок: ${been}`);
+  if (e.wounds > 0)
+    log.push(`Доходил до ранения: ${plural(e.wounds, "раз", "раза", "раз")}`);
+  if (e.captures > 0)
+    log.push(`Оставался в плену: ${plural(e.captures, "раз", "раза", "раз")}`);
+  setHtml(
+    ui.log,
+    log.length
+      ? log.map((line) => `<div class="cat-sub">${line}</div>`).join("")
+      : '<div class="cat-sub">ничего из этого с ним ещё не случалось</div>',
+  );
+}
+
 const WINDOWS = [
   ["stock", () => stockWinOpen, () => closeStockWindow()],
   ["sci", () => sciWinOpen, () => closeSciWindow()],
@@ -7866,6 +8204,7 @@ const WINDOWS = [
   ["raid", () => raidWinOpen, () => closeRaidWindow()],
   ["buy", () => buyWinOpen, () => closeBuyWindow()],
   ["bin", () => binWinOpen, () => closeBinWindow()],
+  ["dossier", () => dossierOpen, () => closeDossier()],
 ];
 
 // Окно модальное, значит второго рядом не бывает. До §12.120 столкнуться им

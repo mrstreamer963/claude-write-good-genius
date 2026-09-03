@@ -509,6 +509,12 @@ main#stage.mode-cursor #mode-banner {
   border-radius: 50%;
 }
 
+/* Личные дела: цвет парты из палитры тайлов — дверь ведёт туда, где кота
+   сажают учиться, и красить её надо тем, чем покрашено место учёбы. */
+.sw-desk {
+  background: #4a4f7a;
+}
+
 /* Покупка: тот же цвет, что у торгового поста в палитре тайлов (§12.150).
    Дверь ведёт в витрину внешнего рынка, и красить её надо тем, чем покрашено
    место, куда товар приедет. */
@@ -1728,7 +1734,8 @@ main#stage.mode-cursor #mode-banner {
 #sciwin,
 #hirewin,
 #buywin,
-#binwin {
+#binwin,
+#dossier {
   position: fixed;
   inset: 0;
   display: flex;
@@ -1742,7 +1749,8 @@ main#stage.mode-cursor #mode-banner {
 #sciwin[hidden],
 #hirewin[hidden],
 #buywin[hidden],
-#binwin[hidden] {
+#binwin[hidden],
+#dossier[hidden] {
   display: none;
 }
 .win-box {
@@ -2360,4 +2368,61 @@ main#stage.mode-cursor #mode-banner {
    предмета, а уход в список, и стоять в одном ряду с ними она не должна. */
 .bin-edit {
   margin-top: 6px;
+}
+
+/* --- Личное дело (§12.N) ---------------------------------------------------
+   Вкладки котов стоят между шапкой и списком — там же, где вкладки гаражей в
+   штабе, и по той же причине: при прокрутке они уезжать не должны. */
+.dos-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.dos-tabs .dos-tab {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.dos-tabs .dos-tab.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.dos-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+/* Строка домена: живая часть слева, кнопка справа. Кнопка — **отдельный узел**
+   и переживает кадр (§12.84): собери строку одним `innerHTML` — и `mousedown`
+   придётся в один узел, а `mouseup` в другой. */
+.dos-skill {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.dos-live {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.dos-teach {
+  flex: 0 0 auto;
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+.dos-log {
+  margin-top: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+/* Домен, который сейчас не растёт: строка стоит на месте, чтобы соседи по
+   колонке не прыгали дважды за каждую ходку кота (§12.172), — гаснет только
+   сама полоска. */
+.cat-skill.quiet {
+  opacity: 0.6;
 }
