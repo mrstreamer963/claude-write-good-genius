@@ -67,6 +67,10 @@ pub(crate) struct RaidRules<'w> {
     pub(crate) skills: Res<'w, SkillRules>,
     pub(crate) stats: Res<'w, StatRules>,
     pub(crate) items: Res<'w, ItemRules>,
+    /// Порог ранения: по нему личное дело считает **переход**, а не урон.
+    /// Лежит здесь, а не шестнадцатым параметром системы, по той же причине,
+    /// по которой свёрнуты остальные четыре.
+    pub(crate) health: Res<'w, HealthRules>,
 }
 
 /// Параметр, которым отряд режет опасность вылазки (§12.70). Имя, а не номер:
@@ -453,6 +457,11 @@ pub(crate) fn run_missions(
         // здесь и в прогнозе для панели — двумя вызывающими одного выражения,
         // как и сила (инвариант 14).
         Option<&Stats>,
+        // Личное дело: вылазка — единственное место, где в него пишутся три
+        // поля из пяти. ⚠️ **Только `Option`**: коты из ASCII-схем собираются
+        // мимо `spawn_cat` и дела не имеют, а неоптиональный `&mut Record`
+        // молча выкинул бы их из запроса — то есть сломал бы вылазки целиком.
+        Option<&mut Record>,
     )>,
     // Весь личный состав базы: по нему считается, есть ли кому прийти за
     // пленным. **Ушедшие сюда входят** (§12.59): кот в поле — твой кот, он
@@ -480,6 +489,7 @@ pub(crate) fn run_missions(
         skills: skill_rules,
         stats: stat_rules,
         items,
+        health: hurts,
     } = raid_rules;
     let raid = skill_rules.index_of(SKILL_RAID);
     let comms = skill_rules.index_of(SKILL_RELAY);
@@ -512,7 +522,7 @@ pub(crate) fn run_missions(
         let squad: Vec<(Entity, (i32, i32), bool, bool, i32, i32)> = crew
             .iter()
             .filter(|(_, s, ..)| s.0 == mission_e)
-            .map(|(e, _, _, p, path, away, skills, _, gear, _, stats)| {
+            .map(|(e, _, _, p, path, away, skills, _, gear, _, stats, _)| {
                 let walking = path.is_some_and(|p| !p.steps.is_empty());
                 // Вклад кота в силу отряда: сам он стоит единицу, навык —
                 // сверху, надетое — ещё сверху. Нулевой навык поэтому не значит
@@ -620,9 +630,10 @@ pub(crate) fn run_missions(
             }
 
             for &(cat_e, ..) in &squad {
+                let taken_captive = Some(cat_e) == captive;
                 // Пленный остаётся в поле: `Away` при нём, отряда больше нет —
                 // миссия сейчас исчезнет, и ссылка на неё повисла бы.
-                match Some(cat_e) == captive {
+                match taken_captive {
                     true => {
                         commands.entity(cat_e).remove::<Squad>().insert(Captive);
                     }
@@ -639,17 +650,37 @@ pub(crate) fn run_missions(
                 // (§12.37). Отдельной формулы для урона нет намеренно: две
                 // арифметики исхода разошлись бы, а прогноз в панели показывал
                 // бы игроку не то, что случится (§12.23).
-                if let Ok((.., energy, _, health, _)) = crew.get_mut(cat_e) {
+                if let Ok((.., energy, _, health, _, record)) = crew.get_mut(cat_e) {
                     if let Some(mut energy) = energy {
                         let toll = if out.failed { energy.0 } else { rule.toll };
                         energy.0 = (energy.0 - toll).max(0);
                     }
+                    // Личное дело помнит не урон, а **выход из строя**: сколько
+                    // раз вылазка довела кота до порога ранения. Царапина, после
+                    // которой он продолжил работать, — не то, о чём игрок
+                    // рассказывает про своего кота.
+                    let mut crossed = false;
                     if let Some(mut health) = health {
                         // Раны у всех одни — те, что посчитал исход. Пленному
                         // сверх этого не достаётся ничего: плен — это место, а
                         // не наказание, и добивать оставленного там кота ядру
                         // незачем (§12.40).
+                        let before = health.0;
                         health.0 = (health.0 - rule.harm * (100 - out.share) / 100).max(0);
+                        let hurt = hurts.hurt;
+                        crossed = before > hurt && health.0 <= hurt;
+                    }
+                    // Три поля дела из пяти — здесь, соседними строками с самими
+                    // событиями, как и журнал `Raids` ниже. Вылазка засчитывается
+                    // и провальная: «сходил» — это про кота, а не про добычу.
+                    if let Some(mut record) = record {
+                        record.note_raid(mission.def);
+                        if crossed {
+                            record.wounds += 1;
+                        }
+                        if taken_captive {
+                            record.captures += 1;
+                        }
                     }
                 }
                 // Провал ломает снаряжение: до него он стоил только бодрости, а

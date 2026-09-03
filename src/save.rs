@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 30;
+pub(crate) const FORMAT: u32 = 31;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -76,6 +76,15 @@ pub(crate) const SAVED: &[&str] = &[
     "Health",
     "Skills",
     "Stats",
+    // След последнего начисления опыта (§12.17). Идёт в снимок, а не в
+    // `SKIPPED` вслед за `Worked`: партия открывается на паузе (§12.45), и без
+    // него панель кота осталась бы без строки навыка до первого тика, которого
+    // может не быть долго.
+    "Trained",
+    // Личное дело (§12.N): наём, вылазки, раны, плен, доученные домены. Забудь
+    // его — и загруженная партия объявит всех котов новобранцами без прошлого,
+    // причём молча: пустое дело от настоящего не отличить.
+    "Record",
     "Perks",
     "Gear",
     "Carrying",
@@ -373,6 +382,12 @@ pub(crate) struct EntityDto {
     pub(crate) skills: Option<Vec<i32>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) stats: Option<Vec<i32>>,
+    /// Домен последнего начисления опыта и тик, когда это было (§12.17).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) trained: Option<(usize, u64)>,
+    /// Личное дело (§12.N): наём, вылазки по заказам, раны, плен, доученное.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) record: Option<RecordDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) perks: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -472,6 +487,17 @@ pub(crate) struct AimDto {
 #[derive(Serialize, Deserialize)]
 pub(crate) struct RestDto {
     pub(crate) spot: Option<(i32, i32)>,
+}
+
+/// Личное дело кота (§12.N) — целиком, поле в поле: ссылок на сущности внутри
+/// нет, поэтому второй проход разбора его не касается.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct RecordDto {
+    pub(crate) joined: u64,
+    pub(crate) raids: Vec<(usize, i32)>,
+    pub(crate) wounds: i32,
+    pub(crate) captures: i32,
+    pub(crate) schooled: Vec<usize>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -659,6 +685,14 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                 posted: e.get::<Posted>().map(|p| p.spot),
                 enlisted: e.get::<Enlisted>().map(|c| c.spot),
                 enrolled: e.get::<Enrolled>().map(|c| c.skill),
+                trained: e.get::<Trained>().map(|t| (t.skill, t.at)),
+                record: e.get::<Record>().map(|r| RecordDto {
+                    joined: r.joined,
+                    raids: r.raids.clone(),
+                    wounds: r.wounds,
+                    captures: r.captures,
+                    schooled: r.schooled.clone(),
+                }),
 
                 away: e.contains::<Away>(),
                 captive: e.contains::<Captive>(),
@@ -1053,6 +1087,18 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
         }
         if let Some(skill) = dto.enrolled {
             e.insert(Enrolled { skill });
+        }
+        if let Some((skill, at)) = dto.trained {
+            e.insert(Trained { skill, at });
+        }
+        if let Some(r) = &dto.record {
+            e.insert(Record {
+                joined: r.joined,
+                raids: r.raids.clone(),
+                wounds: r.wounds,
+                captures: r.captures,
+                schooled: r.schooled.clone(),
+            });
         }
         if let Some(spot) = dto.enlisted {
             e.insert(Enlisted { spot });

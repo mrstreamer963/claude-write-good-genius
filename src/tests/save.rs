@@ -162,6 +162,10 @@ fn every_component_is_either_saved_or_skipped() {
     // инициализации расписания, поэтому такой тип приходится назвать здесь
     // руками — иначе сторож объявит живой компонент мёртвой записью.
     sim.world.register_component::<Enlisted>();
+    // След начисления опыта ставится `Commands`-ом и только тому, кто работал:
+    // за два тика стартовая тройка успевает не всегда, а реестр наполняется
+    // самой вставкой. Тот же случай, что выше, и та же строчка.
+    sim.world.register_component::<Trained>();
 
     let listed: BTreeSet<&str> = SAVED
         .iter()
@@ -790,4 +794,54 @@ fn an_old_snapshot_does_not_hide_the_shelves() {
         "старый снимок спрятал строку лома: линию надо добирать по миру, \
          а не доверять пустому полю",
     );
+}
+
+/// Личное дело переживает загрузку. Промах здесь тихий: пустое дело от
+/// настоящего не отличить, и загруженная партия объявила бы всех котов
+/// новобранцами без прошлого.
+#[test]
+fn a_personal_record_survives_a_save() {
+    let mut live = Sim::new(CORE).expect("рулсет");
+    live.without_timeline();
+    assert!(
+        live.launch(0, vec!["excellent".to_string(), "sp2".to_string()]),
+        "свалка открыта безвестной базе"
+    );
+    live.tick_n(600);
+    assert_eq!(
+        live.raids_of("excellent"),
+        vec![(0, 1)],
+        "сходил и вернулся"
+    );
+
+    let json = live.save().expect("снимок");
+    let mut loaded = Sim::load_from(CORE, &json).expect("загрузка");
+
+    assert_eq!(loaded.raids_of("excellent"), vec![(0, 1)], "дело приехало");
+    assert_eq!(loaded.joined_of("sp2"), 0, "и тик найма вместе с ним");
+}
+
+/// След начисления опыта переживает загрузку, и проверяется это **до** первого
+/// тика: партия открывается на паузе (§12.45), и без записи в снимок панель
+/// кота осталась бы без строки навыка до первой работы, которой может не быть
+/// долго.
+#[test]
+fn the_trained_mark_survives_a_save() {
+    let mut live = Sim::new(CORE).expect("рулсет");
+    live.without_timeline();
+    let build = live.skill_index("build").expect("домен «Стройка»");
+    assert!(
+        live.plan_demolish_rect(6, 10, 3, 4),
+        "занимаем бригаду сносом"
+    );
+    live.tick_n(300);
+    let who = ["excellent", "sp2", "sp3"]
+        .into_iter()
+        .find(|c| live.trained_of(c) == Some(build))
+        .expect("кто-то из бригады успел поработать");
+
+    let json = live.save().expect("снимок");
+    let mut loaded = Sim::load_from(CORE, &json).expect("загрузка");
+
+    assert_eq!(loaded.trained_of(who), Some(build), "домен приехал");
 }

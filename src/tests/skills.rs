@@ -12,6 +12,10 @@ const CORRIDOR: [&str; 3] = ["#########", "#a......#", "#########"];
 /// Пороги «мастера»: пять уровней, каждый достижим сразу через `set_xp`.
 const LEVELS: [i32; 5] = [10, 20, 30, 40, 50];
 
+/// Тайл, которым занимают кота стройкой: пол схемы — уже `0`, и чертёж на нём
+/// отсекается как «уже построено».
+const OTHER: i32 = 2;
+
 // --- рост ------------------------------------------------------------------
 
 /// Базовый случай: кот строит — навык растёт ровно на тик работы за тик.
@@ -209,4 +213,71 @@ fn the_shipped_ruleset_grows_skills_and_deals_paws() {
         crew.iter().any(|c| sim.xp_of(c, build) > 0),
         "на разборке гаража бригада набрала опыт"
     );
+}
+
+// --- Что растёт прямо сейчас (§12.17) ---------------------------------------
+//
+// Панель кота показывает **один** навык, и выбирает его ядро: `Worked` живёт
+// внутри тика и к снимку уже снят, а вывести домен из занятия в JS нельзя —
+// у учёбы он приходит из приписки, а лечение растит «Медицину», а не домен
+// пациента. Тесты сторожат ровно эти два случая (инвариант 14).
+
+/// Строитель растит «Стройку», и след указывает на неё же.
+#[test]
+fn training_names_the_domain_that_grew_this_tick() {
+    let mut sim = sim_from(&["#####", "#a..#", "#####"]);
+    let build = sim.set_skill("build", &[20, 100]);
+    sim.add_blueprint(2, 1, OTHER);
+    sim.tick_n(4);
+
+    assert_eq!(sim.training_of("a"), Some(build), "растёт «Стройка»");
+}
+
+/// Кончилась работа — «растёт сейчас» гаснет, но след домена остаётся: строка
+/// в панели не исчезает, а приглушается. Исчезай она — соседи по колонке
+/// прыгали бы дважды за каждую ходку (тот же довод, что у §12.172).
+#[test]
+fn training_stays_but_goes_quiet_while_he_walks() {
+    let mut sim = sim_from(&CORRIDOR);
+    let build = sim.set_skill("build", &[20, 100]);
+    sim.add_blueprint(2, 1, OTHER);
+    sim.tick_n(4);
+    assert_eq!(sim.training_of("a"), Some(build), "строит");
+
+    sim.tick_n(BUILD_TICKS * 4);
+    assert_eq!(sim.training_of("a"), None, "работы больше нет");
+    assert_eq!(
+        sim.trained_of("a"),
+        Some(build),
+        "а след домена остался: строке в панели есть что показать",
+    );
+}
+
+/// Медик растит «Медицину», а не домен пациента: маппинг «занятие → домен» в
+/// JS сказал бы неправду именно здесь.
+#[test]
+fn a_healer_trains_medicine_not_the_patients_domain() {
+    let mut sim = sim_from(&["#########", "#a.....b#", "#########"]);
+    let medicine = sim.set_skill("medicine", &[10, 100]);
+    sim.set_health_rules(1000, 600, 1);
+    sim.set_health("a", 100);
+    sim.tick_n(20);
+    assert!(sim.is_treating("b"), "сосед взялся лечить");
+
+    assert_eq!(sim.training_of("b"), Some(medicine), "и растит «Медицину»");
+}
+
+/// Ученик растит тот домен, которому приписан, а не тот, чью парту занял бы
+/// ближайший тайл: приписка идёт к домену (§12.84).
+#[test]
+fn a_student_trains_the_domain_he_is_enrolled_in() {
+    let mut sim = sim_from(&["########", "#a.....#", "########"]);
+    let science = sim.set_skill("science", &[20, 100]);
+    sim.set_taught(science, 1);
+    sim.set_teaches(1, science);
+    sim.force_tile(3, 1, 1);
+    assert!(sim.teach("a", "science"));
+    sim.tick_n(6);
+
+    assert_eq!(sim.training_of("a"), Some(science));
 }

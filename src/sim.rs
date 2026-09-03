@@ -39,7 +39,7 @@ use crate::missions::{
     outcome, phase,
 };
 use crate::movement::{Busy, is_stuck};
-use crate::path::find_path;
+use crate::path::{Reach, find_path};
 use crate::relay::relay_force;
 use crate::ruleset::{
     EventDef, FactionDef, GoalDef, ItemDef, MissionDef, PerkDef, RecipeDef, RecruitDef,
@@ -49,14 +49,14 @@ use crate::save::{FORMAT, SaveFile, capture, fingerprint, note, restore};
 use crate::schedule::build_schedule;
 use crate::seen::note_seen;
 use crate::skills::{
-    SKILL_RAID, SKILL_SCIENCE, desk_cap, level_cap_of, level_of, nearest_desk, xp_ceiling,
+    Desk, SKILL_RAID, SKILL_SCIENCE, desk_cap, desk_gate, level_cap_of, level_of, xp_ceiling,
 };
 use crate::slots::{Owners, seats_at, slot_cells};
 use crate::snapshot::{
-    AutoGateNames, BaseMapDto, BinSnap, BlueprintSnap, CraftSnap, DealSnap, DeskSnap, EntitySnap,
-    GoalSnap, MapMeta, MissionSnap, NeedSnap, NewsSnap, NodeSnap, NoteSnap, PriceSnap, RaidGates,
-    RaidSnap, RecipeSnap, RecruitSnap, ResearchSnap, SaleSnap, SkillSnap, Snapshot, StackSnap,
-    StockSnap, StructureSnap, TickerSnap, TopicSnap,
+    AutoGateNames, BaseMapDto, BinSnap, BlueprintSnap, CraftSnap, DealSnap, EntitySnap, GoalSnap,
+    MapMeta, MissionSnap, NeedSnap, NewsSnap, NodeSnap, NoteSnap, PriceSnap, RaidGates, RaidSnap,
+    RecipeSnap, RecruitSnap, ResearchSnap, SaleSnap, SkillSnap, Snapshot, StackSnap, StockSnap,
+    StructureSnap, TallySnap, TickerSnap, TopicSnap,
 };
 use crate::timeline::{ready_for, revealed};
 
@@ -1158,6 +1158,10 @@ fn spawn_cat(
     };
 
     let hauler = perks.iter().any(|p| p == PERK_HAULER);
+    // Дело заводится здесь и только здесь — по тому же доводу, по которому
+    // здесь же собирается сам кот (инвариант 21): второе место сборки дало бы
+    // кота без дела, а заметить это можно было бы только по пустой карточке.
+    let joined = world.resource::<SimTime>().tick;
     let mut cat = world.spawn((
         UnitId(id.to_string()),
         Renderable {
@@ -1165,6 +1169,10 @@ fn spawn_cat(
         },
         Position { x: at.0, y: at.1 },
         Perks(perks.to_vec()),
+        Record {
+            joined,
+            ..Default::default()
+        },
     ));
     // Ни одного параметра — компоненты тоже нет: так живут коты из ASCII-схем,
     // в мире которых палитры параметров не существует. А вот нулевое значение
@@ -3972,64 +3980,63 @@ impl Sim {
     /// иначе свободный кот трогался бы с места на тик позже, чем нажали, — а
     /// заодно здесь же и отказ, когда все парты заняты (молчащая кнопка
     /// читается как сломанная, §12.53).
-    pub fn teach(&mut self, unit_id: &str, skill_id: &str) -> bool {
-        note(&mut self.world, format!("teach {unit_id} {skill_id}"));
-        let rules = self.world.resource::<SkillRules>();
-        let Some(skill) = rules.index_of(skill_id) else {
-            return false;
+    /// Ворота обучения этого кота этому домену — одно выражение на фасад,
+    /// снимок и кнопку «Учить» в «Личном деле» (инвариант 14).
+    ///
+    /// Пропавшего кота ворота называют ушедшим: учить его так же некому, а
+    /// седьмого тега ради случая, которого в игре не бывает, заводить нечего.
+    pub(crate) fn desk_gate_of(&mut self, unit_id: &str, skill: usize) -> Desk {
+        let found = {
+            let mut q = self
+                .world
+                .query::<(Entity, &UnitId, &Position, Option<&Away>)>();
+            q.iter(&self.world)
+                .find(|(_, id, ..)| id.0 == unit_id)
+                .map(|(e, _, p, away)| (e, (p.x, p.y), away.is_some()))
         };
-        // Ноль — домену не учат вовсе («Стройка»): парта ему не поможет.
-        if rules.taught_cap(skill) <= 0 {
-            return false;
-        }
-
-        let mut found = None;
-        {
-            let mut q = self.world.query::<(
-                Entity,
-                &UnitId,
-                &Position,
-                Option<&Skills>,
-                Option<&Stats>,
-                Option<&Away>,
-            )>();
-            let rules = self.world.resource::<SkillRules>();
-            for (e, id, p, skills, stats, away) in q.iter(&self.world) {
-                if id.0 == unit_id && away.is_none() {
-                    // Предел у каждого кота свой: парта доводит до `taught`, но
-                    // не выше врождённого (§12.42).
-                    found = Some((
-                        e,
-                        (p.x, p.y),
-                        skills.map_or(0, |s| s.xp_of(skill)),
-                        desk_cap(rules, stats, skill),
-                    ));
-                    break;
-                }
-            }
-        }
-        // Кота нет на базе — учить некого: его позиция это шлюз, с которого он
-        // ушёл (§12.22).
-        let Some((cat_e, from, xp, cap)) = found else {
-            return false;
+        let Some((cat_e, from, away)) = found else {
+            return Desk::Away;
         };
-        // Парта — вход в домен, а не тренажёр: доученного она не берёт. И не
-        // берёт того, кому парта уже ничего не даст: отправленный за неё кот
-        // встал бы с неё в тот же тик, а игрок прочёл бы это как поломку.
-        if xp >= cap {
-            return false;
-        }
-
         let taken = self.taken_desks();
-        let Some(spot) = nearest_desk(
+        let reach = Reach::all(
             self.world.resource::<BaseMap>(),
             self.world.resource::<TileRules>(),
-            skill,
             from,
+        );
+        desk_gate(
+            self.world.resource::<BaseMap>(),
+            self.world.resource::<TileRules>(),
+            self.world.resource::<SkillRules>(),
+            &reach,
+            self.world.get::<Skills>(cat_e),
+            self.world.get::<Stats>(cat_e),
+            skill,
+            away,
             &taken,
-        ) else {
-            return false; // парт нет, все заняты или до них не добраться
+        )
+    }
+
+    pub fn teach(&mut self, unit_id: &str, skill_id: &str) -> bool {
+        note(&mut self.world, format!("teach {unit_id} {skill_id}"));
+        // Индекс домена — это протокол, а не состояние мира: имени, которого
+        // нет в палитре, ворота ответить не могут, потому что не про что.
+        let Some(skill) = self.world.resource::<SkillRules>().index_of(skill_id) else {
+            return false;
         };
+        // Пять отказов подряд, которые тут стояли россыпью, живут теперь одним
+        // выражением — тем же, каким кнопка в «Личном деле» называет причину
+        // словом (инвариант 14).
+        let Desk::Open(spot) = self.desk_gate_of(unit_id, skill) else {
+            return false;
+        };
+        // Открытые ворота уже сказали, что кот на базе.
+        let Some(cat_e) = self.unit_on_base(unit_id) else {
+            return false;
+        };
+        let from = self
+            .world
+            .get::<Position>(cat_e)
+            .map_or((0, 0), |p| (p.x, p.y));
 
         self.release_task(cat_e);
         if let Some(mission_e) = self.world.get::<Squad>(cat_e).map(|s| s.0) {
@@ -4530,6 +4537,29 @@ impl Sim {
                     .map(|(id, e)| (id.0.clone(), e.skill))
                     .collect()
             };
+            // Занятые парты — тем же боковым запросом: ворота обучения
+            // спрашивают их у каждого кота, а `Study::spot` держит и ту клетку,
+            // к которой ученик ещё только идёт (§12.20).
+            let desks_taken: Vec<(i32, i32)> = {
+                let mut q = self.world.query::<&Study>();
+                q.iter(&self.world).map(|s| s.spot).collect()
+            };
+            // След последнего начисления опыта (§12.17) — тем же боковым
+            // запросом и по той же причине арности.
+            let trainings: Vec<(String, Trained)> = {
+                let mut q = self.world.query::<(&UnitId, &Trained)>();
+                q.iter(&self.world)
+                    .map(|(id, t)| (id.0.clone(), *t))
+                    .collect()
+            };
+            // Личное дело (§12.N) — тем же боковым запросом и по той же
+            // причине арности.
+            let records: Vec<(String, Record)> = {
+                let mut q = self.world.query::<(&UnitId, &Record)>();
+                q.iter(&self.world)
+                    .map(|(id, r)| (id.0.clone(), r.clone()))
+                    .collect()
+            };
             let map = self.world.resource::<BaseMap>();
             let rules = self.world.resource::<SkillRules>();
             let tiles = self.world.resource::<TileRules>();
@@ -4616,6 +4646,15 @@ impl Sim {
                     .iter()
                     .find(|(who, _)| *who == id.0)
                     .map(|(_, s)| *s);
+                let trained = trainings
+                    .iter()
+                    .find(|(who, _)| *who == id.0)
+                    .map(|(_, t)| *t);
+                let record = records.iter().find(|(who, _)| *who == id.0).map(|(_, r)| r);
+                // Обход карты от кота — **один на кота, а не на домен**: ворота
+                // обучения спрашиваются по всей палитре навыков, а `Reach::all`
+                // это два вектора на всю карту.
+                let reach = Reach::all(map, tiles, (p.x, p.y));
                 entities.push(EntitySnap {
                     id: id.0.clone(),
                     sprite: r.sprite.clone(),
@@ -4683,6 +4722,18 @@ impl Sim {
                                 next: rules.next_threshold(i, xp),
                                 cap: level_cap_of(rules, stats, i),
                                 desk: desk_cap(rules, stats, i),
+                                teach: desk_gate(
+                                    map,
+                                    tiles,
+                                    rules,
+                                    &reach,
+                                    skills,
+                                    stats,
+                                    i,
+                                    away.is_some(),
+                                    &desks_taken,
+                                )
+                                .tag(),
                             }
                         })
                         .collect(),
@@ -4703,6 +4754,24 @@ impl Sim {
                         .iter()
                         .find(|(who, _)| who == &id.0)
                         .map_or(-1, |(_, skill)| *skill as i32),
+                    // Какой домен растёт и растёт ли сейчас (§12.17): панель
+                    // кота показывает один навык, и выбирает его ядро.
+                    training: trained.map_or(-1, |t| t.skill as i32),
+                    training_now: trained.is_some_and(|t| t.at == tick),
+                    // Личное дело (§12.N). Дела может не быть вовсе — так живут
+                    // коты из ASCII-схем, собранные мимо `spawn_cat`.
+                    joined: record.map_or(0, |r| r.joined),
+                    raids_done: record
+                        .map(|r| {
+                            r.raids
+                                .iter()
+                                .map(|&(def, count)| TallySnap { def, count })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    wounds: record.map_or(0, |r| r.wounds),
+                    captures: record.map_or(0, |r| r.captures),
+                    schooled: record.map(|r| r.schooled.clone()).unwrap_or_default(),
                     // Тем же выражением, каким сила отряда сложится на уходе
                     // (§12.23, инвариант 14): сам кот стоит единицу, уровень
                     // «Вылазки» — сверху, надетое — ещё сверху. Складывать их
@@ -5356,34 +5425,6 @@ impl Sim {
             }
         }
 
-        // Парты по доменам (§12.84): сколько их всего и сколько свободно.
-        // Считается здесь, а не в JS, по той же причине, что и `post_free`:
-        // «свободна» значит «её не держит ничей `Study`», а занятость — знание
-        // ядра. Панели это нужно ровно для того, чтобы отказ кнопки «Учить» был
-        // назван словом, а не молчанием (§12.53).
-        let desks: Vec<DeskSnap> = {
-            let taken: Vec<(i32, i32)> = self.taken_desks();
-            let map = self.world.resource::<BaseMap>();
-            let tiles = self.world.resource::<TileRules>();
-            let cells: Vec<Option<usize>> = (0..map.height)
-                .flat_map(|y| (0..map.width).map(move |x| (x, y)))
-                .map(|(x, y)| tiles.teaches_of(map.tile_at(x, y)))
-                .collect();
-            let spots: Vec<((i32, i32), Option<usize>)> = (0..map.height)
-                .flat_map(|y| (0..map.width).map(move |x| (x, y)))
-                .zip(cells)
-                .collect();
-            (0..self.world.resource::<SkillRules>().0.len())
-                .map(|i| {
-                    let mine = spots.iter().filter(|(_, s)| *s == Some(i));
-                    DeskSnap {
-                        total: mine.clone().count() as i32,
-                        free: mine.filter(|(c, _)| !taken.contains(c)).count() as i32,
-                    }
-                })
-                .collect()
-        };
-
         let goals_required = self.world.resource::<GoalRules>().required();
         // Лента едет целиком: она ограничена `NEWS_MAX`, а какая новость ещё
         // свежая — решает вид по `tick` и `news` из `meta` (§12.120).
@@ -5420,7 +5461,6 @@ impl Sim {
             gates,
             comms_now,
             nodes,
-            desks,
             fame,
             standing,
             money,

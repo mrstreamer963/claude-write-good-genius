@@ -101,6 +101,39 @@ pub(crate) fn desk_cap(rules: &SkillRules, stats: Option<&Stats>, skill: usize) 
     rules.taught_cap(skill).min(xp_ceiling(rules, stats, skill))
 }
 
+/// Клетки парт этого домена на карте — в порядке обхода, а не по расстоянию.
+///
+/// Отдельным выражением, потому что спрашивают о них двое и о разном: ворота —
+/// «есть ли они вообще», выбор парты — «какая ближе».
+fn desk_cells<'a>(
+    map: &'a BaseMap,
+    tiles: &'a TileRules,
+    skill: usize,
+) -> impl Iterator<Item = (i32, i32)> + 'a {
+    (0..map.height)
+        .flat_map(|y| (0..map.width).map(move |x| (x, y)))
+        .filter(move |&(x, y)| tiles.teaches_of(map.tile_at(x, y)) == Some(skill))
+}
+
+/// Ближайшая свободная парта по **уже готовому** обходу.
+///
+/// Обход отдаётся снаружи, потому что снимок считает ворота по всем доменам
+/// сразу: `Reach::all` — это два вектора на всю карту, и строить его на каждый
+/// домен значило бы гонять BFS шесть раз на кота каждым кадром.
+pub(crate) fn nearest_desk_at(
+    map: &BaseMap,
+    tiles: &TileRules,
+    reach: &Reach,
+    skill: usize,
+    taken: &[(i32, i32)],
+) -> Option<(i32, i32)> {
+    desk_cells(map, tiles, skill)
+        .filter(|cell| !taken.contains(cell))
+        .filter_map(|(x, y)| reach.dist_at(x, y).map(|d| (d, (x, y))))
+        .min_by_key(|&(d, _)| d)
+        .map(|(_, cell)| cell)
+}
+
 /// Ближайшая свободная парта нужного домена; `None` — их нет или не дойти.
 ///
 /// Занятые перечисляет вызывающий: занятость парты держит `Study` ученика, как
@@ -114,13 +147,81 @@ pub(crate) fn nearest_desk(
     taken: &[(i32, i32)],
 ) -> Option<(i32, i32)> {
     let reach = Reach::all(map, tiles, from);
-    (0..map.height)
-        .flat_map(|y| (0..map.width).map(move |x| (x, y)))
-        .filter(|&(x, y)| tiles.teaches_of(map.tile_at(x, y)) == Some(skill))
-        .filter(|cell| !taken.contains(cell))
-        .filter_map(|(x, y)| reach.dist_at(x, y).map(|d| (d, (x, y))))
-        .min_by_key(|&(d, _)| d)
-        .map(|(_, cell)| cell)
+    nearest_desk_at(map, tiles, &reach, skill, taken)
+}
+
+/// Ворота обучения: куда сажать — или почему нельзя.
+///
+/// **Одно выражение на фасад и на снимок** (инвариант 14). У `Sim::teach` пять
+/// отказов, и один из них — «свободная парта есть, но до неё не дойти» — виду
+/// невыразим вовсе: считать достижимость в JS значит завести второй экземпляр
+/// правила, который однажды покажет живой кнопку, отклонённую фасадом.
+///
+/// Наружу едет **тег**, а слово по нему подбирает вид (§12.53) — ровно то же
+/// деление, что у `missions::Phase` (§12.168): ядро не занимается подписями.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Desk {
+    /// Сажать сюда.
+    Open((i32, i32)),
+    /// Домену за партой не учат вовсе («Стройка»): он растёт только работой.
+    Untaught,
+    /// Кота нет на базе — учить некого (§12.22).
+    Away,
+    /// Парта его уже ничему не научит: дальше только практика.
+    Topped,
+    /// Парт этого домена на базе нет ни одной.
+    Missing,
+    /// Парты есть, но все заняты или до них не дойти.
+    Taken,
+}
+
+impl Desk {
+    /// Тег для снимка; у открытых ворот его нет — пустая строка и есть «можно».
+    pub(crate) fn tag(self) -> &'static str {
+        match self {
+            Desk::Open(_) => "",
+            Desk::Untaught => "untaught",
+            Desk::Away => "away",
+            Desk::Topped => "topped",
+            Desk::Missing => "nodesk",
+            Desk::Taken => "taken",
+        }
+    }
+}
+
+/// Порядок проверок значим и повторяет порядок отказов, который был у
+/// `Sim::teach` россыпью: сперва про домен, потом про кота, потом про парты.
+/// Обратный порядок сказал бы «парт нет» про домен, которому и не учат.
+///
+/// **«Парт нет» и «все заняты» — разные ответы**: первый чинится стройкой,
+/// второй ожиданием, и слить их в одно «нельзя» значило бы отказ без причины.
+pub(crate) fn desk_gate(
+    map: &BaseMap,
+    tiles: &TileRules,
+    rules: &SkillRules,
+    reach: &Reach,
+    skills: Option<&Skills>,
+    stats: Option<&Stats>,
+    skill: usize,
+    away: bool,
+    taken: &[(i32, i32)],
+) -> Desk {
+    if rules.taught_cap(skill) <= 0 {
+        return Desk::Untaught;
+    }
+    if away {
+        return Desk::Away;
+    }
+    // Предел у каждого кота свой: парта доводит до `taught`, но не выше
+    // врождённого (§12.42). Доученного она не берёт — отправленный за неё кот
+    // встал бы с неё в тот же тик, а игрок прочёл бы это как поломку.
+    if skills.map_or(0, |s| s.xp_of(skill)) >= desk_cap(rules, stats, skill) {
+        return Desk::Topped;
+    }
+    if desk_cells(map, tiles, skill).next().is_none() {
+        return Desk::Missing;
+    }
+    nearest_desk_at(map, tiles, reach, skill, taken).map_or(Desk::Taken, Desk::Open)
 }
 
 /// Сажает **приписанного** к парте кота, как только тот освободился (§12.84).
@@ -153,6 +254,7 @@ pub(crate) fn assign_study(
     rules: Res<SkillRules>,
     mut commands: Commands,
     students: Query<&Study>,
+    mut records: Query<&mut Record>,
     free_cats: Query<
         (
             Entity,
@@ -200,6 +302,13 @@ pub(crate) fn assign_study(
 
     for (_, cat_e, at, skill, xp, cap) in idle {
         if xp >= cap {
+            // Вторая из двух непересекающихся веток исчерпания приписки: этого
+            // кота от парты уже увели (сон, рана, приказ), `Study` с него снят,
+            // а потолка он достиг. Забудь её — и отметка в личном деле не
+            // встанет ровно у того, кого увели на последнем очке.
+            if let Ok(mut record) = records.get_mut(cat_e) {
+                record.note_schooled(skill);
+            }
             commands.entity(cat_e).remove::<Enrolled>();
             continue;
         }
@@ -241,11 +350,12 @@ pub(crate) fn study(
         Option<&Path>,
         Option<&Skills>,
         Option<&Stats>,
+        Option<&mut Record>,
     )>,
 ) {
     let taken: Vec<(i32, i32)> = students.iter().map(|(_, _, s, ..)| s.spot).collect();
 
-    for (cat_e, pos, mut task, path, skills, stats) in &mut students {
+    for (cat_e, pos, mut task, path, skills, stats, record) in &mut students {
         // Доучился: дальше парта не помогает, и держать за ней кота — значит
         // молча отнимать у базы работника. Предел здесь двойной: докуда доводит
         // парта (§12.18) и докуда пускает врождённый параметр (§12.42) —
@@ -255,6 +365,11 @@ pub(crate) fn study(
         // парту, когда освободишься», а возвращаться уже незачем — иначе кот
         // ходил бы к ней вечно и вечно вставал бы с неё.
         if skills.map_or(0, |s| s.xp_of(task.skill)) >= desk_cap(&rules, stats, task.skill) {
+            // Первая из двух веток исчерпания: досидел за партой сам. Отметка
+            // идемпотентна, поэтому обе ветки безопасно зовут одно и то же.
+            if let Some(mut record) = record {
+                record.note_schooled(task.skill);
+            }
             commands.entity(cat_e).remove::<(Study, Enrolled)>();
             continue;
         }
@@ -300,10 +415,19 @@ pub(crate) fn study(
 /// любая система работы, в том числе будущая.
 pub(crate) fn train_skills(
     rules: Res<SkillRules>,
+    time: Res<SimTime>,
     mut commands: Commands,
     mut cats: Query<(Entity, &Worked, Option<&mut Skills>, Option<&Stats>)>,
 ) {
     for (cat_e, worked, skills, stats) in &mut cats {
+        // След маркера, переживающий тик: `Worked` снимается здесь же, а панель
+        // кота собирается уже после цепочки и без следа не знала бы, какой из
+        // доменов показывать (§12.17). Пишется он тут, потому что тут же
+        // единственное место, где работа превращается в опыт.
+        commands.entity(cat_e).insert(Trained {
+            skill: worked.0,
+            at: time.tick,
+        });
         // Нет порогов — расти нечему: домена нет в рулсете либо он без уровней.
         // Потолок у каждого кота свой: врождённый параметр режет опыт, а не
         // показанный уровень (§12.42), — иначе кот копил бы очки, которые

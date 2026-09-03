@@ -26,6 +26,7 @@ mod news;
 mod orders;
 mod panel;
 mod paths;
+mod record;
 mod relay;
 mod research;
 mod save;
@@ -90,12 +91,16 @@ fn sim_from(rows: &[&str]) -> Sim {
             }
             map.set(x, y, 0);
             if ch != '.' {
+                // Дело схемному коту заводится пустым, с `joined: 0`: он
+                // собирается мимо `spawn_cat`, а вылазки и учёба пишут в дело
+                // через `Option`, и без записи промах был бы молчаливым.
                 world.spawn((
                     UnitId(ch.to_string()),
                     Renderable {
                         sprite: "cat".to_string(),
                     },
                     Position { x, y },
+                    Record::default(),
                 ));
             }
         }
@@ -1387,6 +1392,67 @@ impl Sim {
     fn is_enrolled(&mut self, unit: &str) -> bool {
         let cat = self.entity_of(unit);
         self.world.get::<Enrolled>(cat).is_some()
+    }
+
+    /// Домен, которому капнуло в **этом** тике; `None` — в этом тике кот не
+    /// работал (§12.17). То же, что читает панель кота: `training` вместе с
+    /// `training_now`.
+    fn training_of(&mut self, unit: &str) -> Option<usize> {
+        let tick = self.world.resource::<SimTime>().tick;
+        let cat = self.entity_of(unit);
+        self.world
+            .get::<Trained>(cat)
+            .filter(|t| t.at == tick)
+            .map(|t| t.skill)
+    }
+
+    /// Личное дело кота (§12.N) — то же, что уходит в снимок.
+    fn record_of(&mut self, unit: &str) -> Record {
+        let cat = self.entity_of(unit);
+        self.world.get::<Record>(cat).cloned().unwrap_or_default()
+    }
+
+    /// Тик, в котором кот появился на базе.
+    fn joined_of(&mut self, unit: &str) -> u64 {
+        self.record_of(unit).joined
+    }
+
+    /// Сколько раз ходил на какой заказ — отсортировано по заказу.
+    fn raids_of(&mut self, unit: &str) -> Vec<(usize, i32)> {
+        self.record_of(unit).raids
+    }
+
+    /// Сколько раз вылазка довела кота до порога ранения.
+    fn wounds_of(&mut self, unit: &str) -> i32 {
+        self.record_of(unit).wounds
+    }
+
+    /// Сколько раз оставался в плену.
+    fn captures_of(&mut self, unit: &str) -> i32 {
+        self.record_of(unit).captures
+    }
+
+    /// Домены, доученные за партой до потолка.
+    fn schooled_of(&mut self, unit: &str) -> Vec<usize> {
+        self.record_of(unit).schooled
+    }
+
+    /// Домен последнего начисления опыта — тот, что панель кота показывает и
+    /// приглушённой строкой, когда сейчас ничего не растёт; `None` — кот не
+    /// работал ещё ни разу.
+    fn trained_of(&mut self, unit: &str) -> Option<usize> {
+        let cat = self.entity_of(unit);
+        self.world.get::<Trained>(cat).map(|t| t.skill)
+    }
+
+    /// Ворота обучения **ровно так, как их видит кнопка «Учить»** в «Личном
+    /// деле»: тег из снимка, пустая строка — «можно» (§12.53).
+    ///
+    /// Спрашивается у фасада по той же причине, что и `raid_gates` (§12.43):
+    /// снимок на хосте не собрать, а второй экземпляр ворот в тесте сторожил бы
+    /// сам себя.
+    fn teach_gate(&mut self, unit: &str, skill: usize) -> &'static str {
+        self.desk_gate_of(unit, skill).tag()
     }
 
     /// Парта, которую занял ученик; `None` — кот не учится.

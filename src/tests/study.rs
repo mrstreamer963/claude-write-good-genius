@@ -394,3 +394,113 @@ fn the_shipped_ruleset_teaches_science() {
         "и довела до допуска: без него исследовать нечем",
     );
 }
+
+// --- Ворота обучения (§12.53) -------------------------------------------
+//
+// До них у `Sim::teach` было пять отказов подряд, и наружу они уходили одним
+// `false`. Теперь это одно выражение с тегом, и тесты сторожат ровно две вещи:
+// что каждый отказ **назван своим словом** и что ворота **совпадают с фасадом**
+// (инвариант 14) — разойдись они, кнопка загорится там, где `teach` откажет.
+
+/// «Стройка» растёт только работой: `taught` у неё ноль, и парта ей не поможет.
+/// Отказ про домен, а не про кота, поэтому и спрашивается он первым.
+#[test]
+fn the_teach_gate_names_a_domain_nobody_teaches() {
+    let (mut sim, _) = sim_with_desk();
+    let build = sim.set_skill("build", &[20, 100]);
+    sim.set_taught(build, 0);
+
+    assert_eq!(sim.teach_gate("a", build), "untaught");
+    assert!(!sim.teach("a", "build"), "и фасад отказывает так же");
+}
+
+/// Кота нет на базе — учить некого: его позиция это шлюз, с которого он ушёл
+/// (§12.22). Ворота обязаны сказать это до того, как пойдут искать парту.
+#[test]
+fn the_teach_gate_names_a_cat_who_is_away() {
+    let (mut sim, science) = sim_with_desk();
+    sim.set_gate(2, true);
+    sim.force_tile(6, 1, 2);
+    let m = sim.set_mission(1, 50, &[]);
+    sim.launch(m, vec!["b".to_string()]);
+    sim.tick_n(6);
+    assert!(sim.is_away("b"), "ушёл");
+
+    assert_eq!(sim.teach_gate("b", science), "away");
+}
+
+/// Доученного парта не берёт: отправленный за неё кот встал бы с неё в тот же
+/// тик, а игрок прочёл бы это как поломку.
+#[test]
+fn the_teach_gate_names_a_cat_at_the_desk_ceiling() {
+    let (mut sim, science) = sim_with_desk();
+    sim.set_xp("a", science, 20);
+
+    assert_eq!(sim.teach_gate("a", science), "topped");
+}
+
+/// «Парт нет» и «все заняты» — разные ответы: первый чинится стройкой, второй
+/// ожиданием. Слить их в одно «нельзя» значило бы отказ без причины (§12.53).
+#[test]
+fn the_teach_gate_tells_a_missing_desk_from_a_taken_one() {
+    let mut sim = sim_from(&["########", "#a....b#", "########"]);
+    let science = sim.set_skill("science", &[20, 100]);
+    sim.set_taught(science, 1);
+    sim.set_teaches(1, science);
+    assert_eq!(sim.teach_gate("a", science), "nodesk", "парт нет вовсе");
+
+    sim.force_tile(3, 1, 1);
+    assert_eq!(sim.teach_gate("a", science), "", "парта появилась");
+
+    assert!(sim.teach("b", "science"), "её занял сосед");
+    assert_eq!(sim.teach_gate("a", science), "taken");
+}
+
+/// Тот самый отказ, который виду невыразим: парта свободна, но до неё не дойти.
+/// Достижимость — это BFS по карте, и второй его экземпляр в JS однажды
+/// покажет живой кнопку, которую фасад отклонит (инвариант 14).
+#[test]
+fn the_teach_gate_names_a_desk_behind_a_wall() {
+    let mut sim = sim_from(&["#####", "#a..#", "#####", "#...#", "#####"]);
+    let science = sim.set_skill("science", &[20, 100]);
+    sim.set_taught(science, 1);
+    sim.set_teaches(1, science);
+    sim.force_tile(2, 3, 1);
+
+    assert_eq!(
+        sim.teach_gate("a", science),
+        "taken",
+        "свободна, но за стеной"
+    );
+    assert!(!sim.teach("a", "science"), "и фасад отказывает");
+}
+
+/// Сторож инварианта 14: открытые ворота и успех `teach` — одно и то же.
+/// Разойдутся — кнопка в «Личном деле» начнёт врать, и заметить это можно будет
+/// только по молчащему клику.
+#[test]
+fn the_teach_gate_is_open_exactly_when_teach_succeeds() {
+    // Шесть миров, по одному на каждый ответ ворот и один открытый.
+    let cases: Vec<(&str, fn(&mut Sim, usize))> = vec![
+        ("", |_, _| {}),
+        ("untaught", |sim, skill| sim.set_taught(skill, 0)),
+        ("topped", |sim, skill| sim.set_xp("a", skill, 20)),
+        ("nodesk", |sim, _| {
+            sim.force_tile(3, 1, 0);
+        }),
+        ("taken", |sim, _| {
+            sim.teach("b", "science");
+        }),
+    ];
+    for (want, setup) in cases {
+        let (mut sim, science) = sim_with_desk();
+        setup(&mut sim, science);
+        let gate = sim.teach_gate("a", science);
+        assert_eq!(gate, want, "ворота назвали не тот отказ");
+        assert_eq!(
+            gate.is_empty(),
+            sim.teach("a", "science"),
+            "ворота и фасад разошлись на «{want}»",
+        );
+    }
+}
