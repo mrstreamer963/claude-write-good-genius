@@ -178,7 +178,7 @@ function catFacts(e) {
 function portraitHtml(sprite, cls = "", tip = "") {
   if (!sprite) return "";
   return (
-    `<img class="portrait ${cls}"${tip ? ` data-tip="${esc(tip)}"` : ""} src="/portraits/${encodeURIComponent(sprite)}.png" ` +
+    `<img class="portrait ${cls}"${tip ? ` data-tip="${esc(tip)}"` : ""} src="${import.meta.env.BASE_URL}portraits/${encodeURIComponent(sprite)}.png" ` +
     // Нет файла под этот `sprite` — прячем сам узел: рулсет заводит котов без
     // спроса у вида, и битая картинка в списке хуже, чем её отсутствие.
     `alt="" aria-hidden="true" onerror="this.hidden=true">`

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "SP / Эсперы — simulation core (bevy_ecs -> WASM)"
 license = "MIT"
-repository = "https://github.com/mrstreamer963/claude-write-good-genius"
+repository = "https://github.com/Islands-of-Eternal-Cats/cats-of-base"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

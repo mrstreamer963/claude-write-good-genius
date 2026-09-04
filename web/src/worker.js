@@ -76,7 +76,9 @@ function announce() {
 
 async function boot() {
   await init(wasmUrl);
-  yamlText = await (await fetch("/rulesets/core.yaml")).text();
+  yamlText = await (
+    await fetch(`${import.meta.env.BASE_URL}rulesets/core.yaml`)
+  ).text();
   sim = new Sim(yamlText);
   announce();
   last = performance.now();
