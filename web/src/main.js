@@ -4762,7 +4762,10 @@ function skillBlock(e, def, i, note, flat) {
     (flat && capped
       ? ""
       : `<div class="bar"><i class="${born ? "capped" : ""}" style="width:${pct}%"></i></div>`) +
-    `<div class="cat-sub">${note ?? why}</div>`
+    // Заметка вида «сейчас не растёт» отвечает на «почему полоска стоит», а у
+    // упёршегося в предел на тот же вопрос отвечает сама причина предела —
+    // и она вернее: рост там не встал, он кончился (§12.42).
+    `<div class="cat-sub">${capped ? why : (note ?? why)}</div>`
   );
 }
 
