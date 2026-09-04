@@ -2371,21 +2371,59 @@ main#stage.mode-cursor #mode-banner {
 }
 
 /* --- Личное дело (§12.N) ---------------------------------------------------
-   Вкладки котов стоят между шапкой и списком — там же, где вкладки гаражей в
-   штабе, и по той же причине: при прокрутке они уезжать не должны. */
+   Вкладки котов стоят колонкой слева от дела, а не строкой над ним: имена
+   сканируются столбиком, а строкой в поздней партии они переносятся в три
+   ряда и сдвигают всё дело вниз на каждом найме. Прокрутка у колонки своя и
+   законна ровно потому, что каркас окна строится один раз (§12.118). */
+.dos-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 14px;
+}
 .dos-tabs {
   display: flex;
-  flex-wrap: wrap;
+  flex: 0 0 auto;
+  flex-direction: column;
   gap: 6px;
-  margin-top: 10px;
+  width: 200px;
+  min-height: 0;
+  margin-top: 12px;
+  padding-right: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-right: 1px solid var(--line);
 }
 .dos-tabs .dos-tab {
+  justify-content: flex-start;
   padding: 4px 10px;
   font-size: 12px;
+  text-align: left;
+  white-space: normal;
 }
 .dos-tabs .dos-tab.on {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+/* Имя отряда в шапке кота — дверь в штаб этого гаража (§12.169). Кнопкой она
+   не выглядит, поэтому курсор и подчёркивание при наведении. */
+.raid-link {
+  cursor: pointer;
+}
+.raid-link:hover {
+  text-decoration: underline;
+}
+
+/* Портрет — дверь обратно на карту: закрывает дело и делает кота выбранным.
+   Курсор и подсветка нужны потому, что кнопкой он не выглядит. */
+.dos-portrait {
+  flex: 0 0 auto;
+  cursor: pointer;
+  line-height: 0;
+}
+.dos-portrait:hover {
+  opacity: 0.8;
 }
 
 .dos-head {

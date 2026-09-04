@@ -348,6 +348,12 @@ onPanelClick(researchEl, ".research-cancel", (b) =>
 onPanelClick(missionEl, ".raid-open", (b) =>
   openRaidWindow(Number(b.dataset.x), Number(b.dataset.y)),
 );
+// Та же дверь из панели кота: селектор один, потому что и ответ один —
+// «показать этот отряд целиком». Панель кота перерисовывается кадром, значит
+// делегированием, как и всё в ней (§12.84).
+onPanelClick(catEl, ".raid-open", (b) =>
+  openRaidWindow(Number(b.dataset.x), Number(b.dataset.y)),
+);
 // В панели клетки команд нет ни одной (§12.80). Состав отряда (§12.61) и
 // дежурство на связи (§12.60) правились строками прямо в ней, и панель рации
 // выросла в самый плотный экран игры: кнопка штаба, список всех котов базы по
@@ -2157,11 +2163,19 @@ function renderCatPanel(entities) {
     return;
   }
   const defs = meta.skills ?? [];
+  // В каком отряде кот — той же строкой, что и имя: приписка к гаражу
+  // переживает вылазку (§12.61), то есть это свойство кота, а не его занятие.
+  // Ведёт она в штаб этого гаража — дословно строка «Отряд N» в панели отрядов
+  // (§12.169): там же и состав, и прогноз, и причина отказа словом.
+  const crew = nodeNameAt(e.crew_x, e.crew_y);
   const parts = [
     '<div class="cat-head">' +
       portraitHtml(e.sprite) +
-      `<div class="cat-name">${esc(e.id)}</div>` +
-      "</div>",
+      `<div class="cat-name">${esc(e.id)}` +
+      (crew
+        ? ` · <span class="raid-open raid-link" data-x="${e.crew_x}" data-y="${e.crew_y}">${esc(crew)}</span>`
+        : "") +
+      "</div></div>",
   ];
   if (selectedUnits.length > 1) {
     parts.push(
@@ -8071,8 +8085,12 @@ function buildDossier(roster) {
     rows: [],
   };
 
-  // Вкладки — между шапкой и списком, чтобы не уезжали при прокрутке: там же,
-  // где они стоят в штабе.
+  // Вкладки — колонкой слева от самого дела: котов в поздней партии два
+  // десятка, и строкой поверх списка они переносились бы в три ряда, сдвигая
+  // всё дело вниз на каждом найме. Своя прокрутка у колонки законна ровно
+  // потому, что каркас строится один раз (§12.118).
+  ui.body = document.createElement("div");
+  ui.body.className = "dos-body";
   ui.tabs = document.createElement("div");
   ui.tabs.className = "dos-tabs";
   ui.tabEls = roster.map((e) => {
@@ -8086,10 +8104,46 @@ function buildDossier(roster) {
     ui.tabs.appendChild(tab);
     return { tab, id: e.id };
   });
-  box.insertBefore(ui.tabs, list);
+  ui.body.appendChild(ui.tabs);
+  box.appendChild(ui.body);
+  ui.body.appendChild(list);
 
   ui.head = document.createElement("div");
   ui.head.className = "dos-head";
+  // Портрет — **отдельный узел со своим слушателем** (§12.84): шапка
+  // пересобирается по снимку, и кнопка внутри неё пережила бы не всякий клик.
+  // Ведёт он не в новое окно, а обратно на карту: дело отвечает «каков этот
+  // кот», а выбранный кот — это уже приказы и панель. Ушедшего это тоже
+  // касается: выбор его переживает вылазку, и панель показывает его в поле.
+  ui.portrait = document.createElement("div");
+  ui.portrait.className = "dos-portrait";
+  ui.portrait.onmouseup = () => {
+    closeDossier();
+    selectUnit(dossierAt, false);
+  };
+  ui.head.appendChild(ui.portrait);
+  ui.headText = document.createElement("div");
+  const nameRow = document.createElement("div");
+  nameRow.className = "cat-name";
+  ui.name = document.createElement("span");
+  nameRow.appendChild(ui.name);
+  // Отряд — **свой узел со слушателем**, как портрет (§12.84): шапка тикает
+  // по снимку. Дверь та же, что у строки «Отряд N» в панели отрядов (§12.169):
+  // штаб этого гаража, где стоят состав, прогноз и причина отказа словом.
+  ui.squad = document.createElement("span");
+  ui.squad.className = "raid-link";
+  ui.squad.onmouseup = () => {
+    const { x, y } = ui.squad.dataset;
+    if (x == null) return;
+    closeDossier();
+    openRaidWindow(Number(x), Number(y));
+  };
+  nameRow.appendChild(ui.squad);
+  ui.headText.appendChild(nameRow);
+  ui.job = document.createElement("div");
+  ui.job.className = "cat-sub";
+  ui.headText.appendChild(ui.job);
+  ui.head.appendChild(ui.headText);
   list.appendChild(ui.head);
 
   ui.born = document.createElement("div");
@@ -8173,13 +8227,20 @@ function syncDossier() {
   // же `jobLabel`, что и панель, — второго словаря занятий не заводим.
   const squad = nodeNameAt(e.crew_x, e.crew_y);
   const job = e.stuck ? "не может дойти" : jobLabel(e);
-  setHtml(
-    ui.head,
-    portraitHtml(e.sprite) +
-      `<div><div class="cat-name">${esc(e.id)}${squad ? ` · ${esc(squad)}` : ""}</div>` +
-      (job ? `<div class="cat-sub">${job}</div>` : "") +
-      "</div>",
-  );
+  setHtml(ui.portrait, portraitHtml(e.sprite));
+  liveTitle(ui.portrait, "Показать на карте");
+  // Разделитель — при имени, а не при отряде: подчёркивание двери обязано
+  // кончаться там же, где слово, иначе оно тянется через точку и пробел.
+  setHtml(ui.name, esc(e.id) + (squad ? " · " : ""));
+  setHtml(ui.squad, squad ? esc(squad) : "");
+  if (squad) {
+    ui.squad.dataset.x = e.crew_x;
+    ui.squad.dataset.y = e.crew_y;
+  } else {
+    delete ui.squad.dataset.x;
+    delete ui.squad.dataset.y;
+  }
+  setHtml(ui.job, job);
 
   // Врождённое и перки — одной строкой: и то и другое дано коту навсегда.
   const stats = (meta.stats ?? [])
