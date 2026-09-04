@@ -162,6 +162,7 @@ function tileGlyphHtml(i, cls = "") {
 
 const stageEl = document.getElementById("stage");
 const tickEl = document.getElementById("tick");
+const perfEl = document.getElementById("perf");
 const scrapEl = document.getElementById("scrap");
 // Фишки склада в шапке — дверь в окно «Склад» (§12.100): числа уже стоят здесь,
 // а окно это их подробность. Отдельной кнопки для этого не заводим — она стояла
@@ -1458,6 +1459,9 @@ function renderSnapshot(snap) {
   // Тик сменился — доля тика начинается заново. Отметка общая на всех: тикают
   // коты вместе, и второй такой счётчик на каждого разошёлся бы с этим.
   if (snap.tick !== lastTick) {
+    // Тиков между двумя снимками бывает и несколько (×10 быстрее кадра).
+    // Новая партия и загрузка отматывают тик назад — такой шаг не считаем.
+    perfTicks += Math.max(0, lastTick < 0 ? 1 : snap.tick - lastTick);
     lastTick = snap.tick;
     tickFrac = 0;
   }
@@ -1983,7 +1987,29 @@ function createUnit(e) {
 ///
 /// Линейно намеренно: easing на клетку читается как остановка в каждой, а шаги
 /// идут цепочкой.
+// Счётчик кадров и тиков (шапка). FPS считается по кадрам самого тикера Pixi,
+// TPS — по смене `snap.tick`: второго источника «сколько сейчас идёт время» в
+// проекте нет (§12.140), а на паузе тиков просто не приходит, и TPS честно
+// падает в ноль. Обе величины усредняются за секунду настенных часов — по
+// кадру они прыгали бы вдвое чаще, чем их успевают прочитать.
+let perfFrames = 0;
+let perfTicks = 0;
+let perfAt = performance.now();
+
+function notePerf(now) {
+  const span = now - perfAt;
+  if (span < 1000) return;
+  const fps = Math.round((perfFrames * 1000) / span);
+  const tps = Math.round((perfTicks * 1000) / span);
+  perfEl.textContent = `${fps} FPS · ${tps} TPS`;
+  perfFrames = 0;
+  perfTicks = 0;
+  perfAt = now;
+}
+
 function stepUnits(ticker) {
+  perfFrames += 1;
+  notePerf(performance.now());
   if (!tickMs) return; // мир ещё не приехал
   // Скорость **умножает**, поэтому пауза (0) просто останавливает долю тика:
   // кот замирает между клетками ровно там, где он в симуляции, и делить на
@@ -2175,6 +2201,7 @@ function renderCatPanel(entities) {
           defs[e.training],
           e.training,
           e.training_now ? undefined : "сейчас не растёт",
+          true,
         )
       : "";
   if (inner) {
@@ -3432,7 +3459,7 @@ document.addEventListener("mouseover", (e) => {
 document.addEventListener("mousemove", (e) => {
   lastPointer = { x: e.clientX, y: e.clientY };
   if (liveTipFor && !liveTipFor.isConnected) aimLiveTip();
-  moveLiveTip(e);
+  moveLiveTip();
 });
 document.addEventListener("mouseleave", () => {
   lastPointer = null;
@@ -3471,17 +3498,23 @@ function showLiveTip(el) {
   liveTipFor = el;
   if (liveTipEl.textContent !== text) liveTipEl.textContent = text;
   liveTipEl.hidden = false;
+  // ⚠️ **Место подсказке назначает показ, а не движение мыши.** Всплывает она
+  // и без него — прицел берётся с точки под курсором (`aimLiveTip`), — и
+  // поставленная только в `mousemove` она осталась бы там, где её застало
+  // прошлое движение: у левого края экрана на первой же подсказке партии.
+  moveLiveTip();
 }
 
-function moveLiveTip(e) {
-  if (liveTipEl.hidden) return;
-  // Ставим по курсору и зажимаем в окно: подсказка у правого края таблицы
-  // иначе уезжает за экран, а прокрутки у неё нет.
+// Ставим по курсору и зажимаем в окно: подсказка у правого края таблицы иначе
+// уезжает за экран, а прокрутки у неё нет. Точка — та же `lastPointer`, что и у
+// прицела: второго представления «где курсор» в проекте быть не должно.
+function moveLiveTip() {
+  if (liveTipEl.hidden || !lastPointer) return;
   const box = liveTipEl.getBoundingClientRect();
   const vw = document.documentElement.clientWidth;
   const vh = document.documentElement.clientHeight;
-  const x = Math.min(e.clientX + 14, vw - box.width - 8);
-  const y = Math.min(e.clientY + 18, vh - box.height - 8);
+  const x = Math.min(lastPointer.x + 14, vw - box.width - 8);
+  const y = Math.min(lastPointer.y + 18, vh - box.height - 8);
   liveTipEl.style.left = `${Math.max(8, x)}px`;
   liveTipEl.style.top = `${Math.max(8, y)}px`;
 }
@@ -4700,7 +4733,12 @@ function recipeLabel(def) {
 // Полоска домена: уровень, прогресс до следующего порога и причина, если он
 // упёрся. **Одно выражение на панель кота и на «Личное дело»** — иначе они
 // разойдутся в том, что считают потолком (§12.42).
-function skillBlock(e, def, i, note) {
+// `flat` — не рисовать полоску, упёршуюся в потолок: она стоит полной всегда и
+// не отвечает ни на один вопрос, ровно как полная шкала бодрости (§12.53).
+// Причина остановки при этом остаётся словом строкой ниже («потолок», «предел:
+// Ум 5»), то есть исчезает картинка, а не ответ. В «Личном деле» полоска
+// остаётся: там навыки стоят столбиком и читаются друг относительно друга.
+function skillBlock(e, def, i, note, flat) {
   const s = e.skills?.[i];
   if (!s) return "";
   const levels = def.levels ?? [];
@@ -4721,7 +4759,9 @@ function skillBlock(e, def, i, note) {
       : `${s.xp} / ${s.next}`;
   return (
     `<div class="cat-row"><span>${esc(def.label || def.id)}</span><b>${s.level}</b></div>` +
-    `<div class="bar"><i class="${born ? "capped" : ""}" style="width:${pct}%"></i></div>` +
+    (flat && capped
+      ? ""
+      : `<div class="bar"><i class="${born ? "capped" : ""}" style="width:${pct}%"></i></div>`) +
     `<div class="cat-sub">${note ?? why}</div>`
   );
 }
@@ -8099,7 +8139,8 @@ function buildDossier(roster) {
 const TEACH_WHY = {
   untaught: "Этому за партой не учат: домен растёт только работой",
   away: "Его нет на базе — учить некого",
-  topped: "Парта его уже ничему не научит: дальше только практика",
+  // `topped` слова здесь не имеет намеренно: кнопки у него нет вовсе, а
+  // «дальше только практика» стоит строкой под полоской навыка.
   nodesk: "Парт этого домена на базе нет — постройте класс",
   taken: "Все парты этого домена заняты или до них не дойти",
 };
@@ -8154,9 +8195,19 @@ function syncDossier() {
       : "на базе с самого начала",
   );
 
-  for (const { live, btn, def, i } of ui.rows) {
+  for (const { row, live, btn, def, i } of ui.rows) {
     const s = e.skills?.[i];
     if (!s) continue;
+    const learning = e.study === i;
+    // Слово по тегу ворот; пустое — учить можно.
+    const why = learning ? null : TEACH_WHY[s.teach];
+    // Нетронутый домен прячем целиком — но **только если за партой ему не
+    // учат вовсе**: «парт нет» и «все заняты» чинятся стройкой и ожиданием
+    // (§12.196), то есть это причина, а не приговор, и её называет подсказка
+    // погашенной кнопки. Спрячь такую строку — и решение «выучить с нуля»
+    // стало бы недостижимым.
+    row.hidden = s.level === 0 && s.xp === 0 && s.teach === "untaught";
+    if (row.hidden) continue;
     const levels = def.levels ?? [];
     const from = s.level > 0 ? levels[s.level - 1] : 0;
     const capped = s.cap > 0 && s.level >= s.cap;
@@ -8173,17 +8224,31 @@ function syncDossier() {
     const schooled = (e.schooled ?? []).includes(i)
       ? " · доучен за партой"
       : "";
+    // Парта этому коту больше ничего не даёт, и дать уже не сможет: её потолок
+    // — это `taught` рулсета и врождённый предел, обе величины постоянны
+    // (§12.42). То есть случай §12.156 — «закрыто навсегда», а не «пока
+    // нельзя», — поэтому кнопки ниже нет вовсе, а слово переезжает сюда:
+    // погашенная навсегда кнопка обещает учёбу, которой не будет.
+    const topped = !learning && s.teach === "topped";
+    const practice = topped && !schooled ? " · дальше только практика" : "";
+    // Упёршийся домен полоски не рисует: она стоит на 100 % и не отвечает ни
+    // на один вопрос, а причину остановки называет строка под ней словом
+    // (§12.53) — «потолок» или «предел: Реакция 4».
     setHtml(
       live,
       `<div class="cat-row"><span>${esc(def.label || def.id)}</span><b>${s.level}</b></div>` +
-        `<div class="bar"><i class="${born ? "capped" : ""}" style="width:${pct}%"></i></div>` +
-        `<div class="cat-sub">${note}${schooled}</div>`,
+        (capped || s.next <= 0
+          ? ""
+          : `<div class="bar"><i style="width:${pct}%"></i></div>`) +
+        `<div class="cat-sub">${note}${schooled}${practice}</div>`,
     );
 
     // Кнопка — стабильный узел: меняются только подпись, класс и подсказка.
     // Пересобери её разметку кадром — и клик перестанет доходить (§12.84).
-    const learning = e.study === i;
-    const why = learning ? null : TEACH_WHY[s.teach];
+    // Домена, которому за партой не учат вовсе, и домена, доученного до
+    // потолка парты, кнопка не касается: погашенная навсегда, она предлагает
+    // решение, которого в игре нет и уже не будет (§12.156).
+    btn.hidden = s.teach === "untaught" || topped;
     setHtml(btn.firstChild, learning ? "Снять с учёбы" : "Учить");
     btn.classList.toggle("off", !learning && !!why);
     liveTitle(
@@ -8199,8 +8264,9 @@ function syncDossier() {
   // история, и дублируются они намеренно.
   setHtml(ui.kit, `${gearLine(e)} · ${pawsLine(e)}`);
 
-  // История. Пустая говорит словом, а не пустотой (§12.53): «ничего не
-  // случилось» и «панель сломалась» иначе выглядят одинаково.
+  // История. Пустой её не пишем вовсе: у кота, который никуда не ходил, это
+  // не ответ на вопрос, а строка про отсутствие событий — соседняя дата
+  // прихода на базу уже сказала, что он новичок.
   const been = (e.raids_done ?? [])
     .map((t) => `${esc(missionLabel(t.def))} ×${t.count}`)
     .join(" · ");
@@ -8212,10 +8278,9 @@ function syncDossier() {
     log.push(`Оставался в плену: ${plural(e.captures, "раз", "раза", "раз")}`);
   setHtml(
     ui.log,
-    log.length
-      ? log.map((line) => `<div class="cat-sub">${line}</div>`).join("")
-      : '<div class="cat-sub">ничего из этого с ним ещё не случалось</div>',
+    log.map((line) => `<div class="cat-sub">${line}</div>`).join(""),
   );
+  ui.log.hidden = !log.length;
 }
 
 const WINDOWS = [

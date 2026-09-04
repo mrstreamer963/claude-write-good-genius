@@ -857,7 +857,7 @@ Escape смысл «отменить правку», а не «сбросить 
 
 **Цепочка систем одного тика** (`schedule.rs::build_schedule()`, `.chain()` — порядок значим):
 `advance_time → collapse_exhausted → assign_heal → assign_eat → assign_rest → assign_treat →
-assign_equip → assign_study → gather_squad → assign_hauls → assign_research → plan_craft → spread_craft → assign_craft → assign_jobs →
+assign_equip → assign_study → gather_squad → assign_research → assign_hauls → plan_craft → spread_craft → assign_craft → assign_jobs →
 mark_loose_scrap → assign_tidy → assign_relay → assign_nap → move_units → work_hauls → work_equip → work_eat → work_jobs →
 work_research → work_craft → study → run_missions → run_timeline → run_trade → retry_orders → escape_voids →
 spread_units → settle_stacks → sleep → doze → heal → tire → hunger → train_skills →
@@ -922,8 +922,10 @@ note_seen → check_goals`.
 пятой (§12.34: на базе работа есть всегда, и поставленная после стройки она не случилась бы
 никогда), **учёба по приписке к парте — шестой** (§12.84: по тому же доводу, что экипировка, —
 приписка, уступающая чертежу, не значит ничего, и выспавшегося ученика уводил бы первый же
-подвоз), подвоз на площадки — седьмым (иначе за ломом никто не пойдёт, пока есть обеспеченная
-работа), наука — восьмой (за тему уже заплачено образцами, а чертёж на базе есть почти всегда),
+подвоз), **наука — седьмой** (§12.197: за тему уже заплачено образцами, тему игрок выбрал
+поимённо, и допуск по «Науке» отсекает почти всю базу — а лом донесёт кто угодно; стоя после
+подвоза, наука не начиналась вовсе, пока игрок держал размеченной хоть одну большую площадку),
+подвоз на площадки — восьмым (иначе за ломом никто не пойдёт, пока есть обеспеченная работа),
 производство — девятым (заказ размечен явно и поштучно), стройка и снос — десятыми, уборка пола —
 одиннадцатой, **дежурство на узле связи — двенадцатым** (§12.76: раздачи там больше нет — раздатчик
 зовёт к рации только приписанного игроком (`Posted`), а место в очереди отвечает лишь за то, что

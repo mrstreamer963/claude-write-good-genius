@@ -9,6 +9,13 @@
   <body>
     <header>
       <span class="title">SP / Эсперы — <em>walking skeleton</em></span>
+      <!-- Счётчик кадров и тиков: FPS меряется по rAF, TPS — по смене
+           `snap.tick`, то есть по тому же сигналу, каким живёт вид. -->
+      <span
+        class="clock perf"
+        id="perf"
+        data-tip="кадров в секунду · тиков симуляции в секунду"
+      ></span>
       <span class="spacer"></span>
       <span class="clock" id="scrap"></span>
       <span class="clock">день <b id="tick">0</b></span>

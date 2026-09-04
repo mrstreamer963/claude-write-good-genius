@@ -2426,3 +2426,11 @@ main#stage.mode-cursor #mode-banner {
 .cat-skill.quiet {
   opacity: 0.6;
 }
+
+/* Счётчик кадров и тиков стоит рядом с заголовком, а не среди часов: он про
+   работу движка, а не про время мира, — и потому приглушён сильнее часов. */
+.perf {
+  margin-left: 12px;
+  font-size: 12px;
+  opacity: 0.65;
+}
