@@ -120,7 +120,10 @@ tiles:
   # то, что игрок знал давно. Ворота, чьё открытие ничего не меняет, — это не
   # ступень, а шум в стопке тикеров (§12.120, §12.221).
   - { id: bed,     label: "Лежанка",     color: "#3f5a3a", cost: { scrap: 1, part: 1 }, rest: 120,    wake: 24000, quiet: true }
-  - { id: desk,    label: "Парта",       color: "#4a4f7a", cost: { scrap: 2, part: 1 }, teaches: science, after: lab, quiet: true }
+  # Парта **открыта с нулевого тика** (§12.235, отменяет `after: lab` из
+  # §12.210): знающий игрок строит её заранее и учит котов «Науке», пока ждёт
+  # первую находку, — к лаборатории у него уже будет кому работать.
+  - { id: desk,    label: "Парта",       color: "#4a4f7a", cost: { scrap: 2, part: 1 }, teaches: science, quiet: true }
   - { id: rack,    label: "Стеллаж",     color: "#2f6f8e", cost: { scrap: 4, part: 3 }, capacity: 60, solid: true, tech: racks, dirty: true }
   - { id: nest,    label: "Гнездо",      color: "#4d7a44", cost: { scrap: 2, part: 2 }, rest: 300,    tech: nests, quiet: true }
   - { id: shop,    label: "Мастерская",  color: "#8e6f2f", cost: { scrap: 3, part: 2 }, shop: true,   tech: workshops, noisy: true, dirty: true }
