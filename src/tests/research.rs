@@ -483,7 +483,10 @@ fn a_demolished_predecessor_keeps_its_successor_open() {
     // В боевом контенте `after` с §12.235 не носит никто, а механизм жив —
     // ставим ворота парте прямо здесь, как было в §12.210.
     sim.tile_rule(desk, |r| r.after = Some(lab as i16));
-    assert!(!sim.tile_is_open(desk as usize), "до лаборатории парта закрыта");
+    assert!(
+        !sim.tile_is_open(desk as usize),
+        "до лаборатории парта закрыта"
+    );
 
     sim.sight("sample");
     sim.force_tile(7, 8, lab as i16);

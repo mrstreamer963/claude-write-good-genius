@@ -304,6 +304,47 @@ fn a_successful_cleanup_clears_the_blight() {
     assert_eq!(sim.blight_at(site), None, "очаг снят");
 }
 
+/// Очаг гаснет **на конце работы, а не на возвращении** (§12.244): отряд,
+/// который идёт домой, дело уже сделал, и гореть участку всю дорогу назад
+/// незачем. Добыча при этом по-прежнему ложится на шлюз по приходу.
+#[test]
+fn a_cleanup_clears_the_blight_when_the_work_ends_not_at_the_gate() {
+    let (mut sim, m) = sim_with_gate(&["#######", "#a...b#", "#######"], (3, 1), 2, 10);
+    sim.set_mission_work(m, 20);
+    let kind = sim.set_blight_kind(0, 2, false, 0);
+    let site = sim.set_site("Свалка", (0, 0), &[]);
+    sim.set_mission_cleanses(m, kind);
+    sim.seed_blight(site, kind);
+
+    assert!(sim.launch_to(m, squad(&["a", "b"]), site));
+    // Дождаться ухода и пройти дорогу туда и работу — до первого тика «домой».
+    let mut guard = 0;
+    while sim.mission_phase() != Some("back") {
+        assert_eq!(
+            sim.blight_at(site),
+            Some((kind, 1)),
+            "пока работают — горит"
+        );
+        sim.tick_n(1);
+        guard += 1;
+        assert!(guard < 200, "стадия «домой» так и не настала");
+    }
+    assert_eq!(
+        sim.blight_at(site),
+        None,
+        "снят в первый же тик дороги домой"
+    );
+    assert!(
+        sim.raid_left(m).is_some_and(|l| l > 0),
+        "а отряд ещё в поле"
+    );
+    assert_eq!(sim.item_at(3, 1, 0), 0, "добычи на шлюзе пока нет");
+    let left = sim.raid_left(m).unwrap() as usize;
+    sim.tick_n(left);
+    assert_eq!(sim.raid_left(m), None, "вернулись");
+    assert_eq!(sim.item_at(3, 1, 0), 5, "и только теперь добыча на шлюзе");
+}
+
 /// Провал не снимает ничего: доля меряет добычу, а половины очага не бывает.
 #[test]
 fn a_failed_cleanup_leaves_the_blight_alone() {
@@ -384,13 +425,13 @@ fn a_knocked_blight_starts_its_clock_over() {
     assert!(sim.launch_to(m, squad(&["a", "b"]), site));
     sim.tick_n(30);
     assert_eq!(sim.blight_at(site), Some((kind, 3)), "ступень сбита");
-    // Счёт до следующей ступени пошёл заново — с возвращения отряда, а не с
-    // посева: это и есть купленное базе время.
+    // Счёт до следующей ступени пошёл заново — с конца работы отряда
+    // (§12.244), а не с посева: это и есть купленное базе время.
     let (step, left) = sim.site_step(site).expect("очаг растёт дальше");
     assert_eq!(step, Step::Grow(4), "следующим шагом вернёт сбитое");
     // Считай очаг от посева — осталось бы десять (сорок минус тридцать
-    // прожитых); он считает от возвращения отряда, и потому больше двадцати.
-    assert!(left > 20, "счётчик пошёл заново: осталось {left}");
+    // прожитых); он считает от конца работы, и потому заметно больше.
+    assert!(left > 15, "счётчик пошёл заново: осталось {left}");
 }
 
 /// Провал зачистки пленных не оставляет: очаг — биологическая угроза от

@@ -26,7 +26,10 @@ fn layered() -> Sim {
 #[test]
 fn a_building_stands_only_on_a_floor() {
     let mut sim = layered();
-    assert!(!sim.add_blueprint(0, 1, WALL), "на пустоту постройку не ставят");
+    assert!(
+        !sim.add_blueprint(0, 1, WALL),
+        "на пустоту постройку не ставят"
+    );
     assert!(sim.add_blueprint(3, 1, WALL), "на пол — ставят");
 }
 
@@ -34,7 +37,10 @@ fn a_building_stands_only_on_a_floor() {
 fn a_floor_goes_only_on_void() {
     let mut sim = layered();
     sim.force_tile(3, 1, WALL as i16);
-    assert!(!sim.add_blueprint(3, 1, FLOOR), "пол поверх постройки не кладут");
+    assert!(
+        !sim.add_blueprint(3, 1, FLOOR),
+        "пол поверх постройки не кладут"
+    );
     assert!(sim.add_blueprint(3, 0, FLOOR), "на пустоту — кладут");
 }
 
@@ -43,14 +49,20 @@ fn a_floor_goes_only_on_void() {
 fn nothing_goes_over_a_building() {
     let mut sim = layered();
     sim.force_tile(3, 1, WALL as i16);
-    assert!(!sim.add_blueprint(3, 1, 2), "поверх постройки не встаёт другая");
+    assert!(
+        !sim.add_blueprint(3, 1, 2),
+        "поверх постройки не встаёт другая"
+    );
 }
 
 /// Без основания в палитре правила нет: схема ведёт себя как до §12.237.
 #[test]
 fn without_a_base_anything_goes_anywhere() {
     let mut sim = sim_from(&ROOM);
-    assert!(sim.add_blueprint(0, 1, WALL), "постройка на пустоте, как раньше");
+    assert!(
+        sim.add_blueprint(0, 1, WALL),
+        "постройка на пустоте, как раньше"
+    );
 }
 
 /// Маска превью говорит то же, что фасад (§12.111): пустота под постройкой
@@ -186,8 +198,14 @@ fn the_shipped_ruleset_upgrades_storage_to_a_rack() {
     let rack = sim.tile_index("rack").expect("стеллаж");
     let storage = sim.tile_index("storage").expect("склад");
 
-    assert!(!sim.add_blueprint(8, 7, rack as i32), "на пол стеллаж не встаёт");
-    assert!(sim.add_blueprint(3, 2, rack as i32), "поверх склада — встаёт");
+    assert!(
+        !sim.add_blueprint(8, 7, rack as i32),
+        "на пол стеллаж не встаёт"
+    );
+    assert!(
+        sim.add_blueprint(3, 2, rack as i32),
+        "поверх склада — встаёт"
+    );
     sim.tick_n(1500);
     assert_eq!(sim.tile(3, 2), rack, "стеллаж построен");
 
