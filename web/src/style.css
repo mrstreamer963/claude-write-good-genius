@@ -2679,6 +2679,11 @@ main#stage.mode-cursor #mode-banner {
 .map-site.mine .map-ring {
   stroke-dasharray: 4 3;
 }
+/* Непрочитанный заказ на участке красит число в кружке акцентом (§12.245) —
+   та же метка, что точка на дверях реестров, только на самом счёте. */
+.map-site.fresh .map-stage {
+  fill: var(--accent);
+}
 .map-note {
   display: flex;
   flex-direction: column;

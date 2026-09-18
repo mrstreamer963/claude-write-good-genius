@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 34;
+pub(crate) const FORMAT: u32 = 36;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -163,6 +163,9 @@ pub(crate) const SAVED: &[&str] = &[
     // партия спрятала бы строки склада, которые игрок уже читал, — то есть
     // забыла бы половину своей истории тише, чем любой другой пропуск.
     "Seen",
+    // Заказы, открытые хоть раз (§12.246): без этого загруженная партия
+    // спрятала бы в строку «нужна репутация» заказ, который игрок уже видел.
+    "RaidsMet",
     "Chronicle",
     "Goals",
     "Raids",
@@ -337,6 +340,9 @@ pub(crate) struct StateDto {
     /// иначе старый снимок спрятал бы весь склад до первого `note_seen`.
     #[serde(default)]
     pub(crate) seen: Vec<bool>,
+    /// Заказы, открытые целиком хоть раз (§12.246). Позиционно по `missions:`.
+    #[serde(default)]
+    pub(crate) raids_met: Vec<bool>,
     /// Журнал сработавших событий: `(индекс события, была ли база готова)`.
     pub(crate) chronicle: Vec<(usize, bool)>,
     /// Взятые цели: `(индекс цели, тик взятия)` (§12.58).
@@ -639,6 +645,13 @@ pub(crate) struct MissionDto {
     /// зачистку ходит по очагам, а не стоит на месте.
     #[serde(default)]
     pub(crate) site: Option<usize>,
+    /// Исход, посчитанный на конце работы (§12.244): доля и провал. Состояние,
+    /// а не правило: без него загруженный на дороге домой отряд посчитал бы
+    /// исход второй раз — с очагом, известностью и ранами. Поднят `FORMAT`
+    /// до 35: у старого снимка отряд в поле приехал бы с `None` и сделал ровно
+    /// это.
+    #[serde(default)]
+    pub(crate) verdict: Option<(i32, bool)>,
 }
 
 // ── Снять снимок ──────────────────────────────────────────────────────────
@@ -778,6 +791,7 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                     left: m.left,
                     span: m.span,
                     covered: m.covered,
+                    verdict: m.verdict.map(|v| (v.share, v.failed)),
                     site: m.site,
                 }),
             }
@@ -826,6 +840,7 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
             standing: world.resource::<Standing>().0.clone(),
             techs: world.resource::<Techs>().0.clone(),
             seen: world.resource::<Seen>().0.clone(),
+            raids_met: world.resource::<RaidsMet>().0.clone(),
             chronicle: chronicle.0.iter().map(|h| (h.def, h.ready)).collect(),
             goals: world
                 .resource::<Goals>()
@@ -978,6 +993,14 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
     world.resource_mut::<Money>().0 = s.money;
     world.resource_mut::<Standing>().0 = s.standing.clone();
     world.resource_mut::<Techs>().0 = s.techs.clone();
+    {
+        let mut met = world.resource_mut::<RaidsMet>();
+        for (def, &m) in s.raids_met.iter().enumerate() {
+            if m {
+                met.mark(def);
+            }
+        }
+    }
     restore_seen(world, file);
     world.resource_mut::<Chronicle>().0 = s
         .chronicle
@@ -1234,6 +1257,7 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
                 left: m.left,
                 span: m.span,
                 site: m.site,
+                verdict: m.verdict.map(|(share, failed)| Verdict { share, failed }),
             });
         }
     }

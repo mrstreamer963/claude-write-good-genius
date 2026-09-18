@@ -35,8 +35,8 @@ use crate::hauling::{plan_spend, stored_counts};
 use crate::jobs::{BUILD_WORK, Plan, may_build, site_clutter};
 use crate::map::{BaseMap, rect_cells};
 use crate::missions::{
-    crew_danger, crew_force, duration, faction_is_met, gate_cells, gate_count, guide_cut, guide_of,
-    guide_value, outcome, phase,
+    comms_span, crew_danger, crew_force, duration, faction_is_met, gate_cells, gate_count,
+    guide_cut, guide_of, guide_value, outcome, phase,
 };
 use crate::movement::{Busy, is_stuck};
 use crate::path::{Reach, find_path};
@@ -251,6 +251,7 @@ impl Sim {
         RaidGates {
             unlocked: self.world.resource::<Fame>().0 >= rule.requires,
             welcome: self.world.resource::<Standing>().covers(&rule.needs),
+            met: self.world.resource::<RaidsMet>().met(def),
             // **Есть ли у вылазки цель вообще** (§12.199). Вопрос один на два
             // вида заказов без своего места: за своим идут, пока есть кого
             // спасать (§12.40), на зачистку — пока есть что тушить (§12.198).
@@ -474,7 +475,16 @@ impl Sim {
                     continue;
                 }
                 let open = match kind {
-                    NewsKind::Raid => self.raid_is_open(def),
+                    NewsKind::Raid => {
+                        // Открытый целиком заказ запоминается навсегда
+                        // (§12.246): наблюдатель уже здесь и ворота уже
+                        // посчитаны, второго прохода не заводим.
+                        let open = self.raid_is_open(def);
+                        if open && self.raid_gates(def).welcome {
+                            self.world.resource_mut::<RaidsMet>().mark(def);
+                        }
+                        open
+                    }
                     NewsKind::Recruit => self.recruit_is_open(def),
                     NewsKind::Topic => self.topic_is_open(def),
                     NewsKind::Recipe => self.recipe_is_open(def),
@@ -1840,6 +1850,7 @@ impl Sim {
         // ещё долго, и шапка успела бы сказать «ресурсы не выбраны» про
         // выбранные рулсетом.
         world.insert_resource(Seen(vec![false; rs.items.len()]));
+        world.insert_resource(RaidsMet(vec![false; rs.missions.len()]));
         // Лента новостей (§12.120). Базовой линии у неё пока нет: снимет её
         // первый же `note_news`, и стартовая доступность новостью не станет.
         world.insert_resource(News::default());
@@ -3108,6 +3119,7 @@ impl Sim {
             left: 0,
             span: 0,
             covered: 0,
+            verdict: None,
         });
         let mission_e = mission_e.id();
         // Спящие в `crew` теперь есть (§12.191) — их отсекает `ready` ниже, и
@@ -5326,13 +5338,22 @@ impl Sim {
                     0 => rule.map_or(0, |r| duration(r, paws)),
                     frozen => frozen,
                 };
-                let comms = relay_force(m.covered, span);
+                // Связь делится на срок **до конца работы** — тем же
+                // выражением, что в `run_missions` (§12.244).
+                let comms = relay_force(m.covered, rule.map_or(span, |r| comms_span(r, span)));
                 let raw = mine().map(|&(.., force, _, _, _)| force);
                 let force: i32 = match rule {
                     Some(r) => crew_force(r, raw),
                     None => raw.sum(),
                 } + comms;
-                let out = outcome(danger, force);
+                let mut out = outcome(danger, force);
+                // Отработавший отряд несёт домой уже посчитанный исход
+                // (§12.244): прогноз тут больше не прогноз, а факт, и очаг,
+                // выросший за дорогу назад, его не двигает.
+                if let Some(v) = m.verdict {
+                    out.share = v.share;
+                    out.failed = v.failed;
+                }
                 missions.push(MissionSnap {
                     def: m.def,
                     x: m.gate.0,

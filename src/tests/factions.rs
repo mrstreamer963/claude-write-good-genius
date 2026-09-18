@@ -12,6 +12,8 @@
 
 use super::*;
 
+const CORE: &str = include_str!("../../assets/rulesets/core.yaml");
+
 /// Коридор со шлюзом в (3,1); миссия на двоих, безопасная и бесплатная.
 fn sim_with_gate(ticks: i32) -> (Sim, usize) {
     let mut sim = sim_from(&["########", "#a....b#", "########"]);
@@ -623,4 +625,50 @@ fn a_failed_raid_introduces_no_one() {
     run(&mut sim, m, 10);
     assert_eq!(sim.standing(police), 0, "провал репутацию не двигает");
     assert!(!sim.faction_is_met(police), "и знакомством не считается");
+}
+
+// --- память об открытом заказе (§12.246) -------------------------------------
+
+/// Заказ, который игрок уже держал открытым, при упавшей репутации не исчезает:
+/// `met` остаётся, и вид показывает его карточкой с причиной, а не строкой
+/// «нужна репутация». Тот, что открытым не был, — не `met`.
+#[test]
+fn an_order_once_open_stays_met_after_the_standing_drops() {
+    let (mut sim, m) = sim_with_gate(10);
+    let police = sim.set_faction(100);
+    sim.set_mission_needs(m, &[(police, 30)]);
+
+    sim.tick_n(1);
+    assert!(!sim.raid_gates(m).met, "не доверяют — и открыт он не был");
+
+    sim.set_standing(police, 30);
+    sim.tick_n(1);
+    assert!(sim.raid_gates(m).met, "открылся целиком — отмечен");
+
+    sim.set_standing(police, 0);
+    sim.tick_n(1);
+    let g = sim.raid_gates(m);
+    assert!(!g.welcome, "доверие ушло");
+    assert!(
+        g.met,
+        "а память о заказе — нет: это «потерял», не «не дорос»"
+    );
+}
+
+/// Память едет в снимок: загруженная партия не прячет в строку заказ, который
+/// игрок уже видел.
+#[test]
+fn the_met_orders_survive_a_save() {
+    let mut live = Sim::new(CORE).expect("рулсет");
+    live.tick_n(1);
+    let defs = live.world.resource::<MissionRules>().0.len();
+    let met: Vec<bool> = (0..defs).map(|d| live.raid_gates(d).met).collect();
+    assert!(
+        met.iter().any(|&m| m),
+        "первая ступень открыта с нулевого тика"
+    );
+    let json = live.save().expect("снимок");
+    let mut loaded = Sim::load_from(CORE, &json).expect("загрузка");
+    let back: Vec<bool> = (0..defs).map(|d| loaded.raid_gates(d).met).collect();
+    assert_eq!(back, met, "память о заказах приехала как была");
 }
