@@ -45,7 +45,8 @@ fn a_hungry_cat_walks_to_the_food_and_eats_it() {
     assert!(sim.fed_of("a") < 40, "но пока не поел");
 
     sim.tick_n(10);
-    assert_eq!(sim.pos_of("a"), (5, 1), "дошёл до кучи");
+    // До соседней клетки, а не на саму кучу: с прохода дотягивается (§12.250).
+    assert_eq!(sim.pos_of("a"), (4, 1), "дошёл до кучи");
     // Не ровно 100: пока кот шёл и стоял, голод тикал дальше (§12.36).
     assert!(sim.fed_of("a") > 90, "и наелся почти до полной");
     assert_eq!(sim.item_at(5, 1, RATION), 0, "паёк съеден");
@@ -62,9 +63,9 @@ fn food_is_eaten_from_the_floor() {
     sim.set_fed("a", 10);
 
     sim.tick_n(12);
-    // Ровно 90: паёк долил до потолка, а голод отсчитал свои тики. Дорога до
-    // кучи стоит два тика на клетку (§12.140), поэтому счёт идёт от прибытия.
-    assert_eq!(sim.fed_of("a"), 90, "поел прямо с пола");
+    // Ровно 88: паёк долил до потолка, а голод отсчитал свои тики. Куча в шаге,
+    // и с §12.250 кот ест её, не сходя с места, — то есть с первого же тика.
+    assert_eq!(sim.fed_of("a"), 88, "поел прямо с пола");
     assert_eq!(sim.item_at(2, 1, RATION), 0, "кучи больше нет");
 }
 
@@ -93,7 +94,11 @@ fn the_nearest_food_pile_wins() {
     sim.set_fed("a", 10);
 
     sim.tick_n(10);
-    assert_eq!(sim.pos_of("a"), (2, 1), "сходил за ближней кучей");
+    assert_eq!(
+        sim.pos_of("a"),
+        (1, 1),
+        "ближняя куча в шаге — ел с места (§12.250)"
+    );
     assert_eq!(sim.item_at(2, 1, RATION), 0, "её и съел");
     assert_eq!(sim.item_at(5, 1, RATION), 1, "склад не тронут");
 }
@@ -268,8 +273,8 @@ fn eating_stops_the_double_burn() {
     sim.put_item(2, 1, RATION, 1);
     sim.set_fed("a", 0);
 
-    sim.tick_n(12); // дошёл и поел
-    assert_eq!(sim.fed_of("a"), 90, "сыт");
+    sim.tick_n(12); // куча в шаге: поел с места (§12.250)
+    assert_eq!(sim.fed_of("a"), 88, "сыт");
     let before = sim.energy_of("a");
     sim.tick_n(10);
     assert_eq!(sim.energy_of("a"), before - 10, "жжёт по очку, как все");

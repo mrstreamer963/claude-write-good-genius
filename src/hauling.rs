@@ -1247,13 +1247,16 @@ pub(crate) fn work_hauls(
                 };
 
                 // Пришёл на склад — сдаём, сколько влезло. Класть можно **и в
-                // клетку под лапами, и в заставленного соседа** (§12.142): на
-                // полку не встать, груз кладут с прохода. Клетка выбирается
-                // здесь, а не при раздаче: пока кот шёл, склад мог заполниться,
-                // и эта проверка тут была всегда.
+                // клетку под лапами, и в любого соседа** (§12.142, §12.250):
+                // груз кладут с прохода. Клетка выбирается здесь, а не при
+                // раздаче: пока кот шёл, склад мог заполниться, и эта проверка
+                // тут была всегда. Из нескольких — **высший ярус** (§12.195):
+                // стоя на полу между складом и стеллажом, кот дотягивается до
+                // обоих, и сданное в низший тем же тиком поехало бы вверх.
                 let cell = worked_cells(&map, &rules, (pos.x, pos.y))
                     .into_iter()
-                    .find(|&c| free_space(&map, &rules, &bins, &stock, c, load.item) > 0);
+                    .filter(|&c| free_space(&map, &rules, &bins, &stock, c, load.item) > 0)
+                    .min_by_key(|&c| -rules.priority_of(map.tile_at(c.0, c.1)));
                 if let Some(cell) = cell {
                     let free = free_space(&map, &rules, &bins, &stock, cell, load.item);
                     let given = load.count.min(free);
@@ -1325,10 +1328,15 @@ fn take_needed(
     carry: Option<&Carry>,
 ) -> Option<(usize, i32)> {
     for &(item, need) in miss {
-        let found = stacks
-            .iter()
-            .find(|(_, p, s)| at.contains(&(p.x, p.y)) && s.item == item && s.count > 0)
-            .map(|(e, ..)| e);
+        // Клетки — в порядке `worked_cells` (своя, потом соседи), а не в
+        // порядке обхода ECS: с §12.250 кот дотягивается до пяти клеток, и
+        // «первая попавшаяся куча» между ними была бы недетерминированной.
+        let found = at.iter().find_map(|&c| {
+            stacks
+                .iter()
+                .find(|(_, p, s)| (p.x, p.y) == c && s.item == item && s.count > 0)
+                .map(|(e, ..)| e)
+        });
         if let Some(taken) = take_from_pile(commands, stacks, found, at, portion(carry, need)) {
             return Some(taken);
         }

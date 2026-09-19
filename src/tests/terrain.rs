@@ -801,6 +801,75 @@ fn both_gates_hold_on_one_tile() {
     );
 }
 
+// --- с хранилищем работают с соседней клетки (§12.250) -----------------------
+
+/// Проходимый склад обслуживается **с прохода**, как стеллаж (§12.142): кот,
+/// стоящий рядом, дотягивается до него, не ступая внутрь. Куча в шаге от кота
+/// берётся с места, а сдаётся груз с клетки перед складом.
+#[test]
+fn a_walkable_storage_is_served_from_the_aisle() {
+    let mut sim = sim_from(&["#########", "#a......#", "#########"]);
+    sim.set_capacity(RACK, 20);
+    sim.force_tile(7, 1, RACK);
+    sim.put_scrap(2, 1, 4);
+
+    let mut stepped_in = false;
+    for _ in 0..200 {
+        sim.tick_n(1);
+        stepped_in |= sim.pos_of("a") == (7, 1);
+    }
+    assert_eq!(sim.scrap_at(7, 1), 4, "весь лом на складе");
+    assert_eq!(sim.scrap_at(2, 1), 0, "на полу не осталось");
+    assert!(
+        !stepped_in,
+        "на склад кот не ступал ни разу: сдал с прохода"
+    );
+}
+
+/// За тяжёлой кучей кот идёт **до соседней клетки**, а не в неё: вход в завал
+/// стоит дороже чистого шага (§12.248), Дейкстра это знает (§12.249), и
+/// `work_spot` берёт то, что дешевле. Это отменяет §12.249 в части «к своей
+/// куче — напрямик»: напрямик кот идёт, только когда его туда послал игрок.
+#[test]
+fn a_hauler_stops_beside_a_heavy_pile_instead_of_wading_in() {
+    let mut sim = sim_from(&["#########", "#a......#", "#########"]);
+    sim.set_auto_tidy(false);
+    sim.set_cost(0, 2);
+    sim.put_scrap(6, 1, 64);
+    assert!(sim.add_blueprint(2, 2, 0));
+
+    let mut waded = false;
+    for _ in 0..200 {
+        sim.tick_n(1);
+        waded |= sim.pos_of("a") == (6, 1);
+    }
+    assert_eq!(sim.tile(2, 2), 0, "площадка обеспечена — тайл построен");
+    assert_eq!(sim.scrap_at(6, 1), 62, "с кучи ушла ровно цена тайла");
+    assert!(!waded, "в кучу кот не лез: взял с соседней клетки");
+}
+
+/// Стоя между складом и стеллажом, кот дотягивается до обоих — и сдаёт в
+/// **высший ярус** (§12.195): сданное в низший тем же тиком поехало бы вверх.
+#[test]
+fn a_load_within_reach_of_two_tiers_goes_to_the_higher_one() {
+    const STORE: i16 = 1;
+    const SHELF: i16 = 2;
+    let mut sim = sim_from(&["#######", "#a....#", "###.###", "#######"]);
+    sim.set_capacity(STORE, 20);
+    sim.set_priority(STORE, 1);
+    sim.set_capacity(SHELF, 100);
+    sim.set_priority(SHELF, 2);
+    sim.set_solid(SHELF, true);
+    sim.force_tile(4, 1, STORE); // сосед клетки (3, 1) справа
+    sim.force_tile(3, 2, SHELF); // сосед той же клетки снизу
+    sim.put_scrap(1, 1, 3);
+
+    sim.tick_n(200);
+    assert_eq!(sim.scrap_at(3, 2), 3, "лом ушёл на стеллаж");
+    assert_eq!(sim.scrap_at(4, 1), 0, "склад ниже ярусом пуст");
+    assert_eq!(sim.scrap_at(1, 1), 0, "на полу ничего");
+}
+
 // --- боевой рулсет ----------------------------------------------------------
 
 /// У заставленного тайла обязан быть смысл сверх того, что на нём не стоят.

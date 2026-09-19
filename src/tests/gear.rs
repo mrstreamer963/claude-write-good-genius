@@ -51,7 +51,8 @@ fn a_cat_walks_to_the_storage_for_the_loadout() {
     assert!(sim.gear_of("a").is_empty(), "но пока ни во что не одет");
 
     sim.tick_n(10);
-    assert_eq!(sim.pos_of("a"), (5, 1), "дошёл до склада");
+    // До соседней клетки: со склада берут с прохода (§12.250).
+    assert_eq!(sim.pos_of("a"), (4, 1), "дошёл до склада");
     assert_eq!(sim.gear_of("a"), vec![SUIT], "и надел комбинезон");
     assert_eq!(sim.item_at(5, 1, SUIT), 0, "склад стал легче ровно на него");
     assert!(!sim.is_equipping("a"), "задача закрыта");
@@ -101,8 +102,8 @@ fn the_nearest_pile_wins() {
     assert_eq!(sim.gear_of("a"), vec![SUIT], "оделся");
     assert_eq!(
         sim.pos_of("a"),
-        (2, 1),
-        "сходив за ближней кучей, а не на склад"
+        (1, 1),
+        "взяв ближнюю кучу с места, а не сходив на склад (§12.250)"
     );
     assert_eq!(sim.item_at(2, 1, SUIT), 0, "её и забрал");
 }
