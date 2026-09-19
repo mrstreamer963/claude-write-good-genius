@@ -1191,7 +1191,9 @@ function drawFurniture(g, id, x, y, tint, n) {
       break;
     }
     case "storage": {
-      // Паллета с двумя-тремя ящиками; ящики чуть разные — склад живой.
+      // Пустая паллета: доски и жёлтая разметка места. ⚠️ Ящиков на ней нет
+      // намеренно — содержимое рисует `drawScrap`, и нарисованная тара
+      // читалась бы как «здесь что-то лежит» на пустом складе.
       shadowUnder(T * 0.12, T * 0.12, T * 0.76, T * 0.76);
       g.rect(px + T * 0.12, py + T * 0.12, T * 0.76, T * 0.76).fill(0x5a4a33);
       for (let i = 0; i < 3; i++) {
@@ -1199,15 +1201,11 @@ function drawFurniture(g, id, x, y, tint, n) {
           0x3a2e1e,
         );
       }
-      const boxes = n < 0.5 ? 1 : 2;
-      for (let i = 0; i < boxes; i++) {
-        const bw = T * 0.34;
-        const bx = px + T * 0.18 + i * T * 0.32;
-        const by = py + T * 0.2 + (i ? T * 0.06 : 0);
-        g.rect(bx, by, bw, bw).fill(0x9a7c4e);
-        g.rect(bx, by, bw, bw).stroke({ color: 0x5e4a2c, width: 1 });
-        g.rect(bx + bw * 0.2, by + bw * 0.45, bw * 0.6, 2).fill(0x5e4a2c);
-      }
+      g.rect(px + T * 0.08, py + T * 0.08, T * 0.84, T * 0.84).stroke({
+        color: 0xd9b64a,
+        width: 1,
+        alpha: 0.35,
+      });
       break;
     }
     case "bin": {
@@ -1226,7 +1224,8 @@ function drawFurniture(g, id, x, y, tint, n) {
     }
     case "rack": {
       // Стеллаж: непроходимый (§12.142), поэтому заполняет клетку целиком —
-      // три полки с тенью под каждой.
+      // три **пустые** полки с тенью под каждой и стойки по бокам. Коробок
+      // на полках нет: что лежит, рисует `drawScrap` (см. склад).
       g.rect(px, py, T, T).fill(0x3a3f4a);
       for (let i = 0; i < 3; i++) {
         const sy = py + T * 0.12 + i * T * 0.3;
@@ -1235,14 +1234,9 @@ function drawFurniture(g, id, x, y, tint, n) {
           alpha: 0.5,
         });
         g.rect(px + 2, sy + T * 0.14, T - 4, 2.5).fill(0x8a8f9c);
-        // Коробки на полке — из шума, чтобы соседние стеллажи различались.
-        const k = Math.floor(cellNoise(x, y, i) * 3);
-        for (let j = 0; j < k; j++) {
-          g.rect(px + 4 + j * T * 0.3, sy + T * 0.02, T * 0.22, T * 0.12).fill(
-            j % 2 ? 0x9a7c4e : shade(tint, 0.3),
-          );
-        }
       }
+      g.rect(px + 1, py + 1, 2, T - 2).fill(0x6a707e);
+      g.rect(px + T - 3, py + 1, 2, T - 2).fill(0x6a707e);
       g.rect(px, py, T, T).stroke({ color: dark, width: 1 });
       break;
     }
