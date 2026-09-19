@@ -290,10 +290,12 @@ fn the_slowdown_has_a_ceiling() {
     );
 }
 
-/// Сложенное на склад — порядок, а не завал: иначе собственное хранилище
-/// становилось бы болотом, а уборка наказывала бы сама себя.
+/// Полный склад тормозит, как та же куча в коридоре (§12.248): проходимое
+/// хранилище — это пол, по которому ходят между сложенным. До §12.248 склад из
+/// счёта исключался, и проходимая клетка с ёмкостью была полом без единственного
+/// недостатка пола — оптимальная база вырождалась в квадрат складов.
 #[test]
-fn storage_does_not_slow_anyone_down() {
+fn a_full_storage_cell_slows_the_step_like_a_pile() {
     let mut sim = sim_from(&["#####", "#a..#", "#####"]);
     sim.set_capacity(RACK, 100);
     sim.force_tile(2, 1, RACK);
@@ -304,8 +306,32 @@ fn storage_does_not_slow_anyone_down() {
     let ticks = ticks_to_arrive(&mut sim, (3, 1));
     assert_eq!(
         ticks,
-        Some(walk_ticks(0)),
-        "по складу кот идёт ровно так же, как по чистому полу",
+        Some(walk_ticks(64)),
+        "по полному складу кот идёт так же медленно, как через кучу на полу",
+    );
+}
+
+/// Быстрое хранение ровно одно — непроходимое (§12.248, §12.142): на стеллаж
+/// не ступают, значит, сколько бы на нём ни лежало, шаг мимо него он не
+/// удлиняет.
+#[test]
+fn a_solid_rack_slows_no_one() {
+    let walk = |count: i32| {
+        let mut sim = sim_from(&["#####", "#a..#", "#...#", "#####"]);
+        sim.set_capacity(RACK, 100);
+        sim.set_solid(RACK, true);
+        sim.force_tile(2, 1, RACK);
+        sim.set_auto_tidy(false);
+        if count > 0 {
+            sim.put_item(2, 1, 0, count);
+        }
+        assert!(sim.set_target("a", 3, 1), "приказ принят");
+        ticks_to_arrive(&mut sim, (3, 1)).expect("кот обходит стеллаж понизу")
+    };
+    assert_eq!(
+        walk(64),
+        walk(0),
+        "мимо полного стеллажа кот идёт с той же скоростью, что мимо пустого",
     );
 }
 

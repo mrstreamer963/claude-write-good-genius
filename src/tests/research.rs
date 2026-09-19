@@ -416,10 +416,12 @@ fn the_shipped_ruleset_researches_its_first_topic() {
     let rack = 6; // индекс `rack` в палитре тайлов
     // Стеллаж — улучшение склада, а гнездо — лежанки (§12.238): основу
     // кладём заранее, чтобы отказ ниже был про технологию, а не про слой.
+    // Лежанка стоит на другом конце коридора: с §12.248 спальня чистая, и
+    // склад боком к ней не встал бы уже по зонированию, а не по технологии.
     let storage = sim.tile_index("storage").expect("склад");
     let bed = sim.tile_index("bed").expect("лежанка");
     sim.force_tile(8, 7, storage);
-    sim.force_tile(8, 8, bed);
+    sim.force_tile(3, 8, bed);
     assert!(
         !sim.add_blueprint(8, 7, rack),
         "веха постройку не даёт: у «Стеллажа» своя тема",
@@ -432,7 +434,7 @@ fn the_shipped_ruleset_researches_its_first_topic() {
         "«Стеллаж» открылся своей темой",
     );
     let nest = 7; // а «Гнездо» ждёт следующей темы
-    assert!(!sim.add_blueprint(8, 8, nest), "быт колонии ещё не изучен");
+    assert!(!sim.add_blueprint(3, 8, nest), "быт колонии ещё не изучен");
 }
 
 /// **Боевой рулсет: лаборатория считается.** Ячейка — слот темы (§12.132), и

@@ -62,7 +62,9 @@ fn an_order_is_taken_to_the_shop_and_worked_on() {
     let recipe = sim.set_recipe(200, &[(SCRAP, 2)], &[(PART, 1)], &[]);
 
     assert!(sim.start_craft(recipe, 1));
-    sim.tick_n(10); // ходка за материалом плюс дорога к станку (§12.102)
+    // Ходка за материалом плюс дорога к станку (§12.102); шаг на полный
+    // склад с §12.248 длится дольше чистого.
+    sim.tick_n(20);
     assert_eq!(
         sim.crafter(),
         Some("b".to_string()),
@@ -323,7 +325,8 @@ fn two_shops_run_two_orders_at_once() {
         sim.start_craft(nut, 1),
         "второй станок принимает второй заказ"
     );
-    sim.tick_n(15); // обе ходки за материалом плюс посадка за станки
+    // Полный склад с §12.248 тормозит шаг в него — ходки стали длиннее.
+    sim.tick_n(24); // обе ходки за материалом плюс посадка за станки
 
     assert!(sim.crafter_at(3, 1).is_some(), "первый заказ взят");
     assert!(sim.crafter_at(4, 1).is_some(), "и второй тоже");
@@ -460,7 +463,7 @@ fn a_cancelled_order_frees_its_shop_for_the_next() {
         sim.start_craft(nut, 1),
         "станок освободился вместе с заказом"
     );
-    sim.tick_n(30);
+    sim.tick_n(40); // ходка на полный склад с §12.248 стала длиннее
     // По готовой детали, а не по исполнителю: заказ на 100 очков успевает
     // закрыться и despawn'иться, и «мастера нет» тут значит «всё сделано».
     assert_eq!(
@@ -879,7 +882,7 @@ fn a_manual_order_never_takes_a_paid_shop() {
     sim.put_item(5, 1, SCRAP, 40);
     let recipe = sim.set_recipe(400, &[(SCRAP, 4)], &[(PART, 1)], &[]);
     sim.set_stock(recipe, 1);
-    sim.tick_n(10);
+    sim.tick_n(20); // ходка на полный склад с §12.248 стала длиннее
     assert_eq!(sim.item_at(5, 1, SCRAP), 36, "штука оплачена");
 
     assert!(sim.start_craft(recipe, 4));
@@ -1653,8 +1656,9 @@ fn zeroing_a_threshold_cancels_even_a_supplied_order() {
 
     sim.set_stock(recipe, 1);
     // Ждём, пока материал доедет до станка, но не дольше: доделанная штука
-    // закрыла бы заказ сама, и проверять было бы нечего.
-    sim.tick_n(10);
+    // закрыла бы заказ сама, и проверять было бы нечего. Ходка на полный
+    // склад с §12.248 длиннее, отсюда двадцать.
+    sim.tick_n(20);
     assert_eq!(sim.craft_delivered(), Some(2), "материал на станке");
 
     // Снятие порога — ноль и есть отмена.
@@ -1677,7 +1681,7 @@ fn lowering_a_threshold_below_the_stock_trims_supplied_orders() {
 
     // Высокий порог занимает все три станка и завозит на них материал.
     sim.set_stock(recipe, 10);
-    sim.tick_n(16);
+    sim.tick_n(24); // ходка на полный склад с §12.248 стала длиннее
     assert!(sim.orders_count() >= 2, "правило заняло станки");
     assert!(sim.craft_delivered().is_some(), "и материал уже на станке");
 
