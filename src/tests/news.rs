@@ -119,6 +119,34 @@ fn learning_a_topic_is_not_news() {
     );
 }
 
+/// Снос последней лаборатории закрывает открытые темы (§12.222), но не
+/// изученные: у тех нечего отнимать, и «тема закрылась» по каждой пройденной
+/// стояло бы столбиком в два десятка тикеров.
+#[test]
+fn demolishing_the_lab_does_not_close_a_learned_topic() {
+    let mut sim = sim_bare();
+    let first = sim.set_topic("first", 0, 10, &[], &[]);
+    let second = sim.set_topic("second", 0, 10, &[], &[]);
+    sim.set_lab(1, true);
+    sim.force_tile(2, 1, 1);
+    sim.tick_n(1);
+    sim.set_tech("first");
+    sim.tick_n(1);
+
+    sim.force_tile(2, 1, 0);
+    sim.tick_n(1);
+    assert!(
+        sim.news().contains(&(NewsKind::Topic, second, false)),
+        "неизученная тема закрылась со сносом: {:?}",
+        sim.news()
+    );
+    assert!(
+        !sim.news().contains(&(NewsKind::Topic, first, false)),
+        "изученная тема не закрывается: {:?}",
+        sim.news()
+    );
+}
+
 #[test]
 fn a_recipe_opens_with_its_technology() {
     let mut sim = sim_bare();
