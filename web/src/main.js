@@ -1604,54 +1604,113 @@ function itemColor(item) {
   return itemColors[item] ?? COLORS.scrap;
 }
 
+// Кучи предметов на полу и на полках. Куча — **стопка глифов того, что лежит**
+// (§12.109: один словарь на шапку, лапы кота и карту): одна ткань, две, три —
+// по объёму, чуть вразнобой, с тенью под ними. Абстрактный холмик говорил
+// «что-то лежит», а глиф говорит «ткань», и это тот же значок, что в шапке.
+// Точное число — в шапке и в панели клетки.
+//
+// ⚠️ Узлы глифов живут по (клетка, предмет) и переживают кадр (`stackNodes`,
+// дословно `dealLabels`): `new Graphics(ctx)` каждым кадром — седьмое лицо
+// граблей §12.84. Меняется в стопке только число видимых глифов и метка.
+// Тень и метка «на склад» по-прежнему рисуются в `scrapGfx` — они дёшевы.
+const stackNodes = new Map();
+const STACK_MAX = 3;
+// Раскладка стопки: смещения и поворот каждого глифа, от нижнего к верхнему.
+const STACK_LAYOUT = [
+  [-0.1, 0.1, -0.22],
+  [0.12, 0.0, 0.18],
+  [0.0, -0.14, -0.06],
+];
+
 function drawScrap(list) {
   const g = scrapGfx;
   g.clear();
-  if (!list || !list.length) return;
-  for (const s of list) {
+  const live = new Set();
+  // Несколько типов на одной клетке (инвариант 12) — стопки расходятся по
+  // горизонтали, а не ложатся друг на друга.
+  const perCell = new Map();
+  for (const s of list ?? []) {
+    const k = `${s.x},${s.y}`;
+    perCell.set(k, (perCell.get(k) ?? 0) + 1);
+  }
+  const slotOf = new Map();
+  for (const s of list ?? []) {
     const x = s.x * TILE;
     const y = s.y * TILE;
-    // Куча — неровный холмик, а не брусок: размер от объёма, два тона
-    // (материал в тени и на свету) и тень под ним. Форма детерминирована
-    // клеткой, чтобы не мерцать между кадрами.
-    const size = s.count >= 15 ? 1 : s.count >= 5 ? 0.78 : 0.55;
-    const rw = TILE * 0.36 * size;
-    const rh = TILE * 0.22 * size;
-    const cx = x + TILE / 2;
-    const cy = y + TILE * 0.62;
-    const col = itemColor(s.item);
-    g.ellipse(cx + 1, cy + 2.5, rw * 1.05, rh * 0.8).fill({
-      color: COLORS.shadow,
-      alpha: 0.35,
-    });
-    const pts = [];
-    const n = 7;
-    for (let i = 0; i < n; i++) {
-      const a = (i / n) * Math.PI * 2;
-      const j = 0.78 + cellNoise(s.x, s.y, 50 + i) * 0.34;
-      pts.push(cx + Math.cos(a) * rw * j, cy + Math.sin(a) * rh * j);
-    }
-    g.poly(pts).fill(shade(col, -0.3));
-    g.poly(pts).stroke({ color: 0x0b0d12, width: 1, alpha: 0.7 });
-    // Свет сверху-слева: блик — та же форма, сжатая и сдвинутая.
-    const hp = [];
-    for (let i = 0; i < n; i++) {
-      const a = (i / n) * Math.PI * 2;
-      const j = 0.78 + cellNoise(s.x, s.y, 50 + i) * 0.34;
-      hp.push(
-        cx - rw * 0.12 + Math.cos(a) * rw * j * 0.6,
-        cy - rh * 0.3 + Math.sin(a) * rh * j * 0.55,
+    const n = s.count >= 15 ? 3 : s.count >= 5 ? 2 : 1;
+    const ck = `${s.x},${s.y}`;
+    const m = perCell.get(ck);
+    const slot = slotOf.get(ck) ?? 0;
+    slotOf.set(ck, slot + 1);
+    const shift = m > 1 ? (slot - (m - 1) / 2) * TILE * 0.36 : 0;
+    const shrink = m > 1 ? 0.8 : 1;
+    const key = `${s.x},${s.y},${s.item}`;
+    live.add(key);
+    const ctx = itemGlyphContext(s.item);
+    if (ctx) {
+      let node = stackNodes.get(key);
+      if (!node) {
+        node = new Container();
+        const size = TILE * 0.4;
+        for (let i = 0; i < STACK_MAX; i++) {
+          const [dx, dy, rot] = STACK_LAYOUT[i];
+          // Тёмная подложка чуть шире глифа — иначе золотой лом на золотой
+          // паллете сливается, как груз со шкурой кота (`loadDisc`).
+          const back = new Graphics(ctx);
+          back.tint = 0x0b0d12;
+          back.scale.set((size / 24) * 1.22);
+          back.pivot.set(12, 12);
+          back.rotation = rot;
+          back.x = TILE * (0.5 + dx);
+          back.y = TILE * (0.58 + dy);
+          back.alpha = 0.85;
+          const gl = new Graphics(ctx);
+          gl.scale.set(size / 24);
+          gl.pivot.set(12, 12);
+          gl.rotation = rot;
+          gl.x = back.x;
+          gl.y = back.y;
+          const pair = new Container();
+          pair.addChild(back);
+          pair.addChild(gl);
+          node.addChild(pair);
+        }
+        stackNodes.set(key, node);
+        scrapLayer.addChild(node);
+      }
+      // Масштаб — вокруг центра клетки, поэтому опора узла в её середине.
+      node.pivot.set(TILE / 2, TILE / 2);
+      node.x = x + TILE / 2 + shift;
+      node.y = y + TILE / 2;
+      node.scale.set(shrink);
+      for (let i = 0; i < STACK_MAX; i++) node.children[i].visible = i < n;
+    } else {
+      // Предмету рулсет глифа не дал — остаётся холмик своего цвета.
+      const col = itemColor(s.item);
+      const rw = TILE * 0.3;
+      const rh = TILE * 0.18;
+      g.ellipse(x + TILE / 2, y + TILE * 0.6, rw, rh).fill(shade(col, -0.2));
+      g.ellipse(x + TILE / 2 - 2, y + TILE * 0.55, rw * 0.6, rh * 0.5).fill(
+        shade(col, 0.15),
       );
     }
-    g.poly(hp).fill({ color: shade(col, 0.15), alpha: 0.95 });
+    g.ellipse(x + TILE / 2 + shift, y + TILE * 0.82, TILE * 0.3 * (0.6 + n * 0.15) * shrink, TILE * 0.07)
+      .fill({ color: COLORS.shadow, alpha: 0.35 });
     // Помечена «на склад» — за ней придёт свободный кот. При автоуборке помечено
     // всё, что лежит вне склада, так что метка заодно показывает, что режим включён.
     if (s.marked) {
-      g.circle(x + TILE / 2, y + TILE * 0.3, 2.5).fill({
+      g.circle(x + TILE / 2, y + TILE * 0.22, 2.5).fill({
         color: COLORS.select,
         alpha: 0.9,
       });
     }
+  }
+  for (const [key, node] of stackNodes) {
+    if (live.has(key)) continue;
+    // `destroy()` без аргументов: общий контекст глифа остаётся в кэше.
+    node.destroy();
+    stackNodes.delete(key);
   }
 }
 
