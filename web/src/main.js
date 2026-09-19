@@ -1643,8 +1643,21 @@ function drawScrap(list) {
     const m = perCell.get(ck);
     const slot = slotOf.get(ck) ?? 0;
     slotOf.set(ck, slot + 1);
-    const shift = m > 1 ? (slot - (m - 1) / 2) * TILE * 0.36 : 0;
-    const shrink = m > 1 ? 0.8 : 1;
+    // Раскладка внутри клетки: один тип — по центру, два — рядом, три-четыре —
+    // сеткой 2×2. Ряд шире клетки вылезал на соседей и читался как «выпало
+    // со стеллажа». Больше четырёх — по кругу в те же четыре места.
+    const GRID = [
+      [0, 0],
+      [-0.2, -0.16],
+      [0.2, -0.16],
+      [-0.2, 0.16],
+      [0.2, 0.16],
+    ];
+    const cell =
+      m === 1 ? GRID[0] : m === 2 ? [slot ? 0.2 : -0.2, 0] : GRID[1 + (slot % 4)];
+    const shift = cell[0] * TILE;
+    const lift = cell[1] * TILE;
+    const shrink = m === 1 ? 1 : m === 2 ? 0.72 : 0.58;
     const key = `${s.x},${s.y},${s.item}`;
     live.add(key);
     const ctx = itemGlyphContext(s.item);
@@ -1682,7 +1695,7 @@ function drawScrap(list) {
       // Масштаб — вокруг центра клетки, поэтому опора узла в её середине.
       node.pivot.set(TILE / 2, TILE / 2);
       node.x = x + TILE / 2 + shift;
-      node.y = y + TILE / 2;
+      node.y = y + TILE / 2 + lift;
       node.scale.set(shrink);
       for (let i = 0; i < STACK_MAX; i++) node.children[i].visible = i < n;
     } else {
@@ -1695,7 +1708,12 @@ function drawScrap(list) {
         shade(col, 0.15),
       );
     }
-    g.ellipse(x + TILE / 2 + shift, y + TILE * 0.82, TILE * 0.3 * (0.6 + n * 0.15) * shrink, TILE * 0.07)
+    g.ellipse(
+      x + TILE / 2 + shift,
+      y + TILE * 0.5 + lift + TILE * 0.32 * shrink,
+      TILE * 0.3 * (0.6 + n * 0.15) * shrink,
+      TILE * 0.07 * shrink,
+    )
       .fill({ color: COLORS.shadow, alpha: 0.35 });
     // Помечена «на склад» — за ней придёт свободный кот. При автоуборке помечено
     // всё, что лежит вне склада, так что метка заодно показывает, что режим включён.
