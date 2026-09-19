@@ -18,6 +18,14 @@ const COLORS = {
   bg: 0x0e0f13,
   empty: 0x14161d, // непостроенная (непроходимая) ячейка
   gridLine: 0x262c3a,
+  // Пейнт-овер (ветка `paintover`): материалы, а не отладочные оттенки.
+  rock: 0x16171c, // скала за стенами базы
+  rockSpeck: 0x1e2027, // крап на скале
+  floor: 0x3a3e47, // бетон пола, к нему подмешивается цвет комнаты
+  seam: 0x1c1e24, // шов между плитами
+  wall: 0x4a4e5a, // стена по периметру базы
+  wallLight: 0x676c7a, // блик по верху стены
+  shadow: 0x000000,
   select: 0x6cf0a0, // выбор кота / метка цели / взведённая клетка
   cell: 0x9fb0ff, // осмотренная клетка: уголки вокруг того, о чём говорит панель
   erase: 0xff5566,
@@ -510,7 +518,7 @@ const app = new Application();
 // вся карта была мыльной на любом экране с dpr > 1. `autoDensity` при этом
 // держит CSS-размер канваса прежним — растёт только буфер.
 await app.init({
-  background: COLORS.bg,
+  background: COLORS.rock,
   antialias: true,
   resizeTo: stageEl,
   resolution: window.devicePixelRatio || 1,
@@ -1109,6 +1117,261 @@ function tileRegions() {
   return out;
 }
 
+// --- пейнт-овер карты (ветка `paintover`) ----------------------------------
+//
+// Правило одно: каждая нарисованная деталь — либо **материал**, либо
+// **состояние**. Фактура пола, крап скалы, блик на стене — материал; ничего из
+// этого игрок не должен пытаться «прочесть». Мебель на клетке — существительное
+// (лежанка выглядит лежанкой), и рисуется она из тех же примитивов, что и
+// глифы: масштаб любой, ассетов нет, новый тайл рулсета остаётся квадратиком,
+// пока ему не нарисуют мебель.
+
+/// Детерминированный шум по клетке: фактура не должна мерцать между
+/// перерисовками карты.
+function cellNoise(x, y, k = 0) {
+  let h = (x * 374761393 + y * 668265263 + k * 982451653) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+/// Смесь двух цветов: `t` = доля второго.
+function mixColor(a, b, t) {
+  const ch = (sh) => {
+    const x = (a >> sh) & 0xff;
+    const y = (b >> sh) & 0xff;
+    return Math.round(x + (y - x) * t) & 0xff;
+  };
+  return (ch(16) << 16) | (ch(8) << 8) | ch(0);
+}
+
+function shade(c, t) {
+  return mixColor(c, t < 0 ? 0x000000 : 0xffffff, Math.abs(t));
+}
+
+/// Мебель одной клетки. `id` — тайл рулсета; неизвестному ничего не рисуем,
+/// комната остаётся тонированным полом.
+function drawFurniture(g, id, x, y, tint, n) {
+  const T = TILE;
+  const px = x * T;
+  const py = y * T;
+  const dark = 0x0b0d12;
+  const shadowUnder = (rx, ry, rw, rh) =>
+    g.roundRect(px + rx + 1.5, py + ry + 2, rw, rh, 3).fill({
+      color: COLORS.shadow,
+      alpha: 0.35,
+    });
+  switch (id) {
+    case "bed": {
+      // Матрас, подушка у изголовья, одеяло с подворотом.
+      const m = T * 0.14;
+      shadowUnder(m, m, T - 2 * m, T - 2 * m);
+      g.roundRect(px + m, py + m, T - 2 * m, T - 2 * m, 3).fill(0x8f8a7c);
+      g.roundRect(px + m + 2, py + m + 2, T - 2 * m - 4, T * 0.22, 2).fill(
+        0xe9e4d4,
+      );
+      g.roundRect(px + m, py + T * 0.46, T - 2 * m, T * 0.4, 3).fill(
+        shade(tint, 0.25),
+      );
+      g.rect(px + m, py + T * 0.46, T - 2 * m, 2).fill(shade(tint, 0.5));
+      break;
+    }
+    case "nest": {
+      // Круглая корзина с подушкой.
+      const r = T * 0.36;
+      g.circle(px + T / 2 + 1, py + T / 2 + 2, r).fill({
+        color: COLORS.shadow,
+        alpha: 0.35,
+      });
+      g.circle(px + T / 2, py + T / 2, r).fill(0x7a5a3a);
+      g.circle(px + T / 2, py + T / 2, r * 0.72).fill(shade(tint, 0.3));
+      g.circle(px + T / 2, py + T / 2, r).stroke({
+        color: 0x4a3620,
+        width: 1.5,
+      });
+      break;
+    }
+    case "storage": {
+      // Паллета с двумя-тремя ящиками; ящики чуть разные — склад живой.
+      shadowUnder(T * 0.12, T * 0.12, T * 0.76, T * 0.76);
+      g.rect(px + T * 0.12, py + T * 0.12, T * 0.76, T * 0.76).fill(0x5a4a33);
+      for (let i = 0; i < 3; i++) {
+        g.rect(px + T * 0.12, py + T * 0.12 + i * T * 0.27, T * 0.76, 1.5).fill(
+          0x3a2e1e,
+        );
+      }
+      const boxes = n < 0.5 ? 1 : 2;
+      for (let i = 0; i < boxes; i++) {
+        const bw = T * 0.34;
+        const bx = px + T * 0.18 + i * T * 0.32;
+        const by = py + T * 0.2 + (i ? T * 0.06 : 0);
+        g.rect(bx, by, bw, bw).fill(0x9a7c4e);
+        g.rect(bx, by, bw, bw).stroke({ color: 0x5e4a2c, width: 1 });
+        g.rect(bx + bw * 0.2, by + bw * 0.45, bw * 0.6, 2).fill(0x5e4a2c);
+      }
+      break;
+    }
+    case "bin": {
+      shadowUnder(T * 0.18, T * 0.18, T * 0.64, T * 0.64);
+      g.roundRect(px + T * 0.18, py + T * 0.18, T * 0.64, T * 0.64, 2).fill(
+        shade(tint, 0.1),
+      );
+      g.roundRect(px + T * 0.18, py + T * 0.18, T * 0.64, T * 0.2, 2).fill(
+        shade(tint, 0.4),
+      );
+      g.roundRect(px + T * 0.18, py + T * 0.18, T * 0.64, T * 0.64, 2).stroke({
+        color: dark,
+        width: 1,
+      });
+      break;
+    }
+    case "rack": {
+      // Стеллаж: непроходимый (§12.142), поэтому заполняет клетку целиком —
+      // три полки с тенью под каждой.
+      g.rect(px, py, T, T).fill(0x3a3f4a);
+      for (let i = 0; i < 3; i++) {
+        const sy = py + T * 0.12 + i * T * 0.3;
+        g.rect(px + 2, sy + T * 0.16, T - 4, T * 0.08).fill({
+          color: COLORS.shadow,
+          alpha: 0.5,
+        });
+        g.rect(px + 2, sy + T * 0.14, T - 4, 2.5).fill(0x8a8f9c);
+        // Коробки на полке — из шума, чтобы соседние стеллажи различались.
+        const k = Math.floor(cellNoise(x, y, i) * 3);
+        for (let j = 0; j < k; j++) {
+          g.rect(px + 4 + j * T * 0.3, sy + T * 0.02, T * 0.22, T * 0.12).fill(
+            j % 2 ? 0x9a7c4e : shade(tint, 0.3),
+          );
+        }
+      }
+      g.rect(px, py, T, T).stroke({ color: dark, width: 1 });
+      break;
+    }
+    case "garage": {
+      // Ворота: стальная плита с полосами и предупреждающей кромкой.
+      g.rect(px, py, T, T).fill(0x3d3a33);
+      g.rect(px, py, T, T * 0.14).fill(0x2a2822);
+      for (let i = 0; i < 4; i++) {
+        g.rect(px + 2, py + T * 0.2 + i * T * 0.19, T - 4, 1.5).fill(0x55514a);
+      }
+      // Диагональная полосатая кромка внизу — «здесь выезжают».
+      for (let i = 0; i < 5; i++) {
+        g.moveTo(px + i * T * 0.22, py + T)
+          .lineTo(px + i * T * 0.22 + T * 0.12, py + T - T * 0.14)
+          .lineTo(px + i * T * 0.22 + T * 0.22, py + T - T * 0.14)
+          .lineTo(px + i * T * 0.22 + T * 0.1, py + T)
+          .closePath()
+          .fill(0xd9b64a);
+      }
+      g.rect(px, py + T - T * 0.14, T, T * 0.14).stroke({ color: dark, width: 1 });
+      break;
+    }
+    case "desk": {
+      // Стол и стул перед ним; на столе лист.
+      shadowUnder(T * 0.12, T * 0.1, T * 0.76, T * 0.44);
+      g.roundRect(px + T * 0.12, py + T * 0.1, T * 0.76, T * 0.44, 2).fill(
+        0x8a6a44,
+      );
+      g.rect(px + T * 0.3, py + T * 0.18, T * 0.3, T * 0.24).fill(0xe6e1d2);
+      g.roundRect(px + T * 0.32, py + T * 0.64, T * 0.36, T * 0.24, 3).fill(
+        shade(tint, 0.2),
+      );
+      break;
+    }
+    case "lab": {
+      // Верстак с колбами — стекло с цветной жидкостью.
+      shadowUnder(T * 0.1, T * 0.42, T * 0.8, T * 0.4);
+      g.roundRect(px + T * 0.1, py + T * 0.42, T * 0.8, T * 0.4, 2).fill(
+        0x6a6f7c,
+      );
+      g.rect(px + T * 0.1, py + T * 0.42, T * 0.8, 2).fill(0x9aa0ae);
+      const fl = [0x7fd6a0, 0xb08fde, 0x6ee0e8];
+      for (let i = 0; i < 3; i++) {
+        const fx = px + T * 0.22 + i * T * 0.24;
+        g.rect(fx + 2, py + T * 0.18, T * 0.08, T * 0.12).fill(0xc8d0dc);
+        g.circle(fx + 2 + T * 0.04, py + T * 0.36, T * 0.09).fill(fl[i]);
+        g.circle(fx + 2 + T * 0.04, py + T * 0.36, T * 0.09).stroke({
+          color: 0xdde4ee,
+          width: 1,
+          alpha: 0.7,
+        });
+      }
+      break;
+    }
+    case "bench": {
+      g.rect(px, py, T, T).fill(0x4a4458);
+      g.rect(px + 2, py + T * 0.3, T - 4, T * 0.4).fill(0x6c6580);
+      g.rect(px + 2, py + T * 0.3, T - 4, 2).fill(0x9a92b0);
+      g.circle(px + T * 0.3, py + T * 0.5, 2.5).fill(0x6ee0e8);
+      g.circle(px + T * 0.7, py + T * 0.5, 2.5).fill(0xb08fde);
+      g.rect(px, py, T, T).stroke({ color: dark, width: 1 });
+      break;
+    }
+    case "shop": {
+      // Верстак с тисками и шестернёй на стене.
+      shadowUnder(T * 0.08, T * 0.4, T * 0.84, T * 0.42);
+      g.rect(px + T * 0.08, py + T * 0.4, T * 0.84, T * 0.42).fill(0x6b5230);
+      g.rect(px + T * 0.08, py + T * 0.4, T * 0.84, 2.5).fill(0x9c7a48);
+      g.rect(px + T * 0.62, py + T * 0.3, T * 0.22, T * 0.14).fill(0x8a8f9c);
+      g.circle(px + T * 0.3, py + T * 0.22, T * 0.14).fill(0x8a8f9c);
+      g.circle(px + T * 0.3, py + T * 0.22, T * 0.06).fill(0x3a3d46);
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2;
+        g.rect(
+          px + T * 0.3 + Math.cos(a) * T * 0.15 - 1.5,
+          py + T * 0.22 + Math.sin(a) * T * 0.15 - 1.5,
+          3,
+          3,
+        ).fill(0x8a8f9c);
+      }
+      break;
+    }
+    case "ward": {
+      // Койка с белым бельём и красным крестом на изголовье.
+      const m = T * 0.14;
+      shadowUnder(m, m, T - 2 * m, T - 2 * m);
+      g.roundRect(px + m, py + m, T - 2 * m, T - 2 * m, 3).fill(0xdcdad2);
+      g.roundRect(px + m + 2, py + m + 2, T - 2 * m - 4, T * 0.2, 2).fill(
+        0xf4f2ea,
+      );
+      g.roundRect(px + m, py + T * 0.5, T - 2 * m, T * 0.36, 3).fill(0xb8c4cc);
+      g.rect(px + T / 2 - 1.5, py + m - 3, 3, 8).fill(0xd64a5a);
+      g.rect(px + T / 2 - 4, py + m - 0.5, 8, 3).fill(0xd64a5a);
+      break;
+    }
+    case "post": {
+      // Прилавок с навесом и весами.
+      shadowUnder(T * 0.08, T * 0.5, T * 0.84, T * 0.34);
+      g.rect(px + T * 0.08, py + T * 0.5, T * 0.84, T * 0.34).fill(0x7a5a34);
+      g.rect(px + T * 0.08, py + T * 0.5, T * 0.84, 2.5).fill(0xa8824c);
+      for (let i = 0; i < 4; i++) {
+        g.rect(px + T * 0.1 + i * T * 0.21, py + T * 0.12, T * 0.1, T * 0.1).fill(
+          i % 2 ? 0xd9b64a : 0xe6e1d2,
+        );
+        g.rect(px + T * 0.2 + i * T * 0.21, py + T * 0.12, T * 0.1, T * 0.1).fill(
+          i % 2 ? 0xe6e1d2 : 0xd9b64a,
+        );
+      }
+      g.rect(px + T * 0.08, py + T * 0.22, T * 0.84, 1.5).fill(0x3a2e1e);
+      break;
+    }
+    case "relay": {
+      // Пульт и мачта с антенной.
+      shadowUnder(T * 0.15, T * 0.55, T * 0.7, T * 0.3);
+      g.rect(px + T * 0.15, py + T * 0.55, T * 0.7, T * 0.3).fill(0x3a4048);
+      g.circle(px + T * 0.3, py + T * 0.7, 2).fill(0x6cf0a0);
+      g.circle(px + T * 0.45, py + T * 0.7, 2).fill(0xff9a3c);
+      g.rect(px + T / 2 - 1, py + T * 0.12, 2, T * 0.45).fill(0x9aa0ae);
+      g.moveTo(px + T * 0.3, py + T * 0.12)
+        .lineTo(px + T / 2, py + T * 0.26)
+        .lineTo(px + T * 0.7, py + T * 0.12)
+        .stroke({ color: 0x9aa0ae, width: 1.5 });
+      break;
+    }
+    default:
+      break;
+  }
+}
+
 function drawMap(map) {
   mapCells = map.cells;
   // ⚠️ `removeChildren` узлы **не разрушает**, а `Graphics` держит геометрию в
@@ -1117,17 +1380,131 @@ function drawMap(map) {
   // разрушаем явно. Зовётся `drawMap` только на росте `map_version`
   // (инвариант 3), но за партию это сотни вызовов: каждый достроенный тайл.
   for (const n of tileLayer.removeChildren()) n.destroy();
+  const W = meta.width;
+  const H = meta.height;
+  const at = (x, y) =>
+    x < 0 || y < 0 || x >= W || y >= H ? -1 : mapCells[y * W + x];
   const g = new Graphics();
-  for (let y = 0; y < meta.height; y++) {
-    for (let x = 0; x < meta.width; x++) {
-      const v = mapCells[y * meta.width + x];
-      const color = v >= 0 ? paletteColors[v] : COLORS.empty;
-      g.rect(x * TILE, y * TILE, TILE, TILE)
-        .fill(color)
-        .stroke({ color: COLORS.gridLine, width: 1 });
+  const T = TILE;
+
+  // 1. Скала: сплошной тёмный камень с крапом. Сетки на пустоте нет — там
+  // строить пока нечего, и клетки читались как «незаполненная таблица».
+  g.rect(0, 0, W * T, H * T).fill(COLORS.rock);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      if (at(x, y) >= 0) continue;
+      const n = cellNoise(x, y);
+      // Камень: крупные размытые пятна чуть светлее и чуть темнее фона —
+      // низкий контраст, иначе крап читается звёздным небом.
+      const cnt = 1 + Math.floor(n * 2);
+      for (let i = 0; i < cnt; i++) {
+        const nx = cellNoise(x, y, 10 + i);
+        const ny = cellNoise(x, y, 20 + i);
+        const rr = 4 + cellNoise(x, y, 30 + i) * 9;
+        const light = cellNoise(x, y, 35 + i) > 0.5;
+        g.circle(x * T + nx * T, y * T + ny * T, rr).fill({
+          color: light ? COLORS.rockSpeck : 0x121317,
+          alpha: 0.32,
+        });
+      }
+      // Трещина — тонкая ломаная у каждой третьей клетки.
+      if (n > 0.66) {
+        const sx = x * T + cellNoise(x, y, 40) * T;
+        const sy = y * T + cellNoise(x, y, 41) * T;
+        g.moveTo(sx, sy)
+          .lineTo(sx + (cellNoise(x, y, 42) - 0.5) * T, sy + cellNoise(x, y, 43) * T * 0.8)
+          .lineTo(sx + (cellNoise(x, y, 44) - 0.5) * T * 1.4, sy + T * 0.9)
+          .stroke({ color: 0x0f1014, width: 1, alpha: 0.7 });
+      }
+    }
+  }
+
+  // 2. Пол: бетон, тонированный цветом комнаты, плитами со швом. Цвет из
+  // рулсета не выброшен — он подмешан, так что «какая это комната» по-прежнему
+  // читается оттенком, а материал у всех один.
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const v = at(x, y);
+      if (v < 0) continue;
+      const tint = paletteColors[v] ?? COLORS.floor;
+      const n = cellNoise(x, y, 1);
+      const base = shade(mixColor(COLORS.floor, tint, 0.38), (n - 0.5) * 0.12);
+      g.rect(x * T, y * T, T, T).fill(base);
+      // Шов: тонкая тёмная линия справа и снизу, блик слева и сверху.
+      g.rect(x * T, y * T, T, 1).fill({ color: 0xffffff, alpha: 0.05 });
+      g.rect(x * T, y * T, 1, T).fill({ color: 0xffffff, alpha: 0.04 });
+      g.rect(x * T, y * T + T - 1, T, 1).fill({ color: COLORS.seam, alpha: 0.9 });
+      g.rect(x * T + T - 1, y * T, 1, T).fill({ color: COLORS.seam, alpha: 0.9 });
+      // Потёртость — пятно у каждой четвёртой плиты.
+      if (n > 0.75) {
+        g.ellipse(
+          x * T + T * (0.3 + cellNoise(x, y, 2) * 0.4),
+          y * T + T * (0.3 + cellNoise(x, y, 3) * 0.4),
+          T * 0.22,
+          T * 0.14,
+        ).fill({ color: 0x000000, alpha: 0.12 });
+      }
+    }
+  }
+
+  // 3. Стены: полоса по внутреннему краю каждой клетки пола, граничащей со
+  // скалой. Углы складываются из перекрытия полос сами. Толщина — четверть
+  // клетки: больше ест комнату, меньше не читается как стена.
+  const wt = T * 0.24;
+  const wallAt = (x, y) => at(x, y) < 0;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      if (at(x, y) < 0) continue;
+      const px = x * T;
+      const py = y * T;
+      // Тень от стены на пол — до самой стены, чуть шире её.
+      if (wallAt(x, y - 1)) {
+        g.rect(px, py + wt, T, wt * 0.8).fill({ color: COLORS.shadow, alpha: 0.28 });
+      }
+      if (wallAt(x - 1, y)) {
+        g.rect(px + wt, py, wt * 0.6, T).fill({ color: COLORS.shadow, alpha: 0.2 });
+      }
+      if (wallAt(x, y - 1)) {
+        g.rect(px, py, T, wt).fill(COLORS.wall);
+        g.rect(px, py, T, 2).fill(COLORS.wallLight);
+      }
+      if (wallAt(x, y + 1)) {
+        g.rect(px, py + T - wt, T, wt).fill(shade(COLORS.wall, -0.15));
+        g.rect(px, py + T - wt, T, 2).fill(COLORS.wallLight);
+      }
+      if (wallAt(x - 1, y)) {
+        g.rect(px, py, wt, T).fill(shade(COLORS.wall, -0.05));
+        g.rect(px, py, 2, T).fill(COLORS.wallLight);
+      }
+      if (wallAt(x + 1, y)) {
+        g.rect(px + T - wt, py, wt, T).fill(shade(COLORS.wall, -0.1));
+        g.rect(px + T - 2, py, 2, T).fill(shade(COLORS.wallLight, -0.2));
+      }
+      // Внутренние перегородки между комнатами разного типа — тонкая линия:
+      // это не стена, а граница зоны, через неё ходят.
+      const v = at(x, y);
+      if (at(x + 1, y) >= 0 && at(x + 1, y) !== v) {
+        g.rect(px + T - 1.5, py, 1.5, T).fill({ color: 0x000000, alpha: 0.45 });
+      }
+      if (at(x, y + 1) >= 0 && at(x, y + 1) !== v) {
+        g.rect(px, py + T - 1.5, T, 1.5).fill({ color: 0x000000, alpha: 0.45 });
+      }
     }
   }
   tileLayer.addChild(g);
+
+  // 4. Мебель — отдельным узлом поверх пола и стен, по клетке.
+  const f = new Graphics();
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const v = at(x, y);
+      if (v < 0) continue;
+      const def = (meta.palette ?? [])[v];
+      if (!def) continue;
+      drawFurniture(f, def.id, x, y, paletteColors[v] ?? COLORS.floor, cellNoise(x, y, 7));
+    }
+  }
+  tileLayer.addChild(f);
 
   // Вторым проходом — что клетка делает (§12.109). Заливка отвечает «какая это
   // комната», глиф — «зачем она». До него роль тайла жила только в цвете, то
@@ -1221,7 +1598,7 @@ function drawMap(map) {
     node.y = py * TILE + (TILE - size) / 2;
     // Приглушённо: глиф — подпись комнате, а не её содержимое. Кучи лома,
     // чертежи, сделки и коты рисуются поверх и обязаны читаться первыми.
-    node.alpha = 0.22;
+    node.alpha = 0.14;
     tileLayer.addChild(node);
   }
 }
@@ -1240,14 +1617,39 @@ function drawScrap(list) {
   for (const s of list) {
     const x = s.x * TILE;
     const y = s.y * TILE;
-    const chips = s.count >= 15 ? 3 : s.count >= 5 ? 2 : 1;
-    for (let i = 0; i < chips; i++) {
-      const w = TILE * 0.4 - i * 4;
-      g.rect(x + (TILE - w) / 2, y + TILE * 0.62 - i * 4, w, 3).fill({
-        color: itemColor(s.item),
-        alpha: 0.95,
-      });
+    // Куча — неровный холмик, а не брусок: размер от объёма, два тона
+    // (материал в тени и на свету) и тень под ним. Форма детерминирована
+    // клеткой, чтобы не мерцать между кадрами.
+    const size = s.count >= 15 ? 1 : s.count >= 5 ? 0.78 : 0.55;
+    const rw = TILE * 0.36 * size;
+    const rh = TILE * 0.22 * size;
+    const cx = x + TILE / 2;
+    const cy = y + TILE * 0.62;
+    const col = itemColor(s.item);
+    g.ellipse(cx + 1, cy + 2.5, rw * 1.05, rh * 0.8).fill({
+      color: COLORS.shadow,
+      alpha: 0.35,
+    });
+    const pts = [];
+    const n = 7;
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2;
+      const j = 0.78 + cellNoise(s.x, s.y, 50 + i) * 0.34;
+      pts.push(cx + Math.cos(a) * rw * j, cy + Math.sin(a) * rh * j);
     }
+    g.poly(pts).fill(shade(col, -0.3));
+    g.poly(pts).stroke({ color: 0x0b0d12, width: 1, alpha: 0.7 });
+    // Свет сверху-слева: блик — та же форма, сжатая и сдвинутая.
+    const hp = [];
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2;
+      const j = 0.78 + cellNoise(s.x, s.y, 50 + i) * 0.34;
+      hp.push(
+        cx - rw * 0.12 + Math.cos(a) * rw * j * 0.6,
+        cy - rh * 0.3 + Math.sin(a) * rh * j * 0.55,
+      );
+    }
+    g.poly(hp).fill({ color: shade(col, 0.15), alpha: 0.95 });
     // Помечена «на склад» — за ней придёт свободный кот. При автоуборке помечено
     // всё, что лежит вне склада, так что метка заодно показывает, что режим включён.
     if (s.marked) {
@@ -1982,6 +2384,26 @@ function drawCat(g, fur, geared) {
     g.circle(0, 0, r * k).fill(col);
   }
 
+  // Внутренняя сторона ушей, пятно на боку и глаза — то, что делает кляксу
+  // котом. Глаза смотрят по ходу (вправо у несмещённого силуэта). Пятно —
+  // материал, а не состояние: у каждого окраса своё, читать его незачем.
+  for (const sx of [-1, 1]) {
+    g.moveTo(sx * r * 0.6, -r * 0.5)
+      .lineTo(sx * r * 0.46, -r * 1.08)
+      .lineTo(sx * r * 0.18, -r * 0.66)
+      .closePath()
+      .fill({ color: 0xe8a0a0, alpha: 0.8 });
+  }
+  g.ellipse(-r * 0.35, r * 0.2, r * 0.42, r * 0.3).fill({
+    color: shade(fur, -0.28),
+    alpha: 0.9,
+  });
+  g.ellipse(r * 0.28, -r * 0.18, r * 0.16, r * 0.2).fill(0xf2f6e8);
+  g.ellipse(r * 0.62, -r * 0.18, r * 0.16, r * 0.2).fill(0xf2f6e8);
+  g.ellipse(r * 0.31, -r * 0.16, r * 0.07, r * 0.15).fill(dark);
+  g.ellipse(r * 0.65, -r * 0.16, r * 0.07, r * 0.15).fill(dark);
+  g.circle(r * 0.86, r * 0.1, r * 0.09).fill(0xe8a0a0);
+
   // Жилет — только на экипированном (§12.34). Это и есть ответ на «коты в
   // плащах и перчатках», который влезает в тайл: не текстура, а различимая
   // деталь силуэта. Гол кот или нет, теперь видно с карты, а не только из
@@ -2097,7 +2519,13 @@ function createUnit(e) {
     .ellipse(0, TILE * 0.3, TILE * 0.42, TILE * 0.16)
     .fill({ color: 0x1a1208, alpha: 0.55 });
   wadeMark.visible = false;
+  // Тень под котом — всегда: это глубина, а не состояние.
+  const shadowMark = new Graphics();
+  shadowMark
+    .ellipse(0, TILE * 0.3, TILE * 0.32, TILE * 0.11)
+    .fill({ color: COLORS.shadow, alpha: 0.38 });
   c.addChild(selectRing);
+  c.addChild(shadowMark);
   c.addChild(wadeMark);
   c.addChild(body);
   c.addChild(stuckRing);

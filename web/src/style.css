@@ -201,6 +201,15 @@ main#stage {
   min-height: 0;
   position: relative;
 }
+/* Пейнт-овер: виньетка по краю сцены — глубина, а не сигнал. Не ловит мышь. */
+main#stage::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  background: radial-gradient(ellipse at 50% 45%, transparent 55%, rgba(0, 0, 0, 0.55) 100%);
+}
 main#stage canvas {
   display: block;
 }
