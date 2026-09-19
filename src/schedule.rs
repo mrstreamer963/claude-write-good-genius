@@ -14,7 +14,7 @@ use crate::hauling::{assign_hauls, assign_tidy, mark_loose_scrap, settle_stacks,
 use crate::health::{assign_heal, assign_treat, heal};
 use crate::jobs::{assign_jobs, prune_structures, work_jobs};
 use crate::missions::{gather_squad, run_missions};
-use crate::movement::{escape_voids, move_units, retry_orders, spread_units};
+use crate::movement::{escape_voids, move_units, note_clutter, retry_orders, spread_units};
 use crate::needs::{assign_nap, assign_rest, collapse_exhausted, doze, sleep, tire};
 use crate::relay::assign_relay;
 use crate::research::{assign_research, work_research};
@@ -175,6 +175,7 @@ pub(crate) fn build_schedule() -> Schedule {
     let mut schedule = Schedule::default();
     // Кто чем занят: раздача работы и сбор тех, кого назначил игрок.
     let assign = (
+        note_clutter,
         advance_time,
         collapse_exhausted,
         assign_heal,

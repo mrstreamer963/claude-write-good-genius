@@ -948,6 +948,8 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
         map.height = file.map.height;
         map.cells = file.map.cells.clone();
         map.ever = file.map.ever.clone();
+        // Завал в снимок не идёт — его пересчитает первый же тик из куч.
+        map.set_drag([]);
         // Снимок до §12.220 журнала не вёз: собираем его по самой карте —
         // всё, что стоит сейчас, стояло хоть раз.
         for &tile in &file.map.cells {

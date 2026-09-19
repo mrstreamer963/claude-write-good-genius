@@ -38,6 +38,7 @@ use crate::missions::{
     comms_span, crew_danger, crew_force, duration, faction_is_met, gate_cells, gate_count,
     guide_cut, guide_of, guide_value, outcome, phase,
 };
+use crate::movement::note_clutter;
 use crate::movement::{Busy, is_stuck};
 use crate::path::{Reach, find_path};
 use crate::relay::relay_force;
@@ -120,6 +121,9 @@ impl Sim {
                 .to_string());
         }
         restore(&mut sim.world, &file);
+        // Завал в снимок не идёт (`BaseMap::drag`) — считаем его из
+        // восстановленных куч, как конструктор из стартовых.
+        let _ = sim.world.run_system_once(note_clutter);
         Ok(sim)
     }
 
@@ -1950,6 +1954,10 @@ impl Sim {
         // может не быть ещё долго. Тот же наблюдатель, что в цепочке, — второй
         // экземпляр этого обхода разошёлся бы с первым на первой же правке.
         let _ = world.run_system_once(note_seen);
+        // И завал по клеткам — по тому же доводу (§12.249): первый приказ
+        // игрока на паузе ищет путь по карте, и без этого прогона он шёл бы
+        // сквозь стартовые кучи, как будто их нет.
+        let _ = world.run_system_once(note_clutter);
 
         // Описание условий уезжает в `meta` **разобранным ядром** (§12.159): вид
         // называет каждое словом и ставит напротив дату, а порядок остаётся один
