@@ -5115,6 +5115,7 @@ impl Sim {
                     to_y: stride.map_or(p.y, |(to, _, _)| to.1),
                     step_left: stride.map_or(0, |(_, left, _)| left),
                     step_span: stride.map_or(0, |(_, _, span)| span),
+                    step_drag: stride.map_or(0, |(_, _, span)| crate::movement::step_drag(span)),
                     carrying: load.map_or(0, |c| c.count),
                     carrying_item: load.map_or(-1, |c| c.item as i32),
                     carry_max: carry.map_or(0, |c| c.0),

@@ -1650,6 +1650,7 @@ function renderSnapshot(snap) {
     c.toY = to.y;
     c.stepLeft = e.step_span > 0 ? e.step_left : 0;
     c.stepSpan = e.step_span;
+    c.stepDrag = e.step_drag;
     if (jump || e.step_span <= 0) {
       c.x = from.x;
       c.y = from.y;
@@ -2088,7 +2089,16 @@ function createUnit(e) {
     .rect(-TILE * 0.11, -TILE * 0.71, TILE * 0.22, 4)
     .stroke({ color: COLORS.wound, width: 1.5 });
   medicMark.visible = false;
+  // Пятно под лапами бредущего (§12.248): на ×10 шаг через завал длится
+  // четыре кадра, и покачивание за это время не читается, а пятно — статичная
+  // метка, её видно с первого кадра. Гаснет вместе с завалом.
+  const wadeMark = new Graphics();
+  wadeMark
+    .ellipse(0, TILE * 0.3, TILE * 0.42, TILE * 0.16)
+    .fill({ color: 0x1a1208, alpha: 0.55 });
+  wadeMark.visible = false;
   c.addChild(selectRing);
+  c.addChild(wadeMark);
   c.addChild(body);
   c.addChild(stuckRing);
   c.addChild(load);
@@ -2099,6 +2109,7 @@ function createUnit(e) {
   c.addChild(medicMark);
   c.selectRing = selectRing;
   c.stuckRing = stuckRing;
+  c.wadeMark = wadeMark;
   c.load = load;
   c.loadGlyph = null;
   c.body = body;
@@ -2122,6 +2133,11 @@ function createUnit(e) {
   c.toY = c.fromY;
   c.stepLeft = 0;
   c.stepSpan = 0;
+  // Вязкость (§12.248): сколько тиков шага — завал, и фаза покачивания.
+  // Ноль — идёт чисто, силуэт стоит ровно.
+  c.stepDrag = 0;
+  c.wadePhase = 0;
+  c.wading = false;
   c.x = c.fromX;
   c.y = c.fromY;
   c.sleepMark = sleepMark;
@@ -2184,11 +2200,13 @@ function stepUnits(ticker) {
     if (c.stepSpan <= 0) {
       c.x = c.fromX;
       c.y = c.fromY;
+      wadeUnit(c, 0); // вставший кот выпрямляется
       continue;
     }
     const k = Math.min(1, (c.stepSpan - c.stepLeft + tickFrac) / c.stepSpan);
     c.x = c.fromX + (c.toX - c.fromX) * k;
     c.y = c.fromY + (c.toY - c.fromY) * k;
+    wadeUnit(c, ticker.deltaMS);
   }
   // Глиф работы крутится здесь же, а не в своём тикере: `speed` — то самое, чем
   // умножается доля тика, поэтому на паузе мир и картинка встают вместе. Второй
@@ -2198,6 +2216,38 @@ function stepUnits(ticker) {
       const dir = n.salvage ? -1 : 1;
       n.glyph.rotation += (dir * ticker.deltaMS * speed) / 1400;
     }
+  }
+}
+
+// Кот, чей шаг удлинён завалом, **бредёт** (§12.248): силуэт переваливается с
+// боку на бок и приседает — тем сильнее, чем больше в шаге от завала. Без этого
+// тормоз склада читался как «коты стали работать медленнее», а не как «здесь
+// вязко»: скорость глаз списывает на случайность, походку — нет. Сколько в
+// шаге завала, говорит ядро (`step_drag`) — вычитать чистый темп из `step_span`
+// в JS значило бы завести здесь второй экземпляр правила (инвариант 14).
+//
+// Фаза идёт по `speed`, как доля тика: на паузе кот замирает в наклоне, а не
+// качается на месте. Но **выше ×5 частота не растёт**: на ×10 шаг через завал
+// длится четыре кадра, и качание, ускоренное вдесятеро, за них превращается в
+// дрожь; ниже ×5 темп честный, пауза по-прежнему замораживает. Вдобавок под
+// лапами лежит пятно (`wadeMark`) — статичная метка, читается с первого кадра.
+// Пишем трансформ только бредущим и один раз при выходе из завала — грязный
+// трансформ на каждого кота каждым кадром незачем (§12.84). `scale.x` не
+// трогаем: это зеркало разворота (`c.face`).
+const WADE_SPEED_CAP = 5;
+function wadeUnit(c, deltaMS) {
+  if (c.stepDrag > 0) {
+    c.wadePhase += (deltaMS * Math.min(speed, WADE_SPEED_CAP)) / 220;
+    const depth = Math.min(1, c.stepDrag / 3);
+    c.body.rotation = Math.sin(c.wadePhase) * 0.3 * depth;
+    c.body.scale.y = 1 - 0.16 * depth;
+    if (!c.wading) c.wadeMark.visible = true;
+    c.wading = true;
+  } else if (c.wading) {
+    c.body.rotation = 0;
+    c.body.scale.y = 1;
+    c.wadeMark.visible = false;
+    c.wading = false;
   }
 }
 
