@@ -2144,7 +2144,7 @@ function renderSnapshot(snap) {
       if (face !== c.face) {
         c.face = face;
         c.body.scale.x = face;
-        c.load.x = face * TILE * 0.26;
+        c.load.x = face * TILE * 0.3;
       }
     }
     // Силуэт пересобираем только на смене экипировки: `Graphics` строится
@@ -2185,6 +2185,15 @@ function renderSnapshot(snap) {
     // Спящий кот пригашен: игрок должен видеть, почему тот не работает.
     // Лежачий раненый — тоже: причины разные, а следствие для базы одно (§12.37).
     c.alpha = asleep || lying ? 0.55 : 1;
+    // Лежит — значит лежит (SS13): фигурка поворачивается на бок. Только на
+    // смене — `rotation` грязный трансформ, а `wadeUnit` его у стоящего не
+    // трогает (бредут только идущие).
+    const down = asleep || lying;
+    if (down !== c.down) {
+      c.down = down;
+      c.body.rotation = down ? -Math.PI / 2 : 0;
+      c.body.y = down ? TILE * 0.1 : 0;
+    }
     c.sleepMark.visible = asleep;
     // Крест — над раненым; он важнее «зззз», потому что лежачий кот выбыл не на
     // сотню тиков, а до конца лечения, и это единственная необратимая на вид
@@ -2422,75 +2431,106 @@ function renderSnapshot(snap) {
 // Порядок слоёв значим: хвост уходит **за** корпус, поэтому рисуется первым.
 // Обводка — не `stroke` по общему контуру (он обвёл бы и границы ушей о
 // корпус, превратив силуэт в чертёж), а тёмная копия шире фигуры под ней.
+// Ветка `cat-figure`: эспер — **прямоходящая фигурка**, как персонаж в SS13,
+// а не кружок с ушами. Мокап (`mockup/esper-idle-v1.png`) обещает солдата в
+// разгрузке, и круг на карте рассказывал другую игру. Пропорции — чиби: голова
+// в треть роста, короткие ноги, толстая обводка, — иначе на большой базе при
+// `world.scale < 1` фигура становится палочкой. Смотрит вправо; зеркало —
+// `scale.x`. Начало координат остаётся в середине клетки: метки состояний и
+// кольца стоят относительно него и лишь подняты на `MARK_LIFT`.
+const MARK_LIFT = TILE * 0.22;
 function drawCat(g, fur, geared) {
-  const r = TILE * 0.3; // тот же радиус, что был у круга: метки над котом не съехали
+  const r = TILE * 0.3;
   const dark = 0x0b0d12;
+  const furDark = shade(fur, -0.3);
+  const suit = 0x2c2e27;
+  const suitLight = 0x474a3d;
+  const boot = 0x1f1b16;
 
-  // Хвост: тёмный потолще, поверх — цветной потоньше. Он же единственное, по
-  // чему видно разворот у стоящего кота.
-  //
-  // Рисуется он **влево**, потому что несмещённый силуэт (`scale.x = 1`) смотрит
-  // вправо: хвост обязан тянуться назад. При `+x` он оказывался по ходу
-  // движения, и кот выглядел пятящимся; заодно он лёг бы ровно туда, где
-  // теперь едет груз (§12.109).
+  // Хвост — за спиной, влево и вниз; единственное, по чему виден разворот у
+  // стоящего.
   for (const [w, col] of [
     [r * 0.5, dark],
     [r * 0.3, fur],
   ]) {
-    g.moveTo(-r * 0.5, r * 0.85)
-      .quadraticCurveTo(-r * 2.05, r * 1.5, -r * 1.85, r * 0.05)
+    g.moveTo(-r * 0.4, r * 0.55)
+      .quadraticCurveTo(-r * 1.4, r * 0.9, -r * 1.35, -r * 0.1)
       .stroke({ color: col, width: w, cap: "round" });
   }
 
-  // Корпус и уши — одной фигурой в двух размерах: тёмная подложка и мех.
+  // Ноги и ботинки. Обводка — тёмная копия шире фигуры (см. корпус).
+  for (const [k, col] of [
+    [1, dark],
+    [0, geared ? suit : furDark],
+  ]) {
+    for (const lx of [-r * 0.42, r * 0.02]) {
+      g.roundRect(lx - k, r * 0.35 - k, r * 0.42 + 2 * k, r * 0.8 + 2 * k, r * 0.15).fill(col);
+    }
+  }
+  for (const lx of [-r * 0.42, r * 0.02]) {
+    g.roundRect(lx, r * 0.88, r * 0.46, r * 0.3, r * 0.1).fill(boot);
+  }
+
+  // Корпус: у голого кота — мех, у экипированного — тёмный комбинезон с
+  // разгрузкой. Форма одна, чтобы силуэт не менялся от одежды.
+  for (const [k, col] of [
+    [1.5, dark],
+    [0, geared ? suit : furDark],
+  ]) {
+    g.roundRect(-r * 0.75 - k, -r * 0.55 - k, r * 1.5 + 2 * k, r * 1.05 + 2 * k, r * 0.3).fill(col);
+  }
+  // Руки по бокам.
+  for (const [k, col] of [
+    [1, dark],
+    [0, geared ? suit : furDark],
+  ]) {
+    g.roundRect(-r * 0.98 - k, -r * 0.4 - k, r * 0.34 + 2 * k, r * 0.75 + 2 * k, r * 0.15).fill(col);
+    g.roundRect(r * 0.64 - k, -r * 0.4 - k, r * 0.34 + 2 * k, r * 0.75 + 2 * k, r * 0.15).fill(col);
+  }
+  if (geared) {
+    // Разгрузка: две лямки, два подсумка, ремень. Это и есть «комплект надет»
+    // (§12.34) — сила отряда, видимая с карты.
+    g.rect(-r * 0.5, -r * 0.55, r * 0.22, r * 1.05).fill(suitLight);
+    g.rect(r * 0.28, -r * 0.55, r * 0.22, r * 1.05).fill(suitLight);
+    g.roundRect(-r * 0.45, -r * 0.05, r * 0.36, r * 0.34, 1.5).fill(0x6b6a4e);
+    g.roundRect(r * 0.09, -r * 0.05, r * 0.36, r * 0.34, 1.5).fill(0x6b6a4e);
+    g.rect(-r * 0.75, r * 0.3, r * 1.5, r * 0.12).fill(0x8a7a3a);
+  } else {
+    // Светлая грудка — как у большинства окрасов.
+    g.ellipse(0, -r * 0.05, r * 0.32, r * 0.42).fill({ color: shade(fur, 0.35), alpha: 0.9 });
+  }
+
+  // Голова с ушами — поверх корпуса, чуть к правому плечу (смотрит вправо).
+  const hy = -r * 1.3;
+  const hr = r * 0.82;
   for (const [k, col] of [
     [1.16, dark],
     [1.0, fur],
   ]) {
     for (const sx of [-1, 1]) {
-      g.moveTo(sx * r * 0.72 * k, -r * 0.4 * k)
-        .lineTo(sx * r * 0.46 * k, -r * 1.3 * k)
-        .lineTo(sx * r * 0.04 * k, -r * 0.62 * k)
+      g.moveTo(sx * hr * 0.75 * k, hy - hr * 0.35 * k)
+        .lineTo(sx * hr * 0.5 * k, hy - hr * 1.35 * k)
+        .lineTo(sx * hr * 0.05 * k, hy - hr * 0.7 * k)
         .closePath()
         .fill(col);
     }
-    g.circle(0, 0, r * k).fill(col);
+    g.circle(0, hy, hr * k).fill(col);
   }
-
-  // Внутренняя сторона ушей, пятно на боку и глаза — то, что делает кляксу
-  // котом. Глаза смотрят по ходу (вправо у несмещённого силуэта). Пятно —
-  // материал, а не состояние: у каждого окраса своё, читать его незачем.
   for (const sx of [-1, 1]) {
-    g.moveTo(sx * r * 0.6, -r * 0.5)
-      .lineTo(sx * r * 0.46, -r * 1.08)
-      .lineTo(sx * r * 0.18, -r * 0.66)
+    g.moveTo(sx * hr * 0.6, hy - hr * 0.5)
+      .lineTo(sx * hr * 0.48, hy - hr * 1.1)
+      .lineTo(sx * hr * 0.2, hy - hr * 0.72)
       .closePath()
       .fill({ color: 0xe8a0a0, alpha: 0.8 });
   }
-  g.ellipse(-r * 0.35, r * 0.2, r * 0.42, r * 0.3).fill({
-    color: shade(fur, -0.28),
-    alpha: 0.9,
-  });
-  g.ellipse(r * 0.28, -r * 0.18, r * 0.16, r * 0.2).fill(0xf2f6e8);
-  g.ellipse(r * 0.62, -r * 0.18, r * 0.16, r * 0.2).fill(0xf2f6e8);
-  g.ellipse(r * 0.31, -r * 0.16, r * 0.07, r * 0.15).fill(dark);
-  g.ellipse(r * 0.65, -r * 0.16, r * 0.07, r * 0.15).fill(dark);
-  g.circle(r * 0.86, r * 0.1, r * 0.09).fill(0xe8a0a0);
-
-  // Жилет — только на экипированном (§12.34). Это и есть ответ на «коты в
-  // плащах и перчатках», который влезает в тайл: не текстура, а различимая
-  // деталь силуэта. Гол кот или нет, теперь видно с карты, а не только из
-  // карточки, — а зависит от этого сила отряда на вылазке.
-  if (geared) {
-    g.roundRect(-r * 0.66, -r * 0.12, r * 1.32, r * 0.86, r * 0.22).fill({
-      color: dark,
-      alpha: 0.85,
-    });
-    g.rect(-r * 0.66, r * 0.12, r * 1.32, r * 0.16).fill({
-      color: 0xd6b26a,
-      alpha: 0.9,
-    });
-  }
+  // Морда: глаза со зрачками, нос. Глаза сдвинуты по ходу взгляда.
+  g.ellipse(hr * 0.1, hy - hr * 0.1, hr * 0.2, hr * 0.24).fill(0xf2f6e8);
+  g.ellipse(hr * 0.52, hy - hr * 0.1, hr * 0.2, hr * 0.24).fill(0xf2f6e8);
+  g.ellipse(hr * 0.14, hy - hr * 0.08, hr * 0.09, hr * 0.18).fill(dark);
+  g.ellipse(hr * 0.56, hy - hr * 0.08, hr * 0.09, hr * 0.18).fill(dark);
+  g.circle(hr * 0.72, hy + hr * 0.22, hr * 0.11).fill(0xe8a0a0);
+  // Тёмное пятно на лбу — окрас, а не состояние.
+  g.ellipse(-hr * 0.35, hy - hr * 0.45, hr * 0.32, hr * 0.22).fill({ color: furDark, alpha: 0.7 });
 }
 
 function createUnit(e) {
@@ -2536,8 +2576,8 @@ function createUnit(e) {
     alpha: 0.85,
   });
   load.addChild(loadDisc);
-  load.x = TILE * 0.26; // по умолчанию силуэт смотрит вправо
-  load.y = TILE * 0.16;
+  load.x = TILE * 0.3; // по умолчанию силуэт смотрит вправо — груз в руках спереди
+  load.y = TILE * 0.02;
   load.visible = false;
   // «Зззз» — три пузырька над спящим, выше бруска груза: спать можно и с ломом.
   const sleepMark = new Graphics();
@@ -2595,8 +2635,12 @@ function createUnit(e) {
   // Тень под котом — всегда: это глубина, а не состояние.
   const shadowMark = new Graphics();
   shadowMark
-    .ellipse(0, TILE * 0.3, TILE * 0.32, TILE * 0.11)
+    .ellipse(0, TILE * 0.36, TILE * 0.3, TILE * 0.1)
     .fill({ color: COLORS.shadow, alpha: 0.38 });
+  // Фигурка выше кружка: метки над головой поднимаются на `MARK_LIFT`.
+  for (const m of [sleepMark, studyMark, studyProgress, woundMark, medicMark]) {
+    m.y = -MARK_LIFT;
+  }
   c.addChild(selectRing);
   c.addChild(shadowMark);
   c.addChild(wadeMark);
@@ -2624,6 +2668,7 @@ function createUnit(e) {
   // и сторону, с которой висит груз), поэтому живёт на узле, а не выводится
   // заново в каждом месте.
   c.face = 1;
+  c.down = false;
   // Шаг, который кот проходит прямо сейчас (§12.140): откуда, куда и сколько
   // тиков осталось. Приезжает из ядра снапшотом, а между снапшотами по нему
   // едет `stepUnits`. Позицию ставим сразу: до первого кадра тикера узел иначе
