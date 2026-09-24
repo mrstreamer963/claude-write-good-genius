@@ -39,6 +39,12 @@ const articles = new Map();
 
 let loaded = false;
 
+/// Статьи, временно убранные из справочника. Текст лежит в `assets/wiki` и
+/// стережётся `src/tests/wiki.rs` как прежде — прячет его только вид. Сейчас здесь
+/// записка: механика жива, а как изложить её в лоре, ещё не решено. Вернуть —
+/// убрать ключ из списка.
+const HIDDEN_ARTICLES = new Set(["lore:note"]);
+
 /// Загрузить справочник. Зовётся один раз при старте страницы, а не на `ready`:
 /// тексты принадлежат игре, а не партии, и новая партия их не меняет.
 export async function loadWiki() {
@@ -59,6 +65,7 @@ export async function loadWiki() {
     ),
   );
   for (const text of texts) parseFile(text);
+  for (const key of HIDDEN_ARTICLES) articles.delete(key);
 }
 
 /// Разобрать файл раздела. Статья начинается со строки `## ключ | Заголовок`;

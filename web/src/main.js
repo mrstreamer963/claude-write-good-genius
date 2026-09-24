@@ -5116,9 +5116,14 @@ function renderTradePanel(list) {
 // Записка (§4.6, §12.28). Что известно о будущем — решает ядро: пока детали не
 // проступили, их в снапшоте просто нет, и показывать тут нечего. Прошедшее не
 // стирается — записка заодно и журнал: видно, чем кончился каждый срок.
+//
+// ⚠️ **Временно спрятана** (`HIDE_NOTE`), как рация в `HIDDEN_TILES`: события по
+// расписанию идут в ядре как шли, прячется только их подача — как изложить
+// записку в лоре, ещё не решено. Вернуть — `HIDE_NOTE = false`.
+const HIDE_NOTE = true;
 function renderNotePanel(list, tick = 0) {
   const notes = list ?? [];
-  if (!notes.length || !meta) {
+  if (HIDE_NOTE || !notes.length || !meta) {
     noteEl.hidden = true;
     return;
   }
