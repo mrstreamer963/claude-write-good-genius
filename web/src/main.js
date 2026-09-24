@@ -10,6 +10,7 @@ import {
   hasArticle,
   loadWiki,
   renderArticle,
+  setArticleGate,
 } from "./wiki.js";
 
 const TILE = 28;
@@ -883,6 +884,8 @@ worker.onmessage = (e) => {
     // ...и цели тоже: у нового мира своя история взятого, и старая сделала бы
     // всё уже закрытое «только что закрытым» (см. `goalsDoneSeen`).
     goalsDoneSeen = null;
+    wikiOpenSeen = null;
+    wikiQueue = [];
     // Свёрнутость панели миру не принадлежит — это выбор игрока о своём экране,
     // и новая партия его не отменяет; берём то же, что и при загрузке страницы.
     goalsOpen = localStorage.getItem(GOALS_OPEN_KEY) === "1";
@@ -2078,6 +2081,7 @@ function days(n) {
 
 function renderSnapshot(snap) {
   lastSnap = snap;
+  noteWikiOpened();
   // Тик сменился — доля тика начинается заново. Отметка общая на всех: тикают
   // коты вместе, и второй такой счётчик на каждого разошёлся бы с этим.
   if (snap.tick !== lastTick) {
@@ -10137,6 +10141,7 @@ function openWiki(key, back) {
     closeOtherWindows("wiki");
     wikiOpen = true;
   } else if (wikiKey !== key) {
+    wikiFresh = false;
     // Оглавление (`null`) кладём в след наравне со статьёй: игрок, пришедший
     // из него, ждёт вернуться в него же, а не наружу.
     wikiTrail.push(wikiKey);
@@ -10149,6 +10154,7 @@ function openWiki(key, back) {
 function closeWikiWindow() {
   if (!wikiOpen) return;
   wikiOpen = false;
+  wikiFresh = false;
   wikiKey = null;
   wikiTrail = [];
   wikiWinEl.hidden = true;
@@ -10257,7 +10263,9 @@ function buildWikiWindow() {
   list.innerHTML =
     '<div class="wiki-head">' +
     back +
-    `<div class="wiki-title">${esc(title)}</div></div>` +
+    `<div class="wiki-title">${esc(title)}</div>` +
+    (wikiFresh ? '<div class="wiki-fresh">Новая запись</div>' : "") +
+    "</div>" +
     `<div class="wiki-body">${renderArticle(wikiKey, wikiName)}</div>` +
     wikiFacts(wikiKey) +
     also;
@@ -10277,6 +10285,105 @@ onPanelClick(document, ".wiki-mark", (b) => {
   const open = WINDOWS.find(([, isOpen]) => isOpen());
   openWiki(b.dataset.go, open ? open[3]() : null);
 });
+
+// Статья открывается вместе с вещью (§12.251): справочник знает не больше
+// базы. Ворота — **те же поля снимка**, по которым сама вещь появляется на
+// экране (`tiles_open` у палитры, `seen` у склада, группы окна «Наука»,
+// `shownRaid` у штаба, `factions_met` у шапки), а не второй список условий:
+// разойдись они, и значок «i» стоял бы у невидимого или пропадал у видимого.
+// Навыки, врождённое и перки видны у кота с первого кадра — открыты всегда.
+function wikiGateOpen(key) {
+  const snap = lastSnap;
+  if (!snap) return true;
+  const [kind, id] = String(key).split(":");
+  const { def, entry } = wikiEntry(key);
+  switch (kind) {
+    case "tile":
+      // Спрятанное из палитры (`HIDDEN_TILES`) спрятано и здесь: статья о
+      // постройке, которую нельзя поставить, — витрина недоделанной механики.
+      return (
+        def >= 0 &&
+        !HIDDEN_TILES.has(id) &&
+        (snap.tiles_open ?? [])[def] !== false
+      );
+    case "item":
+      return !!(snap.stock ?? [])[def]?.seen;
+    case "topic": {
+      const t = (snap.topics ?? [])[def];
+      if (!t) return false;
+      // Окно показывает тему открытой (`unlocked && sighted`) или витриной
+      // (§12.137: образец видан, науки нет); ждущая находки скрыта (§12.143).
+      const showcase = t.sighted && (entry?.specimen?.size ?? 0) > 0;
+      return t.known || (t.unlocked && t.sighted) || showcase;
+    }
+    case "recipe":
+      return !!(snap.recipes ?? [])[def]?.unlocked;
+    case "raid": {
+      const r = (snap.raids ?? [])[def];
+      return !!r && (r.met || (r.unlocked && r.possible));
+    }
+    case "recruit": {
+      const r = (snap.recruits ?? [])[def];
+      return !!r && (r.hired || r.unlocked);
+    }
+    case "faction":
+      return !!(snap.factions_met ?? [])[def];
+    case "rule":
+      return !!snap[`auto_${id}`];
+    case "lore":
+      return loreOpen(id, snap);
+    default:
+      return true;
+  }
+}
+
+// Лор без вещи-владельца открывается вещью, о которой он рассказывает.
+// Не названное здесь (мир, эсперы, база, вылазки, кольцо) — то, что игрок
+// видит с первого кадра.
+function loreOpen(id, snap) {
+  const tileOpen = (has) => {
+    const def = (meta?.palette ?? []).findIndex(has);
+    return def >= 0 && (snap.tiles_open ?? [])[def] !== false;
+  };
+  switch (id) {
+    case "science":
+      return tileOpen((p) => p.lab);
+    case "trade":
+      return snap.money_seen || tileOpen((p) => p.trade);
+    case "standing":
+      return (snap.factions_met ?? []).some(Boolean);
+    case "fame":
+      return (snap.fame ?? 0) > 0;
+    default:
+      return true;
+  }
+}
+
+setArticleGate(wikiGateOpen);
+
+// Что было открыто прошлым снимком. `null` — базовой линии ещё нет: первый
+// снимок партии (новой или загруженной) её снимает и новостью не объявляется,
+// ровно как `goalsDoneSeen` и лента §12.120.
+let wikiOpenSeen = null;
+// Статьи, открывшиеся и ещё не показанные. Показываются по одной и только
+// когда никакое окно не открыто: модал поверх штаба стёр бы ответ, за которым
+// игрок туда пошёл (§12.101).
+let wikiQueue = [];
+let wikiFresh = false;
+
+function noteWikiOpened() {
+  const open = new Set(articleKeys());
+  if (wikiOpenSeen !== null) {
+    for (const k of open) {
+      if (!wikiOpenSeen.has(k) && !wikiQueue.includes(k)) wikiQueue.push(k);
+    }
+  }
+  wikiOpenSeen = open;
+  if (!wikiQueue.length || WINDOWS.some(([, isOpen]) => isOpen())) return;
+  const key = wikiQueue.shift();
+  wikiFresh = true;
+  openWiki(key, null);
+}
 
 // Реестр окон: ключ · открыто ли · закрыть · **чем вернуть**.
 //
