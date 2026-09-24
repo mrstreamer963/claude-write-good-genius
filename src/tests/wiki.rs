@@ -97,7 +97,13 @@ fn links() -> Vec<(usize, String)> {
 fn palettes(rs: &Ruleset) -> Vec<(&'static str, Vec<String>)> {
     let ids = |xs: Vec<&String>| xs.into_iter().cloned().collect::<Vec<_>>();
     vec![
-        ("tile", ids(rs.tiles.iter().map(|x| &x.id).collect())),
+        // Внутренность объекта (`internal`, §12.163) своей статьи не получает:
+        // игрок её не ставит и отдельно не видит, о ней рассказывает объект.
+        (
+            "tile",
+            ids(rs.tiles.iter().filter(|x| !x.internal).map(|x| &x.id).collect()),
+        ),
+        ("structure", ids(rs.structures.iter().map(|x| &x.id).collect())),
         ("item", ids(rs.items.iter().map(|x| &x.id).collect())),
         ("topic", ids(rs.research.iter().map(|x| &x.id).collect())),
         ("recipe", ids(rs.recipes.iter().map(|x| &x.id).collect())),

@@ -6768,7 +6768,7 @@ function buildToolbar() {
     // Цену всего объекта считает ядро (§12.162): складывать цены его клеток
     // здесь значило бы завести второе место, знающее, из чего он состоит.
     const b = mkTool(
-      `${glyph}<span>${d.label || d.id}</span>${costChips(new Map(d.cost.map(([it, n]) => [meta.items[it]?.id ?? it, n])))}`,
+      `${wikiMark(`structure:${d.id}`)}${glyph}<span>${d.label || d.id}</span>${costChips(new Map(d.cost.map(([it, n]) => [meta.items[it]?.id ?? it, n])))}`,
       () => {
         if (b.classList.contains("off")) return;
         selectStructure(i, b);
@@ -9989,6 +9989,7 @@ const WIKI_LISTS = {
   skill: () => meta?.skills,
   stat: () => meta?.stats,
   perk: () => meta?.perks,
+  structure: () => meta?.structures,
 };
 
 // Запись палитры по ключу статьи: `{ kind, id, def, entry }`. `def` — индекс,
@@ -10223,6 +10224,7 @@ function wikiIndexHtml() {
   const groups = [
     ["Мир", "lore"],
     ["Постройки", "tile"],
+    ["Объекты", "structure"],
     ["Вещи", "item"],
     ["Наука", "topic"],
     ["Рецепты", "recipe"],
@@ -10341,6 +10343,10 @@ function wikiGateOpen(key) {
     }
     case "recipe":
       return !!(snap.recipes ?? [])[def]?.unlocked;
+    case "structure":
+      // Объект прячется из палитры ровно как закрытый тайл (§12.126) — по
+      // технологии; той же проверкой открывается и его статья.
+      return !!entry && (!entry.tech || (snap.techs ?? []).includes(entry.tech));
     case "raid": {
       const r = (snap.raids ?? [])[def];
       return !!r && (r.met || (r.unlocked && r.possible));
