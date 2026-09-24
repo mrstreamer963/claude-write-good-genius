@@ -2787,6 +2787,38 @@ main#stage.mode-cursor #mode-banner {
   font-size: 16px;
   font-weight: 600;
 }
+.wiki-pic {
+  float: right;
+  margin: 0 0 8px 12px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  line-height: 0;
+}
+.wiki-pic .wiki-glyph {
+  width: 64px;
+  height: 64px;
+}
+.wiki-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 72px;
+  height: 72px;
+  border-radius: 4px;
+}
+.wiki-tile .wiki-glyph {
+  width: 48px;
+  height: 48px;
+  color: rgba(0, 0, 0, 0.55) !important;
+}
+.wiki-portrait {
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+  border-radius: 4px;
+}
 .wiki-fresh {
   margin-left: auto;
   color: var(--accent);

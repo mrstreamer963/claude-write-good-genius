@@ -10105,6 +10105,29 @@ function wikiFacts(key) {
   );
 }
 
+// Как вещь выглядит — тем же словарём, каким она нарисована в игре (§12.109):
+// глиф предмета, тайл его цветом с глифом роли, портрет кандидата. Рецепт
+// рисуется своим предметом (`craftItem` — то же правило, что у значка на
+// карте). Картинки нет — нет и узла: пустая рамка читалась бы битым файлом.
+function wikiPicture(key) {
+  const { kind, def, entry } = wikiEntry(key);
+  if (!entry) return "";
+  let inner = "";
+  if (kind === "item") inner = itemGlyph(def, "wiki-glyph");
+  if (kind === "recipe") {
+    const it = craftItem(def);
+    if (it >= 0) inner = itemGlyph(it, "wiki-glyph");
+  }
+  if (kind === "tile") {
+    inner =
+      `<span class="wiki-tile" style="background:${entry.color}">` +
+      tileGlyphHtml(def, "wiki-glyph") +
+      "</span>";
+  }
+  if (kind === "recruit") inner = portraitHtml(entry.sprite, "wiki-portrait");
+  return inner ? `<div class="wiki-pic">${inner}</div>` : "";
+}
+
 // Роль клетки словами — те же свойства тайла, которыми её знает ядро.
 // Существительными, а не значками: значок стоит у предмета и у роли на карте
 // (§12.109), а здесь строка объясняет, чем эта роль отличается от соседней.
@@ -10266,7 +10289,7 @@ function buildWikiWindow() {
     `<div class="wiki-title">${esc(title)}</div>` +
     (wikiFresh ? '<div class="wiki-fresh">Новая запись</div>' : "") +
     "</div>" +
-    `<div class="wiki-body">${renderArticle(wikiKey, wikiName)}</div>` +
+    `<div class="wiki-body">${wikiPicture(wikiKey)}${renderArticle(wikiKey, wikiName)}</div>` +
     wikiFacts(wikiKey) +
     also;
 }
