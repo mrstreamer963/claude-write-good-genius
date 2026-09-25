@@ -5799,14 +5799,7 @@ function showFinale(goals, snap) {
     `<div class="cat-sub">дальше целей нет — база живёт как хочет</div>` +
     `<button class="finale-close">Играть дальше</button></div>`;
   finaleEl.hidden = false;
-  // Модал ставит время на паузу: итог читают, а не догоняют глазами на ×10.
-  // Своего «запомненного темпа» не заводим — `lastSpeed` уже значит ровно это
-  // («тот темп, к которому возвращает пробел»), и `setSpeed(0)` его не затирает.
-  // Второй такой памяти хватило бы, чтобы однажды разойтись с пробелом.
-  //
-  // Игрок, поставивший паузу сам, сюда не попадёт: цели отмечает `check_goals`,
-  // а он тикает вместе с миром — на паузе закрыться нечему.
-  setSpeed(0);
+  // Паузу ставит общий `syncModalPause`, как у любого модала.
 }
 
 // Условие связки словом (§12.159). Описание приезжает **разобранным ядром** —
@@ -5882,8 +5875,6 @@ function showAchievement(g, snap) {
     `</div>` +
     `<button class="finale-close">Играть дальше</button></div>`;
   finaleEl.hidden = false;
-  // Пауза — как у финала: итог читают, а не догоняют глазами на ×10.
-  setSpeed(0);
 }
 
 // Модал живёт вне потока панелей и не перерисовывается каждым кадром, поэтому
@@ -5891,8 +5882,6 @@ function showAchievement(g, snap) {
 finaleEl.addEventListener("click", (e) => {
   if (!e.target.closest(".finale-close") && e.target !== finaleEl) return;
   finaleEl.hidden = true;
-  // Возвращаем тот темп, на котором игрока застал финал, — как это делает пробел.
-  setSpeed(lastSpeed);
 });
 
 // Рецепт и тема — по индексу палитры, как предмет: их `def` в снапшоте это
@@ -13319,3 +13308,29 @@ setSpeed(0);
 // строки модуль ещё раскладывает состояние, которое `stepUnits` читает
 // (`speed`), а первый кадр тикера придёт уже после.
 app.ticker.add(stepUnits);
+
+// Любой модал ставит время на паузу, а закрытый возвращает тот темп, что был
+// до него (§12.254): окно читают и в нём решают, а мир за ним на ×10 уходит
+// из-под решения. Правило одно на все окна реестра и на поздравление, поэтому
+// живёт не в каждом `open*`/`close*`, а здесь — по состоянию, раз в кадр:
+// переход из окна в окно (`closeOtherWindows` + открытие) внутри одного кадра
+// паузу не снимает и не ставит заново.
+//
+// Паузу игрока модал не трогает: открыт на паузе — закрытие её оставит. А темп,
+// выбранный игроком при открытом окне (пробел, цифры), закрытие не перебивает:
+// вернуть прежний значило бы отменить его решение молча.
+let modalWas = false;
+let modalResume = null;
+function syncModalPause() {
+  const open = WINDOWS.some(([, isOpen]) => isOpen()) || !finaleEl.hidden;
+  if (open === modalWas) return;
+  modalWas = open;
+  if (open) {
+    modalResume = speed > 0 ? speed : null;
+    if (modalResume !== null) setSpeed(0);
+  } else {
+    if (modalResume !== null && speed === 0) setSpeed(modalResume);
+    modalResume = null;
+  }
+}
+app.ticker.add(syncModalPause);
