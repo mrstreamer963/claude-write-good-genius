@@ -10725,14 +10725,12 @@ function wikiGateOpen(key) {
       const st = (snap.stock ?? [])[def];
       return !!st?.seen && (st.understood !== false || hasTeaser(key));
     }
-    case "topic": {
-      const t = (snap.topics ?? [])[def];
-      if (!t) return false;
-      // Окно показывает тему открытой (`unlocked && sighted`) или витриной
-      // (§12.137: образец видан, науки нет); ждущая находки скрыта (§12.143).
-      const showcase = t.sighted && (entry?.specimen?.size ?? 0) > 0;
-      return t.known || (t.unlocked && t.sighted) || showcase;
-    }
+    case "topic":
+      // Тема — только изученная: доступная к изучению стоит в окне «Наука» и
+      // там же объясняет себя строкой «Даёт · Открывает». Статья о ней до
+      // изучения рассказала бы ответ, который тема и должна добыть, а первое
+      // вскрытие открывало разом полтора десятка записей — модалом каждую.
+      return !!(snap.topics ?? [])[def]?.known;
     case "recipe":
       return !!(snap.recipes ?? [])[def]?.unlocked;
     case "structure":
