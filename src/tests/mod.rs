@@ -1202,6 +1202,7 @@ impl Sim {
             specimen: Vec::new(),
             gives: Vec::new(),
             requires: requires.iter().map(|t| t.to_string()).collect(),
+            mastered: Vec::new(),
         });
         rules.0.len() - 1
     }

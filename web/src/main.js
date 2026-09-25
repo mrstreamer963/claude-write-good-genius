@@ -7677,6 +7677,15 @@ function rateText(q, buying) {
 // же развилка, что у лабораторий (§12.124, §12.132): первое чинится стройкой,
 // второе ожиданием уборки. Счёт складов приходит из ядра (`stores`), как
 // `shops` и `posts`, — по карте в JS его не пересчитывают.
+// Чего ждёт тема из `mastered` (§12.259): «Наука 3-го уровня» — навык и
+// ступень словом. Набор приезжает `Map`, как цена (см. `costChips`).
+function masteryHint(need) {
+  const parts = [];
+  for (const [id, lvl] of need ?? new Map())
+    parts.push(`«${skillLabel(id)}» ${lvl}-го уровня — хоть раз на базе`);
+  return parts.join(", ");
+}
+
 function payHint(cost) {
   const entries =
     cost instanceof Map ? [...cost.entries()] : Object.entries(cost ?? {});
@@ -7766,8 +7775,13 @@ function syncTopicButtons(list) {
     // непустого `specimen` обязательна: `sighted` у темы без образца — `true`
     // (пустой список проходит `all`), и без неё в витрину уезжают все закрытые
     // темы разом, включая автоправила, которые не про вещь в руках вовсе.
+    // Вторая витрина (§12.259) — тема, ждущая **учёного**: до неё игрок
+    // дорастает сам (растит «Науку»), значит строка отвечает на «зачем растить
+    // дальше», а не требует невиданной вещи, как у §12.143.
+    const unmastered = !t.known && t.unlocked && !t.mastered;
     const teasing =
-      !t.known && !t.unlocked && (t.specimen ?? []).length > 0 && !!t.sighted;
+      (!t.known && !t.unlocked && (t.specimen ?? []).length > 0 && !!t.sighted) ||
+      unmastered;
     // **Тема, ждущая находки, не показывается вовсе** (§12.143). Витрина
     // §12.137 сюда не распространяется, и граница между ними ровно в том, что
     // игрок уже держал в руках: там артефакт лежит на складе и вопрос «что с
@@ -7822,6 +7836,7 @@ function syncTopicButtons(list) {
       t.unlocked &&
       !t.busy &&
       t.sighted &&
+      t.mastered &&
       t.stocked &&
       t.affordable &&
       t.staffed &&
@@ -7834,7 +7849,9 @@ function syncTopicButtons(list) {
       b,
       t.known
         ? "Уже изучено"
-        : teasing
+        : unmastered
+          ? `Нужен учёный: ${masteryHint((meta.research ?? [])[i]?.mastered)}`
+          : teasing
           ? // Причина названа классом блокера, а не конкретной темой-предком:
             // «когда-нибудь ты это поймёшь» — обещание, а перечень требований
             // превратил бы витрину в чек-лист (§12.137).
@@ -9334,13 +9351,15 @@ function syncDoors(snap) {
         (i) =>
           !topics[i].known &&
           topics[i].unlocked &&
+          topics[i].mastered &&
           ((topics[i].specimen ?? []).length === 0 || topics[i].sighted),
       );
     // Темы-витрины (§12.137) двери не открывают, но и прятать её не дают: за
     // ней есть что посмотреть — артефакт, до которого база ещё не доросла.
     const teasing = topics.some(
       (t) =>
-        !t.known && !t.unlocked && (t.specimen ?? []).length > 0 && t.sighted,
+        (!t.known && !t.unlocked && (t.specimen ?? []).length > 0 && t.sighted) ||
+        (!t.known && t.unlocked && !t.mastered),
     );
     const staffed = open.some((i) => topics[i].staffed);
     // Свободных лабораторий нет — тоже гашение с причиной, а не пропажа

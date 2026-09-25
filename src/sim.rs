@@ -349,7 +349,23 @@ impl Sim {
         if !rule.specimen.iter().all(|&(item, _)| seen.saw(item)) {
             return false;
         }
+        if !self.topic_mastered(def) {
+            return false;
+        }
         self.has_lab()
+    }
+
+    /// Дорастал ли хоть кто-то до уровней, которых ждёт тема (§12.259). Одно
+    /// выражение на ленту, заявку и снимок (инвариант 14); шкала монотонная,
+    /// поэтому открывшаяся тема не закрывается.
+    pub(crate) fn topic_mastered(&self, def: usize) -> bool {
+        let Some(rule) = self.world.resource::<ResearchRules>().0.get(def) else {
+            return false;
+        };
+        let mastery = self.world.resource::<Mastery>();
+        rule.mastered
+            .iter()
+            .all(|&(skill, level)| mastery.reached(skill, level))
     }
 
     /// Открыт ли рецепт — то же выражение, что и `unlocked` в снимке
@@ -909,7 +925,7 @@ impl Sim {
         if !rules.sighted_of(tile).iter().all(|&item| seen.saw(item)) {
             return false;
         }
-        // Учёный, до которого дорос хоть кто-то (§12.257): парте нужен тот,
+        // Учёный, до которого дорос хоть кто-то (§12.257; с §12.259 так закрыта тема, а не парта): нужен тот,
         // кому есть чему учить. Шкала монотонная — плен учёного парту не уносит.
         let mastery = self.world.resource::<Mastery>();
         if !rules
@@ -1523,6 +1539,11 @@ impl Sim {
                         .filter_map(|(id, &n)| item_index(id).map(|i| (i, n)))
                         .collect(),
                     requires: r.requires.clone(),
+                    mastered: r
+                        .mastered
+                        .iter()
+                        .filter_map(|(id, &lvl)| skill_index(id).map(|sk| (sk, lvl)))
+                        .collect(),
                 })
                 .collect(),
         ));
@@ -2382,7 +2403,7 @@ impl Sim {
     /// Ворота у объекта **двое**: своя технология и ворота каждого тайла
     /// штампа. Первая — то, ради чего лаборатория на три места вообще стоит в
     /// дереве науки; вторые — чтобы штамп не протащил в мир закрытый тайл в
-    /// обход §12.27, и ими же парта ждёт учёного третьего уровня (§12.257).
+    /// обход §12.27, и ими же парта ждёт темы «Наставничество» (§12.259).
     pub(crate) fn structure_is_open(&mut self, def: usize) -> bool {
         let Some(rule) = self.world.resource::<StructureRules>().0.get(def).cloned() else {
             return false;
@@ -3417,6 +3438,11 @@ impl Sim {
             if !rule.specimen.iter().all(|&(item, _)| seen.saw(item)) {
                 return false;
             }
+        }
+        // Учёный, до которого база должна была дорасти (§12.259): без него
+        // тема стоит витриной, как невиданный образец.
+        if !self.topic_mastered(def) {
+            return false;
         }
         // …а лежать он обязан **на складе прямо сейчас** (§12.139): везут его
         // ногами и берут со складской кучи (§12.130), поэтому тема, заведённая
@@ -6018,6 +6044,7 @@ impl Sim {
                     lab_free,
                     busy: running.contains(&def),
                     sighted,
+                    mastered: self.topic_mastered(def),
                     // Тем же выражением, что и `affordable` (§12.139): образец
                     // берут со складской кучи, значит спрашивать надо склад.
                     stocked: self.storage_covers(&rule.specimen),
