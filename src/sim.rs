@@ -35,8 +35,8 @@ use crate::hauling::{plan_spend, stored_counts};
 use crate::jobs::{BUILD_WORK, Plan, may_build, site_clutter};
 use crate::map::{BaseMap, rect_cells};
 use crate::missions::{
-    comms_span, crew_danger, crew_force, duration, faction_is_met, gate_cells, gate_count,
-    guide_cut, guide_of, guide_value, outcome, phase,
+    Crew, comms_span, crew_danger, crew_force, crew_traits, duration, faction_is_met, gate_cells,
+    gate_count, guide_cut, guide_of, guide_value, outcome, phase, travel,
 };
 use crate::movement::note_clutter;
 use crate::movement::{Busy, is_stuck};
@@ -51,7 +51,8 @@ use crate::schedule::build_schedule;
 use crate::seen::note_seen;
 use crate::sites::{Step, aim_danger, aim_of, next_step, site_is_clear, stage_danger, targets_of};
 use crate::skills::{
-    Desk, SKILL_RAID, SKILL_SCIENCE, desk_cap, desk_gate, level_cap_of, level_of, xp_ceiling,
+    Desk, SKILL_RAID, SKILL_SCIENCE, desk_cap, desk_gate, lectern_of, level_cap_of, level_of,
+    tutor_cap, xp_ceiling,
 };
 use crate::slots::{Owners, seats_at, slot_cells};
 use crate::snapshot::{
@@ -273,7 +274,7 @@ impl Sim {
             // Медленный край срока — свойство заказа, а не отряда (§12.71): тем
             // же `duration`, каким срок замёрзнет на уходе. Нужен там, где
             // отряда ещё нет и считать не на кого.
-            span_slow: duration(&rule, rule.squad),
+            span_slow: duration(&rule, rule.squad, Crew::default()),
         }
     }
 
@@ -908,6 +909,16 @@ impl Sim {
         if !rules.sighted_of(tile).iter().all(|&item| seen.saw(item)) {
             return false;
         }
+        // Учёный, до которого дорос хоть кто-то (§12.257): парте нужен тот,
+        // кому есть чему учить. Шкала монотонная — плен учёного парту не уносит.
+        let mastery = self.world.resource::<Mastery>();
+        if !rules
+            .mastered_of(tile)
+            .iter()
+            .all(|&(skill, level)| mastery.reached(skill, level))
+        {
+            return false;
+        }
         match rules.after_of(tile) {
             // «Стоял ли такой тайл хоть раз» — журнал застройки, а не текущая
             // карта (§12.220): открывшаяся ступень палитры не закрывается, как
@@ -1278,6 +1289,7 @@ fn spawn_cat(
     perks: &[String],
     skills: &[(usize, i32)],
     stats: &[(usize, i32)],
+    gear: &[usize],
 ) -> Entity {
     let carry = world.resource::<UnitRules>().carry;
     let energy_max = world.resource::<NeedRules>().max;
@@ -1345,6 +1357,12 @@ fn spawn_cat(
             xp.add_xp(skill, amount, cap.max(amount));
         }
         cat.insert(xp);
+    }
+    // С чем кот пришёл (§12.256): личная вещь другого пути в мир не имеет — ни
+    // кучей, ни рецептом, — поэтому надевается прямо здесь, в единственном
+    // месте сборки (инвариант 21).
+    if !gear.is_empty() {
+        cat.insert(Gear(gear.to_vec()));
     }
     cat.id()
 }
@@ -1432,6 +1450,7 @@ impl Sim {
                     heal: t.heal,
                     gate: t.gate,
                     teaches: skill_index(&t.teaches),
+                    lectern: t.lectern,
                     lab: t.lab,
                     shop: t.shop,
                     solid: t.solid,
@@ -1442,6 +1461,11 @@ impl Sim {
                     comms: t.comms,
                     tech: t.tech.clone(),
                     sighted: t.sighted.iter().filter_map(|id| item_index(id)).collect(),
+                    mastered: t
+                        .mastered
+                        .iter()
+                        .filter_map(|(id, &lvl)| skill_index(id).map(|s| (s, lvl)))
+                        .collect(),
                     after: tile_index_of(&t.after)
                         .filter(|&prev| prev < def)
                         .map(|prev| prev as i16),
@@ -1815,6 +1839,7 @@ impl Sim {
                         .iter()
                         .filter_map(|(id, &n)| faction_index(id).map(|f| (f, n)))
                         .collect(),
+                    gear: r.gear.iter().filter_map(|id| item_index(id)).collect(),
                 })
                 .collect(),
         ));
@@ -1828,6 +1853,9 @@ impl Sim {
                     force: i.force,
                     nutrition: i.nutrition,
                     mends: i.mends,
+                    collects: i.collects,
+                    collected: i.collected,
+                    personal: i.personal,
                     requires: i.requires.clone(),
                 })
                 .collect(),
@@ -1836,6 +1864,15 @@ impl Sim {
             rs.loadout.iter().filter_map(|id| item_index(id)).collect(),
         ));
         world.insert_resource(UnitRules { carry: rs.carry });
+        world.insert_resource(PerkRules(
+            rs.perks
+                .iter()
+                .map(|p| PerkRule {
+                    id: p.id.clone(),
+                    road: p.road,
+                })
+                .collect(),
+        ));
         world.insert_resource(AutoTidy(true));
         world.insert_resource(AutoRest(true));
         // Порогов автопроизводства в новой партии нет ни одного: правило — это
@@ -1874,6 +1911,7 @@ impl Sim {
         // выбранные рулсетом.
         world.insert_resource(Seen(vec![false; rs.items.len()]));
         world.insert_resource(RaidsMet(vec![false; rs.missions.len()]));
+        world.insert_resource(Mastery::default());
         // Лента новостей (§12.120). Базовой линии у неё пока нет: снимет её
         // первый же `note_news`, и стартовая доступность новостью не станет.
         world.insert_resource(News::default());
@@ -1939,6 +1977,7 @@ impl Sim {
                 &u.perks,
                 &[],
                 &stats,
+                &[],
             );
             // Стартовый отряд (§12.207): приписка та же, что ставит игрок в
             // штабе, — просто поставленная контентом. Задачи за ней нет
@@ -2318,26 +2357,7 @@ impl Sim {
         if cells.is_empty() {
             return false;
         }
-        // Ворота у объекта **двое**: своя технология и технология каждого тайла
-        // штампа. Первая — то, ради чего лаборатория на три места вообще стоит
-        // в дереве науки; вторая осталась там же, где была, потому что штамп не
-        // должен уметь протащить в мир закрытый тайл в обход §12.27.
-        let own = self
-            .world
-            .resource::<StructureRules>()
-            .0
-            .get(def)
-            .map(|r| r.tech.clone());
-        match own.as_deref() {
-            None => return false,
-            Some("") => {}
-            Some(tech) => {
-                if !self.world.resource::<Techs>().knows(tech) {
-                    return false;
-                }
-            }
-        }
-        if !cells.iter().all(|&(_, t)| self.tech_allows(t)) {
+        if !self.structure_is_open(def) {
             return false;
         }
         let mut plan = self.plan();
@@ -2354,6 +2374,27 @@ impl Sim {
         cells
             .iter()
             .all(|&((cx, cy), t)| map.tile_at(cx, cy) == t || may_build(&plan, rules, (cx, cy), t))
+    }
+
+    /// Открыт ли объект-штамп (§12.160, §12.258): одно выражение на постановку и
+    /// на палитру (`structures_open` в снимке).
+    ///
+    /// Ворота у объекта **двое**: своя технология и ворота каждого тайла
+    /// штампа. Первая — то, ради чего лаборатория на три места вообще стоит в
+    /// дереве науки; вторые — чтобы штамп не протащил в мир закрытый тайл в
+    /// обход §12.27, и ими же парта ждёт учёного третьего уровня (§12.257).
+    pub(crate) fn structure_is_open(&mut self, def: usize) -> bool {
+        let Some(rule) = self.world.resource::<StructureRules>().0.get(def).cloned() else {
+            return false;
+        };
+        if !rule.tech.is_empty() && !self.world.resource::<Techs>().knows(&rule.tech) {
+            return false;
+        }
+        rule.cells
+            .iter()
+            .flatten()
+            .flatten()
+            .all(|&t| self.tech_allows(t))
     }
 
     /// Маска превью для штампа: влезает ли он якорем в каждую клетку рамки.
@@ -2848,9 +2889,53 @@ impl Sim {
     /// Срок каждого заказа для отряда этого узла (§12.70) — цена до нажатия.
     /// Тем же выражением, каким срок замёрзнет на уходе.
     fn node_spans(&mut self, x: i32, y: i32) -> Vec<i32> {
-        let paws = self.ready_roster_of(x, y).len();
+        let roster = self.roster_of(x, y);
+        let ready: Vec<Entity> = self
+            .node_crew(&roster)
+            .into_iter()
+            .map(|(e, _)| e)
+            .collect();
+        let traits = self.traits_of(&ready);
         let rules = self.world.resource::<MissionRules>();
-        rules.0.iter().map(|r| duration(r, paws)).collect()
+        rules
+            .0
+            .iter()
+            .map(|r| duration(r, ready.len(), traits))
+            .collect()
+    }
+
+    /// Слагаемые срока по каждому заказу для отряда этого узла (§12.256):
+    /// `(дорога, работа)` **уже с тропами и сбором** — теми же `travel` и
+    /// `work`, из которых `duration` сложил `spans`. Вид пишет формулу срока, и
+    /// сырые числа рулсета в ней не сходились бы с итогом.
+    fn node_terms(&mut self, x: i32, y: i32) -> (Vec<i32>, Vec<i32>) {
+        let roster = self.roster_of(x, y);
+        let ready: Vec<Entity> = self
+            .node_crew(&roster)
+            .into_iter()
+            .map(|(e, _)| e)
+            .collect();
+        let traits = self.traits_of(&ready);
+        let rules = self.world.resource::<MissionRules>();
+        (
+            rules.0.iter().map(|r| travel(r, traits)).collect(),
+            rules
+                .0
+                .iter()
+                .map(|r| crate::missions::work(r, traits))
+                .collect(),
+        )
+    }
+
+    /// Тропы и прибор сбора у этих котов (§12.256) — тем же `crew_traits`,
+    /// каким `run_missions` заморозит их на уходе.
+    fn traits_of(&self, cats: &[Entity]) -> Crew {
+        crew_traits(
+            self.world.resource::<ItemRules>(),
+            self.world.resource::<PerkRules>(),
+            cats.iter()
+                .map(|&e| (self.world.get::<Perks>(e), self.world.get::<Gear>(e))),
+        )
     }
 
     /// Опасность каждого заказа для отряда этого узла (§12.70): уже урезанная
@@ -3147,6 +3232,8 @@ impl Sim {
             span: 0,
             covered: 0,
             verdict: None,
+            travel: 0,
+            toll: 0,
         });
         let mission_e = mission_e.id();
         // Спящие в `crew` теперь есть (§12.191) — их отсекает `ready` ниже, и
@@ -3276,6 +3363,7 @@ impl Sim {
             &rule.perks,
             &rule.skills,
             &rule.stats,
+            &rule.gear,
         );
         true
     }
@@ -4467,7 +4555,11 @@ impl Sim {
         .unwrap_or_default();
         self.world.entity_mut(cat_e).remove::<Order>().insert((
             Enrolled { skill },
-            Study { skill, spot },
+            Study {
+                skill,
+                spot,
+                teacher: false,
+            },
             Path { steps: path },
         ));
         true
@@ -4533,6 +4625,7 @@ impl Sim {
             Study {
                 skill,
                 spot: (x, y),
+                teacher: false,
             },
             Path { steps: path },
         ));
@@ -4956,7 +5049,59 @@ impl Sim {
             // к которой ученик ещё только идёт (§12.20).
             let desks_taken: Vec<(i32, i32)> = {
                 let mut q = self.world.query::<&Study>();
-                q.iter(&self.world).map(|s| s.spot).collect()
+                q.iter(&self.world)
+                    .filter(|s| !s.teacher)
+                    .map(|s| s.spot)
+                    .collect()
+            };
+            // Кто сидит за партой без учителя (§12.258): причина простоя
+            // словом (§12.53) — игрок приписал ученика сам и обязан видеть,
+            // почему тот сидит без дела. Тем же `lectern_of` и тем же `tutor_cap`,
+            // какими решает `study`.
+            let (waiting, lonely): (Vec<String>, Vec<String>) = {
+                let owners = self.owners();
+                let mut q = self
+                    .world
+                    .query::<(&UnitId, &Position, &Study, Option<&Path>, Option<&Skills>)>();
+                let all: Vec<_> = q
+                    .iter(&self.world)
+                    .map(|(id, p, s, path, k)| {
+                        let here = path.is_none() && (p.x, p.y) == s.spot;
+                        let xp = k.map_or(0, |k| k.xp_of(s.skill));
+                        (id.0.clone(), s.spot, s.skill, s.teacher, here, xp)
+                    })
+                    .collect();
+                let map = self.world.resource::<BaseMap>();
+                let tiles = self.world.resource::<TileRules>();
+                let rules = self.world.resource::<SkillRules>();
+                let waiting = all
+                    .iter()
+                    .filter(|(_, _, _, teacher, here, _)| !teacher && *here)
+                    .filter(|(_, spot, skill, _, _, xp)| {
+                        lectern_of(map, tiles, &owners, *spot).is_some_and(|at| {
+                            !all.iter().any(|(_, t_spot, _, t, t_here, t_xp)| {
+                                *t && *t_here
+                                    && *t_spot == at
+                                    && tutor_cap(rules, *skill, *t_xp) > *xp
+                            })
+                        })
+                    })
+                    .map(|(id, ..)| id.clone())
+                    .collect();
+                // Учитель на месте, а ученика за партой нет — ещё идёт, ушёл
+                // поесть или спит (§12.258). Учить некого, и «учит» про него
+                // было бы враньём: вид по этому слову качает кота у доски.
+                let lonely = all
+                    .iter()
+                    .filter(|(_, _, _, teacher, here, _)| *teacher && *here)
+                    .filter(|(_, t_spot, ..)| {
+                        !all.iter().any(|(_, spot, _, t, here, _)| {
+                            !*t && *here && lectern_of(map, tiles, &owners, *spot) == Some(*t_spot)
+                        })
+                    })
+                    .map(|(id, ..)| id.clone())
+                    .collect();
+                (waiting, lonely)
             };
             // След последнего начисления опыта (§12.17) — тем же боковым
             // запросом и по той же причине арности.
@@ -5114,6 +5259,8 @@ impl Sim {
                     // Чем занят — разобрано в `Busy` вместе с самой занятостью
                     // (§12.41); здесь чертёж только уточняется до сноса.
                     job: match busy.job {
+                        "study" if !busy.moving && waiting.contains(&id.0) => "wait_teacher",
+                        "teach" if !busy.moving && lonely.contains(&id.0) => "wait_pupil",
                         "build"
                             if assignment.is_some_and(|a| sites.get(&a.0).is_some_and(|s| s.2)) =>
                         {
@@ -5308,10 +5455,12 @@ impl Sim {
                 Option<&Gear>,
                 Option<&Rest>,
                 Option<&Stats>,
+                Option<&Perks>,
             )>();
             let skill_rules = self.world.resource::<SkillRules>();
             let stat_rules = self.world.resource::<StatRules>();
             let items = self.world.resource::<ItemRules>();
+            let perk_rules = self.world.resource::<PerkRules>();
             // Надбавка за очаг по каждому участку — снятая **числами**, а не
             // ссылкой: дальше идут `world.query`, а живой заём ресурса не даёт
             // взять мир мутабельно. Тем же выражением, что и на возвращении.
@@ -5323,9 +5472,9 @@ impl Sim {
             // Вклад кота в силу отряда считается ровно как в `run_missions`:
             // сам он стоит единицу, уровень «Вылазки» — сверху, надетое — ещё
             // сверху. Прогноз и результат обязаны быть одним выражением (§12.23).
-            let members: Vec<(Entity, String, bool, i32, bool, i32, i32)> = crew
+            let members: Vec<(Entity, String, bool, i32, bool, i32, i32, Crew)> = crew
                 .iter(&self.world)
-                .map(|(id, squad, away, skills, gear, rest, stats)| {
+                .map(|(id, squad, away, skills, gear, rest, stats, perks)| {
                     let force = 1
                         + raid.map_or(0, |s| level_of(skill_rules, skills, s))
                         + items.force_of_gear(gear);
@@ -5337,6 +5486,9 @@ impl Sim {
                         rest.is_some(),
                         guide_of(stat_rules, stats),
                         guide_value(stat_rules, stats),
+                        // Тропы и прибор — тем же `crew_traits`, что на уходе
+                        // (§12.256); у отряда они складываются «или».
+                        crew_traits(items, perk_rules, [(perks, gear)]),
                     )
                 })
                 .collect();
@@ -5361,7 +5513,21 @@ impl Sim {
                 // выросло, пока он шёл.
                 let extra = m.site.and_then(|s| site_extra.get(s).copied()).unwrap_or(0);
                 let base = rule.map_or(0, |r| r.danger + extra);
-                let guide = mine().map(|&(.., g, _)| g).max().unwrap_or(0);
+                let guide = mine().map(|&(.., g, _, _)| g).max().unwrap_or(0);
+                // Тропы и прибор отряда (§12.256). Перки не меняются, а вот
+                // прибор провал ломает на конце работы — поэтому у ушедшего
+                // признак сбора берётся замороженный, как и дорога.
+                let joined = mine().fold(Crew::default(), |a, &(.., c)| Crew {
+                    road_cut: a.road_cut.max(c.road_cut),
+                    work_toll: a.work_toll.max(c.work_toll),
+                });
+                let traits = match m.span {
+                    0 => joined,
+                    _ => Crew {
+                        road_cut: joined.road_cut,
+                        work_toll: m.toll,
+                    },
+                };
                 let paws = mine().count();
                 let danger = rule.map_or(0, |r| crew_danger(r, extra, guide, paws));
                 // Связь входит в **ту же** силу, что и отряд, и считается тем же
@@ -5372,13 +5538,17 @@ impl Sim {
                 // берёт его по тому составу, который сейчас в отряде, — тем же
                 // выражением, каким срок замёрзнет на уходе (§12.70).
                 let span = match m.span {
-                    0 => rule.map_or(0, |r| duration(r, paws)),
+                    0 => rule.map_or(0, |r| duration(r, paws, traits)),
                     frozen => frozen,
+                };
+                let road = match m.span {
+                    0 => rule.map_or(0, |r| travel(r, traits)),
+                    _ => m.travel,
                 };
                 // Связь делится на срок **до конца работы** — тем же
                 // выражением, что в `run_missions` (§12.244).
-                let comms = relay_force(m.covered, rule.map_or(span, |r| comms_span(r, span)));
-                let raw = mine().map(|&(.., force, _, _, _)| force);
+                let comms = relay_force(m.covered, comms_span(road, span));
+                let raw = mine().map(|&(.., force, _, _, _, _)| force);
                 let force: i32 = match rule {
                     Some(r) => crew_force(r, raw),
                     None => raw.sum(),
@@ -5408,11 +5578,11 @@ impl Sim {
                     // стоящей на базе бригадой читается как поломка — ровно та
                     // же, из-за которой рядом живёт `resting`.
                     phase: match (rule, mine().any(|&(_, _, away, ..)| away)) {
-                        (Some(r), true) => phase(r, span, m.left).tag(),
+                        (Some(_), true) => phase(road, span, m.left).tag(),
                         _ => "",
                     },
                     // Ждать отряд может только на базе: за шлюзом не спят.
-                    resting: mine().any(|&(.., resting, _, _)| resting),
+                    resting: mine().any(|&(.., resting, _, _, _)| resting),
                     strength: out.strength,
                     danger,
                     danger_base: base,
@@ -5421,8 +5591,8 @@ impl Sim {
                     // Ничью решает сырая реакция, потом `id` — то же правило,
                     // что у `node_guide` (§12.70).
                     guide: mine()
-                        .filter(|&&(.., g, _)| g > 0 && g == guide)
-                        .map(|(_, id, .., raw)| (-raw, id.clone()))
+                        .filter(|&&(.., g, _, _)| g > 0 && g == guide)
+                        .map(|(_, id, .., raw, _)| (-raw, id.clone()))
                         .min()
                         .map(|(_, id)| id)
                         .unwrap_or_default(),
@@ -5439,6 +5609,8 @@ impl Sim {
                     rescue: rule.is_some_and(|r| r.rescue),
                     comms,
                     manned: !manned.is_empty(),
+                    trails: traits.road_cut,
+                    samples: traits.work_toll,
                 });
             }
         }
@@ -5683,12 +5855,24 @@ impl Sim {
                     // правила одни, поэтому и поле одно — `auto_fit` разошёлся
                     // бы с кнопкой на первом же спящем.
                     let fit = self.squad_is_fit(x, y);
+                    let (roads, works) = self.node_terms(x, y);
+                    let node_traits = {
+                        let roster = self.roster_of(x, y);
+                        let ready: Vec<Entity> = self
+                            .node_crew(&roster)
+                            .into_iter()
+                            .map(|(e, _)| e)
+                            .collect();
+                        self.traits_of(&ready)
+                    };
                     NodeSnap {
                         x,
                         y,
                         crew: self.roster_of(x, y),
                         ready: self.ready_roster_of(x, y),
                         spans: self.node_spans(x, y),
+                        roads,
+                        works,
                         dangers: self.node_dangers(x, y),
                         aims: self.node_aims(x, y),
                         force: forces.iter().sum(),
@@ -5696,6 +5880,8 @@ impl Sim {
                         shares,
                         fails,
                         guide: self.node_guide(x, y),
+                        trails: node_traits.road_cut,
+                        samples: node_traits.work_toll,
                         busy: !self.node_is_free(x, y),
                         auto: auto.map_or(-1, |def| def as i32),
                         auto_on: self.world.resource::<AutoRaids>().is_on(x, y),
@@ -5797,6 +5983,9 @@ impl Sim {
         // которую фасад отклонит.
         let tiles_open: Vec<bool> = (0..self.world.resource::<TileRules>().0.len())
             .map(|def| self.tile_is_open(def))
+            .collect();
+        let structures_open: Vec<bool> = (0..self.world.resource::<StructureRules>().0.len())
+            .map(|def| self.structure_is_open(def))
             .collect();
         let has_lab = self.has_lab();
         // Свободная ячейка — **тем же выражением, что и заявка** (§12.132):
@@ -6066,6 +6255,7 @@ impl Sim {
             stocking,
             techs,
             tiles_open,
+            structures_open,
             notes,
             goals,
             goals_required,

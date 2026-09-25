@@ -899,6 +899,7 @@ worker.onmessage = (e) => {
     // ...и цели тоже: у нового мира своя история взятого, и старая сделала бы
     // всё уже закрытое «только что закрытым» (см. `goalsDoneSeen`).
     goalsDoneSeen = null;
+    skillLevelsSeen = null;
     wikiOpenSeen = null;
     wikiQueue = [];
     // Свёрнутость панели миру не принадлежит — это выбор игрока о своём экране,
@@ -1279,16 +1280,51 @@ function drawFurniture(g, id, x, y, tint, n) {
       g.rect(px, py + T - T * 0.14, T, T * 0.14).stroke({ color: dark, width: 1 });
       break;
     }
+    // Парта — штамп на три клетки (§12.258): табурет ученика, стол посередине и
+    // стул учителя. Стол у штампа свой, поэтому на месте ученика его больше не
+    // рисуем — иначе стол стоял бы первым, а посередине оставался пустой пол.
     case "desk": {
-      // Стол и стул перед ним; на столе лист.
-      shadowUnder(T * 0.12, T * 0.1, T * 0.76, T * 0.44);
-      g.roundRect(px + T * 0.12, py + T * 0.1, T * 0.76, T * 0.44, 2).fill(
-        0x8a6a44,
-      );
-      g.rect(px + T * 0.3, py + T * 0.18, T * 0.3, T * 0.24).fill(0xe6e1d2);
-      g.roundRect(px + T * 0.32, py + T * 0.64, T * 0.36, T * 0.24, 3).fill(
+      // Табурет ученика: сиденье без спинки.
+      shadowUnder(T * 0.3, T * 0.3, T * 0.4, T * 0.4);
+      g.roundRect(px + T * 0.3, py + T * 0.3, T * 0.4, T * 0.4, 4).fill(
         shade(tint, 0.2),
       );
+      break;
+    }
+    case "desk_table": {
+      // Стол: столешница на всю клетку, на ней лист.
+      shadowUnder(T * 0.08, T * 0.14, T * 0.84, T * 0.72);
+      g.roundRect(px + T * 0.08, py + T * 0.14, T * 0.84, T * 0.72, 2).fill(
+        0x8a6a44,
+      );
+      g.rect(px + T * 0.32, py + T * 0.3, T * 0.36, T * 0.4).fill(0xe6e1d2);
+      break;
+    }
+    case "lectern": {
+      // Стул учителя: сиденье со спинкой — отличается от табурета ученика.
+      // Спинка стоит **со стороны, противоположной столу**: штамп вращается
+      // (§12.160), и спинка, нарисованная всегда сверху, в вертикальной парте
+      // смотрела бы на стол. Стол ищем среди четырёх соседей; нет его — сверху.
+      const [dx, dy] =
+        [
+          [-1, 0],
+          [1, 0],
+          [0, -1],
+          [0, 1],
+        ].find(([ox, oy]) => tileDefAt(x + ox, y + oy)?.id === "desk_table") ?? [0, 1];
+      shadowUnder(T * 0.26, T * 0.26, T * 0.48, T * 0.48);
+      g.roundRect(px + T * 0.3, py + T * 0.3, T * 0.4, T * 0.4, 4).fill(
+        shade(tint, 0.2),
+      );
+      // Спинка — полоска у края сиденья, дальнего от стола.
+      const back = shade(tint, 0.35);
+      if (dx !== 0) {
+        const bx = dx > 0 ? px + T * 0.2 : px + T * 0.7;
+        g.roundRect(bx, py + T * 0.3, T * 0.1, T * 0.4, 2).fill(back);
+      } else {
+        const by = dy > 0 ? py + T * 0.2 : py + T * 0.7;
+        g.roundRect(px + T * 0.3, by, T * 0.4, T * 0.1, 2).fill(back);
+      }
       break;
     }
     case "lab": {
@@ -2182,6 +2218,8 @@ function renderSnapshot(snap) {
     c.workX = e.work_x ?? -1;
     c.workY = e.work_y ?? -1;
     c.workDemolish = e.job === "demolish";
+    // Учит только дошедший (§12.258): идущий к парте ещё не объясняет.
+    c.teaching = e.job === "teach" && !e.moving;
     if (jump || e.step_span <= 0) {
       c.x = from.x;
       c.y = from.y;
@@ -2480,9 +2518,10 @@ function renderSnapshot(snap) {
   syncDoors(snap);
   syncNewsMarks();
   syncStockWindow();
-  syncTileButtons(snap.techs, snap.tiles_open);
+  syncTileButtons(snap.techs, snap.tiles_open, snap.structures_open);
   renderNotePanel(snap.notes, snap.tick);
   renderGoalsPanel(snap.goals, snap.goals_required, snap);
+  noteSkillUps(snap);
   // Последней — подсказка: она читает то, что нарисовали выше, и переприцелится,
   // если её узел уехал вместе с перерисованной лентой.
   refreshLiveTip();
@@ -2888,9 +2927,11 @@ function stepUnits(ticker) {
       c.y = c.fromY;
       wadeUnit(c, 0); // вставший кот выпрямляется
       hammerUnit(c, ticker.deltaMS);
+      teachUnit(c, ticker.deltaMS);
       continue;
     }
     hammerUnit(c, 0); // пошёл — перестал стучать
+    teachUnit(c, 0); // и перестал объяснять
     const k = Math.min(1, (c.stepSpan - c.stepLeft + tickFrac) / c.stepSpan);
     c.x = c.fromX + (c.toX - c.fromX) * k;
     c.y = c.fromY + (c.toY - c.fromY) * k;
@@ -2938,6 +2979,27 @@ function wadeUnit(c, deltaMS) {
     c.wadeMark.visible = false;
     c.wading = false;
   }
+}
+
+// Учитель у парты **объясняет** (§12.258): тело неторопливо качается из
+// стороны в сторону и чуть кивает — как рассказывающий у доски. Темп тот же,
+// что у стука и брода: по `speed` и не выше ×5, иначе на ×10 рассказ
+// превращается в дрожь. Трансформ пишется только учащим и один раз на выходе.
+const TEACH_SPEED_CAP = 5;
+function teachUnit(c, deltaMS) {
+  if (!(deltaMS > 0 && c.teaching && !c.wading && !c.down)) {
+    if (c.swaying) {
+      c.swaying = false;
+      c.body.rotation = 0;
+      // Заснувший прямо у парты лежит ниже — ту же поправку ставит `hammerUnit`.
+      c.body.y = c.down ? TILE * 0.1 : 0;
+    }
+    return;
+  }
+  c.swaying = true;
+  c.teachPhase = (c.teachPhase ?? 0) + (deltaMS * Math.min(speed, TEACH_SPEED_CAP)) / 700;
+  c.body.rotation = Math.sin(c.teachPhase) * 0.14;
+  c.body.y = -Math.abs(Math.sin(c.teachPhase * 2)) * TILE * 0.04;
 }
 
 // Кот, дошедший до площадки, **стучит** по ней: тело кивает в сторону клетки
@@ -3205,6 +3267,15 @@ function jobLabel(e) {
       return going ? "идёт в мастерскую" : "работает в мастерской";
     case "study":
       return going ? "идёт к парте" : "учится";
+    // Учитель и ученик без учителя (§12.258): оба слова считает ядро —
+    // вывести их из клетки в JS значило бы повторить правило пары «парта —
+    // место учителя» вторым экземпляром.
+    case "teach":
+      return going ? "идёт учить" : "учит";
+    case "wait_teacher":
+      return "ждёт учителя";
+    case "wait_pupil":
+      return "ждёт ученика";
     case "relay":
       return going ? "идёт к рации" : "держит связь с отрядом";
     case "build":
@@ -3681,7 +3752,7 @@ function renderCellPanel(snap) {
   const said = new Set();
   if (def?.teaches)
     for (const e of snap.entities ?? [])
-      if (e.job === "study" && e.x === x && e.y === y) said.add(e.id);
+      if (atStudy(e) && e.x === x && e.y === y) said.add(e.id);
   if (def?.lab) {
     const u = (snap.research ?? []).find((v) => v.x === x && v.y === y)?.unit;
     if (u) said.add(u);
@@ -3834,7 +3905,11 @@ function crewList(snap, x, y) {
     const toil =
       !e.away &&
       !hurt &&
-      (e.job === "research" || e.job === "craft" || e.job === "study");
+      (e.job === "research" ||
+        e.job === "craft" ||
+        atStudy(e) ||
+        e.job === "teach" ||
+        e.job === "wait_pupil");
     // Подсказка отвечает на вопрос своей группы. Своим — почему кот не пойдёт;
     // чужим — что клик их **заберёт**: перенос стоит один клик и молча снимает
     // прежнюю приписку (см. шапку функции), и это ровно то, что игрок делает не
@@ -3854,8 +3929,10 @@ function crewList(snap, x, y) {
             ? (mine ? "Уйдёт с отрядом — " : "Возьмёте в отряд — ") +
               (e.job === "research"
                 ? "тема останется без него"
-                : e.job === "study"
+                : atStudy(e)
                   ? "учёба встанет до его возвращения"
+                  : e.job === "teach" || e.job === "wait_pupil"
+                  ? "ученик останется без учителя"
                   : "заказ мастерской останется без него") +
               (mine
                 ? ". Исключить: клик"
@@ -4009,9 +4086,24 @@ function fieldLine(e, led, node, guide) {
     // вычет, и взятый кот его не складывает, а **заменяет** собой.
     const now = ledCut(node);
     parts.push(
-      `<u>станет проводником</u> — сложность <b class="cut">−${cut} %</b>` +
+      `<u>проводник</u> — сложность <b class="cut">−${cut} %</b>` +
         (now > 0 ? ` вместо −${now} %` : ""),
     );
+  }
+  // Что кот даёт отряду сверх силы и проводника (§12.256): перк «Знание троп»
+  // и прибор сбора образцов. Оба — свойство отряда, а не кота.
+  // Проценты — из рулсета (`road` у перка, `collects` у предмета), те же, что
+  // считает ядро; любой перк с `road` подсвечивается сам, без правки кода.
+  for (const id of e.perks ?? []) {
+    const road = (meta?.perks ?? []).find((p) => p.id === id)?.road ?? 0;
+    if (road > 0) {
+      parts.push(`<u>${esc(perkLabel(id))}</u> — дорога <b class="cut">−${road} %</b>`);
+    }
+  }
+  const toll = Math.max(0, ...(e.gear ?? []).map((i) => meta?.items?.[i]?.collects ?? 0));
+  if (toll > 0) {
+    // Цена, а не выгода: сбор удлиняет работу, поэтому число красное.
+    parts.push(`<u>сбор образцов</u> — работа <b class="bad">+${toll} %</b>`);
   }
   // Третьего случая в строке нет намеренно, и это не то же самое, что молчание
   // до §12.71 (§12.71). Тогда строка не говорила вообще ничего, и «нет пометки»
@@ -4946,12 +5038,12 @@ function deskCell(snap, x, y, def) {
   const i = (meta.skills ?? []).findIndex((s) => s.id === def.teaches);
   if (i < 0) return [];
   const ents = snap.entities ?? [];
-  const here = ents.find((e) => e.job === "study" && e.x === x && e.y === y);
+  const here = ents.find((e) => atStudy(e) && e.x === x && e.y === y);
   // Сидящего за **другой** партой того же домена сюда пускать нельзя: это уже
   // не про эту клетку. Всех остальных приписанных — можно, и строка о них
   // говорит про домен, а не про место: за какую из свободных парт кот сядет,
   // решает ядро, и назвать здесь одну значило бы обещать не то (§12.16).
-  const atDesk = (e) => e.job === "study" && !!tileDefAt(e.x, e.y)?.teaches;
+  const atDesk = (e) => atStudy(e) && !!tileDefAt(e.x, e.y)?.teaches;
   const cat = here ?? ents.find((e) => e.study === i && !atDesk(e));
   if (!cat) {
     const out = [
@@ -5766,11 +5858,42 @@ const TOAST_MS = 7000;
 function showGoalToast(goal) {
   play("goal");
   const def = goalDef(goal.def);
+  showToast(goal.kind === "hidden" ? "скрытая цель" : "цель закрыта", def.label || def.id || "?");
+}
+
+/// Рост навыка на ступень: уровень — единственное, что меняет скорость работы
+/// (инвариант 9), а видно его было только в панели выбранного кота. Сравниваем
+/// кадр с прошлым в виде — ядро уровень уже везёт, второго счёта ему не нужно.
+/// Первый кадр мира — базовая линия (как `goalsDoneSeen`), иначе загрузка
+/// партии выстрелила бы тостом за каждый навык каждого кота.
+let skillLevelsSeen = null;
+
+function noteSkillUps(snap) {
+  const first = skillLevelsSeen === null;
+  // Память дописывается, а не заменяется: кот, пропавший из кадра (за шлюзом),
+  // вернётся к своей прошлой записи, и рост за вылазку не спишется в «найм».
+  const now = skillLevelsSeen ?? new Map();
+  for (const e of snap.entities) {
+    if (!e.skills?.length) continue;
+    const levels = e.skills.map((s) => s?.level ?? 0);
+    const was = first ? null : now.get(e.id);
+    now.set(e.id, levels);
+    // Новичок без прошлой записи — не рост, а найм.
+    if (!was) continue;
+    levels.forEach((lv, i) => {
+      if (lv <= (was[i] ?? 0)) return;
+      const def = (meta.skills ?? [])[i];
+      showToast("навык вырос", `${e.id}: ${def?.label || def?.id || "?"} ${lv}`);
+    });
+  }
+  skillLevelsSeen = now;
+}
+
+function showToast(kind, label) {
   const node = document.createElement("div");
   node.className = "toast";
   node.innerHTML =
-    `<div class="toast-kind">${goal.kind === "hidden" ? "скрытая цель" : "цель закрыта"}</div>` +
-    `<div class="toast-label">${esc(def.label || def.id || "?")}</div>`;
+    `<div class="toast-kind">${esc(kind)}</div>` + `<div class="toast-label">${esc(label)}</div>`;
 
   // Уходит либо само, либо по клику — но убирается **одним** путём: иначе клик
   // по уже угасающему уведомлению снимал бы его дважды.
@@ -5800,7 +5923,7 @@ function showGoalToast(goal) {
 /// кончилось обучение, как у записки кончилось предзнание, а не мир (§12.46).
 function showFinale(goals, snap) {
   play("goal");
-  const cats = snap.entities.filter((e) => e.unit).length;
+  const cats = snap.entities.length;
   const scrap = snap.stock?.[0];
   const stored = scrap ? scrap.stored + scrap.loose : 0;
   const day = dayOf(snap.tick);
@@ -6083,7 +6206,7 @@ function deskWelcomes(def, x, y) {
   // Занятую парту ядро отклонит, и клик останется приказом: обещать за неё
   // учёбу — это соврать ровно там, где игрок и так удивится (§12.20).
   return !(lastSnap?.entities ?? []).some(
-    (e) => e.id !== cat.id && e.job === "study" && e.x === x && e.y === y,
+    (e) => e.id !== cat.id && atStudy(e) && e.x === x && e.y === y,
   );
 }
 
@@ -7139,7 +7262,7 @@ function buildToolbar() {
     );
     liveTitle(b, "Ставится одним кликом · R — повернуть");
     // Закрытый технологией объект прячется ровно как закрытый тайл (§12.126).
-    if (d.tech) structButtons.push({ btn: b, def: i, tech: d.tech });
+    structButtons.push({ btn: b, def: i });
     build.appendChild(b);
   });
 
@@ -7912,7 +8035,7 @@ function shopsBusyHint() {
 //
 // Технологии не забываются (§12.18), значит кнопка умеет только появиться:
 // спрятать выбранный игроком инструмент этот код не может никогда.
-function syncTileButtons(techs, open) {
+function syncTileButtons(techs, open, structOpen) {
   const known = techs ?? [];
   const isOpen = open ?? [];
   // Причина отказа словом — сперва: у открытой кнопки подсказка своя (у полки
@@ -7926,9 +8049,10 @@ function syncTileButtons(techs, open) {
   for (const { btn, def } of tileButtons) {
     btn.hidden = isOpen[def] === false;
   }
-  // Объекты — та же палитра и то же правило (§12.126, §12.162).
-  for (const { btn, tech } of structButtons) {
-    btn.hidden = !known.includes(tech);
+  // Объекты — та же палитра и то же правило (§12.126, §12.162), и ответ тоже
+  // ядра (§12.258): у штампа ворота не только свои, но и всех его клеток.
+  for (const { btn, def } of structButtons) {
+    btn.hidden = (structOpen ?? [])[def] === false;
   }
 }
 
@@ -8828,9 +8952,38 @@ function renderNews(snap) {
     // выключает календарь.
     return span <= 0 || snap.tick - n.at < span;
   });
+  // Темы, открывшиеся пачкой, — **одна строка** (§12.258): после вскрытия
+  // образца их приходит пять разом, и столбик «лаборатория готова к теме …»
+  // закрывал полэкрана, называя то, что окно «Наука» и так покажет группой
+  // «Только что открылись». Одна тема по-прежнему называется по имени: там
+  // имя и есть новость. Строка-сводка держит ключи всех своих тем — «×» гасит
+  // их разом, а клик ведёт в «Науку», как и любая новость о теме.
+  const fresh = want.filter((n) => n.kind === "topic" && n.opened);
+  const topics = fresh.length > 1 ? new Set(fresh) : new Set();
   const keep = new Set();
   const order = [];
+  if (topics.size) {
+    const key = "topic:group";
+    keep.add(key);
+    let row = newsRows.get(key);
+    if (!row) {
+      if (!soundQuiet) play("news");
+      row = document.createElement("div");
+      row.className = "newsrow";
+      row.dataset.kind = "topic";
+      row.dataset.def = "-1";
+      row.dataset.key = key;
+      row.innerHTML =
+        '<span class="news-kind">в лаборатории появились</span>' +
+        '<span class="news-label">новые темы</span>' +
+        '<button class="tool news-x" data-tip="Прочитал">×</button>';
+      newsRows.set(key, row);
+    }
+    row.dataset.keys = fresh.map(newsKey).join("|");
+    order.push(row);
+  }
   for (const n of want) {
+    if (topics.has(n)) continue;
     const key = newsKey(n);
     keep.add(key);
     let row = newsRows.get(key);
@@ -8866,7 +9019,10 @@ function renderNews(snap) {
 // Клики по стопке — делегированием и парой `mousedown`/`mouseup`, как во всём
 // остальном (§12.84): узел строки живёт дольше кадра, но идиома одна.
 onPanelClick(newsEl, ".news-x", (b) => {
-  markNewsSeen([b.parentElement?.dataset.key].filter(Boolean));
+  const row = b.parentElement;
+  // Строка-сводка тем (§12.258) гасит все свои темы разом.
+  const keys = row?.dataset.keys ? row.dataset.keys.split("|") : [row?.dataset.key];
+  markNewsSeen(keys.filter(Boolean));
 });
 // «×» лежит внутри строки, и `closest` находит обоих: клик по крестику иначе
 // и гасил бы новость, и открывал бы окно. Отсекаем по самой кнопке, а не по
@@ -8875,6 +9031,13 @@ onPanelClick(newsEl, ".newsrow", (row, e) => {
   if (e.target.closest(".news-x") || e.target.closest(".wiki-mark")) return;
   openNewsTarget(row.dataset.kind, Number(row.dataset.def));
 });
+
+// Сидит ли кот за партой как ученик — учится или ждёт учителя (§12.258).
+// Одно выражение на все места, где спрашивают «кто за этой партой»: занята
+// парта одинаково, есть учитель или нет.
+function atStudy(e) {
+  return e.job === "study" || e.job === "wait_teacher";
+}
 
 // --- каркас модального окна (§12.118) ---------------------------------------
 //
@@ -10736,6 +10899,14 @@ function wikiGateOpen(key) {
         (snap.tiles_open ?? [])[def] !== false
       );
     case "item": {
+      // Личная вещь (§12.256) ресурсом не бывает и «виденной» не считается —
+      // её статья открывается с наймом того, кто её приносит (`gear` у
+      // кандидата): анализатор приходит вместе с Антенной.
+      if (entry?.personal) {
+        return (meta?.recruits ?? []).some(
+          (r, i) => (r.gear ?? []).includes(id) && (snap.recruits ?? [])[i]?.hired,
+        );
+      }
       // Непонятая вещь (`requires`, §12.131) показывает статью, только если у
       // той есть версия «до понимания» (`---понято---`): полный текст отнял бы
       // у темы-вскрытия её смысл. Без короткой версии статья ждёт понимания.
@@ -10754,9 +10925,10 @@ function wikiGateOpen(key) {
     case "recipe":
       return !!(snap.recipes ?? [])[def]?.unlocked;
     case "structure":
-      // Объект прячется из палитры ровно как закрытый тайл (§12.126) — по
-      // технологии; той же проверкой открывается и его статья.
-      return !!entry && (!entry.tech || (snap.techs ?? []).includes(entry.tech));
+      // Объект прячется из палитры ровно как закрытый тайл (§12.126), и тем же
+      // ответом ядра открывается его статья (`structures_open`, §12.258): у
+      // штампа ворота не только свои, но и всех его клеток.
+      return def >= 0 && (snap.structures_open ?? [])[def] !== false;
     case "raid": {
       const r = (snap.raids ?? [])[def];
       return !!r && (r.met || (r.unlocked && r.possible));
@@ -12430,6 +12602,10 @@ function summaryHtml(raid, node) {
         ? `ведёт ${unfit.includes(guide) ? `<span class="bad">${esc(guide)}</span>` : esc(guide)}`
         : "проводника нет"
     }</div>` +
+    // Тропы и прибор сбора (§12.256) — свойства отряда, а не кота, поэтому и
+    // стоят в шапке рядом с проводником. Числа уже в сроке из ядра; здесь
+    // только их подпись словом.
+    fieldTraits(away ? raid : node) +
     `<div class="cat-sub">${
       [
         // Проводник назван строкой выше, и второй раз в перечне он тот же
@@ -12454,6 +12630,16 @@ function summaryHtml(raid, node) {
     }</div>` +
     "</div>"
   );
+}
+
+// Строка «тропы · сбор образцов» в шапке отряда (§12.256). Пусто — нет ни
+// того, ни другого, и строки нет: отсутствие перка не новость.
+function fieldTraits(src) {
+  const parts = [
+    src?.trails ? `тропы: дорога −${src.trails} %` : "",
+    src?.samples ? `сбор образцов: работа <b class="bad">+${src.samples} %</b>` : "",
+  ].filter(Boolean);
+  return parts.length ? `<div class="cat-sub">${parts.join(" · ")}</div>` : "";
 }
 
 // Состав: заголовок группы и строка кота — свои узлы, а группы (§12.73) — это
@@ -12670,16 +12856,36 @@ function missionCostFacts(def, share) {
 
 // Добыча целиком, а не обрезанная краем колонки, — ровно то, чего не было
 // видно в тулбаре. Рядом с ней доля: полную получают не всегда.
-function missionLootRow(def, share) {
+//
+// Образец отряду без прибора сбора не достанется (§12.256), и молчать об этом
+// нельзя (§12.53): фишка в строке добычи обещала бы то, чего не будет. Есть ли
+// прибор, говорит ядро (`samples` у узла и у вылазки); какие предметы
+// «собирают», а не подбирают, — рулсет (`collected`).
+function missionLootRow(def, share, samples) {
   if (def.rescue) {
     return '<div class="cat-sub">возвращает пленного, а не добычу</div>';
   }
-  const loot = costChips(def.loot, true);
-  if (!loot) return "";
+  const all =
+    def.loot instanceof Map ? [...def.loot.entries()] : Object.entries(def.loot ?? {});
+  const collected = (id) => (meta?.items ?? []).some((it) => it.id === id && it.collected);
+  // Невиданный образец не называем вовсе (§12.131): «без ??: нет прибора»
+  // рассказывало бы о вещи и о приборе, которых в мире игрока ещё нет. До
+  // Антенны строка добычи просто без образца — ровно то, что принесёт отряд.
+  const seenId = (id) => {
+    const i = (meta?.items ?? []).findIndex((it) => it.id === id);
+    return i >= 0 && !!(stock[i] ?? {}).seen;
+  };
+  const lost = samples ? [] : all.filter(([id]) => collected(id) && seenId(id));
+  const loot = costChips(new Map(all.filter(([id]) => samples || !collected(id))), true);
+  const miss = lost.length
+    ? `<div class="cat-sub">без ${costChips(new Map(lost), true)}: в отряде нет прибора сбора</div>`
+    : "";
+  if (!loot) return miss;
   return (
     `<div class="raidwin-loot">добыча ${loot}` +
     (share > 0 && share < 100 ? ` <i>× ${share} %</i>` : "") +
-    "</div>"
+    "</div>" +
+    miss
   );
 }
 
@@ -12816,8 +13022,16 @@ function raidCard(i, node) {
   // Заказ без работы на месте — это формула без второго слагаемого, и «от
   // состава не зависит» в нём видно из самой записи.
   const slow = raids[i]?.span_slow;
-  const work = def.work ?? 0;
-  const road = `дорога ${def.travel ?? 0}`;
+  // Слагаемые — из ядра (§12.256): с тропами дорога короче, со сбором образцов
+  // работа длиннее, и сырые числа рулсета в формуле не сходились бы с итогом.
+  // У пустого отряда считать не на кого — там остаются числа заказа.
+  const terms = !empty && node?.roads?.[i] != null;
+  const work = terms ? node.works[i] : (def.work ?? 0);
+  const roadN = terms ? node.roads[i] : (def.travel ?? 0);
+  const road =
+    `дорога ${roadN}` +
+    (terms && roadN < (def.travel ?? 0) ? " (тропы)" : "");
+  const workTxt = `работа ${work}` + (terms && work > (def.work ?? 0) ? " (сбор)" : "");
   if (slow != null) {
     if (work === 0) {
       facts.push(["срок", `${spanText(slow)} = ${road}, и только`]);
@@ -12827,7 +13041,7 @@ function raidCard(i, node) {
       // состава), но без предлога оно читается как обещание, а это потолок.
       facts.push([
         "срок",
-        `до ${spanText(slow)} = ${road} + работа ${work} / ${pawsWord(g.need)}`,
+        `до ${spanText(slow)} = ${road} + ${workTxt} / ${pawsWord(g.need)}`,
       ]);
     } else {
       facts.push([
@@ -12837,7 +13051,7 @@ function raidCard(i, node) {
         // (`capped_paws`). Это не второй экземпляр обрезки, а её подпись:
         // «работа 480 / 5 котов» под пределом в четыре объясняло бы число,
         // которого в сроке нет.
-        `${spanText(g.span)} = ${road} + работа ${work} / ` +
+        `${spanText(g.span)} = ${road} + ${workTxt} / ` +
           pawsWord(Math.min(g.paws, g.most)),
       ]);
     }
@@ -12853,7 +13067,7 @@ function raidCard(i, node) {
       "</div>",
   );
 
-  for (const row of [missionLootRow(def, g.share), missionSidesRow(def)]) {
+  for (const row of [missionLootRow(def, g.share, !!node?.samples), missionSidesRow(def)]) {
     if (row) rows.push(row);
   }
 
@@ -13076,7 +13290,7 @@ function busyCard(raid, node) {
       facts.map(([k, v]) => `<i>${k}</i><span>${v}</span>`).join("") +
       "</div>",
   );
-  for (const row of [missionLootRow(def, raid.share), missionSidesRow(def)]) {
+  for (const row of [missionLootRow(def, raid.share, !!raid.samples), missionSidesRow(def)]) {
     if (row) rows.push(row);
   }
   // Ряд кнопок тот же, что у обычной карточки заказа, и это не украшение: пока

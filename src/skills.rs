@@ -23,7 +23,9 @@ use bevy_ecs::prelude::*;
 
 use crate::components::*;
 use crate::map::BaseMap;
+use crate::needs::release_work;
 use crate::path::{Reach, find_path};
+use crate::slots::{Owners, owners_of, seats_at};
 
 /// Домен «Стройка» — он же снос.
 pub(crate) const SKILL_BUILD: &str = "build";
@@ -99,6 +101,27 @@ pub(crate) fn xp_ceiling(rules: &SkillRules, stats: Option<&Stats>, skill: usize
 /// (§12.18) и врождённого (§12.42). Первый — свойство домена, второй — кота.
 pub(crate) fn desk_cap(rules: &SkillRules, stats: Option<&Stats>, skill: usize) -> i32 {
     rules.taught_cap(skill).min(xp_ceiling(rules, stats, skill))
+}
+
+/// Место учителя у парты `desk` (§12.258): клетка `lectern` того же
+/// объекта-штампа. `None` — у парты места учителя нет, и она учит сама, как до
+/// §12.258 (так живут схемы тестов и одиночная клетка вне штампа).
+pub(crate) fn lectern_of(
+    map: &BaseMap,
+    tiles: &TileRules,
+    owners: &Owners,
+    desk: (i32, i32),
+) -> Option<(i32, i32)> {
+    seats_at(map, tiles, owners, desk, TileRules::is_lectern)
+        .into_iter()
+        .next()
+}
+
+/// Докуда учитель с таким опытом доводит ученика (§12.258): до уровня на
+/// единицу ниже своего. Учить можно только тому, что знаешь лучше.
+pub(crate) fn tutor_cap(rules: &SkillRules, skill: usize, teacher_xp: i32) -> i32 {
+    let level = rules.level(skill, teacher_xp);
+    rules.xp_for_level(skill, level - 1)
 }
 
 /// Клетки парт этого домена на карте — в порядке обхода, а не по расстоянию.
@@ -317,9 +340,123 @@ pub(crate) fn assign_study(
         };
         taken.push(spot);
         let path = find_path(&map, &tiles, at, spot).unwrap_or_default();
+        commands.entity(cat_e).insert((
+            Study {
+                skill,
+                spot,
+                teacher: false,
+            },
+            Path { steps: path },
+        ));
+    }
+}
+
+/// Сажает **учителя** к парте, за которой ждёт ученик (§12.258).
+///
+/// Учитель садится сам — это и есть выбор игрока «учить или исследовать»:
+/// приписав ученика, игрок срывает учёного с его дела, в том числе из
+/// лаборатории. Садится **лучший** из тех, кто может научить этого ученика
+/// хоть чему-то (уровень учителя минус один выше опыта ученика): ничью решает
+/// `id`, как во всех раздатчиках (инвариант 9).
+///
+/// Срывает он только с работы — стройки, подвоза, науки, мастерской. Нужды
+/// (сон, еда, рана, лечение) и отряд старше учёбы по тому же доводу, что у
+/// `assign_study`: голодный учитель сперва человек. Дежурного у рации и
+/// идущего одеваться не трогаем: у первого приписка игрока, второй уйдёт сам.
+///
+/// Учителя нет — ученик ждёт за партой (§12.258): игрок приписал его сам и
+/// видит, почему он сидит без дела.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub(crate) fn assign_tutor(
+    map: Res<BaseMap>,
+    tiles: Res<TileRules>,
+    rules: Res<SkillRules>,
+    structures: Res<StructureRules>,
+    placed: Query<&Structure>,
+    mut commands: Commands,
+    desks: Query<(&Study, Option<&Skills>)>,
+    cats: Query<
+        (
+            Entity,
+            &UnitId,
+            &Position,
+            Option<&Skills>,
+            Option<&Assignment>,
+            Option<&Haul>,
+            Option<&Researching>,
+            Option<&Crafting>,
+        ),
+        (
+            Without<Rest>,
+            Without<Study>,
+            Without<Equipping>,
+            Without<Eating>,
+            Without<Healing>,
+            Without<Treating>,
+            Without<Squad>,
+            Without<OnDuty>,
+            Without<Away>,
+        ),
+    >,
+    mut blueprints: Query<&mut Blueprint>,
+    mut topics: Query<&mut Research>,
+    mut orders: Query<&mut Craft>,
+) {
+    let owners = owners_of(&map, &structures, &placed);
+    let seated: Vec<(i32, i32)> = desks
+        .iter()
+        .filter(|(s, _)| s.teacher)
+        .map(|(s, _)| s.spot)
+        .collect();
+    // Ученики без учителя: `(место учителя, домен, опыт ученика)`.
+    let mut waiting: Vec<((i32, i32), usize, i32)> = desks
+        .iter()
+        .filter(|(s, _)| !s.teacher)
+        .filter_map(|(s, skills)| {
+            let lectern = lectern_of(&map, &tiles, &owners, s.spot)?;
+            (!seated.contains(&lectern))
+                .then(|| (lectern, s.skill, skills.map_or(0, |k| k.xp_of(s.skill))))
+        })
+        .collect();
+    waiting.sort_unstable_by_key(|&(at, ..)| (at.1, at.0));
+
+    let mut taken: Vec<Entity> = Vec::new();
+    for (lectern, skill, pupil_xp) in waiting {
+        let best = cats
+            .iter()
+            .filter(|(e, ..)| !taken.contains(e))
+            .filter_map(|(e, id, p, skills, ..)| {
+                let xp = skills.map_or(0, |k| k.xp_of(skill));
+                (tutor_cap(&rules, skill, xp) > pupil_xp)
+                    .then(|| (-rules.level(skill, xp), id.0.as_str(), e, (p.x, p.y)))
+            })
+            .min();
+        let Some((_, _, cat_e, at)) = best else {
+            continue; // учить некому — ученик ждёт
+        };
+        taken.push(cat_e);
+        if let Ok((.., assignment, haul, researching, crafting)) = cats.get(cat_e) {
+            release_work(
+                &mut commands,
+                cat_e,
+                (assignment, haul, researching, crafting, None),
+                &mut blueprints,
+                &mut topics,
+                &mut orders,
+            );
+        }
+        let path = find_path(&map, &tiles, at, lectern).unwrap_or_default();
         commands
             .entity(cat_e)
-            .insert((Study { skill, spot }, Path { steps: path }));
+            .remove::<(Assignment, Haul, Researching, Crafting, Stride)>()
+            .insert((
+                Study {
+                    skill,
+                    spot: lectern,
+                    teacher: true,
+                },
+                Path { steps: path },
+            ));
     }
 }
 
@@ -338,10 +475,13 @@ pub(crate) fn assign_study(
 /// Дойдя до `taught`, кот встаёт сам: парта — вход в домен, дальше только
 /// практика, иначе она заменяет работу и «чем больше делает, тем лучше»
 /// перестаёт что-либо значить.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn study(
     map: Res<BaseMap>,
     tiles: Res<TileRules>,
     rules: Res<SkillRules>,
+    structures: Res<StructureRules>,
+    placed: Query<&Structure>,
     mut commands: Commands,
     mut students: Query<(
         Entity,
@@ -353,9 +493,52 @@ pub(crate) fn study(
         Option<&mut Record>,
     )>,
 ) {
-    let taken: Vec<(i32, i32)> = students.iter().map(|(_, _, s, ..)| s.spot).collect();
+    let taken: Vec<(i32, i32)> = students
+        .iter()
+        .filter(|(_, _, s, ..)| !s.teacher)
+        .map(|(_, _, s, ..)| s.spot)
+        .collect();
+    let owners = owners_of(&map, &structures, &placed);
+    // Кто сидит на местах учителя (§12.258): `(место, опыт, дошёл ли)`. И кто
+    // ждёт на партах: `(место учителя его парты, опыт)`.
+    let tutors: Vec<((i32, i32), i32, bool)> = students
+        .iter()
+        .filter(|(_, _, s, ..)| s.teacher)
+        .map(|(_, p, s, path, skills, ..)| {
+            let here = path.is_none() && (p.x, p.y) == s.spot;
+            (s.spot, skills.map_or(0, |k| k.xp_of(s.skill)), here)
+        })
+        .collect();
+    let pupils: Vec<((i32, i32), i32)> = students
+        .iter()
+        .filter(|(_, _, s, ..)| !s.teacher)
+        .filter_map(|(_, _, s, _, skills, ..)| {
+            let lectern = lectern_of(&map, &tiles, &owners, s.spot)?;
+            Some((lectern, skills.map_or(0, |k| k.xp_of(s.skill))))
+        })
+        .collect();
 
     for (cat_e, pos, mut task, path, skills, stats, record) in &mut students {
+        // Учитель (§12.258): держится, пока за его партой сидит ученик, которому
+        // он ещё может что-то дать. Опыта за это он не получает — учить значит
+        // не расти самому, в этом и цена решения игрока.
+        if task.teacher {
+            let mine = skills.map_or(0, |k| k.xp_of(task.skill));
+            let needed = tiles.is_lectern(map.tile_at(task.spot.0, task.spot.1))
+                && pupils
+                    .iter()
+                    .any(|&(at, xp)| at == task.spot && tutor_cap(&rules, task.skill, mine) > xp);
+            if !needed {
+                commands.entity(cat_e).remove::<(Study, Path, Stride)>();
+            } else if path.is_none()
+                && (pos.x, pos.y) != task.spot
+                && let Some(steps) = find_path(&map, &tiles, (pos.x, pos.y), task.spot)
+            {
+                commands.entity(cat_e).insert(Path { steps });
+            }
+            continue;
+        }
+
         // Доучился: дальше парта не помогает, и держать за ней кота — значит
         // молча отнимать у базы работника. Предел здесь двойной: докуда доводит
         // парта (§12.18) и докуда пускает врождённый параметр (§12.42) —
@@ -401,7 +584,22 @@ pub(crate) fn study(
             continue; // ещё идёт
         }
         if (pos.x, pos.y) == task.spot {
-            commands.entity(cat_e).insert(Worked(task.skill));
+            // У парты со своим местом учителя учатся только при учителе и только
+            // до его уровня минус один (§12.258). Нет его — ждём: ученика
+            // приписал игрок, и сидит он без дела ровно по этой причине.
+            let lectern = lectern_of(&map, &tiles, &owners, task.spot);
+            let learns = match lectern {
+                None => true,
+                Some(at) => {
+                    let mine = skills.map_or(0, |k| k.xp_of(task.skill));
+                    tutors.iter().any(|&(spot, xp, here)| {
+                        spot == at && here && tutor_cap(&rules, task.skill, xp) > mine
+                    })
+                }
+            };
+            if learns {
+                commands.entity(cat_e).insert(Worked(task.skill));
+            }
         } else if let Some(steps) = find_path(&map, &tiles, (pos.x, pos.y), task.spot) {
             // Маршрут оборвался — кота выбросило из ямы или парту перенесли.
             commands.entity(cat_e).insert(Path { steps });

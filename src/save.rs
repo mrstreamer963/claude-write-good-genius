@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 36;
+pub(crate) const FORMAT: u32 = 40;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -166,6 +166,9 @@ pub(crate) const SAVED: &[&str] = &[
     // Заказы, открытые хоть раз (§12.246): без этого загруженная партия
     // спрятала бы в строку «нужна репутация» заказ, который игрок уже видел.
     "RaidsMet",
+    // До какого уровня дорастали коты базы (§12.257): без этого загруженная
+    // партия закрыла бы парту, если учёный сейчас в плену.
+    "Mastery",
     "Chronicle",
     "Goals",
     "Raids",
@@ -199,6 +202,7 @@ pub(crate) const SKIPPED: &[(&str, &str)] = &[
         "правила: пересобирает `Sim::new` из рулсета",
     ),
     ("ItemRules", "правила: пересобирает `Sim::new` из рулсета"),
+    ("PerkRules", "правила: пересобирает `Sim::new` из рулсета"),
     (
         "LoadoutRules",
         "правила: пересобирает `Sim::new` из рулсета",
@@ -343,6 +347,10 @@ pub(crate) struct StateDto {
     /// Заказы, открытые целиком хоть раз (§12.246). Позиционно по `missions:`.
     #[serde(default)]
     pub(crate) raids_met: Vec<bool>,
+    /// Лучший уровень по домену, когда-либо бывший у кота базы (§12.257).
+    /// Позиционно по `skills:`.
+    #[serde(default)]
+    pub(crate) mastery: Vec<i32>,
     /// Журнал сработавших событий: `(индекс события, была ли база готова)`.
     pub(crate) chronicle: Vec<(usize, bool)>,
     /// Взятые цели: `(индекс цели, тик взятия)` (§12.58).
@@ -539,6 +547,9 @@ pub(crate) struct RecordDto {
 pub(crate) struct StudyDto {
     pub(crate) skill: usize,
     pub(crate) spot: (i32, i32),
+    /// Учитель, а не ученик (§12.258).
+    #[serde(default)]
+    pub(crate) teacher: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -652,6 +663,14 @@ pub(crate) struct MissionDto {
     /// это.
     #[serde(default)]
     pub(crate) verdict: Option<(i32, bool)>,
+    /// Дорога и прибор сбора, замороженные на уходе (§12.256). Состояние, а не
+    /// правило: посчитаны по составу, из рулсета их не вывести. Поднят `FORMAT`
+    /// до 37: у старого снимка отряд в поле приехал бы с нулевой дорогой, то
+    /// есть сразу «работают», и без образцов.
+    #[serde(default)]
+    pub(crate) travel: i32,
+    #[serde(default)]
+    pub(crate) toll: i32,
 }
 
 // ── Снять снимок ──────────────────────────────────────────────────────────
@@ -712,6 +731,7 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                 study: e.get::<Study>().map(|s| StudyDto {
                     skill: s.skill,
                     spot: s.spot,
+                    teacher: s.teacher,
                 }),
                 researching: e.get::<Researching>().and_then(|r| at(r.0)),
                 crafting: e.get::<Crafting>().and_then(|c| at(c.0)),
@@ -793,6 +813,8 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                     covered: m.covered,
                     verdict: m.verdict.map(|v| (v.share, v.failed)),
                     site: m.site,
+                    travel: m.travel,
+                    toll: m.toll,
                 }),
             }
         })
@@ -841,6 +863,7 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
             techs: world.resource::<Techs>().0.clone(),
             seen: world.resource::<Seen>().0.clone(),
             raids_met: world.resource::<RaidsMet>().0.clone(),
+            mastery: world.resource::<Mastery>().0.clone(),
             chronicle: chronicle.0.iter().map(|h| (h.def, h.ready)).collect(),
             goals: world
                 .resource::<Goals>()
@@ -929,6 +952,19 @@ fn restore_seen(world: &mut World, file: &SaveFile) {
     for &(item, _) in &s.tickers {
         seen.mark(item);
     }
+    // Личная вещь ресурсом не бывает (§12.256): снимок, снятый до этого правила,
+    // уже держит отметку анализатора, и без снятия она вернулась бы строкой в
+    // окне «Ресурсы». Ворота только растут, но эта отметка ошибочная с рождения.
+    let personal: Vec<usize> = {
+        let items = world.resource::<ItemRules>();
+        (0..items.0.len()).filter(|&i| items.personal(i)).collect()
+    };
+    let mut seen = world.resource_mut::<Seen>();
+    for item in personal {
+        if let Some(saw) = seen.0.get_mut(item) {
+            *saw = false;
+        }
+    }
 }
 
 pub(crate) fn restore(world: &mut World, file: &SaveFile) {
@@ -995,6 +1031,12 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
     world.resource_mut::<Money>().0 = s.money;
     world.resource_mut::<Standing>().0 = s.standing.clone();
     world.resource_mut::<Techs>().0 = s.techs.clone();
+    {
+        let mut mastery = world.resource_mut::<Mastery>();
+        for (skill, &level) in s.mastery.iter().enumerate() {
+            mastery.raise(skill, level);
+        }
+    }
     {
         let mut met = world.resource_mut::<RaidsMet>();
         for (def, &m) in s.raids_met.iter().enumerate() {
@@ -1133,6 +1175,7 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
             e.insert(Study {
                 skill: s.skill,
                 spot: s.spot,
+                teacher: s.teacher,
             });
         }
         if let Some(n) = dto.researching.and_then(at) {
@@ -1260,6 +1303,8 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
                 span: m.span,
                 site: m.site,
                 verdict: m.verdict.map(|(share, failed)| Verdict { share, failed }),
+                travel: m.travel,
+                toll: m.toll,
             });
         }
     }

@@ -452,23 +452,61 @@ fn the_shipped_ruleset_counts_its_lab_cells() {
     );
 }
 
-/// **Боевой рулсет: парта открыта с нулевого тика, лаборатория — находкой**
-/// (§12.210, §12.235).
+/// **Боевой рулсет: лаборатория открывается находкой, парта — учёным
+/// третьего уровня** (§12.210, §12.257).
 ///
-/// Лаборатория по-прежнему ждёт первую непонятную штуку: без неё изучать
-/// нечего. А парта стоит в палитре с начала — знающий игрок учит котов
-/// «Науке» заранее, и к постройке лаборатории у неё уже есть кому работать.
+/// Лаборатория ждёт первую непонятную штуку: без неё изучать нечего. Парта —
+/// того, кому есть чему учить: «Наука» 3 при потолке парты 2. Ворота
+/// монотонные — доросший и потом ушедший (или, как здесь, «разучившийся»)
+/// учёный парту из палитры не уносит.
 #[test]
 fn the_shipped_ruleset_opens_its_classroom_by_the_first_find() {
     let mut sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
     let lab = i32::from(sim.tile_index("lab").expect("лаборатория в палитре"));
     let desk = i32::from(sim.tile_index("desk").expect("парта в палитре"));
+    let science = sim.skill_index("science").expect("наука");
 
     assert!(!sim.add_blueprint(7, 8, lab), "до находки лаборатории нет");
-    assert!(sim.add_blueprint(8, 8, desk), "а парта есть с начала");
+    let open = |sim: &mut Sim| sim.tile_is_open(desk as usize);
+    assert!(!open(&mut sim), "и парты нет: учить некому");
+    let stamp = sim
+        .structures
+        .iter()
+        .position(|d| d.id == "desk")
+        .expect("штамп «Парта»");
+    assert!(!sim.structure_is_open(stamp), "и штампа в палитре тоже");
 
-    sim.sight("sample"); // ровно то, что привозит первая вылазка
+    sim.sight("sample"); // ровно то, что привозит первая вылазка с прибором
     assert!(sim.add_blueprint(7, 8, lab), "находка открыла лабораторию");
+    assert!(!open(&mut sim), "а парту — нет");
+
+    sim.set_xp("sp3", science, 600);
+    sim.tick_n(1);
+    assert!(
+        !sim.add_blueprint(8, 8, desk),
+        "второй уровень — ещё не учитель"
+    );
+
+    sim.set_xp("sp3", science, 1400);
+    sim.tick_n(1);
+    assert!(open(&mut sim), "третий уровень открыл парту");
+    // Ставится парта штампом (§12.258), и штамп наследует ворота клетки.
+    let stamp = sim
+        .structures
+        .iter()
+        .position(|d| d.id == "desk")
+        .expect("штамп «Парта»");
+    assert!(
+        sim.structure_is_open(stamp),
+        "штамп открылся вместе с клеткой"
+    );
+
+    sim.set_xp("sp3", science, 0);
+    sim.tick_n(1);
+    assert!(
+        sim.tile_is_open(desk as usize),
+        "открытое не закрывается: учёного не стало, а парта осталась",
+    );
 }
 
 /// **Открывшаяся ступень палитры не закрывается** (§12.220).
@@ -484,7 +522,11 @@ fn a_demolished_predecessor_keeps_its_successor_open() {
     let desk = sim.tile_index("desk").expect("парта в палитре");
     // В боевом контенте `after` с §12.235 не носит никто, а механизм жив —
     // ставим ворота парте прямо здесь, как было в §12.210.
-    sim.tile_rule(desk, |r| r.after = Some(lab as i16));
+    // Собственные ворота парты (§12.257) здесь не про то — снимаем их.
+    sim.tile_rule(desk, |r| {
+        r.after = Some(lab as i16);
+        r.mastered.clear();
+    });
     assert!(
         !sim.tile_is_open(desk as usize),
         "до лаборатории парта закрыта"

@@ -20,7 +20,7 @@ use crate::relay::assign_relay;
 use crate::research::{assign_research, work_research};
 use crate::seen::note_seen;
 use crate::sites::grow_blights;
-use crate::skills::{assign_study, study, train_skills};
+use crate::skills::{assign_study, assign_tutor, study, train_skills};
 use crate::timeline::run_timeline;
 use crate::trade::run_trade;
 
@@ -183,7 +183,9 @@ pub(crate) fn build_schedule() -> Schedule {
         assign_rest,
         assign_treat,
         assign_equip,
-        assign_study,
+        // Учитель садится сразу за учеником (§12.258): вложенной цепочкой —
+        // группа упёрлась в предел арности кортежа систем.
+        (assign_study, assign_tutor).chain(),
         gather_squad,
         assign_research,
         assign_hauls,

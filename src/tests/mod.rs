@@ -30,6 +30,7 @@ mod paths;
 mod record;
 mod relay;
 mod research;
+mod sampling;
 mod save;
 mod seen;
 mod sites;
@@ -42,6 +43,7 @@ mod terrain;
 mod tidying;
 mod timeline;
 mod trade;
+mod tutoring;
 mod voids;
 mod wiki;
 
@@ -155,6 +157,8 @@ fn sim_from(rows: &[&str]) -> Sim {
     // Пустая она ровно один тик — `note_seen` отметит всё, что схема положила.
     world.insert_resource(Seen::default());
     world.insert_resource(RaidsMet::default());
+    world.insert_resource(Mastery::default());
+    world.insert_resource(PerkRules::default());
     // Лента новостей (§12.120) заводится всегда, как три журнала целей: она не
     // контент, а память мира о случившемся, и наблюдатель пишет в неё независимо
     // от того, смотрит ли на неё хоть один экран.
@@ -221,6 +225,8 @@ fn sim_from(rows: &[&str]) -> Sim {
             // Ворот по находке и по постройке у схемы тоже нет (§12.210):
             // палитра из одного пола открыта с нулевого тика.
             sighted: Vec::new(),
+            mastered: Default::default(),
+            lectern: false,
             after: String::new(),
             // Улучшений у схемы нет (§12.238): всё стоит на основании, если
             // оно есть. Включает `set_on`.
@@ -790,6 +796,11 @@ impl Sim {
                 // Избранного в синтетическом мире нет, как нет тикеров и
                 // правил сбыта (§12.112): закладку ставит рулсет или игрок.
                 favorite: false,
+                // Приборов сбора и личных вещей тоже нет (§12.256): их
+                // включает `set_item_traits`.
+                collects: 0,
+                collected: false,
+                personal: false,
                 // Ворот на надевание в синтетическом мире тоже нет (§12.114):
                 // предмет надевается сразу — их ставит `set_wear_tech`.
                 requires: Vec::new(),
@@ -1448,6 +1459,12 @@ impl Sim {
         self.world.get::<Study>(cat).is_some()
     }
 
+    /// Кот сидит (или идёт) на месте учителя (§12.258).
+    fn is_teaching(&mut self, unit: &str) -> bool {
+        let cat = self.entity_of(unit);
+        self.world.get::<Study>(cat).is_some_and(|s| s.teacher)
+    }
+
     /// Кот приписан к парте (§12.84): вернётся за неё, как только освободится.
     /// Не то же, что `is_studying` — тот про задачу здесь и сейчас.
     fn is_enrolled(&mut self, unit: &str) -> bool {
@@ -1980,6 +1997,46 @@ impl Sim {
         rules.0[item].mends = mends;
     }
 
+    /// Свойства сбора образцов у предмета (§12.256): прибор (`collects`),
+    /// личная вещь (`personal`) и добыча только с прибором (`collected`).
+    fn set_item_traits(&mut self, item: usize, collects: i32, personal: bool, collected: bool) {
+        let mut rules = self.world.resource_mut::<ItemRules>();
+        if rules.0.len() <= item {
+            rules.0.resize(item + 1, ItemRule::default());
+        }
+        rules.0[item].collects = collects;
+        rules.0[item].personal = personal;
+        rules.0[item].collected = collected;
+    }
+
+    /// Надеть на кота вещи мимо шаблона — как личную вещь кандидата (§12.256).
+    fn put_gear(&mut self, unit: &str, items: &[usize]) {
+        let cat = self.entity_of(unit);
+        self.world.entity_mut(cat).insert(Gear(items.to_vec()));
+    }
+
+    /// Завести перк с вычетом дороги (§12.256): в схеме перков-чисел нет.
+    fn set_perk_road(&mut self, id: &str, road: i32) {
+        self.world.resource_mut::<PerkRules>().0.push(PerkRule {
+            id: id.to_string(),
+            road,
+        });
+    }
+
+    /// Выдать коту перки (§12.256): у кота из схемы их нет вовсе.
+    fn set_perks(&mut self, unit: &str, perks: &[&str]) {
+        let cat = self.entity_of(unit);
+        let perks = perks.iter().map(|p| p.to_string()).collect();
+        self.world.entity_mut(cat).insert(Perks(perks));
+    }
+
+    /// Дорога ушедшей вылазки, замороженная на уходе (§12.256); `None` — миссии
+    /// нет.
+    fn mission_travel(&mut self) -> Option<i32> {
+        let mut q = self.world.query::<&Mission>();
+        q.iter(&self.world).next().map(|m| m.travel)
+    }
+
     /// Задать шаблон снаряжения: что коты носят. Один на всех (§12.29).
     fn set_loadout(&mut self, items: &[usize]) {
         self.world.resource_mut::<LoadoutRules>().0 = items.to_vec();
@@ -2219,7 +2276,9 @@ impl Sim {
             .resource::<MissionRules>()
             .0
             .get(mission)
-            .map_or(0, |r| crate::missions::duration(r, paws))
+            .map_or(0, |r| {
+                crate::missions::duration(r, paws, crate::missions::Crew::default())
+            })
     }
 
     /// Сколько штук предмета в тик даёт лучшая по нему вылазка, при полном
@@ -2705,6 +2764,8 @@ impl Sim {
             // Фракций в синтетическом мире нет — пол доверия ставит
             // `set_recruit_needs` из тестов §12.43.
             needs: Vec::new(),
+            // Личных вещей у кандидата тоже нет (§12.256).
+            gear: Vec::new(),
         });
         rules.0.len() - 1
     }
@@ -2761,18 +2822,14 @@ impl Sim {
     /// и стадии тоже.
     fn mission_phase(&mut self) -> Option<&'static str> {
         let mut q = self.world.query::<&Mission>();
-        let (def, span, left) = q
+        let (span, left, travel) = q
             .iter(&self.world)
             .next()
-            .map(|m| (m.def, m.span, m.left))?;
+            .map(|m| (m.span, m.left, m.travel))?;
         if span == 0 {
             return None;
         }
-        let rules = self.world.resource::<MissionRules>();
-        rules
-            .0
-            .get(def)
-            .map(|r| crate::missions::phase(r, span, left).tag())
+        Some(crate::missions::phase(travel, span, left).tag())
     }
 
     /// Гараж миссии; `None` — миссии нет.

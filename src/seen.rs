@@ -16,7 +16,8 @@
 
 use bevy_ecs::prelude::*;
 
-use crate::components::{Carrying, Gear, Seen, Stack};
+use crate::components::{Carrying, Gear, ItemRules, Mastery, Seen, SkillRules, Skills, Stack};
+use crate::skills::level_of;
 
 /// Отметить всё, что сейчас есть в мире базы.
 ///
@@ -30,10 +31,24 @@ use crate::components::{Carrying, Gear, Seen, Stack};
 /// у базы, которая в нём ходит.
 pub(crate) fn note_seen(
     mut seen: ResMut<Seen>,
+    mut mastery: ResMut<Mastery>,
+    skill_rules: Res<SkillRules>,
+    items: Res<ItemRules>,
     stacks: Query<&Stack>,
     paws: Query<&Carrying>,
     worn: Query<&Gear>,
+    minds: Query<&Skills>,
 ) {
+    // До какого уровня дорастали коты базы (§12.257) — та же память мира о
+    // случившемся, что и `Seen`, и по тому же доводу наблюдателем: навык растёт
+    // в `train_skills`, у парты, приходит с наймом и из снимка, и крючок в
+    // каждом из этих мест был бы четырьмя местами вместо одного. Ушедшие и
+    // пленные считаются: это всё ещё коты базы.
+    for skills in &minds {
+        for skill in 0..skill_rules.0.len() {
+            mastery.raise(skill, level_of(&skill_rules, Some(skills), skill));
+        }
+    }
     for stack in &stacks {
         if stack.count > 0 {
             seen.mark(stack.item);
@@ -44,8 +59,12 @@ pub(crate) fn note_seen(
             seen.mark(load.item);
         }
     }
+    // Личная вещь (§12.256) — не ресурс базы: анализатор Антенны не лежит на
+    // складе, не продаётся и не делается, и строка «Анализатор 0» в окне
+    // «Ресурсы» вместе с новостью «новый ресурс» говорили бы о том, чем база не
+    // располагает. Кучей и в лапах она не бывает, поэтому отсечь её хватает здесь.
     for gear in &worn {
-        for &item in &gear.0 {
+        for &item in gear.0.iter().filter(|&&i| !items.personal(i)) {
             seen.mark(item);
         }
     }

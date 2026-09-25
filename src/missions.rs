@@ -68,6 +68,8 @@ pub(crate) struct RaidRules<'w> {
     pub(crate) skills: Res<'w, SkillRules>,
     pub(crate) stats: Res<'w, StatRules>,
     pub(crate) items: Res<'w, ItemRules>,
+    /// Числа перков (§12.256): «Знание троп» укорачивает дорогу отряда.
+    pub(crate) perks: Res<'w, PerkRules>,
     /// Порог ранения: по нему личное дело считает **переход**, а не урон.
     /// Лежит здесь, а не шестнадцатым параметром системы, по той же причине,
     /// по которой свёрнуты остальные четыре.
@@ -214,6 +216,72 @@ pub(crate) fn guide_of(rules: &StatRules, stats: Option<&Stats>) -> i32 {
         .map_or(0, |stat| rules.step(stat, stats))
 }
 
+/// Что в составе отряда меняет срок и добычу (§12.256): перк «Знание троп» и
+/// прибор сбора образцов. Оба — свойство **отряда**, а не кота: тропы знает
+/// один, а идут по ним все; образцы собирает один прибор, и второй сбор не
+/// ускоряет. Потому и не складываются.
+///
+/// Считает его одно выражение — `crew_traits`, — и зовут его уход и прогноз
+/// в панели (инвариант 14).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Crew {
+    /// На сколько процентов короче дорога: лучший перк с `road` в отряде
+    /// («Знание троп»). Ноль — троп не знает никто.
+    pub(crate) road_cut: i32,
+    /// На сколько процентов длиннее работа: прибор сбора (`collects` у
+    /// предмета). Ноль — прибора нет, и образцы с места не падают.
+    pub(crate) work_toll: i32,
+}
+
+impl Crew {
+    /// Есть ли в отряде прибор сбора образцов.
+    pub(crate) fn samples(&self) -> bool {
+        self.work_toll > 0
+    }
+}
+
+/// Свернуть отряд в `Crew` по перкам и надетому (§12.256). Одно выражение на
+/// уход и на прогноз: разойдись они, и панель пообещала бы не тот срок.
+///
+/// Числа — контент (§12.256): `road` у перка и `collects` у предмета. Берётся
+/// **максимум** по отряду: тропы знает лучший, прибор нужен один.
+pub(crate) fn crew_traits<'a>(
+    items: &ItemRules,
+    perks_rules: &PerkRules,
+    cats: impl IntoIterator<Item = (Option<&'a Perks>, Option<&'a Gear>)>,
+) -> Crew {
+    let mut crew = Crew::default();
+    for (perks, gear) in cats {
+        crew.road_cut = crew.road_cut.max(perks_rules.road_of(perks));
+        crew.work_toll = crew.work_toll.max(items.toll_of_gear(gear));
+    }
+    crew
+}
+
+/// Дорога отряда в тиках (§12.256): «Знание троп» срезает свой процент. Это
+/// **единственное** место этой арифметики — срок, стадия и граница исхода
+/// берут дорогу отсюда, а у ушедшего отряда она заморожена (`Mission::travel`).
+pub(crate) fn travel(rule: &MissionRule, crew: Crew) -> i32 {
+    rule.travel * (100 - crew.road_cut.clamp(0, 100)) / 100
+}
+
+/// Работа на месте в очках (§12.256): прибор сбора добавляет свой процент —
+/// образцы собирают, а не подбирают. Один раз на отряд, сколько бы приборов
+/// ни несли.
+pub(crate) fn work(rule: &MissionRule, crew: Crew) -> i32 {
+    rule.work + rule.work * crew.work_toll.max(0) / 100
+}
+
+/// Сколько штук предмета принесёт вылазка при полной доле (§12.256): предмет
+/// `collected` (образец) падает только отряду с прибором сбора. Потолок задаёт
+/// заказ, а не число приборов, — второй прибор добычи не удваивает.
+pub(crate) fn loot_count(items: &ItemRules, crew: Crew, item: usize, count: i32) -> i32 {
+    match items.collected(item) && !crew.samples() {
+        true => 0,
+        false => count,
+    }
+}
+
 /// Сколько тиков отряд из `paws` котов пробудет в поле (§12.70).
 ///
 /// Дорога фиксирована, работа на месте делится на лапы: та же идиома, что
@@ -224,6 +292,8 @@ pub(crate) fn guide_of(rules: &StatRules, stats: Option<&Stats>) -> i32 {
 /// **Скорость берётся из числа котов, а не из их силы**, и это главное здесь
 /// (§12.70): считай её силой — и сильный отряд выигрывал бы разом по обоим
 /// циферблатам, а «послать толпу середняков» не имело бы смысла нигде.
+/// Тропы и прибор (§12.256) правят дорогу и работу, а не скорость: это свойство
+/// отряда, а не лап.
 ///
 /// Зовут это двое — `run_missions` в момент ухода и снапшот для прогноза в
 /// панели, — ровно как `outcome` (инвариант 14): игрок обязан видеть тот срок,
@@ -231,15 +301,17 @@ pub(crate) fn guide_of(rules: &StatRules, stats: Option<&Stats>) -> i32 {
 ///
 /// Отряда без котов не бывает, но ноль сюда всё же доходит из панели, когда
 /// бригада пуста; тогда работа не делается вовсе и остаётся одна дорога.
-pub(crate) fn duration(rule: &MissionRule, paws: usize) -> i32 {
+pub(crate) fn duration(rule: &MissionRule, paws: usize, crew: Crew) -> i32 {
+    let road = travel(rule, crew);
+    let work = work(rule, crew);
     let paws = capped_paws(rule, paws);
-    if paws == 0 || rule.work <= 0 {
-        return rule.travel;
+    if paws == 0 || work <= 0 {
+        return road;
     }
     // Округление вверх, а не вниз: недоделанное очко — это ещё один тик в поле,
     // а срок, обнулённый делением, означал бы вылазку без работы.
     let paws = paws as i32;
-    rule.travel + (rule.work + paws - 1) / paws
+    road + (work + paws - 1) / paws
 }
 
 /// Стадия ушедшей вылазки (§12.168): дорога туда → работа на месте → дорога
@@ -247,9 +319,11 @@ pub(crate) fn duration(rule: &MissionRule, paws: usize) -> i32 {
 ///
 /// Считается **тем же разложением срока, каким его сложил `duration`**, и
 /// второго экземпляра этой арифметики в JS быть не должно (инвариант 14): вид
-/// увидел бы «работают» там, где отряд ещё в дороге. Дорога от состава не
-/// зависит (`rule.travel`), значит всё, что сверх неё, — работа, а путь в один
-/// конец — её половина.
+/// увидел бы «работают» там, где отряд ещё в дороге. Дорога от числа лап не
+/// зависит, значит всё, что сверх неё, — работа, а путь в один конец — её
+/// половина. Дорога приходит **замороженной на уходе** (`Mission::travel`):
+/// у отряда с тропами она короче, и стадия по чужой дороге разошлась бы со
+/// сроком (§12.256).
 ///
 /// Своей шкалы стадия не заводит и в мир ничего не пишет: это чтение уже
 /// сложившегося срока, как `outcome` — чтение уже собранного отряда. Работы на
@@ -277,11 +351,11 @@ impl Phase {
     }
 }
 
-pub(crate) fn phase(rule: &MissionRule, span: i32, left: i32) -> Phase {
+pub(crate) fn phase(travel: i32, span: i32, left: i32) -> Phase {
     let gone = span - left;
-    if gone < rule.travel / 2 {
+    if gone < travel / 2 {
         Phase::Travel
-    } else if left > back_ticks(rule, span) {
+    } else if left > back_ticks(travel, span) {
         Phase::Work
     } else {
         Phase::Back
@@ -297,17 +371,17 @@ pub(crate) fn phase(rule: &MissionRule, span: i32, left: i32) -> Phase {
 /// — отряд отработал, и с этого тика он только идёт домой. Зовут трое —
 /// `phase`, `run_missions` и `comms_span`, — и второго экземпляра быть не
 /// должно (инвариант 14).
-pub(crate) fn back_ticks(rule: &MissionRule, span: i32) -> i32 {
-    let work = (span - rule.travel).max(0);
-    (span - rule.travel / 2 - work).max(0)
+pub(crate) fn back_ticks(travel: i32, span: i32) -> i32 {
+    let work = (span - travel).max(0);
+    (span - travel / 2 - work).max(0)
 }
 
 /// Сколько тиков вылазки связь имеет значение (§12.244): до конца работы.
 /// Дорога домой в этот счёт не входит — исход уже посчитан, и эфир отряду
 /// больше ничего не даёт. На это число делится набежавшая связь и в
 /// `run_missions`, и в прогнозе снимка (инвариант 14).
-pub(crate) fn comms_span(rule: &MissionRule, span: i32) -> i32 {
-    span - back_ticks(rule, span)
+pub(crate) fn comms_span(travel: i32, span: i32) -> i32 {
+    span - back_ticks(travel, span)
 }
 
 /// Исход по силе отряда и сложности вылазки — **без броска кубика** (§12.23).
@@ -510,6 +584,8 @@ pub(crate) fn run_missions(
         // мимо `spawn_cat` и дела не имеют, а неоптиональный `&mut Record`
         // молча выкинул бы их из запроса — то есть сломал бы вылазки целиком.
         Option<&mut Record>,
+        // Перки: «Знание троп» укорачивает дорогу всему отряду (§12.256).
+        Option<&Perks>,
     )>,
     // Весь личный состав базы: по нему считается, есть ли кому прийти за
     // пленным. **Ушедшие сюда входят** (§12.59): кот в поле — твой кот, он
@@ -537,6 +613,7 @@ pub(crate) fn run_missions(
         skills: skill_rules,
         stats: stat_rules,
         items,
+        perks: perk_rules,
         health: hurts,
         blights: blight_rules,
     } = raid_rules;
@@ -571,7 +648,7 @@ pub(crate) fn run_missions(
         let squad: Vec<(Entity, (i32, i32), bool, bool, i32, i32)> = crew
             .iter()
             .filter(|(_, s, ..)| s.0 == mission_e)
-            .map(|(e, _, _, p, path, away, skills, _, gear, _, stats, _)| {
+            .map(|(e, _, _, p, path, away, skills, _, gear, _, stats, ..)| {
                 let walking = path.is_some_and(|p| !p.steps.is_empty());
                 // Вклад кота в силу отряда: сам он стоит единицу, навык —
                 // сверху, надетое — ещё сверху. Нулевой навык поэтому не значит
@@ -653,8 +730,15 @@ pub(crate) fn run_missions(
                 // Добыча ложится кучей на шлюз — ровно как возврат от сноса
                 // ложится под ноги сносильщику. Развозит её обычная уборка
                 // (§12.16). Доля — та, что посчитана на месте.
+                // Образцы — только отряду, который нёс прибор (§12.256): признак
+                // заморожен на уходе, потому что провал ломает снаряжение раньше,
+                // чем отряд доберётся домой.
+                let crew = Crew {
+                    road_cut: 0,
+                    work_toll: mission.toll,
+                };
                 for &(item, count) in &rule.loot {
-                    let got = count * verdict.share / 100;
+                    let got = loot_count(&items, crew, item, count) * verdict.share / 100;
                     if got > 0 {
                         spill(&mut commands, &mut stacks, gate, item, got);
                     }
@@ -664,7 +748,9 @@ pub(crate) fn run_missions(
             }
 
             // Ещё идут туда или работают — либо уже отработали и идут домой.
-            if mission.verdict.is_some() || phase(rule, mission.span, mission.left) != Phase::Back {
+            if mission.verdict.is_some()
+                || phase(mission.travel, mission.span, mission.left) != Phase::Back
+            {
                 continue;
             }
 
@@ -680,7 +766,7 @@ pub(crate) fn run_missions(
             // и на результат. Делится она на срок **до конца работы**, потому
             // что дальше не копится.
             let force: i32 = crew_force(rule, squad.iter().map(|&(.., f, _)| f))
-                + relay_force(mission.covered, comms_span(rule, mission.span));
+                + relay_force(mission.covered, comms_span(mission.travel, mission.span));
             // Опасность — та, какую встретил этот отряд: проводник режет её
             // делением (§12.70), а разведка умножает на число лап (§12.113).
             // Считается тем же выражением, что и в прогнозе для панели: игрок
@@ -753,7 +839,7 @@ pub(crate) fn run_missions(
                 // (§12.37). Отдельной формулы для урона нет намеренно: две
                 // арифметики исхода разошлись бы, а прогноз в панели показывал
                 // бы игроку не то, что случится (§12.23).
-                if let Ok((.., energy, _, health, _, record)) = crew.get_mut(cat_e) {
+                if let Ok((.., energy, _, health, _, record, _)) = crew.get_mut(cat_e) {
                     if let Some(mut energy) = energy {
                         let toll = if out.failed { energy.0 } else { rule.toll };
                         energy.0 = (energy.0 - toll).max(0);
@@ -792,8 +878,19 @@ pub(crate) fn run_missions(
                 // (§12.29). Успех не изнашивает: износ за каждый выход
                 // превратил бы петлю «добыча → сила» в оброк. Комплект наберётся
                 // заново, как только на складе снова будет из чего.
-                if out.failed {
-                    commands.entity(cat_e).remove::<Gear>();
+                // Личная вещь провалом не ломается (§12.256): анализатор Антенны
+                // другого пути в мир не имеет, и его потеря заперла бы образцы
+                // навсегда.
+                if out.failed
+                    && let Ok((.., gear, _, _, _, _)) = crew.get(cat_e)
+                {
+                    let kept: Vec<usize> = gear
+                        .map(|g| g.0.iter().copied().filter(|&i| items.personal(i)).collect())
+                        .unwrap_or_default();
+                    match kept.is_empty() {
+                        true => commands.entity(cat_e).remove::<Gear>(),
+                        false => commands.entity(cat_e).insert(Gear(kept)),
+                    };
                 }
             }
             // Известность идёт той же долей, что и добыча: слухи расходятся по
@@ -879,7 +976,18 @@ pub(crate) fn run_missions(
             // курс сделки замерзает в момент заказа (§12.44). Считается он по
             // числу ушедших лап: тем же выражением, каким панель показала
             // прогноз до нажатия.
-            mission.span = duration(rule, squad.len());
+            // Тропы и прибор (§12.256) замерзают вместе со сроком: состав ушёл,
+            // и дорога с добычей теперь его, а не того, кто остался дома.
+            let traits = crew_traits(
+                &items,
+                &perk_rules,
+                crew.iter()
+                    .filter(|(_, s, ..)| s.0 == mission_e)
+                    .map(|(.., gear, _, _, _, perks)| (perks, gear)),
+            );
+            mission.span = duration(rule, squad.len(), traits);
+            mission.travel = travel(rule, traits);
+            mission.toll = traits.work_toll;
             mission.left = mission.span;
             for &(cat_e, ..) in &squad {
                 commands.entity(cat_e).insert(Away);

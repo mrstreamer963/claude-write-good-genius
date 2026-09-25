@@ -853,3 +853,28 @@ fn the_trained_mark_survives_a_save() {
 
     assert_eq!(loaded.trained_of(who), Some(build), "домен приехал");
 }
+
+/// Память «до чего дорастали коты» переживает загрузку (§12.257): учёный,
+/// открывший парту и потом забывший науку (здесь — обнулённый опыт; в игре —
+/// плен), не закрывает её и в загруженной партии.
+#[test]
+fn a_loaded_game_remembers_its_best_scientist() {
+    let mut live = Sim::new(CORE).expect("рулсет");
+    let desk = live.tile_index("desk").expect("парта в палитре") as usize;
+    let science = live.skill_index("science").expect("наука");
+    live.set_xp("sp3", science, 1400);
+    live.tick_n(1);
+    live.set_xp("sp3", science, 0);
+    live.tick_n(1);
+    assert!(
+        live.tile_is_open(desk),
+        "парта открыта учёным третьего уровня"
+    );
+
+    let json = live.save().expect("снимок");
+    let mut loaded = Sim::load_from(CORE, &json).expect("загрузка");
+    assert!(
+        loaded.tile_is_open(desk),
+        "загруженная партия закрыла парту"
+    );
+}

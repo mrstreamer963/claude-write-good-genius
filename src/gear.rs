@@ -102,6 +102,10 @@ pub(crate) fn assign_equip(
                 .iter()
                 .copied()
                 .filter(|item| !worn.contains(item) && items.wearable(*item, &techs))
+                // Второй прибор сбора коту ни к чему (§12.256): сбор идёт один
+                // на отряд, и пробоотборник на Антенне с её анализатором —
+                // вещь, отнятая у того, кому её не хватило.
+                .filter(|&item| !(items.collects(item) && items.collects_any(gear)))
                 .collect();
             (!missing.is_empty()).then_some((id.0.as_str(), cat_e, (pos.x, pos.y), missing))
         })

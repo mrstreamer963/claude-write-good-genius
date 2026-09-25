@@ -533,6 +533,10 @@ impl Busy {
             "research"
         } else if crafting.is_some() {
             "craft"
+        } else if study.is_some_and(|s| s.teacher) {
+            // Учитель за партой (§12.258): та же задача, но другое дело —
+            // «учится» про него было бы враньём.
+            "teach"
         } else if study.is_some() {
             "study"
         } else if duty.is_some() {
