@@ -9159,6 +9159,16 @@ function lockedTail(buttons, heads) {
 
 function syncSciWindow() {
   if (!sciWinOpen || !sciHeads) return;
+  // Лаборатория — свойство базы, а не темы, поэтому `lab` у всех тем один;
+  // строка стоит, пока её нет и есть что изучать, — не глядя на ворота тем.
+  const allTopics = lastSnap?.topics ?? [];
+  const noLab =
+    allTopics.some((t) => !t.known) && !allTopics.some((t) => t.lab);
+  sciWarnEl.hidden = !noLab;
+  if (noLab) {
+    const why = "Темы изучают в лаборатории — лаборатории на базе нет";
+    if (sciWarnEl.textContent !== why) sciWarnEl.textContent = why;
+  }
   orderNewFirst(sciList, topicButtons, "topic", sciHeads);
   // **Пустой список обязан назвать, чего ждать** (§12.151). До сих пор он знал
   // одну причину — «всё изучено», — потому что второй не бывало: дверь с пустым
@@ -9200,6 +9210,18 @@ function orderLockedLast(list, buttons, heads) {
 
 function syncHireWindow() {
   if (!hireWinOpen || !hireHeads) return;
+  // Строка стоит, пока склада нет и есть кого нанимать, — **не глядя на
+  // известность и репутацию**: предупреждение заранее, чтобы склад был готов
+  // к моменту, когда кандидат откликнется, а не открывался уже упёршимся.
+  const noStore =
+    stores === 0 && (lastSnap?.recruits ?? []).some((r) => !r.hired);
+  hireWarnEl.hidden = !noStore;
+  if (noStore) {
+    const why =
+      "Найм оплачивается со склада — склада на базе нет. " +
+      "Детали на полу годятся только на стройку";
+    if (hireWarnEl.textContent !== why) hireWarnEl.textContent = why;
+  }
   // Два списка, а не группа «Только что открылись» (§12.241): «Можно нанять» —
   // сперва кликом сейчас, под ними те, кому хватит после уборки на склад;
   // «Нанять нельзя» — известность, репутация или платы на базе нет вовсе.
@@ -9514,6 +9536,7 @@ function mkRegistryHeads(list, locked) {
 let sciWinOpen = false;
 let sciList = null;
 let sciHeads = null;
+let sciWarnEl = null;
 
 function openSciWindow() {
   if (sciWinOpen) return;
@@ -9533,6 +9556,7 @@ function closeSciWindow() {
   readNews("topic");
   sciWinOpen = false;
   sciHeads = null;
+  sciWarnEl = null;
   topicButtons.length = 0;
   sciWinEl.hidden = true;
   sciWinEl.innerHTML = "";
@@ -9666,6 +9690,12 @@ function buildSciWindow() {
   empty.className = "cat-sub";
   empty.textContent = "Ничего не изучается — выберите тему слева";
   col.append(head, empty);
+  // Красная строка над колонками — дословно «Найм»: без лаборатории тему не
+  // изучить, и сказать это одной строкой заранее, а не отказом у каждой темы.
+  sciWarnEl = document.createElement("div");
+  sciWarnEl.className = "win-warn buy-warn";
+  sciWarnEl.hidden = true;
+  box.appendChild(sciWarnEl);
   box.appendChild(cols);
   cols.append(list, col);
   sciHeads.run = { col, head, empty };
@@ -9759,6 +9789,7 @@ function buildSciWindow() {
 let hireWinOpen = false;
 let hireList = null;
 let hireHeads = null;
+let hireWarnEl = null;
 
 function openHireWindow() {
   if (hireWinOpen) return;
@@ -9775,14 +9806,30 @@ function closeHireWindow() {
   readNews("recruit");
   hireWinOpen = false;
   hireHeads = null;
+  hireWarnEl = null;
   recruitButtons.length = 0;
   hireWinEl.hidden = true;
   hireWinEl.innerHTML = "";
 }
 
 function buildHireWindow() {
-  const { list } = mkWindow(hireWinEl, "Найм", () => closeHireWindow(), true);
+  const { box, list } = mkWindow(
+    hireWinEl,
+    "Найм",
+    () => closeHireWindow(),
+    true,
+  );
   hireList = list;
+  // Красная строка над списком (§12.100, как у «Покупки»): без склада платить
+  // за найм нечем, сколько бы деталей ни валялось на полу (§12.69, §12.215).
+  // Одна на окно, а не по строке на кандидата (§12.181): причина у всех общая,
+  // и у каждого кота она читалась бы как «мало деталей» — то есть звала бы на
+  // вылазку, а не строить склад. Кандидаты при этом стоят: окно отвечает ещё и
+  // на «ради кого строить» (§12.151).
+  hireWarnEl = document.createElement("div");
+  hireWarnEl.className = "win-warn buy-warn";
+  hireWarnEl.hidden = true;
+  box.insertBefore(hireWarnEl, list);
   const head = (text, cls) => {
     const el = document.createElement("div");
     el.className = cls;
