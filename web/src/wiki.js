@@ -112,6 +112,19 @@ export function hasArticle(key) {
 }
 
 let gate = () => true;
+let resolve = (key) => key;
+
+/// Поставить переадресацию: `(ключ) → ключ статьи, которая его заменяет`.
+/// Тема «Стеллаж» ведёт в постройку «Стеллаж» (§12.251): два одноимённых
+/// ответа на один вопрос читаются дублем.
+export function setArticleAlias(fn) {
+  resolve = fn;
+}
+
+/// Куда на самом деле ведёт ключ — с учётом переадресации.
+export function articleTarget(key) {
+  return resolve(key);
+}
 let teased = () => false;
 
 /// Есть ли у статьи версия «до понимания» (маркер `---понято---`).
@@ -172,7 +185,7 @@ export function renderArticle(key, nameOf) {
   const art = articles.get(key);
   if (!art) return "";
   const link = (m, target, word) => {
-    const t = target.toLowerCase();
+    const t = resolve(target.toLowerCase());
     const label = word || nameOf(t) || t;
     // Битая ссылка остаётся словом, а не кнопкой в никуда: статью могли ещё не
     // написать, и «нажал — ничего» хуже, чем просто текст.
@@ -209,7 +222,7 @@ export function articleLinks(key) {
   const body = bodyOf(key);
   const out = [];
   for (const m of body.matchAll(/\[\[([a-z]+:[a-z0-9_]+)(?:\|.+?)?\]\]/gi)) {
-    const t = m[1].toLowerCase();
+    const t = resolve(m[1].toLowerCase());
     if (hasArticle(t) && !out.includes(t)) out.push(t);
   }
   return out;

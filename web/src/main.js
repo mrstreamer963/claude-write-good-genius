@@ -11,7 +11,9 @@ import {
   hasArticle,
   hasTeaser,
   loadWiki,
+  articleTarget,
   renderArticle,
+  setArticleAlias,
   setArticleGate,
   setArticleTeased,
 } from "./wiki.js";
@@ -10396,6 +10398,7 @@ function wikiName(key) {
 // (§12.84). Пишется он с ключом статьи внутри — один и тот же значок стоит у
 // десятка строк, и по одному `data-def` они поделили бы обработчик.
 function wikiMark(key, extra = "") {
+  key = articleTarget(key);
   if (!hasArticle(key)) return "";
   return (
     `<button class="tool wiki-mark${extra ? " " + extra : ""}" ` +
@@ -10531,6 +10534,7 @@ function tileRoleWords(t) {
 function openWiki(key, back) {
   // `null` — оглавление: у двери тулбара адресата нет, она ведёт «в
   // справочник вообще».
+  if (key !== null) key = articleTarget(key);
   if (key !== null && !hasArticle(key)) return;
   if (!wikiOpen) {
     // Запоминаем возврат **до** `closeOtherWindows`: он погасит то окно, из
@@ -10715,6 +10719,9 @@ function wikiGateOpen(key) {
       return !!st?.seen && (st.understood !== false || hasTeaser(key));
     }
     case "topic":
+      // Тема, одноимённая своей постройке, статьи не имеет — её заменяет
+      // статья постройки (`topicTwin`).
+      if (topicTwin(key)) return false;
       // Тема — только изученная: доступная к изучению стоит в окне «Наука» и
       // там же объясняет себя строкой «Даёт · Открывает». Статья о ней до
       // изучения рассказала бы ответ, который тема и должна добыть, а первое
@@ -10768,6 +10775,28 @@ function loreOpen(id, snap) {
 }
 
 setArticleGate(wikiGateOpen);
+
+// Тема, которая открывает постройку того же имени («Стеллаж» → «Стеллаж»),
+// — это один вопрос с двумя статьями (§12.251). Остаётся постройка: про неё
+// игрок спрашивает дольше, а тема после изучения — пройденная ступень.
+// Считается перекличкой палитр (`tech` у тайла и объекта), а не списком пар.
+function topicTwin(key) {
+  const [kind] = String(key).split(":");
+  if (kind !== "topic") return null;
+  const { id, entry } = wikiEntry(key);
+  if (!entry) return null;
+  const name = entry.label || entry.id;
+  const tile = (meta?.palette ?? []).find(
+    (p) => p.tech === id && (p.label || p.id) === name,
+  );
+  if (tile) return `tile:${tile.id}`;
+  const st = (meta?.structures ?? []).find(
+    (d) => d.tech === id && (d.label || d.id) === name,
+  );
+  return st ? `structure:${st.id}` : null;
+}
+
+setArticleAlias((key) => topicTwin(key) ?? key);
 // Короткая версия — у предмета, который база видела, но ещё не поняла.
 setArticleTeased((key) => {
   const [kind] = String(key).split(":");
