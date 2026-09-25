@@ -171,3 +171,23 @@ fn fully_erased_area_leaves_the_island_under_the_cat() {
         "и кот на ней замурован: пол под лапами есть, а шагнуть некуда (§12.144)",
     );
 }
+
+/// Снимок называет клетку сноса, а не ту, где кот стоит: работает он с
+/// соседней, и вид по этой клетке рисует стук и крошки.
+#[test]
+fn a_demolisher_points_at_the_cell_it_works_on() {
+    let mut sim = sim_from(&["#####", "#a..#", "#####"]);
+    assert!(sim.plan_demolish(3, 1));
+    let mut seen = false;
+    for _ in 0..200 {
+        sim.tick_n(1);
+        let w = sim.work_cell_of("a");
+        if w != (-1, -1) {
+            assert_eq!(w, (3, 1), "кот смотрит на свою площадку");
+            assert_ne!(sim.pos_of("a"), w, "и стоит рядом с ней");
+            seen = true;
+        }
+    }
+    assert!(seen, "работа была видна хоть один тик");
+    assert_eq!(sim.work_cell_of("a"), (-1, -1), "снесено — работы нет");
+}

@@ -4875,11 +4875,12 @@ impl Sim {
         // Площадки сноса: `Busy` знает, что кот занят чертежом, но не тем, во что
         // тот обернётся, — а «строит» и «разбирает» игрок читает по-разному
         // (§12.41). Собирается до котов, потому что чертёж читают по `Assignment`.
-        let doomed: std::collections::HashSet<Entity> = {
+        // Там же — клетка площадки: кот работает с соседней (инвариант 4), и
+        // вид без неё не знает, куда кивает строитель и где сыпать искры.
+        let sites: std::collections::HashMap<Entity, (i32, i32, bool)> = {
             let mut q = self.world.query::<(Entity, &Blueprint)>();
             q.iter(&self.world)
-                .filter(|(_, bp)| bp.tile < 0)
-                .map(|(e, _)| e)
+                .map(|(e, bp)| (e, (bp.x, bp.y, bp.tile < 0)))
                 .collect()
         };
 
@@ -5113,9 +5114,17 @@ impl Sim {
                     // Чем занят — разобрано в `Busy` вместе с самой занятостью
                     // (§12.41); здесь чертёж только уточняется до сноса.
                     job: match busy.job {
-                        "build" if assignment.is_some_and(|a| doomed.contains(&a.0)) => "demolish",
+                        "build"
+                            if assignment.is_some_and(|a| sites.get(&a.0).is_some_and(|s| s.2)) =>
+                        {
+                            "demolish"
+                        }
                         job => job,
                     },
+                    // Клетка, над которой кот работает прямо сейчас: только
+                    // дошедший, идущий ещё не стучит.
+                    work_x: work_cell(assignment, &sites, busy.moving).0,
+                    work_y: work_cell(assignment, &sites, busy.moving).1,
                     moving: busy.moving,
                     // Стоящий кот «идёт» в свою же клетку: нулевой `step_span`
                     // и есть признак, что рисовать нечего.
@@ -6063,5 +6072,18 @@ impl Sim {
             news,
         })
         .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+}
+
+/// Клетка площадки под работой кота для снимка (`EntitySnap::work_*`):
+/// `(-1, -1)`, пока кот не дошёл или работы у него нет.
+pub(crate) fn work_cell(
+    assignment: Option<&Assignment>,
+    sites: &std::collections::HashMap<Entity, (i32, i32, bool)>,
+    moving: bool,
+) -> (i32, i32) {
+    match assignment.and_then(|a| sites.get(&a.0)) {
+        Some(&(x, y, _)) if !moving => (x, y),
+        _ => (-1, -1),
     }
 }

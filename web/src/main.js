@@ -577,6 +577,11 @@ const scrapGfx = new Graphics();
 scrapLayer.addChild(scrapGfx);
 const bpGfx = new Graphics();
 bpLayer.addChild(bpGfx);
+// Искры стройки, крошки сноса и пыль достроенной клетки — один постоянный узел
+// на все частицы, `clear()` каждым кадром, как у `bpGfx`: частицы живут сотни
+// миллисекунд, и узел на каждую был бы тем самым седьмым лицом граблей §12.84.
+const sparkGfx = new Graphics();
+bpLayer.addChild(sparkGfx);
 const dealGfx = new Graphics();
 dealLayer.addChild(dealGfx);
 
@@ -903,6 +908,7 @@ worker.onmessage = (e) => {
       if (saved) worker.postMessage({ type: "load", json: saved });
     }
   } else if (m.type === "map") {
+    puffChanged(mapCells, m.map.cells);
     drawMap(m.map);
   } else if (m.type === "snapshot") {
     // Перерисовываем рамку только на **изменение** маски: `snapshot` приходит
@@ -2029,6 +2035,37 @@ function drawBlueprints(list) {
     }
     // прогресс-бар работы
     const p = b.total > 0 ? Math.min(1, b.progress / b.total) : 0;
+    if (p > 0 && !isDemolish) {
+      // Клетка проявляется снизу вверх: будущий тайл набирает плотность по
+      // мере работы, а не возникает целиком на последнем тике.
+      const h = (TILE - 2) * p;
+      g.rect(x + 1, y + TILE - 1 - h, TILE - 2, h).fill({
+        color,
+        alpha: 0.45,
+      });
+    } else if (p > 0) {
+      // Снос: клетка темнеет и трескается. Трещины — из шума клетки, то есть
+      // одни и те же от кадра к кадру: дрожащая трещина читалась бы молнией.
+      g.rect(x + 1, y + 1, TILE - 2, TILE - 2).fill({
+        color: 0x000000,
+        alpha: 0.35 * p,
+      });
+      const cracks = Math.ceil(p * 3);
+      for (let i = 0; i < cracks; i++) {
+        let cx = x + TILE * (0.25 + 0.5 * cellNoise(b.x, b.y, i * 3 + 1));
+        let cy = y + TILE * (0.25 + 0.5 * cellNoise(b.x, b.y, i * 3 + 2));
+        g.moveTo(cx, cy);
+        for (let j = 0; j < 3; j++) {
+          cx += (cellNoise(b.x, b.y, i * 7 + j + 10) - 0.5) * TILE * 0.45;
+          cy += (cellNoise(b.x, b.y, i * 7 + j + 20) - 0.5) * TILE * 0.45;
+          g.lineTo(
+            Math.max(x + 2, Math.min(x + TILE - 2, cx)),
+            Math.max(y + 2, Math.min(y + TILE - 2, cy)),
+          );
+        }
+        g.stroke({ color: 0x0a0a0c, width: 1.2, alpha: 0.85 });
+      }
+    }
     if (p > 0) {
       g.rect(x + 3, y + TILE - 6, (TILE - 6) * p, 3).fill({
         color: COLORS.select,
@@ -2130,6 +2167,10 @@ function renderSnapshot(snap) {
     c.stepLeft = e.step_span > 0 ? e.step_left : 0;
     c.stepSpan = e.step_span;
     c.stepDrag = e.step_drag;
+    // Клетка, над которой кот стучит (из ядра: он стоит на соседней, §12.250).
+    c.workX = e.work_x ?? -1;
+    c.workY = e.work_y ?? -1;
+    c.workDemolish = e.job === "demolish";
     if (jump || e.step_span <= 0) {
       c.x = from.x;
       c.y = from.y;
@@ -2141,8 +2182,15 @@ function renderSnapshot(snap) {
     // пикселей давала бы субпиксельный шум и мигание на месте. Зеркалим силуэт,
     // а не весь узел: метки состояний — соседние дети контейнера, и они бы
     // уехали вместе с ним.
-    if (was && was.x !== e.x) {
-      const face = e.x > was.x ? 1 : -1;
+    // Работающий смотрит на свою площадку, а не туда, откуда пришёл.
+    const turn =
+      c.workX >= 0 && c.workX !== e.x
+        ? c.workX - e.x
+        : was && was.x !== e.x
+          ? e.x - was.x
+          : 0;
+    if (turn) {
+      const face = turn > 0 ? 1 : -1;
       // Только на смене: `scale` и `x` — это грязный трансформ у Pixi, и писать
       // их каждым кадром на каждого кота незачем.
       if (face !== c.face) {
@@ -2158,7 +2206,7 @@ function renderSnapshot(snap) {
     if (geared !== c.geared) {
       c.geared = geared;
       c.body.clear();
-      drawCat(c.body, c.fur, geared);
+      drawCat(c.body, c.fur, geared, c.arm);
     }
     c.load.visible = e.carrying > 0;
     // Глиф груза — **новый узел** на смене типа, а не подмена контекста у
@@ -2443,7 +2491,33 @@ function renderSnapshot(snap) {
 // `scale.x`. Начало координат остаётся в середине клетки: метки состояний и
 // кольца стоят относительно него и лишь подняты на `MARK_LIFT`.
 const MARK_LIFT = TILE * 0.22;
-function drawCat(g, fur, geared) {
+// Инструмент в лапе (§12.252): молоток у стройки, лом у сноса. Держится у кисти
+// и продолжает руку — рисуется один раз при создании кота.
+function drawTool(g, crowbar) {
+  const r = TILE * 0.3;
+  const dark = 0x0b0d12;
+  if (crowbar) {
+    // Лом держат **поперёк** руки, под прямым углом: продолжая руку, он
+    // читался её гнущимся продолжением — щупальцем. Сталь, а не красный:
+    // красным у сноса уже говорит крест на клетке. Рабочий конец — на `−x`
+    // руки: на ударе (рука вперёд) он смотрит вниз, в клетку.
+    const path = (q) =>
+      q
+        .moveTo(r * 0.3, r * 0.62)
+        .lineTo(-r * 0.95, r * 0.62)
+        .lineTo(-r * 1.1, r * 0.8);
+    path(g).stroke({ color: dark, width: 3.2, cap: "round", join: "round" });
+    path(g).stroke({ color: 0x8a909c, width: 1.6, cap: "round", join: "round" });
+  } else {
+    g.roundRect(-r * 0.08, r * 0.6, r * 0.16, r * 0.6, 1).fill(0x8a6a3a);
+    g.roundRect(-r * 0.3, r * 1.12, r * 0.6, r * 0.26, 1.5)
+      .fill(0xaab0bc)
+      .stroke({ color: dark, width: 1 });
+  }
+  return g;
+}
+
+function drawCat(g, fur, geared, arm) {
   const r = TILE * 0.3;
   const dark = 0x0b0d12;
   const furDark = shade(fur, -0.3);
@@ -2483,13 +2557,16 @@ function drawCat(g, fur, geared) {
   ]) {
     g.roundRect(-r * 0.75 - k, -r * 0.55 - k, r * 1.5 + 2 * k, r * 1.05 + 2 * k, r * 0.3).fill(col);
   }
-  // Руки по бокам.
+  // Руки по бокам. Передняя (по ходу взгляда, `+x`) — отдельный узел `arm`
+  // с началом в плече: ею кот машет на стройке и сносе (§12.252, `hammerUnit`).
+  // Рисуется она тем же выражением, что задняя, только в координатах плеча.
+  arm.clear();
   for (const [k, col] of [
     [1, dark],
     [0, geared ? suit : furDark],
   ]) {
     g.roundRect(-r * 0.98 - k, -r * 0.4 - k, r * 0.34 + 2 * k, r * 0.75 + 2 * k, r * 0.15).fill(col);
-    g.roundRect(r * 0.64 - k, -r * 0.4 - k, r * 0.34 + 2 * k, r * 0.75 + 2 * k, r * 0.15).fill(col);
+    arm.roundRect(-r * 0.17 - k, -r * 0.05 - k, r * 0.34 + 2 * k, r * 0.75 + 2 * k, r * 0.15).fill(col);
   }
   if (geared) {
     // Разгрузка: две лямки, два подсумка, ремень. Это и есть «комплект надет»
@@ -2540,7 +2617,17 @@ function drawCat(g, fur, geared) {
 function createUnit(e) {
   const c = new Container();
   const body = new Graphics();
-  drawCat(body, COLORS.unit[e.sprite] ?? COLORS.unitDefault, false);
+  // Передняя рука — ребёнок тела: зеркалится вместе с ним (`c.face`), а
+  // поворачивается сама, вокруг плеча. Инструмент — ребёнок руки, виден только
+  // за работой.
+  const arm = new Graphics();
+  arm.position.set(TILE * 0.3 * 0.81, -TILE * 0.3 * 0.35);
+  const hammer = drawTool(new Graphics(), false);
+  const crowbar = drawTool(new Graphics(), true);
+  hammer.visible = crowbar.visible = false;
+  arm.addChild(hammer, crowbar);
+  drawCat(body, COLORS.unit[e.sprite] ?? COLORS.unitDefault, false, arm);
+  body.addChild(arm);
   // Кольцо выбора живёт **на самом узле**, как и кольцо «застрял» ниже
   // (§12.140): кот теперь едет между клетками, и кольцо, поставленное по
   // клетке ядра, прыгало бы вокруг него. Заодно ушло пересоздание `Graphics`
@@ -2662,6 +2749,9 @@ function createUnit(e) {
   c.load = load;
   c.loadGlyph = null;
   c.body = body;
+  c.arm = arm;
+  c.hammer = hammer;
+  c.crowbar = crowbar;
   c.fur = COLORS.unit[e.sprite] ?? COLORS.unitDefault;
   // Что уже нарисовано, помним на самом узле: силуэт пересобирается только
   // когда кот оделся или разделся, а не каждым кадром (тот же довод, что у покадровых
@@ -2751,8 +2841,10 @@ function stepUnits(ticker) {
       c.x = c.fromX;
       c.y = c.fromY;
       wadeUnit(c, 0); // вставший кот выпрямляется
+      hammerUnit(c, ticker.deltaMS);
       continue;
     }
+    hammerUnit(c, 0); // пошёл — перестал стучать
     const k = Math.min(1, (c.stepSpan - c.stepLeft + tickFrac) / c.stepSpan);
     c.x = c.fromX + (c.toX - c.fromX) * k;
     c.y = c.fromY + (c.toY - c.fromY) * k;
@@ -2761,6 +2853,7 @@ function stepUnits(ticker) {
   // Глиф работы крутится здесь же, а не в своём тикере: `speed` — то самое, чем
   // умножается доля тика, поэтому на паузе мир и картинка встают вместе. Второй
   // копии «сколько сейчас идёт время» в проекте быть не должно (§12.140).
+  stepSparks(ticker.deltaMS);
   for (const n of workNodes.values()) {
     if (n.glyph && n.live) {
       const dir = n.salvage ? -1 : 1;
@@ -2799,6 +2892,168 @@ function wadeUnit(c, deltaMS) {
     c.wadeMark.visible = false;
     c.wading = false;
   }
+}
+
+// Кот, дошедший до площадки, **стучит** по ней: тело кивает в сторону клетки
+// работы, и на пике удара с неё сыплются искры (стройка) или крошки (снос).
+// Клетку называет ядро (`work_x/work_y`), темп — тот же, что у бредущего:
+// по `speed` и не выше ×5, иначе на ×10 кивок превращается в дрожь. Стройка —
+// мягкая синусоида, снос — резкий удар и медленный замах. Трансформ пишется
+// только стучащим и один раз на выходе; бредущий не стучит (он в пути).
+const HAMMER_SPEED_CAP = 5;
+function hammerUnit(c, deltaMS) {
+  const working = deltaMS > 0 && c.workX >= 0 && !c.wading && !c.down;
+  if (!working) {
+    if (c.hammering) {
+      c.hammering = false;
+      c.body.x = 0;
+      c.body.y = c.down ? TILE * 0.1 : 0;
+      if (!c.wading) c.body.scale.y = 1;
+      c.arm.rotation = 0;
+      c.hammer.visible = c.crowbar.visible = false;
+    }
+    return;
+  }
+  // `visible` — не грязный трансформ, писать его каждым кадром дёшево, а кот
+  // может перейти со стройки на снос, не переставая стучать.
+  c.hammer.visible = !c.workDemolish;
+  c.crowbar.visible = c.workDemolish;
+  c.hammering = true;
+  const period = c.workDemolish ? 200 : 300;
+  const before = c.hamPhase ?? 0;
+  c.hamPhase = before + (deltaMS * Math.min(speed, HAMMER_SPEED_CAP)) / period;
+  const t = c.hamPhase % 1;
+  // `k` — вынос к клетке, 1 на ударе. Удар стоит на обороте фазы: там же
+  // рождаются частицы.
+  const k = c.workDemolish
+    ? t < 0.8
+      ? t / 0.8
+      : 1 - (t - 0.8) / 0.2
+    : (1 - Math.cos(2 * Math.PI * t)) / 2;
+  const cx = (c.workX + 0.5) * TILE;
+  const cy = (c.workY + 0.5) * TILE;
+  const dx = Math.sign(cx - c.x);
+  const dy = Math.sign(cy - c.y);
+  // Машет передней рукой: отрицательный поворот выносит кисть вперёд (`+x`),
+  // зеркало тела делает «вперёд» стороной клетки. Стройка — короткие удары
+  // сверху, снос — замах из-за головы. Тело лишь чуть подаётся за рукой.
+  const [raised, struck] = c.workDemolish ? [-2.9, -1.3] : [-2.0, -0.9];
+  c.arm.rotation = raised + (struck - raised) * k;
+  c.body.x = dx * 1.2 * k;
+  c.body.y = dy * 1.2 * k;
+  c.body.scale.y = 1 - (c.workDemolish ? 0.08 : 0.03) * k;
+  if (Math.floor(c.hamPhase) !== Math.floor(before)) {
+    // Частицы — у края клетки, обращённого к коту: туда и бьёт.
+    spawnHit(cx - dx * TILE * 0.3, cy - dy * TILE * 0.3, c.workDemolish);
+  }
+}
+
+// Частицы: простые записи в массиве, рисуются одним `sparkGfx`. Случайность
+// здесь законна — это вид, а не мир (инвариант 2 про ядро). Время — `speed`,
+// как у доли тика: на паузе искры висят в воздухе вместе с котами.
+const sparks = [];
+const SPARKS_MAX = 240;
+function addSpark(p) {
+  if (sparks.length >= SPARKS_MAX) sparks.shift();
+  sparks.push(p);
+}
+function spawnHit(x, y, demolish) {
+  const n = demolish ? 4 : 3;
+  for (let i = 0; i < n; i++) {
+    addSpark(
+      demolish
+        ? {
+            kind: "chip",
+            x,
+            y,
+            vx: (Math.random() - 0.5) * 0.16,
+            vy: -0.05 - Math.random() * 0.06,
+            g: 0.0005,
+            life: 450,
+            max: 450,
+            size: 1.5 + Math.random() * 1.5,
+            color: 0x8a8f9a,
+          }
+        : {
+            kind: "spark",
+            x,
+            y,
+            vx: (Math.random() - 0.5) * 0.08,
+            vy: -0.05 - Math.random() * 0.06,
+            g: 0.0001,
+            life: 380,
+            max: 380,
+            size: 1.2 + Math.random(),
+            color: COLORS.scrap,
+          },
+    );
+  }
+}
+// Клетка достроена или снесена: облачко пыли. Сравниваем карту с прошлой;
+// много изменившихся разом — это загрузка или новая партия, а не работа.
+function puffChanged(prev, next) {
+  if (!prev || !next || prev.length !== next.length || !meta) return;
+  const W = meta.width;
+  const changed = [];
+  for (let i = 0; i < next.length; i++) {
+    if (prev[i] !== next[i]) changed.push(i);
+    if (changed.length > 12) return;
+  }
+  for (const i of changed) {
+    const x = ((i % W) + 0.5) * TILE;
+    const y = (Math.floor(i / W) + 0.5) * TILE;
+    for (let j = 0; j < 7; j++) {
+      const a = (j / 7) * Math.PI * 2 + Math.random() * 0.5;
+      addSpark({
+        kind: "dust",
+        x,
+        y,
+        vx: Math.cos(a) * 0.035,
+        vy: Math.sin(a) * 0.035 - 0.01,
+        g: 0,
+        life: 550,
+        max: 550,
+        size: 3 + Math.random() * 2,
+        color: 0xa8a49a,
+      });
+    }
+  }
+}
+let sparksDrawn = false;
+function stepSparks(deltaMS) {
+  if (!sparks.length) {
+    if (sparksDrawn) sparkGfx.clear();
+    sparksDrawn = false;
+    return;
+  }
+  const dt = deltaMS * Math.min(speed, HAMMER_SPEED_CAP);
+  const g = sparkGfx;
+  g.clear();
+  let w = 0;
+  for (const p of sparks) {
+    p.life -= dt;
+    if (p.life <= 0) continue;
+    p.vy += p.g * dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    const f = p.life / p.max;
+    if (p.kind === "dust") {
+      g.circle(p.x, p.y, p.size * (1.8 - f)).fill({
+        color: p.color,
+        alpha: 0.35 * f,
+      });
+    } else if (p.kind === "chip") {
+      g.rect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size).fill({
+        color: p.color,
+        alpha: f,
+      });
+    } else {
+      g.circle(p.x, p.y, p.size).fill({ color: p.color, alpha: f });
+    }
+    sparks[w++] = p;
+  }
+  sparks.length = w;
+  sparksDrawn = true;
 }
 
 function updateSelectionOverlay() {

@@ -384,6 +384,22 @@ impl Sim {
             .and_then(|(_, o)| o.and_then(|o| o.tried_version))
     }
 
+    /// Клетка площадки, над которой кот работает, ровно как её видит снимок
+    /// (`EntitySnap::work_*`); `(-1, -1)` — не работает или ещё идёт.
+    fn work_cell_of(&mut self, unit: &str) -> (i32, i32) {
+        let sites: std::collections::HashMap<Entity, (i32, i32, bool)> = {
+            let mut q = self.world.query::<(Entity, &Blueprint)>();
+            q.iter(&self.world)
+                .map(|(e, bp)| (e, (bp.x, bp.y, bp.tile < 0)))
+                .collect()
+        };
+        let mut q = self
+            .world
+            .query::<(&UnitId, Option<&Assignment>, Option<&Path>)>();
+        let (_, a, p) = q.iter(&self.world).find(|(id, _, _)| id.0 == unit).unwrap();
+        crate::sim::work_cell(a, &sites, p.is_some())
+    }
+
     fn has_assignment(&mut self, unit: &str) -> bool {
         let mut q = self.world.query::<(&UnitId, Option<&Assignment>)>();
         q.iter(&self.world)
