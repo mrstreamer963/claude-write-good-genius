@@ -2217,11 +2217,14 @@ function renderSnapshot(snap) {
     // на нём, ядро его не снимало). Ключ перерисовки — пара «что видно».
     const geared = (e.gear ?? []).length > 0;
     const napping = e.job === "rest" && !e.moving;
-    const look = `${geared && !napping}|${napping}`;
+    // Дремлет (§12.52: задачи нет, а место для сна под лапами) — глаза
+    // полуприкрыты: не спит, но и не работает. Ключ `nap` даёт ядро (`Busy`).
+    const drowsy = e.job === "nap" && !e.moving;
+    const look = `${geared && !napping}|${napping}|${drowsy}`;
     if (look !== c.look) {
       c.look = look;
       c.body.clear();
-      drawCat(c.body, c.fur, geared && !napping, c.arm, napping);
+      drawCat(c.body, c.fur, geared && !napping, c.arm, napping, drowsy);
     }
     c.load.visible = e.carrying > 0;
     // Глиф груза — **новый узел** на смене типа, а не подмена контекста у
@@ -2535,7 +2538,7 @@ function drawTool(g, crowbar) {
   return g;
 }
 
-function drawCat(g, fur, geared, arm, asleep = false) {
+function drawCat(g, fur, geared, arm, asleep = false, drowsy = false) {
   const r = TILE * 0.3;
   const dark = 0x0b0d12;
   const furDark = shade(fur, -0.3);
@@ -2629,6 +2632,22 @@ function drawCat(g, fur, geared, arm, asleep = false) {
       g.moveTo(ex - hr * 0.17, hy - hr * 0.1)
         .quadraticCurveTo(ex, hy + hr * 0.08, ex + hr * 0.17, hy - hr * 0.1)
         .stroke({ color: dark, width: 1.4, cap: "round" });
+    }
+  } else if (drowsy) {
+    // Полуприкрытые: нижняя половина глаза со зрачком, сверху — веко дугой
+    // **в ширину самого глаза**. Шире — и два века сходятся в одну черту над
+    // переносицей, то есть в монобровь (глаза стоят в 0.42·hr друг от друга).
+    for (const ex of [hr * 0.1, hr * 0.52]) {
+      const ey = hy - hr * 0.08;
+      const r = hr * 0.17;
+      g.moveTo(ex - r, ey).arc(ex, ey, r, Math.PI, 0, true).closePath().fill(0xf2f6e8);
+      g.moveTo(ex - hr * 0.04, ey)
+        .arc(ex + hr * 0.04, ey, hr * 0.08, Math.PI, 0, true)
+        .closePath()
+        .fill(dark);
+      g.moveTo(ex - r, ey + hr * 0.02)
+        .quadraticCurveTo(ex, ey - hr * 0.1, ex + r, ey + hr * 0.02)
+        .stroke({ color: dark, width: 1.2, cap: "round" });
     }
   } else {
     g.ellipse(hr * 0.1, hy - hr * 0.1, hr * 0.2, hr * 0.24).fill(0xf2f6e8);
@@ -2783,7 +2802,7 @@ function createUnit(e) {
   // Что уже нарисовано, помним на самом узле: силуэт пересобирается только
   // когда кот оделся или разделся, а не каждым кадром (тот же довод, что у покадровых
   // `sync*`, §12.84 — безусловная перерисовка каждые 16 мс).
-  c.look = "false|false";
+  c.look = "false|false|false";
   c.loadItem = -1;
   // Куда смотрит: 1 — вправо, −1 — влево. Двигает две вещи разом (зеркало тела
   // и сторону, с которой висит груз), поэтому живёт на узле, а не выводится
