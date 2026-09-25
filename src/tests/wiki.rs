@@ -101,9 +101,17 @@ fn palettes(rs: &Ruleset) -> Vec<(&'static str, Vec<String>)> {
         // игрок её не ставит и отдельно не видит, о ней рассказывает объект.
         (
             "tile",
-            ids(rs.tiles.iter().filter(|x| !x.internal).map(|x| &x.id).collect()),
+            ids(rs
+                .tiles
+                .iter()
+                .filter(|x| !x.internal)
+                .map(|x| &x.id)
+                .collect()),
         ),
-        ("structure", ids(rs.structures.iter().map(|x| &x.id).collect())),
+        (
+            "structure",
+            ids(rs.structures.iter().map(|x| &x.id).collect()),
+        ),
         ("item", ids(rs.items.iter().map(|x| &x.id).collect())),
         ("topic", ids(rs.research.iter().map(|x| &x.id).collect())),
         ("recipe", ids(rs.recipes.iter().map(|x| &x.id).collect())),

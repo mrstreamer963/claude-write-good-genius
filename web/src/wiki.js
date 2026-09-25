@@ -68,6 +68,8 @@ export async function loadWiki() {
   for (const key of HIDDEN_ARTICLES) articles.delete(key);
 }
 
+const UNDERSTOOD = "---понято---";
+
 /// Разобрать файл раздела. Статья начинается со строки `## ключ | Заголовок`;
 /// заголовок необязателен — без него его даст палитра (`label` записи).
 function parseFile(text) {
@@ -75,7 +77,14 @@ function parseFile(text) {
   let title = "";
   let lines = [];
   const flush = () => {
-    if (key) articles.set(key, { title, body: lines.join("\n").trim() });
+    if (!key) return;
+    // Маркер `---понято---` делит статью на две версии: выше — что база видит
+    // снаружи, пока вещь не понята (§12.131), ниже — полная. Без маркера
+    // версия одна, и `teaser` пуст.
+    const cut = lines.findIndex((l) => l.trim() === UNDERSTOOD);
+    const teaser = cut < 0 ? "" : lines.slice(0, cut).join("\n").trim();
+    const body = lines.slice(cut + 1).join("\n").trim();
+    articles.set(key, { title, teaser, body });
   };
   for (const raw of text.split(/\r?\n/)) {
     const head = /^##\s+([a-z]+:[a-z0-9_]+)\s*(?:\|\s*(.*))?$/i.exec(raw);
@@ -103,6 +112,30 @@ export function hasArticle(key) {
 }
 
 let gate = () => true;
+let teased = () => false;
+
+/// Есть ли у статьи версия «до понимания» (маркер `---понято---`).
+export function hasTeaser(key) {
+  return !!articles.get(key)?.teaser;
+}
+
+/// Показывать ли сейчас короткую версию: `(ключ) → вещь ещё не понята`.
+/// Ответ считает вид по снимку, как и ворота.
+export function setArticleTeased(fn) {
+  teased = fn;
+}
+
+/// Текст статьи в той версии, какая открыта сейчас.
+function bodyOf(key) {
+  const art = articles.get(key);
+  if (!art) return "";
+  return art.teaser && teased(key) ? art.teaser : art.body;
+}
+
+/// Версия статьи как метка: по её смене вид объявляет «Запись дополнена».
+export function articleStage(key) {
+  return hasTeaser(key) && teased(key) ? "teaser" : "full";
+}
 
 /// Поставить ворота статей: `(ключ) → открыта ли`.
 export function setArticleGate(fn) {
@@ -147,7 +180,7 @@ export function renderArticle(key, nameOf) {
       ? `<button class="wiki-link" data-key="wiki${t}" data-go="${esc(t)}">${esc(label)}</button>`
       : esc(label);
   };
-  return art.body
+  return bodyOf(key)
     .split(/\n\s*\n/)
     .map((block) => {
       const quote = block.startsWith("> ");
@@ -173,7 +206,7 @@ export function renderArticle(key, nameOf) {
 /// Считаются **перекличкой с текстом**, а не вторым списком в файле: разойдись
 /// они, и подвал обещал бы статью, которой в тексте нет (идиома `opensOf`).
 export function articleLinks(key) {
-  const body = articles.get(key)?.body ?? "";
+  const body = bodyOf(key);
   const out = [];
   for (const m of body.matchAll(/\[\[([a-z]+:[a-z0-9_]+)(?:\|.+?)?\]\]/gi)) {
     const t = m[1].toLowerCase();

@@ -2910,3 +2910,15 @@ main#stage.mode-cursor #mode-banner {
   color: var(--muted);
   font-size: 12px;
 }
+
+/* Громкость звука в разделе «Партия» (§12.253). */
+.sound-vol {
+  width: calc(100% - 16px);
+  margin: 2px 8px 6px;
+  accent-color: #c9a227;
+}
+
+/* Выключенная шина звука — тусклая, но жмётся. */
+.tool.snd-off {
+  opacity: 0.5;
+}

@@ -6,12 +6,16 @@ import { ITEM_GLYPHS, TILE_GLYPHS } from "./glyphs.js";
 import {
   articleKeys,
   articleLinks,
+  articleStage,
   articleTitle,
   hasArticle,
+  hasTeaser,
   loadWiki,
   renderArticle,
   setArticleGate,
+  setArticleTeased,
 } from "./wiki.js";
+import { play, setBusOn, setMuted, setPaused, setVolume, soundPrefs } from "./sound.js";
 
 const TILE = 28;
 
@@ -874,6 +878,10 @@ let triedResume = false;
 worker.onmessage = (e) => {
   const m = e.data;
   if (m.type === "ready") {
+    // Звук событий мира молчит до первого снимка нового мира: иначе загрузка
+    // партии прозвучит залпом новостей и возвращений (§12.253).
+    soundQuiet = true;
+    awaySeen = null;
     meta = m.meta;
     paletteColors = meta.palette.map((p) => hex(p.color));
     itemColors = (meta.items ?? []).map((i) => hex(i.color));
@@ -920,6 +928,7 @@ worker.onmessage = (e) => {
       if (hoverAt) updateHover(hoverAt);
     }
     renderSnapshot(m.snap);
+    soundQuiet = false;
   } else if (m.type === "saved") {
     if (m.auto) localStorage.setItem(SAVE_KEY, m.json);
     else download(`sp-save-${stamp()}.json`, m.json);
@@ -2202,11 +2211,15 @@ function renderSnapshot(snap) {
     // Силуэт пересобираем только на смене экипировки: `Graphics` строится
     // командами рисования, и безусловный `clear()` каждые 16 мс — это разбор
     // фигуры шестьдесят раз в секунду на каждого кота.
+    // Спящий — без одежды и с закрытыми глазами (только картинка: снаряжение
+    // на нём, ядро его не снимало). Ключ перерисовки — пара «что видно».
     const geared = (e.gear ?? []).length > 0;
-    if (geared !== c.geared) {
-      c.geared = geared;
+    const napping = e.job === "rest" && !e.moving;
+    const look = `${geared && !napping}|${napping}`;
+    if (look !== c.look) {
+      c.look = look;
       c.body.clear();
-      drawCat(c.body, c.fur, geared, c.arm);
+      drawCat(c.body, c.fur, geared && !napping, c.arm, napping);
     }
     c.load.visible = e.carrying > 0;
     // Глиф груза — **новый узел** на смене типа, а не подмена контекста у
@@ -2243,7 +2256,9 @@ function renderSnapshot(snap) {
     const down = asleep || lying;
     if (down !== c.down) {
       c.down = down;
-      c.body.rotation = down ? -Math.PI / 2 : 0;
+      // Бок — случайный на каждое укладывание: ряд спящих, повёрнутых
+      // одинаково, читался строем, а не сном. Случайность законна — это вид.
+      c.body.rotation = down ? (Math.random() < 0.5 ? -1 : 1) * (Math.PI / 2) : 0;
       c.body.y = down ? TILE * 0.1 : 0;
     }
     c.sleepMark.visible = asleep;
@@ -2456,6 +2471,7 @@ function renderSnapshot(snap) {
   syncBuyWindow();
   syncBinWindow();
   renderNews(snap);
+  soundSquads(snap);
   syncDoors(snap);
   syncNewsMarks();
   syncStockWindow();
@@ -2517,7 +2533,7 @@ function drawTool(g, crowbar) {
   return g;
 }
 
-function drawCat(g, fur, geared, arm) {
+function drawCat(g, fur, geared, arm, asleep = false) {
   const r = TILE * 0.3;
   const dark = 0x0b0d12;
   const furDark = shade(fur, -0.3);
@@ -2605,10 +2621,19 @@ function drawCat(g, fur, geared, arm) {
       .fill({ color: 0xe8a0a0, alpha: 0.8 });
   }
   // Морда: глаза со зрачками, нос. Глаза сдвинуты по ходу взгляда.
-  g.ellipse(hr * 0.1, hy - hr * 0.1, hr * 0.2, hr * 0.24).fill(0xf2f6e8);
-  g.ellipse(hr * 0.52, hy - hr * 0.1, hr * 0.2, hr * 0.24).fill(0xf2f6e8);
-  g.ellipse(hr * 0.14, hy - hr * 0.08, hr * 0.09, hr * 0.18).fill(dark);
-  g.ellipse(hr * 0.56, hy - hr * 0.08, hr * 0.09, hr * 0.18).fill(dark);
+  if (asleep) {
+    // Закрытые глаза — дуги вниз.
+    for (const ex of [hr * 0.12, hr * 0.54]) {
+      g.moveTo(ex - hr * 0.17, hy - hr * 0.1)
+        .quadraticCurveTo(ex, hy + hr * 0.08, ex + hr * 0.17, hy - hr * 0.1)
+        .stroke({ color: dark, width: 1.4, cap: "round" });
+    }
+  } else {
+    g.ellipse(hr * 0.1, hy - hr * 0.1, hr * 0.2, hr * 0.24).fill(0xf2f6e8);
+    g.ellipse(hr * 0.52, hy - hr * 0.1, hr * 0.2, hr * 0.24).fill(0xf2f6e8);
+    g.ellipse(hr * 0.14, hy - hr * 0.08, hr * 0.09, hr * 0.18).fill(dark);
+    g.ellipse(hr * 0.56, hy - hr * 0.08, hr * 0.09, hr * 0.18).fill(dark);
+  }
   g.circle(hr * 0.72, hy + hr * 0.22, hr * 0.11).fill(0xe8a0a0);
   // Тёмное пятно на лбу — окрас, а не состояние.
   g.ellipse(-hr * 0.35, hy - hr * 0.45, hr * 0.32, hr * 0.22).fill({ color: furDark, alpha: 0.7 });
@@ -2756,7 +2781,7 @@ function createUnit(e) {
   // Что уже нарисовано, помним на самом узле: силуэт пересобирается только
   // когда кот оделся или разделся, а не каждым кадром (тот же довод, что у покадровых
   // `sync*`, §12.84 — безусловная перерисовка каждые 16 мс).
-  c.geared = false;
+  c.look = "false|false";
   c.loadItem = -1;
   // Куда смотрит: 1 — вправо, −1 — влево. Двигает две вещи разом (зеркало тела
   // и сторону, с которой висит груз), поэтому живёт на узле, а не выводится
@@ -2945,6 +2970,13 @@ function hammerUnit(c, deltaMS) {
   if (Math.floor(c.hamPhase) !== Math.floor(before)) {
     // Частицы — у края клетки, обращённого к коту: туда и бьёт.
     spawnHit(cx - dx * TILE * 0.3, cy - dy * TILE * 0.3, c.workDemolish);
+    // Слышно только тех, кого видно; панорама — по месту на экране.
+    const at = c.getGlobalPosition();
+    if (at.x >= 0 && at.y >= 0 && at.x <= app.screen.width && at.y <= app.screen.height) {
+      play(c.workDemolish ? "crowbar" : "hammer", {
+        pan: (at.x / app.screen.width) * 2 - 1,
+      });
+    }
   }
 }
 
@@ -2999,6 +3031,7 @@ function puffChanged(prev, next) {
     if (prev[i] !== next[i]) changed.push(i);
     if (changed.length > 12) return;
   }
+  if (changed.length) play("puff");
   for (const i of changed) {
     const x = ((i % W) + 0.5) * TILE;
     const y = (Math.floor(i / W) + 0.5) * TILE;
@@ -5705,6 +5738,7 @@ function renderGoalsPanel(goals, required, snap) {
 const TOAST_MS = 7000;
 
 function showGoalToast(goal) {
+  play("goal");
   const def = goalDef(goal.def);
   const node = document.createElement("div");
   node.className = "toast";
@@ -5739,6 +5773,7 @@ function showGoalToast(goal) {
 /// Закрыл и играешь дальше: §10 отказывает MVP в финальном акте Воланда, а тут
 /// кончилось обучение, как у записки кончилось предзнание, а не мир (§12.46).
 function showFinale(goals, snap) {
+  play("goal");
   const cats = snap.entities.filter((e) => e.unit).length;
   const scrap = snap.stock?.[0];
   const stored = scrap ? scrap.stored + scrap.loose : 0;
@@ -6144,6 +6179,7 @@ function rectOf(a, b) {
 function applyDrag() {
   if (!dragFrom || !dragTo) return;
   const rect = rectOf(dragFrom, dragTo);
+  play("blueprint");
   worker.postMessage({ type: "build", ...rect, tile: buildTile });
 }
 
@@ -6583,6 +6619,59 @@ const KEEPS_CELL = new Set([
   "cancelResearch",
 ]);
 
+// --- звук (§12.253) -----------------------------------------------------------
+let soundQuiet = true;
+let awaySeen = null;
+let soundBtn = null;
+let soundBusBtns = [];
+
+function toggleSound() {
+  setMuted(!soundPrefs().mute);
+  syncSoundBtn();
+}
+function syncSoundBtn() {
+  if (!soundBtn) return;
+  const on = !soundPrefs().mute;
+  soundBtn.innerHTML = `<span class="sw sw-cursor"></span><span>Звук: ${on ? "вкл" : "выкл"}</span>`;
+  const p = soundPrefs();
+  for (const b of soundBusBtns) {
+    const bon = p.on[b.dataset.bus];
+    b.innerHTML = `<span class="sw sw-cursor"></span><span>${b.dataset.label}: ${bon ? "вкл" : "выкл"}</span>`;
+    b.classList.toggle("snd-off", !on || !bon);
+  }
+}
+
+// Клик интерфейса — одним слушателем на документе, как подсказки (§12.125):
+// кнопки пересоздаются кадром, и свой слушатель на каждой умер бы вместе с ней.
+// Погашенная (`.off`) отвечает глухим «отказом».
+document.addEventListener(
+  "mousedown",
+  (e) => {
+    const b = e.target.closest?.("button, .tool, .sec-head, .speed");
+    if (!b) return;
+    play(b.closest(".off") ? "deny" : "click");
+  },
+  true,
+);
+
+// Отряд вернулся: кот был `away` и стал дома. Сравнение между снимками, базовую
+// линию снимает первый снимок мира (`awaySeen = null` на `ready`).
+function soundSquads(snap) {
+  const now = new Set(
+    snap.entities.filter((e) => e.away && !e.captive).map((e) => e.id),
+  );
+  if (awaySeen && !soundQuiet) {
+    for (const id of awaySeen) {
+      const e = snap.entities.find((x) => x.id === id);
+      if (e && !e.away) {
+        play("squad");
+        break;
+      }
+    }
+  }
+  awaySeen = now;
+}
+
 function sendAction(msg) {
   worker.postMessage(msg);
   if (KEEPS_CELL.has(msg.type)) return;
@@ -6612,6 +6701,10 @@ window.addEventListener("keydown", (e) => {
   // делит ни с чем: буквенная часть клавиатуры в игре свободна целиком.
   // Маску и силуэт пересчитываем сразу, по последней позиции курсора: без
   // этого повёрнутый объект появился бы, только когда игрок дёрнет мышь.
+  if (e.code === "KeyM") {
+    toggleSound();
+    return;
+  }
   if (e.code === "KeyR" && buildStruct >= 0) {
     buildRot = (buildRot + 1) % 4;
     applyModeChrome();
@@ -7122,6 +7215,38 @@ function buildToolbar() {
   // решение с двух сторон, и цена у них общая; разложенные по разным экранам,
   // они заставляли игрока держать в голове то, что можно показать рядом.
 
+  // Звук (§12.253) — свой раздел: общий вкл/выкл, громкость и три шины
+  // отдельно. Кнопки раздел не складывают: их жмут, чтобы услышать разницу.
+  const snd = mkSection(el, "Звук");
+  soundBtn = mkTool("", () => toggleSound());
+  liveTitle(soundBtn, "Включить или выключить весь звук (клавиша M)");
+  snd.appendChild(soundBtn);
+  const vol = document.createElement("input");
+  vol.type = "range";
+  vol.min = "0";
+  vol.max = "100";
+  vol.value = String(Math.round(soundPrefs().master * 100));
+  vol.className = "sound-vol";
+  vol.addEventListener("input", () => setVolume("master", Number(vol.value) / 100));
+  liveTitle(vol, "Громкость");
+  snd.appendChild(vol);
+  soundBusBtns = [];
+  for (const [bus, label] of [
+    ["sfx", "Эффекты"],
+    ["ui", "Интерфейс"],
+    ["ambient", "Фон"],
+  ]) {
+    const b = mkTool("", () => {
+      setBusOn(bus, !soundPrefs().on[bus]);
+      syncSoundBtn();
+    });
+    b.dataset.bus = bus;
+    b.dataset.label = label;
+    snd.appendChild(b);
+    soundBusBtns.push(b);
+  }
+  syncSoundBtn();
+
   // Партия (§12.45). Автосохранение идёт само и молча, поэтому здесь только
   // то, что игрок решает сам: начать заново, унести партию файлом, принести
   // обратно и снять трейс.
@@ -7153,6 +7278,7 @@ function buildToolbar() {
   );
   liveTitle(dump, "Скачать снимок партии");
   game.appendChild(dump);
+
 
   const picker = document.createElement("input");
   picker.type = "file";
@@ -8694,6 +8820,7 @@ function renderNews(snap) {
     keep.add(key);
     let row = newsRows.get(key);
     if (!row) {
+      if (!soundQuiet) play("news");
       row = document.createElement("div");
       row.className = "newsrow";
       row.dataset.kind = n.kind;
@@ -8744,13 +8871,17 @@ onPanelClick(newsEl, ".newsrow", (row, e) => {
 // ⚠️ Окно с прокруткой **не перерисовывается** (§12.118): рамка и строки живут
 // от открытия до закрытия, а меняются на месте.
 function mkWindow(el, title, onClose, narrow) {
+  play("open");
   el.innerHTML = "";
   const box = document.createElement("div");
   box.className = "win-box" + (narrow ? " narrow" : "");
   const top = document.createElement("div");
   top.className = "win-top";
   top.innerHTML = `<div class="win-title">${esc(title)}</div>`;
-  const close = mkTool("Закрыть", onClose);
+  const close = mkTool("Закрыть", () => {
+    play("close");
+    onClose();
+  });
   close.className = "tool win-close";
   top.appendChild(close);
   box.appendChild(top);
@@ -10420,7 +10551,7 @@ function openWiki(key, back) {
     closeOtherWindows("wiki");
     wikiOpen = true;
   } else if (wikiKey !== key) {
-    wikiFresh = false;
+    wikiFresh = "";
     // Оглавление (`null`) кладём в след наравне со статьёй: игрок, пришедший
     // из него, ждёт вернуться в него же, а не наружу.
     wikiTrail.push(wikiKey);
@@ -10433,7 +10564,7 @@ function openWiki(key, back) {
 function closeWikiWindow() {
   if (!wikiOpen) return;
   wikiOpen = false;
-  wikiFresh = false;
+  wikiFresh = "";
   wikiKey = null;
   wikiTrail = [];
   wikiWinEl.hidden = true;
@@ -10545,7 +10676,7 @@ function buildWikiWindow() {
     '<div class="wiki-head">' +
     back +
     `<div class="wiki-title">${esc(title)}</div>` +
-    (wikiFresh ? '<div class="wiki-fresh">Новая запись</div>' : "") +
+    (wikiFresh ? `<div class="wiki-fresh">${wikiFresh}</div>` : "") +
     "</div>" +
     `<div class="wiki-body">${wikiPicture(wikiKey)}${renderArticle(wikiKey, wikiName)}</div>` +
     wikiFacts(wikiKey) +
@@ -10587,8 +10718,13 @@ function wikiGateOpen(key) {
         !HIDDEN_TILES.has(id) &&
         (snap.tiles_open ?? [])[def] !== false
       );
-    case "item":
-      return !!(snap.stock ?? [])[def]?.seen;
+    case "item": {
+      // Непонятая вещь (`requires`, §12.131) показывает статью, только если у
+      // той есть версия «до понимания» (`---понято---`): полный текст отнял бы
+      // у темы-вскрытия её смысл. Без короткой версии статья ждёт понимания.
+      const st = (snap.stock ?? [])[def];
+      return !!st?.seen && (st.understood !== false || hasTeaser(key));
+    }
     case "topic": {
       const t = (snap.topics ?? [])[def];
       if (!t) return false;
@@ -10645,6 +10781,13 @@ function loreOpen(id, snap) {
 }
 
 setArticleGate(wikiGateOpen);
+// Короткая версия — у предмета, который база видела, но ещё не поняла.
+setArticleTeased((key) => {
+  const [kind] = String(key).split(":");
+  if (kind !== "item") return false;
+  const { def } = wikiEntry(key);
+  return (lastSnap?.stock ?? [])[def]?.understood === false;
+});
 
 // Что было открыто прошлым снимком. `null` — базовой линии ещё нет: первый
 // снимок партии (новой или загруженной) её снимает и новостью не объявляется,
@@ -10654,19 +10797,24 @@ let wikiOpenSeen = null;
 // когда никакое окно не открыто: модал поверх штаба стёр бы ответ, за которым
 // игрок туда пошёл (§12.101).
 let wikiQueue = [];
-let wikiFresh = false;
+// Плашка над открывшейся статьёй: «Новая запись» · «Запись дополнена»; "" — нет.
+let wikiFresh = "";
 
 function noteWikiOpened() {
-  const open = new Set(articleKeys());
+  // Помним и версию: переход «коротко → полно» (вещь поняли) объявляется
+  // так же, как новая статья, но словами «Запись дополнена».
+  const open = new Map(articleKeys().map((k) => [k, articleStage(k)]));
   if (wikiOpenSeen !== null) {
-    for (const k of open) {
-      if (!wikiOpenSeen.has(k) && !wikiQueue.includes(k)) wikiQueue.push(k);
+    for (const [k, stage] of open) {
+      const was = wikiOpenSeen.get(k);
+      if (was === stage || wikiQueue.some(([q]) => q === k)) continue;
+      wikiQueue.push([k, was ? "Запись дополнена" : "Новая запись"]);
     }
   }
   wikiOpenSeen = open;
   if (!wikiQueue.length || WINDOWS.some(([, isOpen]) => isOpen())) return;
-  const key = wikiQueue.shift();
-  wikiFresh = true;
+  const [key, fresh] = wikiQueue.shift();
+  wikiFresh = fresh;
   openWiki(key, null);
 }
 
@@ -10738,6 +10886,7 @@ function closeOtherWindows(keep) {
 function closeAnyWindow() {
   const open = WINDOWS.find(([, isOpen]) => isOpen());
   if (!open) return false;
+  play("close");
   open[2]();
   return true;
 }
@@ -13144,6 +13293,7 @@ function setSpeed(s) {
   // ждать паузы ради неё игрока никто не заставляет.
   if (s > 0) lastSpeed = s;
   speed = s;
+  setPaused(s === 0);
   worker.postMessage({ type: "setSpeed", speed: s });
   for (const b of document.querySelectorAll(".speed")) {
     b.classList.toggle("active", Number(b.dataset.speed) === s);
