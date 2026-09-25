@@ -5722,7 +5722,12 @@ function renderGoalsPanel(goals, required, snap) {
   // кликабельной строкой, так что рассказ не теряется.
   const award = finale ? null : fresh.find((g) => g.kind === "optional");
   if (!finale) fresh.forEach((g) => g !== award && showGoalToast(g));
-  if (award) showAchievement(award, snap);
+  if (award) {
+    // Фанфара — только на взятии: повторное открытие строкой панели — это
+    // перечитывание, а не победа (§12.255).
+    play("victory");
+    showAchievement(award, snap);
+  }
 
   goalsDoneSeen = doneNow;
   // В самом конце: до сюда `goalsOpen` мог свернуться и финалом, и первым кадром

@@ -242,6 +242,22 @@ const SOUNDS = {
       }
     },
   },
+  // Фанфара ачивки (§12.255): короткий подъём до октавы и тянущийся аккорд —
+  // крупнее `goal`, потому что закрыта связка условий, а не одно.
+  victory: {
+    bus: "ui", max: 1, gap: 1500,
+    synth(d, t) {
+      [392, 523, 659].forEach((f, i) =>
+        tone(d, t + i * 0.11, { type: "square", f, peak: 0.06, decay: 0.14 }),
+      );
+      const at = t + 0.36;
+      for (const f of [523, 659, 784, 1047]) {
+        tone(d, at, { type: "triangle", f, a: 0.01, peak: 0.1, decay: 1.6 });
+      }
+      tone(d, at, { type: "square", f: 1047, f2: 1060, peak: 0.03, decay: 1.2 });
+      noise(d, at, { f: 6000, q: 0.7, peak: 0.05, decay: 0.5 });
+    },
+  },
 };
 
 // Сэмплы: запись с `file` грузится один раз после первого жеста.
