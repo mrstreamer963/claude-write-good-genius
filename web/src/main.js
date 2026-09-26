@@ -13331,7 +13331,7 @@ function raidCard(i, node) {
       "</div>",
   );
 
-  for (const row of [missionLootRow(def, g.share, !!(node?.samples_for?.[def] ?? node?.samples), node?.loots?.[def]), missionSidesRow(def)]) {
+  for (const row of [missionLootRow(def, g.share, !!(node?.samples_for?.[i] ?? node?.samples), node?.loots?.[i]), missionSidesRow(def)]) {
     if (row) rows.push(row);
   }
 
