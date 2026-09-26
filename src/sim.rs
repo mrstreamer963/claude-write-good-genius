@@ -3449,6 +3449,16 @@ impl Sim {
             &rule.stats,
             &rule.gear,
         );
+        // Новичок меняет память базы сразу (`Seen`, `Mastery`): найм идёт и на
+        // паузе, а наблюдатель в цепочке ждал бы первого тика — и лаборатория,
+        // которую открывает пришедший учёный, открылась бы только со снятием
+        // паузы. Прогон тот же, что в `Sim::new`.
+        let _ = self.world.run_system_once(note_seen);
+        // ⚠️ И лента — тем же движением: открытая на паузе постройка без
+        // новости всплывала статьёй-модалом, а меткой «новое» в палитре — только
+        // со снятием паузы, то есть два ответа на одно событие расходились.
+        // Это не крючок по воротам: наблюдатель прогоняется целиком, как в тике.
+        self.note_news();
         true
     }
 
@@ -6102,6 +6112,14 @@ impl Sim {
         let tiles_open: Vec<bool> = (0..self.world.resource::<TileRules>().0.len())
             .map(|def| self.tile_is_open(def))
             .collect();
+        // Журнал застройки (§12.220) наружу: дверь «Наука» и статья о науке ждут
+        // первой достроенной лаборатории — монотонно, снос её не прячет.
+        let tiles_built: Vec<bool> = {
+            let map = self.world.resource::<BaseMap>();
+            (0..self.world.resource::<TileRules>().0.len())
+                .map(|def| map.was_erected(def as i16))
+                .collect()
+        };
         let structures_open: Vec<bool> = (0..self.world.resource::<StructureRules>().0.len())
             .map(|def| self.structure_is_open(def))
             .collect();
@@ -6375,6 +6393,7 @@ impl Sim {
             stocking,
             techs,
             tiles_open,
+            tiles_built,
             structures_open,
             notes,
             goals,

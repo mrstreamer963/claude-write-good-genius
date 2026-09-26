@@ -8111,12 +8111,25 @@ function syncTileButtons(techs, open, structOpen) {
   // разметку, маску превью, ленту и палитру. Здесь остаётся только `hidden`.
   for (const { btn, def } of tileButtons) {
     btn.hidden = isOpen[def] === false;
+    syncWikiMark(btn, `tile:${meta.palette[def].id}`);
   }
   // Объекты — та же палитра и то же правило (§12.126, §12.162), и ответ тоже
   // ядра (§12.258): у штампа ворота не только свои, но и всех его клеток.
   for (const { btn, def } of structButtons) {
     btn.hidden = (structOpen ?? [])[def] === false;
+    syncWikiMark(btn, `structure:${(meta.structures ?? [])[def]?.id}`);
   }
+}
+
+// Значок «i» у кнопки, собранной один раз (палитра): статья открывается по
+// ходу партии (§12.251), а кнопка при этом не пересобирается — без досинхрона
+// закрытый на старте тайл так и оставался без значка. Пишем **только на
+// изменении**: покадровая пересборка детей кнопки съела бы клик (§12.84).
+function syncWikiMark(btn, key) {
+  const has = hasArticle(articleTarget(key));
+  const mark = btn.querySelector(":scope > .wiki-mark");
+  if (has && !mark) btn.insertAdjacentHTML("afterbegin", wikiMark(key));
+  else if (!has && mark) mark.remove();
 }
 
 /// Кто из фракций не доверяет базе настолько, чтобы дать этот заказ, — и
@@ -8918,6 +8931,28 @@ function newsText(n) {
     // Закрытий у постройки не бывает по тому же доводу, что у рецепта (§12.18),
     // — но ветку пишем: молчаливое «i» объяснить было бы нечем.
     const label = name(meta?.palette, n.def);
+    // Постройку открыл пришедший кот с навыком (`mastered`) — причину называем
+    // **навыком, а не именем**: учёным может прийти любой кандидат, и имя в
+    // тексте разошлось бы с рулсетом на первой же правке.
+    // `mastered` у записи палитры — набор `{id навыка: уровень}`, то есть
+    // `Map` (см. `costChips`): индексом по нему ничего не найти.
+    const need = meta?.palette?.[n.def]?.mastered;
+    const skillId = need instanceof Map ? [...need.keys()][0] : undefined;
+    const skill = (meta?.skills ?? []).findIndex((s) => s.id === skillId);
+    if (n.opened && skill >= 0) {
+      // Кто открыл — тот, кто дорос до нужной ступени: берём из снимка, а не
+      // из рулсета, — учёным может прийти любой кандидат.
+      const lvl = need.get(skillId);
+      const who = (lastSnap?.entities ?? []).find(
+        (e) => (e.skills?.[skill]?.level ?? 0) >= lvl,
+      );
+      // «Наука» → «науку»: винительный у женского рода на -а/-я, прочее как есть.
+      const acc = (w) => w.replace(/а$/, "у").replace(/я$/, "ю");
+      const sk = acc(name(meta?.skills, skill).toLowerCase());
+      const what = acc(label);
+      if (who) return [`${esc(who.id)} знает ${sk} — можно строить`, what];
+      return [`на базе знают ${sk} — можно строить`, what];
+    }
     return n.opened
       ? ["в палитре появилась постройка", label]
       : ["постройка закрылась", label];
@@ -9373,6 +9408,13 @@ function doorTileClosed(snap, has) {
   return def >= 0 && (snap.tiles_open ?? [])[def] === false;
 }
 
+// Стояла ли такая постройка на карте хоть раз — журнал застройки ядра
+// (`tiles_built`, §12.220), монотонный: снос двери и статьи не прячет.
+function tileEverBuilt(snap, has) {
+  const def = (meta?.palette ?? []).findIndex(has);
+  return def >= 0 && !!(snap.tiles_built ?? [])[def];
+}
+
 function syncDoors(snap) {
   const topics = snap.topics ?? [];
   const recruits = snap.recruits ?? [];
@@ -9411,7 +9453,10 @@ function syncDoors(snap) {
     // палитре, и эта дверь, и обе объявлены новостью.
     sciDoor.hidden =
       (topics.length > 0 && topics.every((t) => t.known)) ||
-      doorTileClosed(snap, (p) => p.lab);
+      // Открытая, но ещё не достроенная лаборатория двери тоже не даёт: в
+      // момент найма учёного новостью приходит «можно строить лабораторию»,
+      // и «Наука» рядом с ней — вторая новость о том же, до которой рано.
+      !tileEverBuilt(snap, (p) => p.lab);
     if (sciDoor.hidden && sciWinOpen) closeSciWindow();
     // Индексы, а не сами темы: уровень допуска лежит в палитре (`meta.research`),
     // и связывает их только номер — тот же, что у кнопок в окне.
@@ -11044,7 +11089,13 @@ function wikiGateOpen(key) {
       // Личная вещь (§12.256) ресурсом не бывает и «виденной» не считается —
       // её статья открывается с наймом того, кто её приносит (`gear` у
       // кандидата): анализатор приходит вместе с Антенной.
+      // Модалом «Новая запись» она при этом всплывала бы тем же кликом, что и
+      // сам кандидат, и рассказывала бы о коробке вместо кота, — поэтому
+      // статья с версией «до понимания» ждёт своей темы (`---понято---`):
+      // вещь объясняется тогда, когда база поняла, зачем она.
       if (entry?.personal) {
+        const tech = teaserTech(key);
+        if (tech && !(snap.techs ?? []).includes(tech)) return false;
         return (meta?.recruits ?? []).some(
           (r, i) => (r.gear ?? []).includes(id) && (snap.recruits ?? [])[i]?.hired,
         );
@@ -11100,7 +11151,10 @@ function loreOpen(id, snap) {
   };
   switch (id) {
     case "science":
-      return tileOpen((p) => p.lab);
+      // Статья ждёт достроенной лаборатории, а не открытой: открывает её
+      // пришедший учёный, и модал «Наука» тем же кликом, что и найм, —
+      // лекция поверх новости «можно строить».
+      return tileEverBuilt(snap, (p) => p.lab);
     case "trade":
       return snap.money_seen || tileOpen((p) => p.trade);
     case "standing":
