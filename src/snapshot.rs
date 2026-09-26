@@ -6,8 +6,8 @@
 use serde::Serialize;
 
 use crate::ruleset::{
-    BlightDef, FactionDef, GoalDef, ItemDef, MissionDef, PerkDef, RecipeDef, RecruitDef,
-    ResearchDef, SiteDef, SkillDef, StatDef, TileDef,
+    AbilityDef, BlightDef, FactionDef, GoalDef, ItemDef, MissionDef, PerkDef, RecipeDef,
+    RecruitDef, ResearchDef, SiteDef, SkillDef, StatDef, TileDef,
 };
 
 #[derive(Serialize)]
@@ -30,6 +30,9 @@ pub(crate) struct MapMeta {
     /// состояние очага на нём. Пусто = карты в этом рулсете нет.
     pub(crate) sites: Vec<SiteDef>,
     pub(crate) blights: Vec<BlightDef>,
+    /// Палитра возможностей отряда (§12.260): в снимке от них остаются индексы
+    /// (`lacks` у узла, `abilities` у кота), слово — отсюда.
+    pub(crate) abilities: Vec<AbilityDef>,
     /// Палитра предметов: тип в снапшоте — это её индекс (§12.21).
     pub(crate) items: Vec<ItemDef>,
     /// Палитра навыков: имена и подписи уходят один раз, как палитра тайлов, —
@@ -188,6 +191,10 @@ pub(crate) struct Snapshot {
     /// значит «счёт заведён» это `earned > 0`, а не `money > 0`. По самому
     /// счёту судить нельзя — потративший всё вернулся бы к «денег не бывает».
     pub(crate) money_seen: bool,
+    /// Освоенные базой возможности отряда (§12.261), индексы палитры
+    /// `abilities:`. Несомая, но не освоенная — прибор без методики: строка
+    /// кота называет её тусклой с причиной (`hint` у записи).
+    pub(crate) abilities_on: Vec<usize>,
     /// Сделка в работе; список, а не одна запись, — но фасад пускает по одной
     /// за раз, как вылазку, тему и заказ (§12.44).
     pub(crate) deals: Vec<DealSnap>,
@@ -848,6 +855,10 @@ pub(crate) struct EntitySnap {
     /// берут, чтобы рос (§12.71).
     pub(crate) raid_skill: i32,
     pub(crate) gear_force: i32,
+    /// Возможности, которые вещи этого кота вешают на отряд (§12.260), —
+    /// индексы палитры `abilities:`. По ним штаб называет, у кого есть то,
+    /// чего не хватает заказу: «нужен сбор образцов — у Антенны».
+    pub(crate) abilities: Vec<usize>,
     /// Ступень проводника (§12.70) и то, **что она даёт**: на сколько процентов
     /// этот кот срежет опасность, если поведёт отряд (§12.71).
     ///
@@ -1006,6 +1017,13 @@ pub(crate) struct NodeSnap {
     /// — его подпись, и приходят они из рулсета через ядро.
     pub(crate) trails: i32,
     pub(crate) samples: i32,
+    /// То же по каждому заказу (§12.261): вылазка-урок сама осваивает
+    /// сбор, и прибор на ней работает раньше, чем на прочих.
+    pub(crate) samples_for: Vec<i32>,
+    /// Каких возможностей отряду не хватает на каждый заказ (§12.260): индексы
+    /// палитры `abilities:` по заказам, пусто — хватает всех. Тем же
+    /// `crew_traits`, каким заявка решит, пускать ли отряд.
+    pub(crate) lacks: Vec<Vec<usize>>,
     /// Слагаемые срока по заказам — дорога и работа уже с тропами и сбором
     /// (§12.256): из них вид пишет формулу `spans`, и она обязана сходиться.
     pub(crate) roads: Vec<i32>,

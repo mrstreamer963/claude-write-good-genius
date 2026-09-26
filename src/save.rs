@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 40;
+pub(crate) const FORMAT: u32 = 41;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -203,6 +203,10 @@ pub(crate) const SKIPPED: &[(&str, &str)] = &[
     ),
     ("ItemRules", "правила: пересобирает `Sim::new` из рулсета"),
     ("PerkRules", "правила: пересобирает `Sim::new` из рулсета"),
+    (
+        "AbilityRules",
+        "правила: пересобирает `Sim::new` из рулсета",
+    ),
     (
         "LoadoutRules",
         "правила: пересобирает `Sim::new` из рулсета",
@@ -671,6 +675,9 @@ pub(crate) struct MissionDto {
     pub(crate) travel: i32,
     #[serde(default)]
     pub(crate) toll: i32,
+    /// Возможности ушедшего отряда (§12.260), маской.
+    #[serde(default)]
+    pub(crate) abilities: u64,
 }
 
 // ── Снять снимок ──────────────────────────────────────────────────────────
@@ -815,6 +822,7 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                     site: m.site,
                     travel: m.travel,
                     toll: m.toll,
+                    abilities: m.abilities,
                 }),
             }
         })
@@ -1305,6 +1313,7 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
                 verdict: m.verdict.map(|(share, failed)| Verdict { share, failed }),
                 travel: m.travel,
                 toll: m.toll,
+                abilities: m.abilities,
             });
         }
     }

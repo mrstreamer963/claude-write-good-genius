@@ -2185,6 +2185,22 @@ function renderSnapshot(snap) {
   drawDeals(snap.deals);
   drawWork(snap);
   const seen = new Set();
+  // Кто сидит у парты (ученик или дошедший учитель): штамп «ученик · стол ·
+  // учитель» (§12.258) ставит их в один ряд через стол, и смотрят они друг на
+  // друга, а не туда, откуда пришли. Только картинка: пару ядро не называет.
+  const seated = (e) => !e.moving && (atStudy(e) || e.job === "teach");
+  const deskSeats = new Map();
+  for (const e of snap.entities) {
+    if (seated(e)) deskSeats.set(`${e.x},${e.y}`, e.id);
+  }
+  const deskPartner = (e) => {
+    if (!seated(e)) return 0;
+    for (const d of [2, -2, 1, -1]) {
+      const id = deskSeats.get(`${e.x + d},${e.y}`);
+      if (id !== undefined && id !== e.id) return d;
+    }
+    return 0;
+  };
   for (const e of snap.entities) {
     seen.add(e.id);
     const c = units.get(e.id) ?? createUnit(e);
@@ -2232,8 +2248,10 @@ function renderSnapshot(snap) {
     // а не весь узел: метки состояний — соседние дети контейнера, и они бы
     // уехали вместе с ним.
     // Работающий смотрит на свою площадку, а не туда, откуда пришёл.
-    const turn =
-      c.workX >= 0 && c.workX !== e.x
+    const partner = deskPartner(e);
+    const turn = partner
+      ? partner
+      : c.workX >= 0 && c.workX !== e.x
         ? c.workX - e.x
         : was && was.x !== e.x
           ? e.x - was.x
@@ -4101,7 +4119,11 @@ function fieldLine(e, led, node, guide) {
     }
   }
   const toll = Math.max(0, ...(e.gear ?? []).map((i) => meta?.items?.[i]?.collects ?? 0));
-  if (toll > 0) {
+  // Прибор без методики — железка (§12.261): пока база не освоила сбор,
+  // строка о нём молчит вовсе — ни цены, ни причины. Освоено ли, говорит
+  // ядро (`abilities_on`).
+  const idle = (e.abilities ?? []).some((a) => !(lastSnap?.abilities_on ?? []).includes(a));
+  if (toll > 0 && !idle) {
     // Цена, а не выгода: сбор удлиняет работу, поэтому число красное.
     parts.push(`<u>сбор образцов</u> — работа <b class="bad">+${toll} %</b>`);
   }
@@ -7686,6 +7708,15 @@ function masteryHint(need) {
   return parts.join(", ");
 }
 
+// То же требование в творительном падеже для строки витрины:
+// «Нужен кот, у которого „Наука“ 3-го уровня».
+function masteryNeed(need) {
+  const parts = [];
+  for (const [id, lvl] of need ?? new Map())
+    parts.push(`«${skillLabel(id)}» ${lvl}-го уровня`);
+  return parts.join(" и ");
+}
+
 function payHint(cost) {
   const entries =
     cost instanceof Map ? [...cost.entries()] : Object.entries(cost ?? {});
@@ -7795,7 +7826,21 @@ function syncTopicButtons(list) {
     b.hidden = !!t.known || awaiting || (!t.unlocked && !teasing);
     b.classList.toggle("locked", teasing);
     for (const el of b._details ?? []) el.hidden = teasing;
-    if (b._locked) b._locked.hidden = !teasing;
+    if (b._locked) {
+      b._locked.hidden = !teasing;
+      // Две витрины — две причины (§12.137, §12.259): у вскрытия это
+      // непонятый артефакт, у темы, ждущей учёного, — сам учёный, и его
+      // называем прямо: до него игрок дорастает сам. Пишем на изменении (§12.84).
+      const why = unmastered
+        ? `Нужен кот, у которого ${masteryNeed((meta.research ?? [])[i]?.mastered)} — ` +
+          "такого на базе ещё не было"
+        : "Артефакт со склада. Что с ним делать, база пока не понимает — " +
+          "нужна наука, до которой ещё не доросли";
+      if (b._locked._text !== why) {
+        b._locked._text = why;
+        b._locked.textContent = why;
+      }
+    }
     // «Открывает:» — живая строка (см. `opensAfter`): она называет только то,
     // что станет доступно **сразу** после этой темы, а список известных
     // технологий растёт по ходу партии. Пишем **только на изменении**: узел
@@ -8237,6 +8282,22 @@ function stepWords(i) {
   return `через ${st.step_in} станет ступенью ${st.stage + 1}`;
 }
 
+// Недостающие возможности отряда словом (§12.260): «нужен сбор образцов — у
+// Антенны». Кто её несёт, берётся из самого кота (`EntitySnap::abilities`,
+// считает ядро по надетому); пленных и ушедших не называем — их не взять.
+function abilityWhy(lacks) {
+  const names = lacks.map((a) => (meta.abilities ?? [])[a]?.label ?? "?");
+  const carriers = (lastSnap?.entities ?? [])
+    .filter((e) => !e.away && lacks.some((a) => (e.abilities ?? []).includes(a)))
+    .map((e) => e.id);
+  return (
+    `нужен ${names.join(", ")}` +
+    (carriers.length
+      ? ` — возьмите в отряд: ${carriers.map(esc).join(", ")}`
+      : " — такого снаряжения на базе нет")
+  );
+}
+
 function raidGate(i, node) {
   const def = (meta.missions ?? [])[i] ?? {};
   const [need, most] = squadBounds(def);
@@ -8362,6 +8423,12 @@ function raidGate(i, node) {
   // вымотанных — их ядро в `ready` держало, а `fit` не пускал, и строка
   // говорила «кто-то вымотан», не называя кто.
   const waiting = home.length ? ` (${home.join(", ")})` : "";
+  // Чего отряду не хватает в поле (§12.260): возможности («сбор образцов»)
+  // вешает снаряжение, и заказ спрашивает её, а не кота по имени. Чего нет,
+  // считает ядро (`NodeSnap::lacks`) тем же `crew_traits`, каким отклонит
+  // заявку; здесь только называем словом — и кто на базе её несёт.
+  const lacks = node.lacks?.[i] ?? [];
+  const lackWhy = lacks.length ? abilityWhy(lacks) : null;
   const ready =
     !nogate &&
     !busyHere &&
@@ -8371,7 +8438,8 @@ function raidGate(i, node) {
     !nobody &&
     reachable &&
     paws >= least &&
-    !over;
+    !over &&
+    !lackWhy;
   // Закрытая вылазка видна и объясняется словом: лестница ответственности —
   // это то, к чему игрок идёт (§4.4). Исключения перечислены у `hiddenRaid`
   // (с §12.242 среди них и заражённый участок), и до карточки они не доходят
@@ -8418,7 +8486,9 @@ function raidGate(i, node) {
                     : over
                       ? `${hint} · в отряде ${enlisted}, а больше ${most} этот заказ` +
                         ` не уводит — вычеркните лишних`
-                      : hint;
+                      : lackWhy
+                        ? `${hint} · ${lackWhy}`
+                        : hint;
   // Причина отказа отдельной строкой от подсказки: тулбар склеивает их в один
   // `title`, а штаб (§12.71) печатает причину словом под заказом — там она и
   // должна читаться, не наводя мышь.
@@ -8458,7 +8528,9 @@ function raidGate(i, node) {
                     : over
                       ? `в отряде ${enlisted}, а больше ${most} этот заказ не уводит` +
                         ` — вычеркните лишних`
-                      : null;
+                      : // Строкой, а не только подсказкой (§12.181): причина
+                        // своя у этой карточки и чинится составом.
+                        lackWhy;
   return {
     ready,
     // Заказчик закрыл виданный заказ (§12.246): карточка без кнопки.
@@ -9626,6 +9698,10 @@ function opensOf(topic, known = []) {
     (xs ?? []).filter(pick).map((x) => x.label || x.id);
   const groups = [
     ["постройки", names(meta.palette, (t) => t.tech === id)],
+    // Заказ за технологией (§12.260): «Полевая методика» обещает вылазку
+    // «Сбор образцов». Ворота у заказа одни — `tech`, — так что обещание
+    // исполняется ровно по названной причине.
+    ["вылазки", names(meta.missions, (m) => m.tech === id)],
     // Разбор — тот же рецепт (§12.114), и называется он входом, а не выходом.
     [
       "рецепты",
@@ -9751,9 +9827,8 @@ function buildSciWindow() {
         // ни цены, ни «даёт», ни «открывает», — но **причина словом есть**,
         // иначе это молчащая кнопка (§12.53). Класс блокера назван, конкретная
         // тема-предок — нет: в этом и смысл.
-        '<span class="topic-locked" hidden>Артефакт со склада. Что с ним ' +
-        "делать, база пока не понимает — нужна наука, до которой ещё не " +
-        "доросли</span>" +
+        // Текст пишет кадр: у витрины две причины (§12.137, §12.259).
+        '<span class="topic-locked" hidden></span>' +
         // Идущая тема — тем же, чем её показывает панель тем справа: доля,
         // кто за ней и «Отменить». Панель накрыта самим модалом (§12.101), и
         // без этого блока окно отвечало на идущую тему одним «уже изучается».
@@ -13133,7 +13208,7 @@ function raidCard(i, node) {
       "</div>",
   );
 
-  for (const row of [missionLootRow(def, g.share, !!node?.samples), missionSidesRow(def)]) {
+  for (const row of [missionLootRow(def, g.share, !!(node?.samples_for?.[def] ?? node?.samples)), missionSidesRow(def)]) {
     if (row) rows.push(row);
   }
 

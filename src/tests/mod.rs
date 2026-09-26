@@ -159,6 +159,7 @@ fn sim_from(rows: &[&str]) -> Sim {
     world.insert_resource(RaidsMet::default());
     world.insert_resource(Mastery::default());
     world.insert_resource(PerkRules::default());
+    world.insert_resource(AbilityRules::default());
     // Лента новостей (§12.120) заводится всегда, как три журнала целей: она не
     // контент, а память мира о случившемся, и наблюдатель пишет в неё независимо
     // от того, смотрит ли на неё хоть один экран.
@@ -256,6 +257,7 @@ fn sim_from(rows: &[&str]) -> Sim {
         perks: Vec::new(),
         factions: Vec::new(),
         missions: Vec::new(),
+        abilities: Vec::new(),
         // Палитры карты пусты, как и всё остальное: у схемы `sim_from` карты
         // внешнего мира нет (§12.198), её заводят `set_site` и `set_blight_kind`.
         sites: Vec::new(),
@@ -799,7 +801,8 @@ impl Sim {
                 // Приборов сбора и личных вещей тоже нет (§12.256): их
                 // включает `set_item_traits`.
                 collects: 0,
-                collected: false,
+                grants: Vec::new(),
+                collected: String::new(),
                 personal: false,
                 // Ворот на надевание в синтетическом мире тоже нет (§12.114):
                 // предмет надевается сразу — их ставит `set_wear_tech`.
@@ -1690,6 +1693,14 @@ impl Sim {
 
     /// Отметить предмет виденным (§12.131) — открывает ворота по находке
     /// (§12.210). Тестам чужих механик короче, чем везти образец с вылазки.
+    /// Отметить, что кот базы хоть раз дорастал до `level` в домене `skill`
+    /// (§12.257) — как `sight` для предмета. Так открывается лаборатория
+    /// (§12.260): её приводит учёный.
+    fn master(&mut self, skill: &str, level: i32) {
+        let skill = self.skill_index(skill).expect("навык в палитре");
+        self.world.resource_mut::<Mastery>().raise(skill, level);
+    }
+
     fn sight(&mut self, id: &str) {
         let item = self.item_index(id).expect("предмет в палитре");
         self.world.resource_mut::<Seen>().mark(item);
@@ -2007,7 +2018,10 @@ impl Sim {
         }
         rules.0[item].collects = collects;
         rules.0[item].personal = personal;
-        rules.0[item].collected = collected;
+        // В схеме палитра возможностей одна — «сбор» под индексом 0 (§12.260):
+        // прибор вешает его на отряд, а `collected` его требует.
+        rules.0[item].grants = u64::from(collects > 0);
+        rules.0[item].collected = collected.then_some(0);
     }
 
     /// Надеть на кота вещи мимо шаблона — как личную вещь кандидата (§12.256).

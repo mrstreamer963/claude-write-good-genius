@@ -81,8 +81,13 @@ fn item_stages(rs: &Ruleset, depth: &BTreeMap<&str, u32>) -> BTreeMap<String, (u
         note(&s.item, 0); // стартовый склад — самое раннее, что бывает
     }
     for m in &rs.missions {
-        for id in m.loot.keys() {
-            note(id, 0); // вылазка технологиями не закрыта (§12.43)
+        // Обычная вылазка технологиями не закрыта (§12.43); вылазка-урок
+        // приносит добычу только после своей темы (§12.260).
+        let at = depth_of_one(depth, &m.tech);
+        if let Some(at) = at {
+            for id in m.loot.keys() {
+                note(id, at);
+            }
         }
     }
     for f in &rs.factions {
@@ -338,7 +343,11 @@ fn the_shipped_ruleset_opens_early_items_without_fame() {
             free.insert(id.as_str());
         }
     }
-    for m in rs.missions.iter().filter(|m| m.requires == 0) {
+    for m in rs
+        .missions
+        .iter()
+        .filter(|m| m.requires == 0 && m.tech.is_empty())
+    {
         for id in m.loot.keys() {
             free.insert(id.as_str());
         }
@@ -396,7 +405,21 @@ fn the_shipped_ruleset_lets_you_take_apart_what_you_opened() {
     let mut sins: Vec<String> = Vec::new();
     for r in rs.recipes.iter().filter(|r| r.salvage) {
         for input in r.cost.keys() {
-            let opener = rs.research.iter().find(|t| t.specimen.contains_key(input));
+            // Вещь, которую база не вскрывает, а **делает сама**, разбирается
+            // той же темой, что открыла её производство: умеешь сделать —
+            // знаешь, из чего она.
+            let opener = rs
+                .research
+                .iter()
+                .find(|t| t.specimen.contains_key(input))
+                .or_else(|| {
+                    rs.recipes
+                        .iter()
+                        .filter(|m| !m.salvage && m.gives.contains_key(input))
+                        .flat_map(|m| m.requires.iter())
+                        .filter(|t| Some(t.as_str()) != shop.as_deref())
+                        .find_map(|t| rs.research.iter().find(|x| &x.id == t))
+                });
             let Some(opener) = opener else {
                 sins.push(format!(
                     "«{}» разбирает «{input}», но вскрывать его негде: темы с \

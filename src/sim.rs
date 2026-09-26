@@ -43,8 +43,8 @@ use crate::movement::{Busy, is_stuck};
 use crate::path::{Reach, find_path};
 use crate::relay::relay_force;
 use crate::ruleset::{
-    BlightDef, EventDef, FactionDef, GoalDef, ItemDef, MissionDef, PerkDef, RecipeDef, RecruitDef,
-    ResearchDef, Ruleset, SiteDef, SkillDef, StatDef, TileDef,
+    AbilityDef, BlightDef, EventDef, FactionDef, GoalDef, ItemDef, MissionDef, PerkDef, RecipeDef,
+    RecruitDef, ResearchDef, Ruleset, SiteDef, SkillDef, StatDef, TileDef,
 };
 use crate::save::{FORMAT, SaveFile, capture, fingerprint, note, restore};
 use crate::schedule::build_schedule;
@@ -79,6 +79,8 @@ pub struct Sim {
     /// их здесь, а не только в ресурсах, по той же причине, что и остальные
     /// палитры, — `map_meta` отдаёт их виду один раз, целиком из рулсета.
     pub(crate) sites: Vec<SiteDef>,
+    /// Палитра возможностей отряда (§12.260): едет виду ради слова.
+    pub(crate) abilities: Vec<AbilityDef>,
     pub(crate) blights: Vec<BlightDef>,
     pub(crate) recruits: Vec<RecruitDef>,
     pub(crate) research: Vec<ResearchDef>,
@@ -254,7 +256,12 @@ impl Sim {
             def,
         );
         RaidGates {
-            unlocked: self.world.resource::<Fame>().0 >= rule.requires,
+            // Известность и технология — одно выражение (§12.260): заявка
+            // спрашивает его же.
+            unlocked: rule.unlocked(
+                self.world.resource::<Fame>().0,
+                self.world.resource::<Techs>(),
+            ),
             welcome: self.world.resource::<Standing>().covers(&rule.needs),
             met: self.world.resource::<RaidsMet>().met(def),
             // **Есть ли у вылазки цель вообще** (§12.199). Вопрос один на два
@@ -263,8 +270,12 @@ impl Sim {
             // Оба **прячутся** из списка, когда цели нет, и это не «пока
             // нельзя», а «сейчас такого не существует»: ждать нечего и целиться
             // не во что.
+            //
+            // Третий такой заказ — однократный (§12.260): урок, пройденный
+            // успехом (журнал `Raids`), больше не существует.
             possible: (!rule.rescue || self.has_captive())
-                && (rule.cleanses.is_none() || !targets.is_empty()),
+                && (rule.cleanses.is_none() || !targets.is_empty())
+                && !(rule.once && self.world.resource::<Raids>().0.contains(&def)),
             // Место заказа не заражено (§12.198). Только про заказ **со своим
             // местом**: у зачистки места нет, у неё цель, — и разводить эти два
             // вопроса пришлось ровно потому, что прячется один, а второй обязан
@@ -1401,6 +1412,19 @@ impl Sim {
         // на них ссылается расписание: событие сеет очаг по адресу.
         let site_index = |id: &str| rs.sites.iter().position(|s| s.id == id);
         let blight_index = |id: &str| rs.blights.iter().position(|b| b.id == id);
+        // Возможности отряда (§12.260): от записи остаётся бит маски, а маска
+        // вмещает 64 — пропавший `id` и лишняя запись схлопываются в ноль.
+        let ability_index = |id: &str| {
+            rs.abilities
+                .iter()
+                .position(|a| a.id == id)
+                .filter(|&i| i < 64)
+        };
+        let ability_mask = |ids: &[String]| {
+            ids.iter()
+                .filter_map(|id| ability_index(id))
+                .fold(0u64, |m, i| m | (1 << i))
+        };
 
         let mut map = BaseMap::empty(w, h);
         for b in &rs.build {
@@ -1829,6 +1853,9 @@ impl Sim {
                         .collect(),
                     site: site_index(&m.site),
                     cleanses: blight_index(&m.cleanses),
+                    tech: (!m.tech.is_empty()).then(|| m.tech.clone()),
+                    once: m.once,
+                    abilities: ability_mask(&m.abilities),
                 })
                 .collect(),
         ));
@@ -1875,7 +1902,8 @@ impl Sim {
                     nutrition: i.nutrition,
                     mends: i.mends,
                     collects: i.collects,
-                    collected: i.collected,
+                    grants: ability_mask(&i.grants),
+                    collected: ability_index(&i.collected),
                     personal: i.personal,
                     requires: i.requires.clone(),
                 })
@@ -1885,6 +1913,14 @@ impl Sim {
             rs.loadout.iter().filter_map(|id| item_index(id)).collect(),
         ));
         world.insert_resource(UnitRules { carry: rs.carry });
+        // Какой вылазкой осваивается возможность отряда (§12.261). Пропавший
+        // `id` вылазки значит «освоена с начала» — как пустое поле.
+        world.insert_resource(AbilityRules(
+            rs.abilities
+                .iter()
+                .map(|a| rs.missions.iter().position(|m| m.id == a.after))
+                .collect(),
+        ));
         world.insert_resource(PerkRules(
             rs.perks
                 .iter()
@@ -2091,6 +2127,7 @@ impl Sim {
             perks: rs.perks,
             factions: rs.factions,
             missions: rs.missions,
+            abilities: rs.abilities,
             sites: rs.sites,
             blights: rs.blights,
             recruits: rs.recruits,
@@ -2147,6 +2184,7 @@ impl Sim {
             structures: self.structures.clone(),
             sites: self.sites.clone(),
             blights: self.blights.clone(),
+            abilities: self.abilities.clone(),
             items: self.items.clone(),
             skills: self.skills.clone(),
             stats: self.stats.clone(),
@@ -2917,11 +2955,12 @@ impl Sim {
             .map(|(e, _)| e)
             .collect();
         let traits = self.traits_of(&ready);
+        let active = self.abilities_active();
         let rules = self.world.resource::<MissionRules>();
         rules
             .0
             .iter()
-            .map(|r| duration(r, ready.len(), traits))
+            .map(|r| duration(r, ready.len(), traits.fielded(r.abilities, active)))
             .collect()
     }
 
@@ -2937,15 +2976,23 @@ impl Sim {
             .map(|(e, _)| e)
             .collect();
         let traits = self.traits_of(&ready);
+        let active = self.abilities_active();
         let rules = self.world.resource::<MissionRules>();
         (
             rules.0.iter().map(|r| travel(r, traits)).collect(),
             rules
                 .0
                 .iter()
-                .map(|r| crate::missions::work(r, traits))
+                .map(|r| crate::missions::work(r, traits.fielded(r.abilities, active)))
                 .collect(),
         )
+    }
+
+    /// Освоенные базой возможности отряда маской (§12.261).
+    pub(crate) fn abilities_active(&self) -> u64 {
+        self.world
+            .resource::<AbilityRules>()
+            .active(self.world.resource::<Raids>())
     }
 
     /// Тропы и прибор сбора у этих котов (§12.256) — тем же `crew_traits`,
@@ -3160,8 +3207,16 @@ impl Sim {
             return false;
         }
         // Известность — ворота: за дело, о котором ещё не слышали, не берутся,
-        // сколько бы сильным ни был отряд (§12.24).
-        if self.world.resource::<Fame>().0 < rule.requires {
+        // сколько бы сильным ни был отряд (§12.24). Технология — тем же
+        // выражением (§12.260).
+        if !rule.unlocked(
+            self.world.resource::<Fame>().0,
+            self.world.resource::<Techs>(),
+        ) {
+            return false;
+        }
+        // Однократный заказ после успеха больше не существует (§12.260).
+        if rule.once && self.world.resource::<Raids>().0.contains(&def) {
             return false;
         }
         // Вторые ворота: заказчик должен с базой разговаривать (§12.43).
@@ -3224,6 +3279,13 @@ impl Sim {
         if crew.len() < need {
             return false;
         }
+        // Возможности отряда (§12.260): заказ спрашивает не кота по имени, а
+        // то, что отряд несёт, — тем же `crew_traits`, каким снимок называет
+        // недостающее.
+        let cats: Vec<Entity> = crew.iter().map(|&(e, _)| e).collect();
+        if !self.traits_of(&cats).covers(rule.abilities) {
+            return false;
+        }
 
         // Гараж, который держит этот слот, — он же дверь и дом отряда
         // (§12.152). Свободный берётся в порядке обхода карты, то есть
@@ -3255,6 +3317,7 @@ impl Sim {
             verdict: None,
             travel: 0,
             toll: 0,
+            abilities: 0,
         });
         let mission_e = mission_e.id();
         // Спящие в `crew` теперь есть (§12.191) — их отсекает `ready` ниже, и
@@ -5379,6 +5442,7 @@ impl Sim {
                     raid_force: raid_skill + gear_force + 1,
                     raid_skill,
                     gear_force,
+                    abilities: bits(items.grants_of_gear(gear)),
                     // Проводник: ступень — чтобы сравнить кандидата с нынешним
                     // ведущим (считается по лучшему, а не по сумме), процент —
                     // чтобы панель называла следствие реакции, а не её шкалу
@@ -5524,6 +5588,7 @@ impl Sim {
                 let mut q = self.world.query_filtered::<&OnDuty, Without<Path>>();
                 q.iter(&self.world).map(|d| d.spot).collect()
             };
+            let active = self.abilities_active();
             let mut q = self.world.query::<(Entity, &Mission)>();
             let rules = self.world.resource::<MissionRules>();
             for (e, m) in q.iter(&self.world) {
@@ -5546,12 +5611,16 @@ impl Sim {
                 let joined = mine().fold(Crew::default(), |a, &(.., c)| Crew {
                     road_cut: a.road_cut.max(c.road_cut),
                     work_toll: a.work_toll.max(c.work_toll),
+                    abilities: a.abilities | c.abilities,
+                    toll_grants: a.toll_grants | c.toll_grants,
                 });
                 let traits = match m.span {
-                    0 => joined,
+                    0 => joined.fielded(rule.map_or(0, |r| r.abilities), active),
                     _ => Crew {
                         road_cut: joined.road_cut,
                         work_toll: m.toll,
+                        abilities: m.abilities,
+                        toll_grants: 0,
                     },
                 };
                 let paws = mine().count();
@@ -5704,6 +5773,12 @@ impl Sim {
         // Меряем журналом, а не самим счётом: потративший всё не должен
         // возвращаться к «котоденег в этой игре не бывает».
         let money_seen = self.world.resource::<Earned>().0 > 0;
+        let abilities_on = {
+            let on = self.abilities_active();
+            (0..self.abilities.len().min(64))
+                .filter(|&i| on & (1 << i) != 0)
+                .collect()
+        };
         let deals: Vec<DealSnap> = {
             let mut q = self.world.query::<&Deal>();
             let mut out: Vec<DealSnap> = q
@@ -5891,6 +5966,7 @@ impl Sim {
                             .collect();
                         self.traits_of(&ready)
                     };
+                    let active = self.abilities_active();
                     NodeSnap {
                         x,
                         y,
@@ -5907,7 +5983,23 @@ impl Sim {
                         fails,
                         guide: self.node_guide(x, y),
                         trails: node_traits.road_cut,
-                        samples: node_traits.work_toll,
+                        // Сбор в шапке отряда — каким он выйдет на обычный
+                        // заказ (§12.261): неосвоенный прибор цены не берёт.
+                        samples: node_traits.fielded(0, active).work_toll,
+                        samples_for: self
+                            .world
+                            .resource::<MissionRules>()
+                            .0
+                            .iter()
+                            .map(|r| node_traits.fielded(r.abilities, active).work_toll)
+                            .collect(),
+                        lacks: self
+                            .world
+                            .resource::<MissionRules>()
+                            .0
+                            .iter()
+                            .map(|r| bits(r.abilities & !node_traits.abilities))
+                            .collect(),
                         busy: !self.node_is_free(x, y),
                         auto: auto.map_or(-1, |def| def as i32),
                         auto_on: self.world.resource::<AutoRaids>().is_on(x, y),
@@ -6259,6 +6351,7 @@ impl Sim {
             factions_met,
             money,
             money_seen,
+            abilities_on,
             deals,
             bins,
             prices,
@@ -6303,4 +6396,9 @@ pub(crate) fn work_cell(
         Some(&(x, y, _)) if !moving => (x, y),
         _ => (-1, -1),
     }
+}
+
+/// Индексы поднятых битов маски — возможности отряда наружу (§12.260).
+fn bits(mask: u64) -> Vec<usize> {
+    (0..64).filter(|&i| mask & (1 << i) != 0).collect()
 }

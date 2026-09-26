@@ -77,6 +77,8 @@ pub(crate) struct RaidRules<'w> {
     /// Породы очагов: по ним считается надбавка за ступень (§12.198). Здесь же
     /// и по той же причине — система и без них у предела параметров.
     pub(crate) blights: Res<'w, BlightRules>,
+    /// Какой вылазкой база осваивает возможность отряда (§12.261).
+    pub(crate) abilities: Res<'w, AbilityRules>,
 }
 
 /// Параметр, которым отряд режет опасность вылазки (§12.70). Имя, а не номер:
@@ -229,14 +231,44 @@ pub(crate) struct Crew {
     /// («Знание троп»). Ноль — троп не знает никто.
     pub(crate) road_cut: i32,
     /// На сколько процентов длиннее работа: прибор сбора (`collects` у
-    /// предмета). Ноль — прибора нет, и образцы с места не падают.
+    /// предмета). Ноль — прибора нет.
     pub(crate) work_toll: i32,
+    /// Возможности отряда (§12.260) — объединение `grants` по надетому, маской
+    /// по палитре `abilities:`. Ими отряд проходит ворота заказа и приносит
+    /// `collected`-добычу.
+    pub(crate) abilities: u64,
+    /// Какие возможности вешают именно приборы сбора (§12.261): их цена
+    /// (`work_toll`) платится, только пока возможность в деле.
+    pub(crate) toll_grants: u64,
 }
 
 impl Crew {
-    /// Есть ли в отряде прибор сбора образцов.
-    pub(crate) fn samples(&self) -> bool {
-        self.work_toll > 0
+    /// Отряд, каким он выйдет **на этот заказ** (§12.261): возможность,
+    /// ещё не освоенная базой (`after` у записи `abilities:`), в поле не
+    /// работает — ни добычи, ни цены. Исключение — заказ, который её сам
+    /// требует: вылазка-урок и есть то место, где база её осваивает.
+    /// Ворота заказа (`covers`) и «чего не хватает» спрашивают **несомое**,
+    /// а не это: прибор у Антенны есть и до методики.
+    pub(crate) fn fielded(self, rule_abilities: u64, active: u64) -> Crew {
+        let abilities = self.abilities & (active | rule_abilities);
+        let paid = self.toll_grants == 0 || abilities & self.toll_grants != 0;
+        Crew {
+            abilities,
+            work_toll: if paid { self.work_toll } else { 0 },
+            ..self
+        }
+    }
+}
+
+impl Crew {
+    /// Есть ли у отряда возможность `ability` (индекс палитры `abilities:`).
+    pub(crate) fn has(&self, ability: usize) -> bool {
+        ability < 64 && self.abilities & (1 << ability) != 0
+    }
+
+    /// Несёт ли отряд всё, что требует заказ (§12.260).
+    pub(crate) fn covers(&self, need: u64) -> bool {
+        self.abilities & need == need
     }
 }
 
@@ -254,6 +286,8 @@ pub(crate) fn crew_traits<'a>(
     for (perks, gear) in cats {
         crew.road_cut = crew.road_cut.max(perks_rules.road_of(perks));
         crew.work_toll = crew.work_toll.max(items.toll_of_gear(gear));
+        crew.abilities |= items.grants_of_gear(gear);
+        crew.toll_grants |= items.toll_grants_of_gear(gear);
     }
     crew
 }
@@ -273,12 +307,13 @@ pub(crate) fn work(rule: &MissionRule, crew: Crew) -> i32 {
 }
 
 /// Сколько штук предмета принесёт вылазка при полной доле (§12.256): предмет
-/// `collected` (образец) падает только отряду с прибором сбора. Потолок задаёт
-/// заказ, а не число приборов, — второй прибор добычи не удваивает.
+/// `collected` (образец) падает только отряду с нужной возможностью —
+/// «сбор образцов» вешает прибор (§12.260). Потолок задаёт заказ, а не число
+/// приборов, — второй прибор добычи не удваивает.
 pub(crate) fn loot_count(items: &ItemRules, crew: Crew, item: usize, count: i32) -> i32 {
-    match items.collected(item) && !crew.samples() {
-        true => 0,
-        false => count,
+    match items.collected(item) {
+        Some(ability) if !crew.has(ability) => 0,
+        _ => count,
     }
 }
 
@@ -616,6 +651,7 @@ pub(crate) fn run_missions(
         perks: perk_rules,
         health: hurts,
         blights: blight_rules,
+        abilities: ability_rules,
     } = raid_rules;
     let raid = skill_rules.index_of(SKILL_RAID);
     let comms = skill_rules.index_of(SKILL_RELAY);
@@ -730,12 +766,14 @@ pub(crate) fn run_missions(
                 // Добыча ложится кучей на шлюз — ровно как возврат от сноса
                 // ложится под ноги сносильщику. Развозит её обычная уборка
                 // (§12.16). Доля — та, что посчитана на месте.
-                // Образцы — только отряду, который нёс прибор (§12.256): признак
-                // заморожен на уходе, потому что провал ломает снаряжение раньше,
+                // Образцы — только отряду, который нёс прибор (§12.256): его
+                // возможность «сбор образцов» (§12.260) заморожена на уходе, потому что провал ломает снаряжение раньше,
                 // чем отряд доберётся домой.
                 let crew = Crew {
                     road_cut: 0,
                     work_toll: mission.toll,
+                    abilities: mission.abilities,
+                    toll_grants: 0,
                 };
                 for &(item, count) in &rule.loot {
                     let got = loot_count(&items, crew, item, count) * verdict.share / 100;
@@ -985,9 +1023,13 @@ pub(crate) fn run_missions(
                     .filter(|(_, s, ..)| s.0 == mission_e)
                     .map(|(.., gear, _, _, _, perks)| (perks, gear)),
             );
+            // Неосвоенная возможность в поле не работает (§12.261) — и
+            // замерзает уже урезанной, как дорога.
+            let traits = traits.fielded(rule.abilities, ability_rules.active(&raids));
             mission.span = duration(rule, squad.len(), traits);
             mission.travel = travel(rule, traits);
             mission.toll = traits.work_toll;
+            mission.abilities = traits.abilities;
             mission.left = mission.span;
             for &(cat_e, ..) in &squad {
                 commands.entity(cat_e).insert(Away);
