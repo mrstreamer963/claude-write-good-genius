@@ -9299,10 +9299,19 @@ function syncSciWindow() {
   const allTopics = lastSnap?.topics ?? [];
   const noLab =
     allTopics.some((t) => !t.known) && !allTopics.some((t) => t.lab);
-  sciWarnEl.hidden = !noLab;
-  if (noLab) {
-    const why = "Темы изучают в лаборатории — лаборатории на базе нет";
-    if (sciWarnEl.textContent !== why) sciWarnEl.textContent = why;
+  // Вторая причина той же строкой (§12.263): тема ждёт образца, а привезёт его
+  // вылазка. Какая — считает ядро (`TopicSnap::bring`); строка кликабельна и
+  // ведёт в штаб на участок заказа — дословно клик по новости о заказе.
+  const bring = noLab ? undefined : allTopics.find((t) => t.bring != null)?.bring;
+  sciWarnEl.hidden = !noLab && bring == null;
+  sciWarnEl.dataset.raid = bring ?? "";
+  if (noLab || bring != null) {
+    // Ссылка — только имя вылазки: кликается дело, а не вся причина.
+    const why = noLab
+      ? esc("Темы изучают в лаборатории — лаборатории на базе нет")
+      : "Понимать вещество база начнёт с образцов — их приносит вылазка " +
+        `<span class="warn-link">«${esc((meta.missions ?? [])[bring]?.label ?? "?")}»</span>`;
+    if (sciWarnEl.innerHTML !== why) sciWarnEl.innerHTML = why;
   }
   orderNewFirst(sciList, topicButtons, "topic", sciHeads);
   // **Пустой список обязан назвать, чего ждать** (§12.151). До сих пор он знал
@@ -9759,7 +9768,7 @@ function opensOf(topic, known = []) {
   const groups = [
     ["постройки", names(meta.palette, (t) => t.tech === id)],
     // Заказ за технологией (§12.260): «Полевая методика» обещает вылазку
-    // «Сбор образцов». Ворота у заказа одни — `tech`, — так что обещание
+    // «Калибровка анализатора». Ворота у заказа одни — `tech`, — так что обещание
     // исполняется ровно по названной причине.
     ["вылазки", names(meta.missions, (m) => m.tech === id)],
     // Разбор — тот же рецепт (§12.114), и называется он входом, а не выходом.
@@ -9850,6 +9859,15 @@ function buildSciWindow() {
   sciWarnEl = document.createElement("div");
   sciWarnEl.className = "win-warn buy-warn";
   sciWarnEl.hidden = true;
+  // Узел живёт всё окно и текст пишет только на изменении — `click` здесь
+  // законен (граблей §12.84 нет).
+  sciWarnEl.addEventListener("click", (e) => {
+    const def = sciWarnEl.dataset.raid;
+    if (def === "" || !e.target.closest(".warn-link")) return;
+    const at = siteOfRaid(Number(def));
+    if (at >= 0) mapPick = at;
+    openRaidWindow();
+  });
   box.appendChild(sciWarnEl);
   box.appendChild(cols);
   cols.append(list, col);
@@ -13077,32 +13095,62 @@ function missionCostFacts(def, share) {
 // нельзя (§12.53): фишка в строке добычи обещала бы то, чего не будет. Есть ли
 // прибор, говорит ядро (`samples` у узла и у вылазки); какие предметы
 // «собирают», а не подбирают, — рулсет (`collected`).
-function missionLootRow(def, share, samples) {
+function missionLootRow(def, share, samples, counts) {
   if (def.rescue) {
     return '<div class="cat-sub">возвращает пленного, а не добычу</div>';
   }
   const all =
     def.loot instanceof Map ? [...def.loot.entries()] : Object.entries(def.loot ?? {});
   const collected = (id) => (meta?.items ?? []).some((it) => it.id === id && it.collected);
-  // Невиданный образец не называем вовсе (§12.131): «без ??: нет прибора»
-  // рассказывало бы о вещи и о приборе, которых в мире игрока ещё нет. До
-  // Антенны строка добычи просто без образца — ровно то, что принесёт отряд.
+  // Сколько штук принесёт **этот** отряд, считает ядро (§12.264): образцы
+  // делятся по приборам на лапы тем же `loot_count`, что на возвращении.
+  // Без чисел из ядра (карточка без узла) — полный запас заказа.
+  const got = new Map(
+    (counts ?? []).map(([i, n]) => [(meta?.items ?? [])[i]?.id, n]),
+  );
+  const countOf = (id, n) => (counts ? (got.get(id) ?? 0) : n);
   const seenId = (id) => {
     const i = (meta?.items ?? []).findIndex((it) => it.id === id);
     return i >= 0 && !!(stock[i] ?? {}).seen;
   };
-  const lost = samples ? [] : all.filter(([id]) => collected(id) && seenId(id));
-  const loot = costChips(new Map(all.filter(([id]) => samples || !collected(id))), true);
+  const plain = all.filter(([id]) => !collected(id));
+  const gathered = all.filter(([id]) => collected(id));
+  const loot = costChips(new Map(plain), true);
+  // Образцы — своей строкой и акцентом (§12.264): ради них заказы и ходят в
+  // поле с прибором, и в общей строке фишка терялась среди лома. Называем их
+  // и невиданными: строка появляется, только когда отряд их правда соберёт, —
+  // то есть прибор уже в руках (§12.131 цел: до Антенны её нет вовсе).
+  const rows = [];
+  if (samples && gathered.length) {
+    const chips = gathered
+      .map(([id, n]) => [id, countOf(id, n), n])
+      .filter(([, c]) => c > 0);
+    const short = gathered.some(([id, n]) => countOf(id, n) < n);
+    if (chips.length) {
+      rows.push(
+        `<div class="raidwin-gather">вернутся с ${costChips(
+          new Map(chips.map(([id, c]) => [id, c])),
+        )}` +
+          (short
+            ? ` <i>из ${costChips(new Map(gathered))} — прибор сбора не у каждого в отряде</i>`
+            : "") +
+          (share > 0 && share < 100 ? ` <i>× ${share} %</i>` : "") +
+          "</div>",
+      );
+    }
+  }
+  const lost = samples ? [] : gathered.filter(([id]) => seenId(id));
   const miss = lost.length
     ? `<div class="cat-sub">без ${costChips(new Map(lost), true)}: в отряде нет прибора сбора</div>`
     : "";
-  if (!loot) return miss;
-  return (
-    `<div class="raidwin-loot">добыча ${loot}` +
-    (share > 0 && share < 100 ? ` <i>× ${share} %</i>` : "") +
-    "</div>" +
-    miss
-  );
+  if (loot) {
+    rows.unshift(
+      `<div class="raidwin-loot">добыча ${loot}` +
+        (share > 0 && share < 100 ? ` <i>× ${share} %</i>` : "") +
+        "</div>",
+    );
+  }
+  return rows.join("") + miss;
 }
 
 // Как фракция зовётся — **по `id`**, а не по индексу: у заказа стороны названы
@@ -13283,7 +13331,7 @@ function raidCard(i, node) {
       "</div>",
   );
 
-  for (const row of [missionLootRow(def, g.share, !!(node?.samples_for?.[def] ?? node?.samples)), missionSidesRow(def)]) {
+  for (const row of [missionLootRow(def, g.share, !!(node?.samples_for?.[def] ?? node?.samples), node?.loots?.[def]), missionSidesRow(def)]) {
     if (row) rows.push(row);
   }
 
@@ -13506,7 +13554,7 @@ function busyCard(raid, node) {
       facts.map(([k, v]) => `<i>${k}</i><span>${v}</span>`).join("") +
       "</div>",
   );
-  for (const row of [missionLootRow(def, raid.share, !!raid.samples), missionSidesRow(def)]) {
+  for (const row of [missionLootRow(def, raid.share, !!raid.samples, raid.loot), missionSidesRow(def)]) {
     if (row) rows.push(row);
   }
   // Ряд кнопок тот же, что у обычной карточки заказа, и это не украшение: пока

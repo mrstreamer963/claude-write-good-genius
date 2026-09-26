@@ -108,6 +108,7 @@ fn the_forecast_span_knows_the_trails() {
         work_toll: 0,
         abilities: 0,
         toll_grants: 0,
+        ..Default::default()
     };
     assert_eq!(
         Some(crate::missions::duration(&rules.0[m], 1, crew)),
@@ -136,6 +137,26 @@ fn samples_drop_only_with_a_collector_in_the_squad() {
         sim.tick_n(40);
         assert!(!sim.is_away("a"), "отряд вернулся");
         assert_eq!(sim.item_total(SAMPLE), expected, "с прибором: {with}");
+    }
+}
+
+/// Образцы делятся по приборам на лапы (§12.264): прибор у половины отряда —
+/// половина запаса заказа (с округлением вниз), у всех — весь.
+#[test]
+fn samples_split_by_collectors_per_paw() {
+    let rows = &["########", "#ab....#", "########"];
+    for (both, expected) in [(false, 2), (true, 5)] {
+        let (mut sim, m) = field(rows, 10, 0);
+        sim.set_item_traits(SAMPLE, 0, false, true);
+        sim.set_item_traits(COLLECTOR, 10, false, false);
+        sim.put_gear("a", &[COLLECTOR]);
+        if both {
+            sim.put_gear("b", &[COLLECTOR]);
+        }
+        assert!(sim.launch(m, all(&["a", "b"])));
+        sim.tick_n(60);
+        assert!(!sim.is_away("a"), "отряд вернулся");
+        assert_eq!(sim.item_total(SAMPLE), expected, "приборы у обоих: {both}");
     }
 }
 
@@ -323,7 +344,7 @@ fn a_one_time_raid_ends_with_success_not_failure() {
 }
 
 /// **Боевой рулсет: цепочка от учёного до образца проходима** (§12.260).
-/// Лаборатория → «Полевая методика» → «Сбор образцов», который берёт отряд
+/// Лаборатория → «Полевая методика» → «Калибровка анализатора», который берёт отряд
 /// с анализатором Антенны и приносит образцы. Ловит контент, где вылазку
 /// закрыла не та тема, прибор перестал давать нужную возможность или из
 /// добычи пропал образец.
@@ -334,7 +355,7 @@ fn the_shipped_ruleset_leads_its_scientist_to_samples() {
         .missions
         .iter()
         .position(|d| d.id == "sampling")
-        .expect("вылазка «Сбор образцов»");
+        .expect("вылазка «Калибровка анализатора»");
     let sample = sim.item_index("sample").expect("образец");
     let methods = sim
         .topic_index("field_methods")
@@ -378,6 +399,33 @@ fn the_shipped_ruleset_leads_its_scientist_to_samples() {
         Some(rule.abilities),
         "образец просит ту же возможность, что и урок",
     );
+}
+
+/// Тема, ждущая образца, называет вылазку, которая его привезёт (§12.263):
+/// окно «Наука» без неё пустое и не говорит, куда идти. Методики нет — заказ
+/// закрыт, и называть нечего; образец видели — тема открыта сама.
+#[test]
+fn the_shipped_ruleset_names_the_raid_for_the_sample() {
+    let mut sim = shipped();
+    let m = sim
+        .missions
+        .iter()
+        .position(|d| d.id == "sampling")
+        .expect("вылазка");
+    let lore = sim.topic_index("sample_lore").expect("«Свойства образца»");
+    let specimen = sim.world.resource::<ResearchRules>().0[lore]
+        .specimen
+        .clone();
+    assert_eq!(sim.raid_bringing(&specimen), None, "до методики заказа нет");
+    sim.set_tech("field_methods");
+    assert_eq!(
+        sim.raid_bringing(&specimen),
+        Some(m),
+        "образцы везёт «Калибровка анализатора»"
+    );
+    let sample = sim.item_index("sample").expect("образец");
+    sim.world.resource_mut::<Seen>().mark(sample);
+    assert_eq!(sim.raid_bringing(&specimen), None, "увиденное не ждут");
 }
 
 // --- освоение сбора (§12.261) ------------------------------------------------

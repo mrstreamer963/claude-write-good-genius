@@ -430,6 +430,37 @@ impl Sim {
     ///
     /// Правило общее: **лента говорит о появлении и пропаже, а не о воротах.**
     /// Ворота называет словом сама карточка (§12.53).
+    /// Первый открытый заказ, который привезёт невиданный образец (§12.263).
+    /// Собираемый предмет (`collected`, §12.260) до освоения сбора (§12.261)
+    /// везёт только вылазка-урок, требующая эту возможность: в добыче прочих
+    /// он стоит, но без освоенного прибора не упадёт. Порядок — палитра.
+    pub(crate) fn raid_bringing(&mut self, specimen: &[(usize, i32)]) -> Option<usize> {
+        let on = self.abilities_active();
+        let want: Vec<(usize, u64)> = {
+            let seen = self.world.resource::<Seen>();
+            let items = self.world.resource::<ItemRules>();
+            specimen
+                .iter()
+                .map(|&(i, _)| i)
+                .filter(|&i| !seen.saw(i))
+                .map(|i| (i, items.collected(i).map_or(0, |a| 1u64 << a) & !on))
+                .collect()
+        };
+        let raids: Vec<(Vec<usize>, u64)> = self
+            .world
+            .resource::<MissionRules>()
+            .0
+            .iter()
+            .map(|m| (m.loot.iter().map(|&(i, _)| i).collect(), m.abilities))
+            .collect();
+        (0..raids.len()).find(|&def| {
+            let (loot, asks) = &raids[def];
+            want.iter()
+                .any(|&(i, need)| loot.contains(&i) && asks & need == need)
+                && self.raid_is_open(def)
+        })
+    }
+
     pub(crate) fn raid_is_open(&mut self, def: usize) -> bool {
         let g = self.raid_gates(def);
         g.unlocked && g.possible
@@ -3318,6 +3349,7 @@ impl Sim {
             travel: 0,
             toll: 0,
             abilities: 0,
+            gather: 0,
         });
         let mission_e = mission_e.id();
         // Спящие в `crew` теперь есть (§12.191) — их отсекает `ready` ниже, и
@@ -5623,6 +5655,8 @@ impl Sim {
                     work_toll: a.work_toll.max(c.work_toll),
                     abilities: a.abilities | c.abilities,
                     toll_grants: a.toll_grants | c.toll_grants,
+                    collectors: a.collectors + c.collectors,
+                    paws: a.paws + c.paws,
                 });
                 let traits = match m.span {
                     0 => joined.fielded(rule.map_or(0, |r| r.abilities), active),
@@ -5631,6 +5665,8 @@ impl Sim {
                         work_toll: m.toll,
                         abilities: m.abilities,
                         toll_grants: 0,
+                        collectors: m.gather,
+                        paws: 100,
                     },
                 };
                 let paws = mine().count();
@@ -5716,6 +5752,13 @@ impl Sim {
                     manned: !manned.is_empty(),
                     trails: traits.road_cut,
                     samples: traits.work_toll,
+                    loot: rule.map_or_else(Vec::new, |r| {
+                        let items = self.world.resource::<ItemRules>();
+                        r.loot
+                            .iter()
+                            .map(|&(i, n)| (i, crate::missions::loot_count(items, traits, i, n)))
+                            .collect()
+                    }),
                 });
             }
         }
@@ -6003,6 +6046,23 @@ impl Sim {
                             .iter()
                             .map(|r| node_traits.fielded(r.abilities, active).work_toll)
                             .collect(),
+                        loots: {
+                            let items = self.world.resource::<ItemRules>();
+                            self.world
+                                .resource::<MissionRules>()
+                                .0
+                                .iter()
+                                .map(|r| {
+                                    let crew = node_traits.fielded(r.abilities, active);
+                                    r.loot
+                                        .iter()
+                                        .map(|&(i, n)| {
+                                            (i, crate::missions::loot_count(items, crew, i, n))
+                                        })
+                                        .collect()
+                                })
+                                .collect()
+                        },
                         lacks: self
                             .world
                             .resource::<MissionRules>()
@@ -6159,6 +6219,11 @@ impl Sim {
                     // берут со складской кучи, значит спрашивать надо склад.
                     stocked: self.storage_covers(&rule.specimen),
                     specimen: rule.specimen.iter().map(|&(item, _)| item).collect(),
+                    bring: if known || !unlocked || sighted {
+                        None
+                    } else {
+                        self.raid_bringing(&rule.specimen)
+                    },
                 });
             }
         }

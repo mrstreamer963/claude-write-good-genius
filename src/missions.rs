@@ -240,6 +240,11 @@ pub(crate) struct Crew {
     /// Какие возможности вешают именно приборы сбора (§12.261): их цена
     /// (`work_toll`) платится, только пока возможность в деле.
     pub(crate) toll_grants: u64,
+    /// Сколько котов отряда несут прибор сбора и сколько их всего (§12.264):
+    /// образцы делятся по лапам — укомплектован весь отряд, собран весь запас
+    /// заказа, половина — половина. `paws == 0` — делить нечем, запас целиком.
+    pub(crate) collectors: i32,
+    pub(crate) paws: i32,
 }
 
 impl Crew {
@@ -288,6 +293,8 @@ pub(crate) fn crew_traits<'a>(
         crew.work_toll = crew.work_toll.max(items.toll_of_gear(gear));
         crew.abilities |= items.grants_of_gear(gear);
         crew.toll_grants |= items.toll_grants_of_gear(gear);
+        crew.paws += 1;
+        crew.collectors += items.collects_any(gear) as i32;
     }
     crew
 }
@@ -308,13 +315,23 @@ pub(crate) fn work(rule: &MissionRule, crew: Crew) -> i32 {
 
 /// Сколько штук предмета принесёт вылазка при полной доле (§12.256): предмет
 /// `collected` (образец) падает только отряду с нужной возможностью —
-/// «сбор образцов» вешает прибор (§12.260). Потолок задаёт заказ, а не число
-/// приборов, — второй прибор добычи не удваивает.
+/// «сбор образцов» вешает прибор (§12.260). Потолок задаёт заказ, а **долю
+/// запаса — число приборов на лапы** (§12.264): каждый кот с прибором
+/// собирает свою часть, и отряд, укомплектованный целиком, берёт всё.
 pub(crate) fn loot_count(items: &ItemRules, crew: Crew, item: usize, count: i32) -> i32 {
     match items.collected(item) {
         Some(ability) if !crew.has(ability) => 0,
-        _ => count,
+        Some(_) => count * gather(crew) / 100,
+        None => count,
     }
+}
+
+/// Доля запаса образцов в процентах, которую соберёт отряд (§12.264).
+pub(crate) fn gather(crew: Crew) -> i32 {
+    if crew.paws <= 0 {
+        return 100;
+    }
+    (crew.collectors.clamp(0, crew.paws) * 100 / crew.paws).max(0)
 }
 
 /// Сколько тиков отряд из `paws` котов пробудет в поле (§12.70).
@@ -774,6 +791,8 @@ pub(crate) fn run_missions(
                     work_toll: mission.toll,
                     abilities: mission.abilities,
                     toll_grants: 0,
+                    collectors: mission.gather,
+                    paws: 100,
                 };
                 for &(item, count) in &rule.loot {
                     let got = loot_count(&items, crew, item, count) * verdict.share / 100;
@@ -1030,6 +1049,7 @@ pub(crate) fn run_missions(
             mission.travel = travel(rule, traits);
             mission.toll = traits.work_toll;
             mission.abilities = traits.abilities;
+            mission.gather = gather(traits);
             mission.left = mission.span;
             for &(cat_e, ..) in &squad {
                 commands.entity(cat_e).insert(Away);

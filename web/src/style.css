@@ -1705,6 +1705,24 @@ main#stage.mode-cursor #mode-banner {
   font-size: 12px;
   margin-top: 2px;
 }
+/* Образцы, которые принесёт отряд (§12.264), — своей строкой и акцентом:
+   ради них с прибором и ходят, и в общей добыче фишка терялась. */
+.raidwin-gather {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+  margin-top: 2px;
+  color: #7fd6a0;
+  font-weight: 600;
+}
+.raidwin-gather i {
+  color: var(--muted);
+  font-style: normal;
+  font-weight: 400;
+  font-size: 11px;
+}
 .raidwin-loot i {
   color: var(--muted);
   font-style: normal;
@@ -2927,4 +2945,13 @@ main#stage.mode-cursor #mode-banner {
 /* Выключенная шина звука — тусклая, но жмётся. */
 .tool.snd-off {
   opacity: 0.5;
+}
+/* Причина, которая ведёт к делу (§12.263): красная строка «Науки», называющая
+   вылазку за образцами, — клик ведёт в штаб. */
+.win-warn .warn-link {
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+.win-warn .warn-link:hover {
+  filter: brightness(1.2);
 }

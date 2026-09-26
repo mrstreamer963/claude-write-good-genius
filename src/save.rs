@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 41;
+pub(crate) const FORMAT: u32 = 42;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -678,6 +678,9 @@ pub(crate) struct MissionDto {
     /// Возможности ушедшего отряда (§12.260), маской.
     #[serde(default)]
     pub(crate) abilities: u64,
+    /// Доля сбора образцов (§12.264); `FORMAT` 42.
+    #[serde(default)]
+    pub(crate) gather: i32,
 }
 
 // ── Снять снимок ──────────────────────────────────────────────────────────
@@ -823,6 +826,7 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                     travel: m.travel,
                     toll: m.toll,
                     abilities: m.abilities,
+                    gather: m.gather,
                 }),
             }
         })
@@ -1314,6 +1318,7 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
                 travel: m.travel,
                 toll: m.toll,
                 abilities: m.abilities,
+                gather: m.gather,
             });
         }
     }
