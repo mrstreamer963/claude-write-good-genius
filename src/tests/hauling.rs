@@ -350,3 +350,25 @@ fn a_vanished_pile_is_just_a_missed_trip() {
     assert_eq!(sim.carrying_of("a"), 0, "в лапах пусто");
     assert!(!sim.has_haul("a"), "задача отпущена");
 }
+
+/// Переразметка (вопрос из разговора о палитре): материала хватает на одну
+/// площадку из трёх, а носильщиков двое. Материал обязан сойтись в одну
+/// площадку, а не размазаться по двум так, что не достроится ни одна.
+#[test]
+fn scarce_material_finishes_one_site_instead_of_starting_many() {
+    let mut sim = sim_from(&["##########", "#a......b#", "##########"]);
+    sim.set_cost(0, 4);
+    sim.put_scrap(1, 1, 2);
+    sim.put_scrap(8, 1, 2);
+    assert!(sim.add_blueprint(2, 2, 0));
+    assert!(sim.add_blueprint(5, 2, 0));
+    assert!(sim.add_blueprint(7, 2, 0));
+
+    sim.tick_n(600);
+    let built = [2, 5, 7].iter().filter(|&&x| sim.tile(x, 2) == 0).count();
+    let spread: Vec<_> = [2, 5, 7].iter().map(|&x| sim.delivered_at(x, 2)).collect();
+    assert_eq!(
+        built, 1,
+        "материала ровно на одну площадку; сдано: {spread:?}"
+    );
+}

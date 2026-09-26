@@ -50,6 +50,10 @@ struct Needy {
     /// Чего не хватает — уже за вычетом груза, который сюда везут (§12.48).
     miss: Vec<(usize, i32)>,
     dest: Dest,
+    /// Площадка уже начата — на ней лежит или к ней едет материал (§12.262).
+    /// Такой запас отдан заранее; нетронутая получает его, только когда к ней
+    /// впервые идёт кот, и только целиком.
+    committed: bool,
     /// Сколько ещё не обещано: остаток минус ходки тех, кто уже идёт. Дошёл до
     /// нуля — адресат снабжён, и новых котов к нему не зовут.
     budget: i32,
@@ -150,6 +154,25 @@ fn less_incoming(miss: &mut Vec<(usize, i32)>, incoming: &[(usize, i32)]) {
 ///
 /// Чертежи сноса сюда не попадают: снос ничего не стоит, он материал возвращает.
 #[allow(clippy::too_many_arguments)]
+/// Хватает ли запаса закрыть недостачу целиком (§12.262).
+fn covers(pool: &[(usize, i32)], miss: &[(usize, i32)]) -> bool {
+    miss.iter()
+        .all(|&(item, count)| pool.iter().any(|&(i, left)| i == item && left >= count))
+}
+
+/// Отдаёт недостачу из запаса, если его хватает целиком; иначе не трогает.
+fn reserve(pool: &mut [(usize, i32)], miss: &[(usize, i32)]) -> bool {
+    if !covers(pool, miss) {
+        return false;
+    }
+    for &(item, count) in miss {
+        if let Some((_, left)) = pool.iter_mut().find(|(i, _)| *i == item) {
+            *left -= count;
+        }
+    }
+    true
+}
+
 pub(crate) fn assign_hauls(
     map: Res<BaseMap>,
     rules: Res<TileRules>,
@@ -232,12 +255,14 @@ pub(crate) fn assign_hauls(
         .filter_map(|(e, bp)| {
             let mut miss = missing(&rules, bp);
             less_incoming(&mut miss, &brought(e));
+            let committed = bp.delivered.iter().any(|&(_, n)| n > 0) || !brought(e).is_empty();
             (!miss.is_empty()).then_some(Needy {
                 target: e,
                 at: (bp.x, bp.y),
                 tile: bp.tile,
                 miss,
                 dest: Dest::Site,
+                committed,
                 budget: 0,
             })
         })
@@ -261,6 +286,7 @@ pub(crate) fn assign_hauls(
                     tile: map.tile_at(d.cell.0, d.cell.1),
                     miss,
                     dest: Dest::Sale,
+                    committed: true,
                     budget: 0,
                 })
             }),
@@ -280,6 +306,7 @@ pub(crate) fn assign_hauls(
             tile: map.tile_at(order.cell.0, order.cell.1),
             miss,
             dest: Dest::Shop,
+            committed: true,
             budget: 0,
         })
     }));
@@ -296,6 +323,7 @@ pub(crate) fn assign_hauls(
             tile: map.tile_at(topic.cell.0, topic.cell.1),
             miss,
             dest: Dest::Lab,
+            committed: true,
             budget: 0,
         })
     }));
@@ -309,6 +337,9 @@ pub(crate) fn assign_hauls(
     // подвоза. Это и была большая часть промахов.
     let mut spoken_for: Vec<(Entity, i32)> =
         tidy_promises(going.iter().map(|(_, h, l, c)| (h, l, c)), &stacks);
+    // Сколько из куч уже обещано адресатам идущими налегке, по типам: эти штуки
+    // ещё лежат, но площадкам без обещания их больше не видать (§12.262).
+    let mut promised: Vec<(usize, i32)> = Vec::new();
     for (_, target, aim, carry) in aiming {
         let Some(n) = needy.iter_mut().find(|n| n.target == target) else {
             continue; // адресат уже снабжён — обещать нечего
@@ -319,6 +350,12 @@ pub(crate) fn assign_hauls(
             continue;
         }
         less_incoming(&mut n.miss, &[(aim.item, promise)]);
+        if n.dest != Dest::Sale {
+            match promised.iter_mut().find(|(i, _)| *i == aim.item) {
+                Some((_, p)) => *p += promise,
+                None => promised.push((aim.item, promise)),
+            }
+        }
         match spoken_for.iter_mut().find(|(e, _)| *e == aim.pile) {
             Some((_, n)) => *n += promise,
             None => spoken_for.push((aim.pile, promise)),
@@ -333,26 +370,63 @@ pub(crate) fn assign_hauls(
     // вечный цикл: кот не двигается, но и свободным его не видит никто, —
     // в том числе `assign_nap`, и дремать он не уходит **никогда** (§12.52).
     // Продажи это не касается: она и есть тот, кому бронь принадлежит.
-    for n in needy.iter_mut().filter(|n| n.dest != Dest::Sale) {
+    let free_of = |item: usize| -> i32 {
+        let free = crate::trade::free_to_spend(
+            stacks.iter().map(|(_, _, s)| s),
+            deals.iter().map(|(_, d)| d),
+            going.iter().filter_map(|(_, h, l, _)| l.map(|l| (h, l))),
+            item,
+        );
+        // Плюс то, что уже в лапах у свободных котов: их ходка не поднимает
+        // ничего со склада, а донести ношу они обязаны (§12.15) — ровно
+        // поэтому `work_hauls` режет недостачу только на подъёме.
+        let in_paws: i32 = free_cats
+            .iter()
+            .filter_map(|(_, _, _, load, _)| load)
+            .filter(|load| load.item == item)
+            .map(|load| load.count)
+            .sum();
+        free.max(0) + in_paws
+    };
+    for n in needy
+        .iter_mut()
+        .filter(|n| n.dest != Dest::Sale && n.dest != Dest::Site)
+    {
         for slot in n.miss.iter_mut() {
-            let free = crate::trade::free_to_spend(
-                stacks.iter().map(|(_, _, s)| s),
-                deals.iter().map(|(_, d)| d),
-                going.iter().filter_map(|(_, h, l, _)| l.map(|l| (h, l))),
-                slot.0,
-            );
-            // Плюс то, что уже в лапах у свободных котов: их ходка не поднимает
-            // ничего со склада, а донести ношу они обязаны (§12.15) — ровно
-            // поэтому `work_hauls` режет недостачу только на подъёме.
-            let in_paws: i32 = free_cats
-                .iter()
-                .filter_map(|(_, _, _, load, _)| load)
-                .filter(|load| load.item == slot.0)
-                .map(|load| load.count)
-                .sum();
-            slot.1 = slot.1.min(free.max(0) + in_paws);
+            slot.1 = slot.1.min(free_of(slot.0));
         }
         n.miss.retain(|&(_, count)| count > 0);
+    }
+    // **Площадку снабжают, только если её можно закрыть целиком** (§12.262).
+    // Жадная пара «ближайший кот — ближайшая площадка» размазывала скудный
+    // запас: два кота несли по половине на две площадки, не достраивалась ни
+    // одна, а материал запирался в них до отмены. Теперь запас (`pool`) —
+    // свободное минус обещанное идущими налегке (оно ещё лежит в кучах) —
+    // сперва отдаётся начатым площадкам, меньший остаток первым, при равенстве
+    // по клетке (§11). Начатая, которую закрыть нечем, ждёт. Нетронутые берут
+    // из остатка в раздаче ниже — целиком и в момент, когда к ним пошёл кот:
+    // резерв заранее отдал бы запас площадке, до которой никто не дойдёт.
+    let mut pool: Vec<(usize, i32)> = Vec::new();
+    for n in needy.iter().filter(|n| n.dest == Dest::Site) {
+        for &(item, _) in &n.miss {
+            if !pool.iter().any(|&(i, _)| i == item) {
+                let spoken = promised
+                    .iter()
+                    .find(|&&(i, _)| i == item)
+                    .map_or(0, |&(_, p)| p);
+                pool.push((item, free_of(item) - spoken));
+            }
+        }
+    }
+    let mut started: Vec<&mut Needy> = needy
+        .iter_mut()
+        .filter(|n| n.dest == Dest::Site && n.committed)
+        .collect();
+    started.sort_by_key(|n| (n.miss.iter().map(|&(_, c)| c).sum::<i32>(), n.at.1, n.at.0));
+    for n in started {
+        if !reserve(&mut pool, &n.miss) {
+            n.miss.clear();
+        }
     }
 
     // Бюджет: остаток после всех обещаний. Ушёл в ноль — адресат снабжён, и
@@ -424,6 +498,7 @@ pub(crate) fn assign_hauls(
         // Взгляд на кучи внутри итерации: жадный выбор их только читает, а
         // правит остаток уже после того, как пара выбрана.
         let view: &[Pile] = &piles;
+        let pool_view: &[(usize, i32)] = &pool;
         // Куда идти первым шагом: гружёный — на площадку, пустой — к куче. Тип
         // связывает обоих: гружёный годится только той площадке, которой нужен
         // его груз, пустой идёт лишь к куче нужного типа (§12.21). У пустого
@@ -433,6 +508,9 @@ pub(crate) fn assign_hauls(
             .enumerate()
             .flat_map(|(ci, (_, _, loaded, _, reach))| {
                 needy.iter().enumerate().filter_map(move |(ni, n)| {
+                    if !n.committed && !covers(pool_view, &n.miss) {
+                        return None;
+                    }
                     let wanted = |item: usize| n.miss.iter().any(|&(i, _)| i == item);
                     if let Some((item, _)) = *loaded {
                         // Груз в лапах — неучтённое (§12.69): откуда кот его
@@ -480,6 +558,10 @@ pub(crate) fn assign_hauls(
         // позовут другие. Учёт ведётся тут же, потому что команды применяются
         // после системы, и `going` только что назначенных ещё не видит.
         let n = &mut needy[ni];
+        if !n.committed {
+            reserve(&mut pool, &n.miss);
+            n.committed = true;
+        }
         let (target_e, dest) = (n.target, n.dest);
         let (promise, aim) = match (loaded, pi) {
             (Some((item, count)), _) => {
