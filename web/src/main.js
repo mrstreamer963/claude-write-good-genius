@@ -8877,8 +8877,18 @@ function markNewsSeen(keys) {
 // автоматики живут за двумя разными дверями, и «прочитал» у одной не значит
 // «прочитал» у другой. Без среза закрытый «Склад» гасил бы и метку штаба —
 // то есть стирал бы новость, которую игрок не видел.
+// Новость, которую перекрыла более поздняя по той же записи, — вчерашняя:
+// «открыт заказ „Выжечь очаг“» после «заказ закрылся» зовёт туда, где карточки
+// уже нет, и прочитать её негде, — тикер висел бы до конца срока (§12.120).
+// Лента в ядре идёт от старого к новому, значит живая — последняя по записи.
+function liveNews(list) {
+  const last = new Map();
+  for (const n of list) last.set(`${n.kind}:${n.def}`, n);
+  return list.filter((n) => last.get(`${n.kind}:${n.def}`) === n);
+}
+
 function newsPending(kind, defs = null) {
-  return (lastSnap?.news ?? []).filter(
+  return liveNews(lastSnap?.news ?? []).filter(
     (n) =>
       n.kind === kind &&
       (defs === null || defs.includes(n.def)) &&
@@ -9071,7 +9081,7 @@ const newsRows = new Map();
 
 function renderNews(snap) {
   const span = meta?.news ?? 0;
-  const want = (snap.news ?? []).filter((n) => {
+  const want = liveNews(snap.news ?? []).filter((n) => {
     if (newsSeen.has(newsKey(n))) return false;
     // Ноль в рулсете значит «сами не гаснут» — тем же нулём, каким `day`
     // выключает календарь.
@@ -9620,9 +9630,12 @@ function syncNewsMarks() {
   );
   sciDoor?.classList.toggle("fresh", newsPending("topic").length > 0);
   hireDoor?.classList.toggle("fresh", newsPending("recruit").length > 0);
+  // Точку зажигает только **открытие** заказа: «заказ закрылся» звать в штаб
+  // незачем — карточки там уже нет, и метка горела бы над пустотой (так
+  // висела точка после одноразового «Сбора образцов»).
   raidDoor?.classList.toggle(
     "fresh",
-    newsPending("raid").length +
+    newsPending("raid").filter((n) => n.opened).length +
       newsPending("rule", ruleDefsAt("raid")).length >
       0,
   );
@@ -12459,6 +12472,10 @@ function closeRaidWindow() {
   // отряд в поле, — значит визит и есть «посмотрел» (§12.120). Но с §12.243
   // колонка режется участком, и прочитанным идёт лишь то, что показывалось.
   readNews("raid", [...raidSeenDefs]);
+  // Закрывшийся заказ карточкой не стоит (одноразовый после успеха, пропавший
+  // участок), значит в `raidSeenDefs` не попадёт никогда, — и без этой строки
+  // его новость висела бы непрочитанной вечно.
+  markNewsSeen(newsPending("raid").filter((n) => !n.opened).map(newsKey));
   // Автовылазка тоже видна целиком: тумблер «↻» появился в каждой карточке
   // заказа (§12.202). Правила «Склада» здесь не гасим — их игрок не видел.
   readNews("rule", ruleDefsAt("raid"));
