@@ -208,3 +208,19 @@ fn a_lore_article_always_names_itself() {
         }
     }
 }
+
+/// Ключ статьи встречается один раз на весь справочник. Повтор не роняет
+/// ничего: разборщик в `wiki.js` молча оставляет последнюю статью, и первая —
+/// вместе с её короткой версией до маркера `---понято---` — пропадает. Так
+/// «Анализатор» однажды открылся полным текстом до изучения своей темы.
+#[test]
+fn every_article_key_is_written_once() {
+    let mut seen = BTreeSet::new();
+    let twice: Vec<String> = WIKI
+        .iter()
+        .flat_map(|file| file.lines())
+        .filter_map(article_key)
+        .filter(|key| !seen.insert(key.clone()))
+        .collect();
+    assert!(twice.is_empty(), "статьи с повторным ключом: {twice:?}");
+}

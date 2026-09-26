@@ -16,6 +16,7 @@ import {
   setArticleAlias,
   setArticleGate,
   setArticleTeased,
+  teaserTech,
 } from "./wiki.js";
 import { play, setBusOn, setMuted, setPaused, setVolume, soundPrefs } from "./sound.js";
 
@@ -11136,6 +11137,8 @@ function topicTwin(key) {
 setArticleAlias((key) => topicTwin(key) ?? key);
 // Короткая версия — у предмета, который база видела, но ещё не поняла.
 setArticleTeased((key) => {
+  const tech = teaserTech(key);
+  if (tech) return !(lastSnap?.techs ?? []).includes(tech);
   const [kind] = String(key).split(":");
   if (kind !== "item") return false;
   const { def } = wikiEntry(key);

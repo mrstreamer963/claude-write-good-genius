@@ -68,7 +68,9 @@ export async function loadWiki() {
   for (const key of HIDDEN_ARTICLES) articles.delete(key);
 }
 
-const UNDERSTOOD = "---понято---";
+// `---понято---` или `---понято tech_id---`: во втором случае полная версия
+// открывается изучением технологии, а не пониманием предмета.
+const UNDERSTOOD = /^---понято(?:\s+([a-z0-9_]+))?---$/;
 
 /// Разобрать файл раздела. Статья начинается со строки `## ключ | Заголовок`;
 /// заголовок необязателен — без него его даст палитра (`label` записи).
@@ -81,10 +83,11 @@ function parseFile(text) {
     // Маркер `---понято---` делит статью на две версии: выше — что база видит
     // снаружи, пока вещь не понята (§12.131), ниже — полная. Без маркера
     // версия одна, и `teaser` пуст.
-    const cut = lines.findIndex((l) => l.trim() === UNDERSTOOD);
+    const cut = lines.findIndex((l) => UNDERSTOOD.test(l.trim()));
     const teaser = cut < 0 ? "" : lines.slice(0, cut).join("\n").trim();
+    const tech = cut < 0 ? "" : (UNDERSTOOD.exec(lines[cut].trim())[1] ?? "");
     const body = lines.slice(cut + 1).join("\n").trim();
-    articles.set(key, { title, teaser, body });
+    articles.set(key, { title, teaser, body, tech });
   };
   for (const raw of text.split(/\r?\n/)) {
     const head = /^##\s+([a-z]+:[a-z0-9_]+)\s*(?:\|\s*(.*))?$/i.exec(raw);
@@ -130,6 +133,11 @@ let teased = () => false;
 /// Есть ли у статьи версия «до понимания» (маркер `---понято---`).
 export function hasTeaser(key) {
   return !!articles.get(key)?.teaser;
+}
+
+/// Технология, открывающая полную версию статьи (`---понято tech---`); "" — нет.
+export function teaserTech(key) {
+  return articles.get(key)?.tech ?? "";
 }
 
 /// Показывать ли сейчас короткую версию: `(ключ) → вещь ещё не понята`.
