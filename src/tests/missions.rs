@@ -1128,6 +1128,28 @@ fn the_rule_waits_while_a_cat_is_hurt() {
     assert!(sim.is_away("a"), "а как встал — правило его отправило");
 }
 
+/// Приписанной вещи нет на базе — правило ждёт (§12.270): иначе отряд уходил
+/// бы каждый круг без того, что игрок велел носить. Появилась вещь — кот
+/// сходит за ней, и правило уводит отряд одетым.
+#[test]
+fn the_rule_waits_for_gear_the_base_does_not_have() {
+    let mut sim = sim_with_nodes(1);
+    let def = sim.set_mission(1, 30, &[(0, 5)]);
+    sim.set_force(0, 3);
+    sim.outfit_all(&[0]);
+    sim.enlist("a", 1, 2);
+    sim.set_auto_raid(def as i32, 1, 2);
+
+    sim.tick_n(10);
+    assert_eq!(sim.raid_count(), 0, "надеть нечего — правило стоит");
+    assert!(sim.auto_raid_is_on(1, 2), "и не снимается");
+
+    sim.put_item(4, 2, 0, 1);
+    sim.tick_n(40);
+    assert!(sim.is_away("a"), "вещь нашлась — отряд ушёл");
+    assert!(sim.gear_of("a").contains(&0), "и ушёл одетым");
+}
+
 /// Спящего правило тоже ждёт. `launch_node` принял бы заявку и над спящим
 /// (§12.51), но правило повторяется каждый тик — и такая заявка заняла бы узел
 /// на всё время сна.

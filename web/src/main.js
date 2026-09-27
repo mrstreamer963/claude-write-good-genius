@@ -14041,8 +14041,16 @@ function ruleRow(node) {
   // «прогноз: провал» там, где правило просто ждёт, пока коты выспятся, и шёл
   // чинить состав, который чинить не нужно.
   const gathering = holding && !over && node.fit === false;
+  // Приписанной вещи нет на базе (§12.270): правило ждёт её, а не прогноза —
+  // ядро спрашивает это тоже до `auto_outcome_full`.
+  const undressed = node.undressed || [];
+  const naked = holding && !over && !gathering && undressed.length > 0;
   const weak =
-    holding && !over && !gathering && (node.auto_fail || node.auto_share < 100);
+    holding &&
+    !over &&
+    !gathering &&
+    !naked &&
+    (node.auto_fail || node.auto_share < 100);
   const state = nogate
     ? "выйти некуда"
     : blocked
@@ -14057,7 +14065,9 @@ function ruleRow(node) {
           ? "отряд великоват"
           : gathering
             ? "ждёт сбора"
-            : weak
+            : naked
+              ? "нечего надеть"
+              : weak
               ? node.auto_fail
                 ? "прогноз: провал"
                 : `прогноз: ${node.auto_share} %`
@@ -14071,7 +14081,11 @@ function ruleRow(node) {
       : gathering
         ? "Кто-то из отряда спит, ранен или ещё не вернулся. Правило уводит " +
           "всех разом, поэтому ждёт — само, без вашего участия"
-        : weak
+        : naked
+          ? `${undressed.join(", ")}: по приписке нужна вещь, которой нет на ` +
+            `базе. Правило ждёт, пока она появится, — или снимите приписку ` +
+            `в «Личном деле». Отправить как есть можно вручную, из штаба`
+          : weak
           ? `Правило уводит отряд только на полной доле, а сейчас ` +
             `${
               node.auto_fail

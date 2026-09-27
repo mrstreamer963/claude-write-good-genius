@@ -3958,6 +3958,11 @@ impl Sim {
             if !self.node_is_free(x, y) || !self.squad_is_fit(x, y) {
                 continue;
             }
+            // Приписанной вещи нет на базе — правило ждёт (§12.270): уведи оно
+            // отряд, коты ушли бы без того, что игрок им велел носить.
+            if !self.undressed_of(x, y).is_empty() {
+                continue;
+            }
             // Правило берётся за заказ, **только когда прогноз обещает полную
             // долю** (§12.117). До §12.117 здесь стоял минимум вилки (§12.113),
             // и он мерил не то: справится ли отряд, считает `outcome`, а не
@@ -4026,6 +4031,86 @@ impl Sim {
     /// состава, хотя кнопка ждать перестала.
     pub(crate) fn squad_is_fit(&mut self, x: i32, y: i32) -> bool {
         !self.roster_of(x, y).is_empty() && self.unfit_of(x, y).is_empty()
+    }
+
+    /// Кто из состава не может надеть приписанное (§12.268), по `id` (§12.270).
+    ///
+    /// Вещь в приписке, которой на коте нет, а на базе (кучи на складе и на
+    /// полу минус бронь продажи) не хватает на всех таких котов этого отряда.
+    /// Кот, уже идущий за вещью (`Equipping`), в счёт не идёт — он её получит.
+    /// Фильтры приписки те же, что у `assign_equip`: невыполнимую приписку
+    /// (не понята, не умеет, второй прибор сбора) кот и не пытается добрать,
+    /// и ждать её правилу незачем.
+    ///
+    /// Держит только **правило автовылазки**: кнопка игрока решение принимает
+    /// разово и видит голых котов в штабе, а правило гоняло бы их без
+    /// комбинезонов на каждом круге.
+    pub(crate) fn undressed_of(&mut self, x: i32, y: i32) -> Vec<String> {
+        let mut q = self.world.query::<(
+            &UnitId,
+            &Enlisted,
+            Option<&Gear>,
+            Option<&Outfit>,
+            Option<&Skills>,
+            Option<&Equipping>,
+        )>();
+        let mut deals = self.world.query::<&Deal>();
+        let mut paws = self.world.query::<(&Haul, &Carrying)>();
+        let mut piles = self.world.query::<&Stack>();
+        let world = &self.world;
+        let items = world.resource::<ItemRules>();
+        let techs = world.resource::<Techs>();
+        let skill_rules = world.resource::<SkillRules>();
+        let short: Vec<(String, Vec<usize>)> = q
+            .iter(world)
+            .filter(|(_, spot, ..)| spot.spot == (x, y))
+            .filter(|(.., going)| going.is_none())
+            .filter_map(|(id, _, gear, outfit, skills, _)| {
+                let missing: Vec<usize> = outfit?
+                    .0
+                    .iter()
+                    .copied()
+                    .filter(|&i| !gear.is_some_and(|g| g.has(i)) && items.wearable(i, techs))
+                    .filter(|&i| !(items.collects(i) && items.collects_any(gear)))
+                    .filter(|&i| items.skilled(i, skill_rules, skills))
+                    .collect();
+                (!missing.is_empty()).then(|| (id.0.clone(), missing))
+            })
+            .collect();
+        if short.is_empty() {
+            return Vec::new();
+        }
+        let booked = crate::trade::booked(deals.iter(world), paws.iter(world));
+        let mut on_base = |item: usize| -> i32 {
+            let have: i32 = piles
+                .iter(world)
+                .filter(|s| s.item == item)
+                .map(|s| s.count)
+                .sum();
+            have - booked
+                .iter()
+                .find(|&&(i, _)| i == item)
+                .map_or(0, |&(_, n)| n)
+        };
+        let mut lacking: Vec<usize> = Vec::new();
+        for (_, missing) in &short {
+            for &item in missing {
+                if lacking.contains(&item) {
+                    continue;
+                }
+                let need = short.iter().filter(|(_, m)| m.contains(&item)).count() as i32;
+                if on_base(item) < need {
+                    lacking.push(item);
+                }
+            }
+        }
+        let mut out: Vec<String> = short
+            .into_iter()
+            .filter(|(_, m)| m.iter().any(|i| lacking.contains(i)))
+            .map(|(id, _)| id)
+            .collect();
+        out.sort_unstable();
+        out
     }
 
     /// Кто из состава держит сбор, по `id` и по алфавиту (§12.184).
@@ -6269,6 +6354,7 @@ impl Sim {
                         auto_fail,
                         fit,
                         unfit: self.unfit_of(x, y),
+                        undressed: self.undressed_of(x, y),
                     }
                 })
                 .collect()
