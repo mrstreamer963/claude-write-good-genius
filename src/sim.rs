@@ -1507,6 +1507,7 @@ impl Sim {
                     id: s.id.clone(),
                     levels: s.levels.clone(),
                     taught: s.taught,
+                    tutor: s.tutor,
                     stat: stat_index(&s.stat),
                     demands: s.demands.clone(),
                 })
@@ -1954,6 +1955,13 @@ impl Sim {
                     collected: ability_index(&i.collected),
                     personal: i.personal,
                     wear: i.wear,
+                    skills: i
+                        .skills
+                        .iter()
+                        .filter_map(|(id, &n)| {
+                            rs.skills.iter().position(|s| &s.id == id).map(|k| (k, n))
+                        })
+                        .collect(),
                     requires: i.requires.clone(),
                 })
                 .collect(),
@@ -4838,11 +4846,13 @@ impl Sim {
             self.world.resource::<ItemRules>(),
             self.world.resource::<Techs>(),
             self.world.resource::<Seen>(),
+            self.world.resource::<SkillRules>(),
             item,
             on,
             self.world.get::<Away>(cat_e).is_some(),
             self.world.get::<Gear>(cat_e),
             self.world.get::<Outfit>(cat_e),
+            self.world.get::<Skills>(cat_e),
         );
         if !gate.is_empty() {
             return false;
@@ -5585,11 +5595,13 @@ impl Sim {
                                 items,
                                 techs,
                                 seen,
+                                rules,
                                 i,
                                 on,
                                 away.is_some(),
                                 gear,
                                 Some(&o),
+                                skills,
                             )
                             .to_string()
                         })

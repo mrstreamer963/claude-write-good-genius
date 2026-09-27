@@ -37,6 +37,8 @@ use crate::path::Reach;
 /// * `unseen` — вещь ни разу не бывала на базе (`Seen`, §12.131): назначить то,
 ///   о чём база не знает, — обещание механики, которой для игрока ещё нет;
 /// * `unknown` — база вещь не поняла (§12.114) — ворота на команде, как у правил (§12.93);
+/// * `unskilled` — кот не умеет пользоваться вещью (`skills` у предмета, §12.269):
+///   пробоотборник — прибор учёного;
 /// * `collector` — у кота уже есть прибор сбора: второй ему ни к чему (§12.256).
 ///
 /// Снятие спрашивает только первые два: запертая отмена оставила бы приписку
@@ -46,11 +48,13 @@ pub(crate) fn outfit_gate(
     items: &ItemRules,
     techs: &Techs,
     seen: &Seen,
+    skill_rules: &SkillRules,
     item: usize,
     on: bool,
     away: bool,
     gear: Option<&Gear>,
     outfit: Option<&Outfit>,
+    skills: Option<&Skills>,
 ) -> &'static str {
     if items.personal(item) {
         return "personal";
@@ -66,6 +70,9 @@ pub(crate) fn outfit_gate(
     }
     if !items.equippable(item) || !items.wearable(item, techs) {
         return "unknown";
+    }
+    if !items.skilled(item, skill_rules, skills) {
+        return "unskilled";
     }
     // Прибор сбора уже приписан или надет (например, личный анализатор).
     let collector = items.collects(item)
@@ -129,6 +136,7 @@ pub(crate) fn assign_equip(
     tiles: Res<TileRules>,
     items: Res<ItemRules>,
     techs: Res<Techs>,
+    skill_rules: Res<SkillRules>,
     mut commands: Commands,
     cats: Query<
         (
@@ -139,6 +147,7 @@ pub(crate) fn assign_equip(
             &Outfit,
             Option<&Path>,
             Option<&Squad>,
+            Option<&Skills>,
         ),
         (
             Without<Assignment>,
@@ -165,8 +174,8 @@ pub(crate) fn assign_equip(
     // Кто чего недосчитался, в порядке `id`.
     let mut naked: Vec<(&str, Entity, (i32, i32), Vec<usize>)> = cats
         .iter()
-        .filter(|(_, _, _, _, _, path, squad)| path.is_none() || squad.is_some())
-        .filter_map(|(cat_e, id, pos, gear, outfit, ..)| {
+        .filter(|(_, _, _, _, _, path, squad, _)| path.is_none() || squad.is_some())
+        .filter_map(|(cat_e, id, pos, gear, outfit, _, _, skills)| {
             // Ворота на надевание (§12.114) проверяет команда; здесь они
             // остаются подстраховкой — технологии не забываются (§12.18).
             let missing: Vec<usize> = outfit
@@ -178,6 +187,9 @@ pub(crate) fn assign_equip(
                 // на отряд, и пробоотборник на Антенне с её анализатором —
                 // вещь, отнятая у того, кому её не хватило.
                 .filter(|&item| !(items.collects(item) && items.collects_any(gear)))
+                // Не умеет — не берёт (§12.269). Приписку проверила команда;
+                // здесь страховка для приписок из старого снимка.
+                .filter(|&item| items.skilled(item, &skill_rules, skills))
                 .collect();
             (!missing.is_empty()).then_some((id.0.as_str(), cat_e, (pos.x, pos.y), missing))
         })

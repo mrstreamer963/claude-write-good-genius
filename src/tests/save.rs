@@ -231,6 +231,9 @@ fn a_saved_game_continues_identically() {
     live.put_item(4, 3, sample, 10);
     assert!(live.teach("excellent", "science"), "ученик за партой");
     live.tick_n(400);
+    // «Учить» — один уровень (§12.269): доучившись до первого, кот встал.
+    // Садим его снова, чтобы тема ждала учёного и дожила до снимка.
+    assert!(live.teach("excellent", "science"), "и снова за партой");
     assert!(live.start_research(0), "тема взята: наука в работе");
     // На полу коридора (§12.237: постройка встаёт только на пол).
     assert!(

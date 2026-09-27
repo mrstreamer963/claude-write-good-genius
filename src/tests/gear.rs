@@ -15,6 +15,8 @@
 
 use super::*;
 
+const CORE: &str = include_str!("../../assets/rulesets/core.yaml");
+
 /// Предмет-снаряжение в тестах: индекс палитры, у которого есть `force`.
 const SUIT: usize = 1;
 
@@ -422,6 +424,55 @@ fn a_collector_cannot_be_given_a_second_sampler() {
     sim.tick_n(1);
     assert_eq!(sim.outfit_gate("a", 3, true), "collector");
     assert!(!sim.set_outfit("a", 3, true));
+}
+
+/// Пробоотборник — прибор учёного (§12.269): коту без «Науки» его не
+/// приписать, и ворота называют причину.
+#[test]
+fn outfit_refuses_an_item_the_cat_cannot_use() {
+    let mut sim = sim_with_store_and_gate();
+    let science = sim.set_skill("science", &[10, 30]);
+    sim.set_item_traits(3, 10, false, false);
+    sim.set_item_skill(3, science, 1);
+    sim.put_item(5, 1, 3, 1);
+    sim.tick_n(1);
+    assert_eq!(sim.outfit_gate("a", 3, true), "unskilled");
+    assert!(!sim.set_outfit("a", 3, true));
+
+    sim.set_xp("a", science, 10);
+    assert_eq!(sim.outfit_gate("a", 3, true), "");
+    assert!(sim.set_outfit("a", 3, true));
+}
+
+/// Приписанное в обход ворот (старый снимок) неумелый кот не берёт.
+#[test]
+fn unskilled_cat_does_not_go_for_a_sampler() {
+    let mut sim = sim_with_store_and_gate();
+    let science = sim.set_skill("science", &[10, 30]);
+    sim.set_item_traits(3, 10, false, false);
+    sim.set_item_skill(3, science, 1);
+    sim.put_item(5, 1, 3, 1);
+    sim.outfit_all(&[3]);
+    sim.tick_n(40);
+    assert!(sim.gear_of("a").is_empty(), "без науки прибор не надет");
+    assert_eq!(sim.item_at(5, 1, 3), 1, "и лежит, где лежал");
+}
+
+/// На боевом рулсете пробоотборник носит только учёный (§12.269).
+#[test]
+fn the_shipped_ruleset_hands_samplers_only_to_scientists() {
+    let rs: crate::ruleset::Ruleset = serde_yaml::from_str(CORE).expect("рулсет");
+    let sampler = rs
+        .items
+        .iter()
+        .find(|i| i.id == "sampler")
+        .expect("пробоотборник");
+    assert!(
+        sampler.skills.get("science").is_some_and(|&n| n >= 1),
+        "пробоотборник без «Науки» не носят",
+    );
+    let science = rs.skills.iter().find(|s| s.id == "science").expect("наука");
+    assert_eq!(science.tutor, 3, "учит у парты кот с «Наукой» 3");
 }
 
 // --- износ (§12.268) ---------------------------------------------------------

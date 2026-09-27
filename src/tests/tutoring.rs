@@ -55,6 +55,14 @@ fn a_teacher_sits_down_and_teaches_up_to_his_level_minus_one() {
     assert_eq!(sim.pos_of("b"), (4, 1), "на своё место у парты");
 
     sim.tick_n(400);
+    assert_eq!(
+        sim.level_of("a", science),
+        1,
+        "«Учить» — один уровень (§12.269)"
+    );
+    assert!(!sim.is_studying("a"), "и парта свободна");
+    assert!(sim.teach("a", "science"), "за вторым — снова");
+    sim.tick_n(400);
     assert_eq!(sim.xp_of("a", science), 100, "ровно второй уровень");
     assert_eq!(sim.xp_of("b", science), 300, "учитель за учёбу не растёт");
 }
@@ -89,4 +97,21 @@ fn a_teacher_is_pulled_off_his_work() {
     sim.tick_n(3);
     assert!(sim.is_teaching("b"), "бросил стройку ради ученика");
     assert!(!sim.has_assignment("b"));
+}
+
+/// Учит у парты только тот, кто дорос до порога домена (§12.269): кот второго
+/// уровня за кафедру не садится, третьего — садится.
+#[test]
+fn a_level_two_cat_does_not_teach() {
+    let (mut sim, science) = classroom(ROOM);
+    sim.set_tutor(science, 3);
+    sim.set_xp("b", science, 100); // второй уровень
+    assert!(sim.teach("a", "science"));
+    sim.tick_n(40);
+    assert!(!sim.is_teaching("b"), "второго уровня мало");
+    assert_eq!(sim.xp_of("a", science), 0);
+
+    sim.set_xp("b", science, 300); // третий
+    sim.tick_n(5); // сесть успеет, а ученик за это время уровня не возьмёт
+    assert!(sim.is_teaching("b"), "третий — учит");
 }

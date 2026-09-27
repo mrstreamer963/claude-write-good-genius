@@ -805,6 +805,8 @@ impl Sim {
                 grants: Vec::new(),
                 collected: String::new(),
                 personal: false,
+                // Умения на прибор тоже не нужно (§12.269).
+                skills: Default::default(),
                 // Ворот на надевание в синтетическом мире тоже нет (§12.114):
                 // предмет надевается сразу — их ставит `set_wear_tech`.
                 requires: Vec::new(),
@@ -926,6 +928,7 @@ impl Sim {
             id: id.to_string(),
             levels: levels.to_vec(),
             taught: 0,
+            tutor: 0,
             // Предела по параметру у домена нет, пока его не задали явно:
             // тесты чужих механик о врождённом знать не должны (§12.42).
             stat: None,
@@ -2065,6 +2068,23 @@ impl Sim {
     /// Приписать **всем** котам мира одни и те же вещи (§12.268) — мимо ворот
     /// команды, как делал прежний общий шаблон. Коты, пришедшие позже, без
     /// приписки.
+    /// Умение, без которого вещь не носят (§12.269).
+    fn set_item_skill(&mut self, item: usize, skill: usize, level: i32) {
+        let mut rules = self.world.resource_mut::<ItemRules>();
+        if rules.0.len() <= item {
+            rules.0.resize(item + 1, ItemRule::default());
+        }
+        rules.0[item].skills = vec![(skill, level)];
+    }
+
+    /// Порог учителя в домене (§12.269): с какого уровня кот учит у парты.
+    fn set_tutor(&mut self, skill: usize, level: i32) {
+        let mut rules = self.world.resource_mut::<SkillRules>();
+        if let Some(rule) = rules.0.get_mut(skill) {
+            rule.tutor = level;
+        }
+    }
+
     fn outfit_all(&mut self, items: &[usize]) {
         let mut q = self.world.query_filtered::<Entity, With<UnitId>>();
         let cats: Vec<Entity> = q.iter(&self.world).collect();
@@ -2089,11 +2109,13 @@ impl Sim {
             self.world.resource::<ItemRules>(),
             self.world.resource::<Techs>(),
             self.world.resource::<Seen>(),
+            self.world.resource::<SkillRules>(),
             item,
             on,
             self.world.get::<Away>(cat).is_some(),
             self.world.get::<Gear>(cat),
             self.world.get::<Outfit>(cat),
+            self.world.get::<Skills>(cat),
         )
     }
 

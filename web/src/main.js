@@ -10679,6 +10679,16 @@ const OUTFIT_WHY = {
   collector: "Прибор сбора у него уже есть — второй ни к чему",
 };
 
+// Отказ `unskilled` (§12.269): какое умение нужно вещи — из `meta`, а не
+// текстом, чтобы слово не разошлось с рулсетом. Набор приезжает `Map`.
+function skillNeedWhy(def) {
+  const parts = [...(def.skills ?? new Map())].map(([id, n]) => {
+    const s = (meta.skills ?? []).find((k) => k.id === id);
+    return `${s?.label || id} ${n}`;
+  });
+  return `Не умеет им пользоваться: нужна ${parts.join(", ")}`;
+}
+
 // Сколько выходов осталось надетой вещи; ноль — не изнашивается.
 function wearLeft(e, item) {
   const k = (e.gear ?? []).indexOf(item);
@@ -10723,7 +10733,7 @@ function syncDossierGear(ui, e) {
     );
     btn.hidden = personal;
     setHtml(btn.firstChild, want ? "Снять" : "Носить");
-    const why = OUTFIT_WHY[gate];
+    const why = gate === "unskilled" ? skillNeedWhy(def) : OUTFIT_WHY[gate];
     btn.classList.toggle("off", !!why);
     liveTitle(
       btn,
@@ -11019,6 +11029,16 @@ function wikiFacts(key) {
     if (entry.nutrition > 0) uses.push("идёт в еду");
     if (entry.mends > 0) uses.push("ускоряет лечение");
     add("Годен", uses.join(" · "));
+    // Кто вещь носит (§12.269): то же `skills`, что держит ворота приписки.
+    add(
+      "Носит",
+      [...(entry.skills ?? new Map())]
+        .map(([id, n]) => {
+          const s = (meta.skills ?? []).find((k) => k.id === id);
+          return `кот с «${esc(s?.label || id)}» ${n}`;
+        })
+        .join(", "),
+    );
     add(
       "Понимание",
       entry.requires?.length && !facetTopic

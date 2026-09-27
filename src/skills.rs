@@ -124,6 +124,16 @@ pub(crate) fn tutor_cap(rules: &SkillRules, skill: usize, teacher_xp: i32) -> i3
     rules.xp_for_level(skill, level - 1)
 }
 
+/// Может ли кот с опытом `teacher_xp` учить ученика с опытом `pupil_xp`
+/// (§12.258, §12.269): у учителя есть порог домена (`tutor`), и знать он обязан
+/// больше, чем ученик получит. Одно выражение на выбор учителя, на его
+/// удержание у кафедры и на учёбу ученика — разойдись они, и учитель сидел бы
+/// за кафедрой, от которой ученику ничего не достаётся.
+pub(crate) fn may_tutor(rules: &SkillRules, skill: usize, teacher_xp: i32, pupil_xp: i32) -> bool {
+    let floor = rules.0.get(skill).map_or(0, |r| r.tutor);
+    rules.level(skill, teacher_xp) >= floor && tutor_cap(rules, skill, teacher_xp) > pupil_xp
+}
+
 /// Клетки парт этого домена на карте — в порядке обхода, а не по расстоянию.
 ///
 /// Отдельным выражением, потому что спрашивают о них двое и о разном: ворота —
@@ -427,7 +437,7 @@ pub(crate) fn assign_tutor(
             .filter(|(e, ..)| !taken.contains(e))
             .filter_map(|(e, id, p, skills, ..)| {
                 let xp = skills.map_or(0, |k| k.xp_of(skill));
-                (tutor_cap(&rules, skill, xp) > pupil_xp)
+                may_tutor(&rules, skill, xp, pupil_xp)
                     .then(|| (-rules.level(skill, xp), id.0.as_str(), e, (p.x, p.y)))
             })
             .min();
@@ -527,7 +537,7 @@ pub(crate) fn study(
             let needed = tiles.is_lectern(map.tile_at(task.spot.0, task.spot.1))
                 && pupils
                     .iter()
-                    .any(|&(at, xp)| at == task.spot && tutor_cap(&rules, task.skill, mine) > xp);
+                    .any(|&(at, xp)| at == task.spot && may_tutor(&rules, task.skill, mine, xp));
             if !needed {
                 commands.entity(cat_e).remove::<(Study, Path, Stride)>();
             } else if path.is_none()
@@ -593,7 +603,7 @@ pub(crate) fn study(
                 Some(at) => {
                     let mine = skills.map_or(0, |k| k.xp_of(task.skill));
                     tutors.iter().any(|&(spot, xp, here)| {
-                        spot == at && here && tutor_cap(&rules, task.skill, xp) > mine
+                        spot == at && here && may_tutor(&rules, task.skill, xp, mine)
                     })
                 }
             };
@@ -615,9 +625,16 @@ pub(crate) fn train_skills(
     rules: Res<SkillRules>,
     time: Res<SimTime>,
     mut commands: Commands,
-    mut cats: Query<(Entity, &Worked, Option<&mut Skills>, Option<&Stats>)>,
+    mut cats: Query<(
+        Entity,
+        &Worked,
+        Option<&mut Skills>,
+        Option<&Stats>,
+        Option<&Study>,
+        Option<&mut Record>,
+    )>,
 ) {
-    for (cat_e, worked, skills, stats) in &mut cats {
+    for (cat_e, worked, skills, stats, study, record) in &mut cats {
         // След маркера, переживающий тик: `Worked` снимается здесь же, а панель
         // кота собирается уже после цепочки и без следа не знала бы, какой из
         // доменов показывать (§12.17). Пишется он тут, потому что тут же
@@ -631,13 +648,35 @@ pub(crate) fn train_skills(
         // показанный уровень (§12.42), — иначе кот копил бы очки, которые
         // никогда ни во что не превратятся.
         let cap = xp_ceiling(&rules, stats, worked.0);
-        match skills {
-            Some(mut skills) => skills.add_xp(worked.0, XP_PER_TICK, cap),
+        let (before, after) = match skills {
+            Some(mut skills) => {
+                let before = skills.xp_of(worked.0);
+                skills.add_xp(worked.0, XP_PER_TICK, cap);
+                (before, skills.xp_of(worked.0))
+            }
             None => {
                 let mut fresh = Skills::default();
                 fresh.add_xp(worked.0, XP_PER_TICK, cap);
+                let after = fresh.xp_of(worked.0);
                 commands.entity(cat_e).insert(fresh);
+                (0, after)
             }
+        };
+        // «Учить» — это один уровень (§12.269): ученик, поднявшийся за партой,
+        // встаёт сам и отдаёт парту следующему. Запоминать цель незачем —
+        // переход уровня виден ровно здесь, где опыт и растёт.
+        if study.is_some_and(|s| !s.teacher && s.skill == worked.0)
+            && rules.level(worked.0, after) > rules.level(worked.0, before)
+        {
+            // «Доучился» в деле — только на потолке парты, как и прежде.
+            if after >= desk_cap(&rules, stats, worked.0)
+                && let Some(mut record) = record
+            {
+                record.note_schooled(worked.0);
+            }
+            commands
+                .entity(cat_e)
+                .remove::<(Study, Enrolled, Path, Stride)>();
         }
         commands.entity(cat_e).remove::<Worked>();
     }

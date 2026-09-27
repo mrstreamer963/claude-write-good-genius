@@ -133,7 +133,12 @@ fn the_desk_stops_at_the_stat_ceiling() {
     sim.force_tile(3, 1, 1);
     sim.set_stat("a", 0, 4); // а параметр пускает только до второго
 
+    // «Учить» — один уровень (§12.269): до второго кот садится дважды.
     assert!(sim.teach("a", "science"), "учиться ему ещё есть чему");
+    sim.tick_n(60);
+    assert_eq!(sim.level_of("a", science), 1);
+    assert!(!sim.is_studying("a"), "поднялся на уровень и встал");
+    assert!(sim.teach("a", "science"), "второй уровень ещё впереди");
     sim.tick_n(60);
     assert_eq!(sim.xp_of("a", science), 10, "встал на пороге второго");
     assert_eq!(sim.level_of("a", science), 2);
