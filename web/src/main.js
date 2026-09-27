@@ -4141,6 +4141,14 @@ function fieldLine(e, led, node, guide) {
   // форме» видно занятием в той же строке. Сырые значения параметров живут в
   // карточке кота (§12.42) — там они отвечают на другой вопрос, про потолки
   // навыков, и там число уместно.
+  // Приписанное, за чем некуда сходить (§12.268): причина словом, а не голый
+  // кот в отряде (§12.53). Чинится вылазкой, покупкой или мастерской.
+  const short = e.outfit_short ?? [];
+  if (short.length && !node?.busy) {
+    parts.push(
+      `<b class="bad">нет на базе: ${short.map((i) => esc(itemLabel(i))).join(", ")}</b>`,
+    );
+  }
   return `<i class="crew-field">${parts.join(" · ")}</i>`;
 }
 
@@ -6777,6 +6785,9 @@ const KEEPS_CELL = new Set([
   // Снятие с учёбы (§12.147) — там же и по тому же доводу: кнопка стоит в
   // панели парты, и снятое выделение спрятало бы ответ («парта свободна»).
   "unteach",
+  // Приписка снаряжения (§12.268) — из окна «Личное дело», модала поверх
+  // карты: гасить под ним выделение значит стирать то, к чему вернутся.
+  "setOutfit",
   // «Отменить» у темы (§12.233) — там же: снятое выделение спрятало бы ответ
   // («лаборатория свободна»).
   "cancelResearch",
@@ -10606,6 +10617,40 @@ function buildDossier(roster) {
   ui.kit.className = "cat-sub";
   list.appendChild(ui.kit);
 
+  // Снаряжение (§12.268): строка на каждую надеваемую вещь палитры, узлы
+  // строятся раз — видимость и подписи правит `syncDossier` (§12.118).
+  ui.gearHead = document.createElement("div");
+  ui.gearHead.className = "cat-row";
+  ui.gearHead.innerHTML = "<span>Снаряжение</span>";
+  list.appendChild(ui.gearHead);
+  ui.gear = [];
+  (meta.items ?? []).forEach((def, i) => {
+    const equippable =
+      (def.force ?? 0) > 0 ||
+      (def.collects ?? 0) > 0 ||
+      (def.grants ?? []).length > 0;
+    if (!equippable) return;
+    const row = document.createElement("div");
+    row.className = "dos-skill";
+    const live = document.createElement("div");
+    live.className = "dos-live";
+    row.appendChild(live);
+    const btn = mkTool("<span></span>", () => {
+      if (btn.classList.contains("off")) return;
+      const me = (lastSnap?.entities ?? []).find((e) => e.id === dossierAt);
+      sendAction({
+        type: "setOutfit",
+        id: dossierAt,
+        item: i,
+        on: !(me?.outfit ?? []).includes(i),
+      });
+    });
+    btn.className = "tool dos-teach";
+    row.appendChild(btn);
+    list.appendChild(row);
+    ui.gear.push({ row, live, btn, def, i });
+  });
+
   ui.log = document.createElement("div");
   ui.log.className = "dos-log";
   list.appendChild(ui.log);
@@ -10624,6 +10669,79 @@ const TEACH_WHY = {
   nodesk: "Парт этого домена на базе нет — постройте класс",
   taken: "Все парты этого домена заняты или до них не дойти",
 };
+
+// Слово по тегу ворот приписки (§12.268). Считает ядро (`gear::outfit_gate`),
+// вид только называет — как `TEACH_WHY`.
+const OUTFIT_WHY = {
+  away: "Его нет на базе — переодеть некого",
+  unseen: "Такой вещи база ещё не видела",
+  unknown: "База ещё не поняла эту вещь",
+  collector: "Прибор сбора у него уже есть — второй ни к чему",
+};
+
+// Сколько выходов осталось надетой вещи; ноль — не изнашивается.
+function wearLeft(e, item) {
+  const k = (e.gear ?? []).indexOf(item);
+  return k < 0 ? 0 : (e.gear_left ?? [])[k] ?? 0;
+}
+
+function syncDossierGear(ui, e) {
+  let any = false;
+  for (const { row, live, btn, def, i } of ui.gear) {
+    const worn = (e.gear ?? []).includes(i);
+    const want = (e.outfit ?? []).includes(i);
+    const gate = (e.outfit_gates ?? [])[i] ?? "";
+    // Незнакомую вещь не показываем, пока её нет ни на коте, ни в приписке:
+    // строка про то, о чём база не знает, — отказ без причины (§12.131).
+    // Чужая личная вещь (§12.256) — не выбор для этого кота: она бывает только
+    // на своём хозяине, и строка «не снимается» у голого кота врала бы.
+    // Невиданное и непонятое (§12.131) прячем целиком: строка про вещь, которой
+    // нет даже в планах, обещала бы механику раньше, чем она есть.
+    row.hidden =
+      !worn &&
+      !want &&
+      (gate === "unseen" || gate === "unknown" || gate === "personal");
+    if (row.hidden) continue;
+    any = true;
+    const personal = gate === "personal";
+    const left = wearLeft(e, i);
+    const state = personal
+      ? "личное — не снимается"
+      : worn
+        ? left > 0
+          ? `надето · ещё ${plural(left, "выход", "выхода", "выходов")}`
+          : "надето"
+        : want
+          ? (e.outfit_short ?? []).includes(i)
+            ? "носит · нет на базе"
+            : "носит · сходит сам"
+          : "не носит";
+    setHtml(
+      live,
+      `<div class="cat-row"><span>${itemGlyph(i)} ${esc(def.label || def.id)}</span></div>` +
+        `<div class="cat-sub">${state}</div>`,
+    );
+    btn.hidden = personal;
+    setHtml(btn.firstChild, want ? "Снять" : "Носить");
+    const why = OUTFIT_WHY[gate];
+    btn.classList.toggle("off", !!why);
+    liveTitle(
+      btn,
+      why ||
+        (want
+          ? "Снять приписку: надетое кот положит под ноги"
+          : "Приписать: кот сам сходит за вещью, потерянную доберёт снова"),
+    );
+  }
+  ui.gearHead.hidden = !any;
+}
+
+// Открыта ли хоть одна парта — тайл с `teaches` (§12.259). Считает ядро
+// (`tiles_open`), вид только спрашивает.
+function teachingOpen() {
+  const open = lastSnap?.tiles_open ?? [];
+  return (meta.tiles ?? []).some((t, i) => t.teaches && open[i]);
+}
 
 function syncDossier() {
   if (!dossierOpen) return;
@@ -10693,7 +10811,9 @@ function syncDossier() {
     // (§12.196), то есть это причина, а не приговор, и её называет подсказка
     // погашенной кнопки. Спрячь такую строку — и решение «выучить с нуля»
     // стало бы недостижимым.
-    row.hidden = s.level === 0 && s.xp === 0 && s.teach === "untaught";
+    // Нулевой домен не показываем вовсе: «Наука 0 · 0 / 200» у кота, который
+    // за неё не брался, — строка про пустоту. Появится с первым очком опыта.
+    row.hidden = s.level === 0 && s.xp === 0;
     if (row.hidden) continue;
     const levels = def.levels ?? [];
     const from = s.level > 0 ? levels[s.level - 1] : 0;
@@ -10735,7 +10855,10 @@ function syncDossier() {
     // Домена, которому за партой не учат вовсе, и домена, доученного до
     // потолка парты, кнопка не касается: погашенная навсегда, она предлагает
     // решение, которого в игре нет и уже не будет (§12.156).
-    btn.hidden = s.teach === "untaught" || topped;
+    // Пока парта не открыта (тема «Наставничество», §12.259), кнопки нет вовсе:
+    // она звала бы к постройке, которой нет даже в палитре (§12.126). Ворота —
+    // у самого тайла (`tiles_open`), а не переписанное имя темы.
+    btn.hidden = s.teach === "untaught" || topped || !teachingOpen();
     setHtml(btn.firstChild, learning ? "Снять с учёбы" : "Учить");
     btn.classList.toggle("off", !learning && !!why);
     liveTitle(
@@ -10750,6 +10873,8 @@ function syncDossier() {
   // Надетое и лапы — те же строки, что и в панели: это состояние, а не
   // история, и дублируются они намеренно.
   setHtml(ui.kit, `${gearLine(e)} · ${pawsLine(e)}`);
+
+  syncDossierGear(ui, e);
 
   // История. Пустой её не пишем вовсе: у кота, который никуда не ходил, это
   // не ответ на вопрос, а строка про отсутствие событий — соседняя дата
@@ -13298,7 +13423,7 @@ function missionCostFacts(def, share) {
 // нельзя (§12.53): фишка в строке добычи обещала бы то, чего не будет. Есть ли
 // прибор, говорит ядро (`samples` у узла и у вылазки); какие предметы
 // «собирают», а не подбирают, — рулсет (`collected`).
-function missionLootRow(def, share, samples, counts) {
+function missionLootRow(def, share, samples, counts, gather) {
   if (def.rescue) {
     return '<div class="cat-sub">возвращает пленного, а не добычу</div>';
   }
@@ -13311,14 +13436,18 @@ function missionLootRow(def, share, samples, counts) {
   const got = new Map(
     (counts ?? []).map(([i, n]) => [(meta?.items ?? [])[i]?.id, n]),
   );
-  const countOf = (id, n) => (counts ? (got.get(id) ?? 0) : n);
+  // Доля прогноза применена к самим числам, а не названа «× 88 %» у каждой
+  // строки: она уже стоит вердиктом в заголовке карточки (дословно
+  // `missionGainsText`), и та же округлённая вниз арифметика, что на возвращении.
+  const cut = (n) => (share > 0 && share < 100 ? Math.floor((n * share) / 100) : n);
+  const countOf = (id, n) => cut(counts ? (got.get(id) ?? 0) : n);
   const seenId = (id) => {
     const i = (meta?.items ?? []).findIndex((it) => it.id === id);
     return i >= 0 && !!(stock[i] ?? {}).seen;
   };
   const plain = all.filter(([id]) => !collected(id));
   const gathered = all.filter(([id]) => collected(id));
-  const loot = costChips(new Map(plain), true);
+  const loot = costChips(new Map(plain.map(([id, n]) => [id, cut(n)])), true);
   // Образцы — своей строкой и акцентом (§12.264): ради них заказы и ходят в
   // поле с прибором, и в общей строке фишка терялась среди лома. Называем их
   // и невиданными: строка появляется, только когда отряд их правда соберёт, —
@@ -13328,16 +13457,20 @@ function missionLootRow(def, share, samples, counts) {
     const chips = gathered
       .map(([id, n]) => [id, countOf(id, n), n])
       .filter(([, c]) => c > 0);
-    const short = gathered.some(([id, n]) => countOf(id, n) < n);
+    const short = gathered.some(([id, n]) => countOf(id, n) < cut(n));
     if (chips.length) {
       rows.push(
         `<div class="raidwin-gather">вернутся с ${costChips(
           new Map(chips.map(([id, c]) => [id, c])),
         )}` +
+          // Недобор — долей сбора в скобках при числе (§12.267; считает ядро,
+          // `gathers`), а «7 из 10» с причиной — в подсказке (§12.53).
           (short
-            ? ` <i>из ${costChips(new Map(gathered))} — прибор сбора не у каждого в отряде</i>`
+            ? ` <i data-tip="${chips.reduce((a, [, c]) => a + c, 0)} из ${gathered.reduce(
+                (a, [, n]) => a + cut(n),
+                0,
+              )} — прибор сбора не у каждого в отряде">(${gather ?? 0} %)</i>`
             : "") +
-          (share > 0 && share < 100 ? ` <i>× ${share} %</i>` : "") +
           "</div>",
       );
     }
@@ -13350,9 +13483,7 @@ function missionLootRow(def, share, samples, counts) {
     : "";
   if (loot || miss) {
     rows.unshift(
-      `<div class="raidwin-loot">добыча ${loot}${miss}` +
-        (share > 0 && share < 100 ? ` <i>× ${share} %</i>` : "") +
-        "</div>",
+      `<div class="raidwin-loot">добыча ${loot}${miss}</div>`,
     );
   }
   return rows.join("");
@@ -13536,7 +13667,7 @@ function raidCard(i, node) {
       "</div>",
   );
 
-  for (const row of [missionLootRow(def, g.share, !!(node?.samples_for?.[i] ?? node?.samples), node?.loots?.[i]), missionSidesRow(def)]) {
+  for (const row of [missionLootRow(def, g.share, !!(node?.samples_for?.[i] ?? node?.samples), node?.loots?.[i], node?.gathers?.[i]), missionSidesRow(def)]) {
     if (row) rows.push(row);
   }
 
@@ -13759,7 +13890,7 @@ function busyCard(raid, node) {
       facts.map(([k, v]) => `<i>${k}</i><span>${v}</span>`).join("") +
       "</div>",
   );
-  for (const row of [missionLootRow(def, raid.share, !!raid.samples, raid.loot), missionSidesRow(def)]) {
+  for (const row of [missionLootRow(def, raid.share, !!raid.samples, raid.loot, raid.gather), missionSidesRow(def)]) {
     if (row) rows.push(row);
   }
   // Ряд кнопок тот же, что у обычной карточки заказа, и это не украшение: пока

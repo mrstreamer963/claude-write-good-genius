@@ -140,13 +140,14 @@ fn samples_drop_only_with_a_collector_in_the_squad() {
     }
 }
 
-/// Образцы делятся по приборам на лапы (§12.264): прибор у половины отряда —
-/// половина запаса заказа (с округлением вниз), у всех — весь.
+/// Образцы делятся по приборам на **предел состава** (§12.267): заказ на 2–4
+/// кота, запас 5 — два прибора дают половину (2), один — четверть (1, вниз).
 #[test]
-fn samples_split_by_collectors_per_paw() {
+fn samples_split_by_collectors_per_squad_max() {
     let rows = &["########", "#ab....#", "########"];
-    for (both, expected) in [(false, 2), (true, 5)] {
+    for (both, expected) in [(false, 1), (true, 2)] {
         let (mut sim, m) = field(rows, 10, 0);
+        sim.set_squad_range(m, 2, 4);
         sim.set_item_traits(SAMPLE, 0, false, true);
         sim.set_item_traits(COLLECTOR, 10, false, false);
         sim.put_gear("a", &[COLLECTOR]);
@@ -220,7 +221,7 @@ fn a_collector_does_not_take_a_second_one() {
     let sampler = 3;
     sim.set_item_traits(COLLECTOR, 10, true, false);
     sim.set_item_traits(sampler, 10, false, false);
-    sim.set_loadout(&[sampler]);
+    sim.outfit_all(&[sampler]);
     sim.put_gear("a", &[COLLECTOR]);
     sim.put_item(3, 1, sampler, 1);
     sim.tick_n(10);
@@ -403,7 +404,9 @@ fn the_shipped_ruleset_leads_its_scientist_to_samples() {
         .iter()
         .find(|r| r.id == "antenna")
         .expect("Антенна");
-    let carries = items.grants_of_gear(Some(&Gear(antenna.gear.clone())));
+    let carries = items.grants_of_gear(Some(&Gear(
+        antenna.gear.iter().map(|&i| items.fresh(i)).collect(),
+    )));
     assert!(rule.abilities != 0, "вылазка спрашивает возможность отряда");
     assert_eq!(
         carries & rule.abilities,

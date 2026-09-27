@@ -195,7 +195,6 @@ fn sim_from(rows: &[&str]) -> Sim {
     world.insert_resource(Crafted::default());
     world.insert_resource(Earned::default());
     world.insert_resource(ItemRules::default());
-    world.insert_resource(LoadoutRules::default());
     world.insert_resource(UnitRules::default());
     world.insert_resource(StructureRules::default());
     Sim {
@@ -793,6 +792,7 @@ impl Sim {
                 label: String::new(),
                 color: "#000000".to_string(),
                 force: 0,
+                wear: 0,
                 mends: 0,
                 nutrition: 0,
                 // Избранного в синтетическом мире нет, как нет тикеров и
@@ -2033,7 +2033,11 @@ impl Sim {
     /// Надеть на кота вещи мимо шаблона — как личную вещь кандидата (§12.256).
     fn put_gear(&mut self, unit: &str, items: &[usize]) {
         let cat = self.entity_of(unit);
-        self.world.entity_mut(cat).insert(Gear(items.to_vec()));
+        let worn = {
+            let rules = self.world.resource::<ItemRules>();
+            items.iter().map(|&i| rules.fresh(i)).collect()
+        };
+        self.world.entity_mut(cat).insert(Gear(worn));
     }
 
     /// Завести перк с вычетом дороги (§12.256): в схеме перков-чисел нет.
@@ -2058,9 +2062,70 @@ impl Sim {
         q.iter(&self.world).next().map(|m| m.travel)
     }
 
-    /// Задать шаблон снаряжения: что коты носят. Один на всех (§12.29).
-    fn set_loadout(&mut self, items: &[usize]) {
-        self.world.resource_mut::<LoadoutRules>().0 = items.to_vec();
+    /// Приписать **всем** котам мира одни и те же вещи (§12.268) — мимо ворот
+    /// команды, как делал прежний общий шаблон. Коты, пришедшие позже, без
+    /// приписки.
+    fn outfit_all(&mut self, items: &[usize]) {
+        let mut q = self.world.query_filtered::<Entity, With<UnitId>>();
+        let cats: Vec<Entity> = q.iter(&self.world).collect();
+        for cat in cats {
+            self.world.entity_mut(cat).insert(Outfit(items.to_vec()));
+        }
+    }
+
+    /// Приписка снаряжения (§12.268), как её видит окно «Личное дело».
+    fn outfit_of(&mut self, unit: &str) -> Vec<usize> {
+        let cat = self.entity_of(unit);
+        self.world
+            .get::<Outfit>(cat)
+            .map(|o| o.0.clone())
+            .unwrap_or_default()
+    }
+
+    /// Ворота приписки (§12.268) тегом — ровно как их видит кнопка.
+    fn outfit_gate(&mut self, unit: &str, item: usize, on: bool) -> &'static str {
+        let cat = self.entity_of(unit);
+        crate::gear::outfit_gate(
+            self.world.resource::<ItemRules>(),
+            self.world.resource::<Techs>(),
+            self.world.resource::<Seen>(),
+            item,
+            on,
+            self.world.get::<Away>(cat).is_some(),
+            self.world.get::<Gear>(cat),
+            self.world.get::<Outfit>(cat),
+        )
+    }
+
+    /// Сколько выходов осталось надетой вещи (§12.268); `None` — не надета.
+    fn wear_left(&mut self, unit: &str, item: usize) -> Option<i32> {
+        let cat = self.entity_of(unit);
+        self.world
+            .get::<Gear>(cat)
+            .and_then(|g| g.0.iter().find(|w| w.item == item).map(|w| w.left))
+    }
+
+    /// Сделать вещь личной (§12.256): не снимается, не ломается, не изнашивается.
+    fn set_personal(&mut self, item: usize) {
+        let mut rules = self.world.resource_mut::<ItemRules>();
+        if rules.0.len() <= item {
+            rules.0.resize(item + 1, ItemRule::default());
+        }
+        rules.0[item].personal = true;
+    }
+
+    /// С чем кандидат приходит надетым (§12.256, §12.268).
+    fn set_recruit_gear(&mut self, recruit: usize, items: &[usize]) {
+        self.world.resource_mut::<RecruitRules>().0[recruit].gear = items.to_vec();
+    }
+
+    /// Сколько выходов выдерживает вещь (§12.268): в схеме — ноль, вечная.
+    fn set_wear(&mut self, item: usize, wear: i32) {
+        let mut rules = self.world.resource_mut::<ItemRules>();
+        if rules.0.len() <= item {
+            rules.0.resize(item + 1, ItemRule::default());
+        }
+        rules.0[item].wear = wear;
     }
 
     /// Убрать кучу с клетки целиком — как если бы её унесли, пока кот шёл.
@@ -2087,7 +2152,7 @@ impl Sim {
         let cat = self.entity_of(unit);
         self.world
             .get::<Gear>(cat)
-            .map(|g| g.0.clone())
+            .map(|g| g.items().collect())
             .unwrap_or_default()
     }
 

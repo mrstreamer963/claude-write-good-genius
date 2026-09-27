@@ -81,7 +81,9 @@ fn worn_gear_is_seen() {
     let mut sim = sim_from(&["#####", "#a..#", "#####"]);
     sim.set_items(2);
     let cat = sim.entity_of("a");
-    sim.world.entity_mut(cat).insert(Gear(vec![1]));
+    sim.world
+        .entity_mut(cat)
+        .insert(Gear(vec![Worn { item: 1, left: 0 }]));
 
     sim.tick_n(1);
 

@@ -851,7 +851,7 @@ fn worn_gear_does_not_count_as_a_specimen() {
     let (mut sim, _) = sim_with_lab();
     sim.set_items(2);
     sim.set_force(1, 1);
-    sim.set_loadout(&[1]);
+    sim.outfit_all(&[1]);
     let topic = sim.set_topic("fabrics", 0, 400, &[], &[]);
     sim.set_specimen(topic, &[(1, 1)], &[]);
 
@@ -877,7 +877,7 @@ fn the_loadout_yields_to_a_started_topic_and_not_to_an_open_one() {
         let (mut sim, _) = sim_with_lab();
         sim.set_items(2);
         sim.set_force(1, 1);
-        sim.set_loadout(&[1]);
+        sim.outfit_all(&[1]);
         let topic = sim.set_topic("fabrics", 0, 4000, &[], &[]);
         sim.set_specimen(topic, &[(1, 1)], &[]);
         sim.put_item(5, 1, 1, 1);

@@ -64,7 +64,7 @@ pub(crate) fn note_seen(
     // «Ресурсы» вместе с новостью «новый ресурс» говорили бы о том, чем база не
     // располагает. Кучей и в лапах она не бывает, поэтому отсечь её хватает здесь.
     for gear in &worn {
-        for &item in gear.0.iter().filter(|&&i| !items.personal(i)) {
+        for item in gear.items().filter(|&i| !items.personal(i)) {
             seen.mark(item);
         }
     }

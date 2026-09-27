@@ -55,7 +55,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 42;
+pub(crate) const FORMAT: u32 = 43;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -108,6 +108,7 @@ pub(crate) const SAVED: &[&str] = &[
     // Состав отряда на узле (§12.61) — той же природы: конфигурация, но
     // состояние мира. Без неё загруженная партия распустила бы все отряды.
     "Enlisted",
+    "Outfit",
     // Приписка к парте (§12.84) — третья конфигурация того же рода: без неё
     // загруженная партия забыла бы, кого игрок отправил учиться, и ученик,
     // спавший в момент сохранения, за парту больше не вернулся бы.
@@ -205,10 +206,6 @@ pub(crate) const SKIPPED: &[(&str, &str)] = &[
     ("PerkRules", "правила: пересобирает `Sim::new` из рулсета"),
     (
         "AbilityRules",
-        "правила: пересобирает `Sim::new` из рулсета",
-    ),
-    (
-        "LoadoutRules",
         "правила: пересобирает `Sim::new` из рулсета",
     ),
     (
@@ -437,8 +434,12 @@ pub(crate) struct EntityDto {
     pub(crate) record: Option<RecordDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) perks: Option<Vec<String>>,
+    /// Надетое парами (предмет, сколько выходов осталось) — §12.268; `FORMAT` 43.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) gear: Option<Vec<usize>>,
+    pub(crate) gear: Option<Vec<(usize, i32)>>,
+    /// Приписка снаряжения (§12.268).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) outfit: Option<Vec<usize>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) carrying: Option<(usize, i32)>,
 
@@ -721,7 +722,10 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                 skills: e.get::<Skills>().map(|s| s.xp.clone()),
                 stats: e.get::<Stats>().map(|s| s.0.clone()),
                 perks: e.get::<Perks>().map(|p| p.0.clone()),
-                gear: e.get::<Gear>().map(|g| g.0.clone()),
+                gear: e
+                    .get::<Gear>()
+                    .map(|g| g.0.iter().map(|w| (w.item, w.left)).collect()),
+                outfit: e.get::<Outfit>().map(|o| o.0.clone()),
                 carrying: e.get::<Carrying>().map(|c| (c.item, c.count)),
 
                 order: e.get::<Order>().map(|o| (o.x, o.y, o.tried_version)),
@@ -953,7 +957,7 @@ fn restore_seen(world: &mut World, file: &SaveFile) {
             seen.mark(item);
         }
         if let Some(gear) = &dto.gear {
-            for &item in gear {
+            for &(item, _) in gear {
                 seen.mark(item);
             }
         }
@@ -1146,7 +1150,12 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
             e.insert(Perks(v.clone()));
         }
         if let Some(v) = &dto.gear {
-            e.insert(Gear(v.clone()));
+            e.insert(Gear(
+                v.iter().map(|&(item, left)| Worn { item, left }).collect(),
+            ));
+        }
+        if let Some(v) = &dto.outfit {
+            e.insert(Outfit(v.clone()));
         }
         if let Some((item, count)) = dto.carrying {
             e.insert(Carrying { item, count });

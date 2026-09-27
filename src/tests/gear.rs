@@ -1,4 +1,5 @@
-//! Снаряжение: комплект по шаблону, за которым кот идёт сам (§12.29, §12.34).
+//! Снаряжение: приписка на кота, за которой кот идёт сам (§12.29, §12.34,
+//! §12.268).
 //!
 //! Снаряжение — свойство предмета (`force`), а не отдельная сущность, поэтому
 //! проверять его надо там, где оно что-то меняет: в силе отряда. Отсюда и мир
@@ -8,9 +9,9 @@
 //! тиков: кот доходит до кучи и берёт вещь оттуда. Это и есть главная разница с
 //! первой редакцией §12.29, где склад одевал мгновенно.
 //!
-//! В схеме `sim_from` предметы бессильны и шаблон пуст, ровно как тайл там
-//! бесплатен: это контент рулсета, и включают его тесты сами (`set_force`,
-//! `set_loadout`).
+//! В схеме `sim_from` предметы бессильны, вечны и никому не приписаны, ровно как
+//! тайл там бесплатен: включают их тесты сами (`set_force`, `set_wear`,
+//! `outfit_all`, `set_outfit`).
 
 use super::*;
 
@@ -32,7 +33,7 @@ fn sim_with_store_and_gate() -> Sim {
     sim.set_relay(2, true);
     sim.force_tile(6, 1, 2);
     sim.set_force(SUIT, 1);
-    sim.set_loadout(&[SUIT]);
+    sim.outfit_all(&[SUIT]);
     sim
 }
 
@@ -294,17 +295,196 @@ fn a_stripped_cat_is_re_equipped() {
     assert_eq!(sim.gear_of("a"), vec![SUIT], "сходил и оделся снова");
 }
 
-/// Нанятый приходит голым и одевается по общему правилу: второго места, где
-/// коту выдают вещи, не заводится (§12.24).
+/// Нанятый приходит **со своим** (§12.268): пусто у кандидата — голым и без
+/// приписки, и сам за комбинезоном не пойдёт, пока игрок не велит.
 #[test]
-fn a_hired_cat_is_equipped_too() {
+fn a_hired_cat_comes_bare_and_waits_for_an_outfit() {
     let mut sim = sim_with_store_and_gate();
     sim.put_item(5, 1, SUIT, 4);
     let r = sim.set_recruit("nail", 0, &[], &[]);
     assert!(sim.hire(r));
 
     sim.tick_n(15);
-    assert_eq!(sim.gear_of("nail"), vec![SUIT], "новичок одет");
+    assert!(sim.gear_of("nail").is_empty(), "новичок гол");
+    assert!(
+        sim.outfit_of("nail").is_empty(),
+        "и ничего ему не приписано"
+    );
+
+    assert!(sim.set_outfit("nail", SUIT, true));
+    sim.tick_n(15);
+    assert_eq!(
+        sim.gear_of("nail"),
+        vec![SUIT],
+        "приписали — сходил и оделся"
+    );
+}
+
+/// Кандидат в комбинезоне: вещь надета с порога **и** приписана — потеряет,
+/// доберёт сам (§12.268).
+#[test]
+fn a_recruit_arrives_wearing_its_gear() {
+    let mut sim = sim_with_store_and_gate();
+    let r = sim.set_recruit("nail", 0, &[], &[]);
+    sim.set_recruit_gear(r, &[SUIT]);
+    assert!(sim.hire(r));
+
+    assert_eq!(sim.gear_of("nail"), vec![SUIT]);
+    assert_eq!(sim.outfit_of("nail"), vec![SUIT]);
+}
+
+// --- личная вещь (§12.256, §12.268) ------------------------------------------
+
+/// Личная вещь приходит с котом, но в приписку не идёт никогда: она не решение
+/// игрока, а свойство кота.
+#[test]
+fn a_personal_item_is_never_in_the_outfit() {
+    let mut sim = sim_with_store_and_gate();
+    sim.set_personal(2);
+    let r = sim.set_recruit("antenna", 0, &[], &[]);
+    sim.set_recruit_gear(r, &[2]);
+    assert!(sim.hire(r));
+
+    assert_eq!(sim.gear_of("antenna"), vec![2], "надета с порога");
+    assert!(sim.outfit_of("antenna").is_empty(), "но не приписана");
+    assert_eq!(sim.outfit_gate("antenna", 2, true), "personal");
+}
+
+/// Снять личную вещь обычным образом нельзя: команда отклонена тегом, на коте
+/// вещь цела, и под ногами ничего не появилось.
+#[test]
+fn a_personal_item_cannot_be_taken_off() {
+    let mut sim = sim_with_store_and_gate();
+    sim.set_personal(2);
+    let r = sim.set_recruit("antenna", 0, &[], &[]);
+    sim.set_recruit_gear(r, &[2]);
+    assert!(sim.hire(r));
+    let at = sim.pos_of("antenna");
+
+    assert_eq!(sim.outfit_gate("antenna", 2, false), "personal");
+    assert!(!sim.set_outfit("antenna", 2, false), "снятие отклонено");
+    assert_eq!(sim.gear_of("antenna"), vec![2]);
+    assert_eq!(sim.item_at(at.0, at.1, 2), 0, "кучи не появилось");
+}
+
+/// Личная вещь не изнашивается, даже если у предмета есть `wear`.
+#[test]
+fn a_personal_item_never_wears() {
+    let mut sim = sim_with_store_and_gate();
+    sim.set_personal(2);
+    sim.set_wear(2, 1);
+    sim.put_gear("a", &[2]);
+    let m = sim.set_risky_mission(1, 10, 0, 0, &[]);
+    assert!(sim.launch(m, squad(&["a"])));
+    sim.tick_n(40);
+    assert_eq!(sim.gear_of("a"), vec![2], "после вылазки вещь на месте");
+}
+
+// --- приписка (§12.268) ------------------------------------------------------
+
+/// Снятая приписка роняет надетое под ноги — ничего не исчезает (инвариант 8).
+#[test]
+fn taking_off_drops_the_item_underfoot() {
+    let mut sim = sim_with_store_and_gate();
+    sim.put_item(5, 1, SUIT, 1);
+    sim.tick_n(15);
+    assert_eq!(sim.gear_of("a"), vec![SUIT]);
+    let at = sim.pos_of("a");
+
+    assert!(sim.set_outfit("a", SUIT, false));
+    assert!(sim.gear_of("a").is_empty());
+    assert!(sim.outfit_of("a").is_empty());
+    assert_eq!(sim.item_at(at.0, at.1, SUIT), 1, "комбинезон под ногами");
+}
+
+/// Ушедшего не переодевают: состав в поле заморожен (§12.22).
+#[test]
+fn a_cat_away_keeps_its_outfit() {
+    let mut sim = sim_with_store_and_gate();
+    let m = sim.set_risky_mission(1, 200, 0, 0, &[]);
+    assert!(sim.launch(m, squad(&["a"])));
+    sim.tick_n(20);
+    assert!(sim.is_away("a"));
+
+    assert_eq!(sim.outfit_gate("a", SUIT, false), "away");
+    assert!(!sim.set_outfit("a", SUIT, false));
+    assert_eq!(sim.outfit_of("a"), vec![SUIT]);
+}
+
+/// Второй прибор сбора коту ни к чему (§12.256): ворота называют причину.
+#[test]
+fn a_collector_cannot_be_given_a_second_sampler() {
+    let mut sim = sim_with_store_and_gate();
+    sim.set_item_traits(2, 10, false, false);
+    sim.set_item_traits(3, 10, false, false);
+    sim.put_gear("a", &[2]);
+    sim.put_item(5, 1, 3, 1); // пробоотборник база видела
+    sim.tick_n(1);
+    assert_eq!(sim.outfit_gate("a", 3, true), "collector");
+    assert!(!sim.set_outfit("a", 3, true));
+}
+
+// --- износ (§12.268) ---------------------------------------------------------
+
+/// Успешная вылазка снимает выход; вещь с запасом остаётся на коте.
+#[test]
+fn a_success_wears_gear_by_one() {
+    let mut sim = sim_with_store_and_gate();
+    sim.set_wear(SUIT, 3);
+    sim.put_item(5, 1, SUIT, 1);
+    sim.tick_n(15);
+    assert_eq!(
+        sim.wear_left("a", SUIT),
+        Some(3),
+        "новая — с полной прочностью"
+    );
+
+    let m = sim.set_risky_mission(1, 10, 0, 0, &[]);
+    assert!(sim.launch(m, squad(&["a"])));
+    sim.tick_n(40);
+    assert_eq!(sim.wear_left("a", SUIT), Some(2));
+}
+
+/// Неполный успех изнашивает сильнее полного — той же долей, что и добычу.
+#[test]
+fn a_partial_success_wears_more() {
+    assert_eq!(crate::gear::wear_toll(100), 1);
+    assert_eq!(crate::gear::wear_toll(75), 2);
+    assert_eq!(crate::gear::wear_toll(50), 3);
+}
+
+/// Вещь без `wear` вечна: сколько ни ходи.
+#[test]
+fn zero_wear_never_wears_out() {
+    let mut sim = sim_with_store_and_gate();
+    sim.put_gear("a", &[SUIT]);
+    for _ in 0..3 {
+        let m = sim.set_risky_mission(1, 10, 0, 0, &[]);
+        assert!(sim.launch(m, squad(&["a"])));
+        sim.tick_n(40);
+    }
+    assert_eq!(sim.gear_of("a"), vec![SUIT]);
+}
+
+/// Сношенная до нуля вещь исчезает, а приписка ведёт за новой.
+#[test]
+fn worn_out_gear_vanishes_and_the_cat_fetches_a_new_one() {
+    let mut sim = sim_with_store_and_gate();
+    sim.set_wear(SUIT, 1);
+    sim.put_item(5, 1, SUIT, 1);
+    sim.tick_n(15);
+    assert_eq!(sim.gear_of("a"), vec![SUIT]);
+
+    let m = sim.set_risky_mission(1, 10, 0, 0, &[]);
+    assert!(sim.launch(m, squad(&["a"])));
+    sim.tick_n(40);
+    assert!(sim.gear_of("a").is_empty(), "износился до нуля");
+    assert_eq!(sim.item_total(SUIT), 0, "и кучей не стал");
+
+    sim.put_item(5, 1, SUIT, 1);
+    sim.tick_n(15);
+    assert_eq!(sim.gear_of("a"), vec![SUIT], "сходил за новым сам");
+    assert_eq!(sim.wear_left("a", SUIT), Some(1));
 }
 
 // --- боевой рулсет ----------------------------------------------------------
@@ -313,7 +493,7 @@ fn a_hired_cat_is_equipped_too() {
 /// **второй** ступени лестницы («Свалка» их не даёт: первая вылазка и без того
 /// открывает разом склад, лабораторию, пост и тему) и надеваются сами — хоть с
 /// пола у шлюза, хоть со склада, куда их свезёт уборка. Ловит контент, в котором
-/// шаблон ссылается на предмет не тем `id`, снаряжение забыли положить в добычу
+/// снаряжение забыли положить в добычу
 /// или у него нулевая `force`, — синтетическая схема этого не увидит.
 #[test]
 fn the_shipped_ruleset_equips_its_cats_from_loot() {
@@ -323,6 +503,9 @@ fn the_shipped_ruleset_equips_its_cats_from_loot() {
 
     assert_eq!(sim.item_total(suit), 0, "на старте одеться не во что");
     assert!(sim.gear_of("excellent").is_empty());
+    // Невиданную вещь не назначить (§12.131, §12.268).
+    assert_eq!(sim.outfit_gate("excellent", suit, true), "unseen");
+    assert!(!sim.set_outfit("excellent", suit, true));
 
     // Известность второй ступени база набирает вылазками; здесь она не предмет
     // проверки, поэтому выставлена прямо.
@@ -334,12 +517,17 @@ fn the_shipped_ruleset_equips_its_cats_from_loot() {
     sim.tick_n(700);
     assert_eq!(sim.mission_left(), None, "отряд вернулся");
 
-    // Комбинезон в добыче один, и достаётся он первому по `id` — порядок
-    // раздачи задан явно, чтобы «кому достанется» было видно игроку (§12.29).
+    // Добыча у шлюза — теперь база комбинезон видела, и его можно назначить.
+    // Комбинезон в добыче один и приписан одному — он за ним и идёт.
+    sim.tick_n(1);
+    assert!(
+        sim.set_outfit("excellent", suit, true),
+        "виданный — назначается"
+    );
     sim.tick_n(1500); // добыча ложится у шлюза, и за ней приходят сами
     assert!(
         !sim.gear_of("excellent").is_empty(),
-        "бригада оделась сама, без команды игрока — и добыча впервые ушла не внутрь базы",
+        "приписанный кот оделся сам — и добыча впервые ушла не внутрь базы",
     );
 }
 
@@ -374,4 +562,54 @@ fn understanding_opens_the_trophy() {
     sim.set_tech("xenotech");
     sim.tick_n(20);
     assert_eq!(sim.gear_of("a"), vec![SUIT], "поняли — надели");
+}
+
+/// Стартовые коты боевого рулсета голы и ничего не носят (§12.268): кому что
+/// приписать, решает игрок. Кандидаты тоже приходят голыми — кроме тех, у кого
+/// личная вещь: неличного снаряжения в записи кандидата нет ни у кого.
+#[test]
+fn the_shipped_ruleset_starts_its_cats_bare() {
+    let mut sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
+    for id in ["excellent", "sp2", "sp3"] {
+        assert!(sim.gear_of(id).is_empty(), "{id} одет с порога");
+        assert!(sim.outfit_of(id).is_empty(), "{id} с припиской с порога");
+    }
+    let items = sim.world.resource::<ItemRules>();
+    let recruits = sim.world.resource::<RecruitRules>();
+    for r in &recruits.0 {
+        assert!(
+            r.gear.iter().all(|&i| items.personal(i)),
+            "кандидат «{}» приходит в неличном снаряжении",
+            r.id,
+        );
+    }
+}
+
+/// Антенна приходит с анализатором, и снять его обычным образом нельзя
+/// (§12.256, §12.268): вещь надета, в приписке её нет, команда снятия
+/// отклонена тегом.
+#[test]
+fn the_shipped_antenna_keeps_her_analyzer() {
+    let mut sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
+    sim.without_timeline();
+    sim.add_storage();
+    let scrap = sim.item_index("scrap").expect("лом");
+    let part = sim.item_index("part").expect("деталь");
+    let analyzer = sim.item_index("analyzer").expect("анализатор");
+    sim.put_item(4, 3, scrap, 60);
+    sim.put_item(5, 3, part, 20);
+    sim.set_fame(90);
+    let r = sim
+        .world
+        .resource::<RecruitRules>()
+        .0
+        .iter()
+        .position(|r| r.id == "antenna")
+        .expect("Антенна");
+    assert!(sim.hire(r), "наняли");
+
+    assert_eq!(sim.gear_of("antenna"), vec![analyzer]);
+    assert!(sim.outfit_of("antenna").is_empty());
+    assert!(!sim.set_outfit("antenna", analyzer, false), "не снимается");
+    assert_eq!(sim.gear_of("antenna"), vec![analyzer]);
 }

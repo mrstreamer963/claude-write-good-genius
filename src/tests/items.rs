@@ -25,7 +25,11 @@ fn a_site_waits_for_every_item_of_its_cost() {
     sim.add_blueprint(1, 2, 0);
 
     sim.tick_n(60);
-    assert_eq!(sim.delivered_item_at(1, 2, SCRAP), 0, "лом без детали не везут");
+    assert_eq!(
+        sim.delivered_item_at(1, 2, SCRAP),
+        0,
+        "лом без детали не везут"
+    );
     assert_eq!(sim.tile(1, 2), -1, "но без детали стройка не началась");
 
     sim.put_item(5, 1, PART, 1);

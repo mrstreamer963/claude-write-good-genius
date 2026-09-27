@@ -319,23 +319,35 @@ pub(crate) fn work(rule: &MissionRule, crew: Crew) -> i32 {
 /// Сколько штук предмета принесёт вылазка при полной доле (§12.256): предмет
 /// `collected` (образец) падает только отряду с нужной возможностью —
 /// «сбор образцов» вешает прибор (§12.260). Потолок задаёт заказ, а **долю
-/// запаса — число приборов на лапы** (§12.264): каждый кот с прибором
-/// собирает свою часть, и отряд, укомплектованный целиком, берёт всё.
-pub(crate) fn loot_count(items: &ItemRules, crew: Crew, item: usize, count: i32) -> i32 {
+/// запаса — число приборов на предел состава** (§12.267): запас рассчитан на
+/// полный отряд `squad_max`, и каждый кот с прибором собирает свою часть.
+pub(crate) fn loot_count(
+    items: &ItemRules,
+    crew: Crew,
+    item: usize,
+    count: i32,
+    squad_max: usize,
+) -> i32 {
     match items.collected(item) {
         Some(ability) if !crew.has(ability) => 0,
-        Some(_) => count * gather(crew) / 100,
+        Some(_) => count * gather(crew, squad_max) / 100,
         None => count,
     }
 }
 
-/// Доля запаса образцов в процентах, которую соберёт отряд (§12.264).
-pub(crate) fn gather(crew: Crew) -> i32 {
+/// Доля запаса образцов в процентах, которую соберёт отряд (§12.264, §12.267).
+///
+/// Знаменатель — **предел состава заказа**, а не число ушедших лап: два кота
+/// с приборами из четырёх возможных соберут половину, один — четверть, иначе
+/// недобор по образцам ничего не стоил бы. У замороженной доли (`paws: 100`)
+/// знаменатель уже сотня, и предел её не трогает.
+pub(crate) fn gather(crew: Crew, squad_max: usize) -> i32 {
+    let full = crew.paws.max(squad_max as i32);
     // Анализатор Антенны собирает весь запас сам (§12.266).
-    if crew.sweep || crew.paws <= 0 {
+    if crew.sweep || full <= 0 {
         return 100;
     }
-    (crew.collectors.clamp(0, crew.paws) * 100 / crew.paws).max(0)
+    (crew.collectors.clamp(0, full) * 100 / full).max(0)
 }
 
 /// Сколько тиков отряд из `paws` котов пробудет в поле (§12.70).
@@ -800,7 +812,7 @@ pub(crate) fn run_missions(
                     sweep: false,
                 };
                 for &(item, count) in &rule.loot {
-                    let got = loot_count(&items, crew, item, count) * verdict.share / 100;
+                    let got = loot_count(&items, crew, item, count, 0) * verdict.share / 100;
                     if got > 0 {
                         spill(&mut commands, &mut stacks, gate, item, got);
                     }
@@ -937,18 +949,24 @@ pub(crate) fn run_missions(
                 // Провал ломает снаряжение: до него он стоил только бодрости, а
                 // она восстанавливается бесплатно — то есть заведомо провальная
                 // вылазка была способом качать «Вылазку» за одно лишь время
-                // (§12.29). Успех не изнашивает: износ за каждый выход
-                // превратил бы петлю «добыча → сила» в оброк. Комплект наберётся
-                // заново, как только на складе снова будет из чего.
-                // Личная вещь провалом не ломается (§12.256): анализатор Антенны
-                // другого пути в мир не имеет, и его потеря заперла бы образцы
-                // навсегда.
-                if out.failed
-                    && let Ok((.., gear, _, _, _, _)) = crew.get(cat_e)
-                {
-                    let kept: Vec<usize> = gear
-                        .map(|g| g.0.iter().copied().filter(|&i| items.personal(i)).collect())
-                        .unwrap_or_default();
+                // (§12.29). С §12.268 успех тоже изнашивает — но по выходу, а не
+                // целиком: `wear` у предмета говорит, сколько выходов вещь
+                // выдержит, и та же доля `share`, что у добычи и ран, решает,
+                // сколько снимет эта вылазка (`gear::wear_toll`). Потерянное
+                // кот доберёт сам — по приписке (`Outfit`).
+                // Личная вещь не ломается и не изнашивается (§12.256):
+                // анализатор Антенны другого пути в мир не имеет, и его потеря
+                // заперла бы образцы навсегда.
+                if let Ok((.., Some(gear), _, _, _, _)) = crew.get(cat_e) {
+                    let kept: Vec<Worn> = match out.failed {
+                        true => gear
+                            .0
+                            .iter()
+                            .copied()
+                            .filter(|w| items.personal(w.item))
+                            .collect(),
+                        false => crate::gear::worn_after(&items, gear, out.share),
+                    };
                     match kept.is_empty() {
                         true => commands.entity(cat_e).remove::<Gear>(),
                         false => commands.entity(cat_e).insert(Gear(kept)),
@@ -1054,7 +1072,7 @@ pub(crate) fn run_missions(
             mission.travel = travel(rule, traits);
             mission.toll = traits.work_toll;
             mission.abilities = traits.abilities;
-            mission.gather = gather(traits);
+            mission.gather = gather(traits, rule.squad_max);
             mission.left = mission.span;
             for &(cat_e, ..) in &squad {
                 commands.entity(cat_e).insert(Away);

@@ -1517,7 +1517,7 @@ fn a_worn_suit_is_not_salvage_material() {
     let suit = 2;
     sim.set_items(suit + 1);
     sim.set_force(suit, 1);
-    sim.set_loadout(&[suit]);
+    sim.outfit_all(&[suit]);
     let def = sim.set_recipe(100, &[(suit, 1)], &[(PART, 1)], &[]);
     sim.set_salvage(def);
     sim.put_item(5, 1, suit, 1);
@@ -1600,7 +1600,7 @@ fn the_salvage_rule_keeps_what_it_promised() {
 fn the_salvage_rule_yields_to_the_loadout() {
     let (mut sim, def) = sim_with_salvage_rule();
     sim.set_force(PART, 1);
-    sim.set_loadout(&[PART]);
+    sim.outfit_all(&[PART]);
     sim.put_item(5, 1, PART, 4); // один по порогу, двое на котов, один лишний
     assert!(sim.set_salvage_rule(PART, 1), "правило принято");
 

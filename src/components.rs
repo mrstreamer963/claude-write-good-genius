@@ -694,12 +694,47 @@ pub(crate) struct Eating {
     pub(crate) pile: Entity,
 }
 
-/// Что на коте надето: индексы предметов палитры, в порядке шаблона (§12.29).
+/// Что на коте надето, в порядке надевания (§12.29).
 ///
 /// Не инвентарь: предмет надет либо нет, класть в него нечего (§12.21). Компонента
 /// нет — кот не экипирован вовсе, и это нормальное состояние, а не недостача.
+///
+/// Прочность (§12.268) живёт **только здесь**: кучи и лапы о ней не знают, и
+/// надевается всегда новая вещь. Параллельного вектора «сколько осталось» рядом
+/// не заводим — разъедется с этим.
 #[derive(Component)]
-pub(crate) struct Gear(pub(crate) Vec<usize>);
+pub(crate) struct Gear(pub(crate) Vec<Worn>);
+
+/// Одна надетая вещь: что и сколько выходов она ещё выдержит (§12.268).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Worn {
+    /// Индекс палитры `items:`.
+    pub(crate) item: usize,
+    /// Сколько выходов осталось. У вещи с `wear: 0` — ноль, и он не убывает:
+    /// такая вещь не изнашивается вовсе.
+    pub(crate) left: i32,
+}
+
+impl Gear {
+    /// Индексы надетого, без прочности.
+    pub(crate) fn items(&self) -> impl Iterator<Item = usize> + '_ {
+        self.0.iter().map(|w| w.item)
+    }
+
+    /// Надета ли вещь этого типа.
+    pub(crate) fn has(&self, item: usize) -> bool {
+        self.0.iter().any(|w| w.item == item)
+    }
+}
+
+/// Что игрок велел коту носить — **приписка**, а не задача (§12.268): типы вещей,
+/// без повторов. Форма та же, что у `Enlisted` и `Posted`, и в фильтрах занятости
+/// её нет. Потерянную вещь (провал, износ) кот добирает сам, пока приписка стоит.
+///
+/// **Личной вещи здесь не бывает никогда** (§12.256): она не решение игрока, а
+/// свойство кота, и снять её обычным образом нельзя.
+#[derive(Component, Default, Clone)]
+pub(crate) struct Outfit(pub(crate) Vec<usize>);
 
 /// Опыт кота по доменам работы; индекс — номер записи в `skills:` рулсета.
 /// Уровень не хранится: он выводится из опыта по порогам (`SkillRules`), и
@@ -1968,6 +2003,9 @@ pub(crate) struct ItemRule {
     /// видят. Так живёт анализатор Антенны: без него до пробоотборника образцов
     /// не было бы вовсе, и потеря его была бы вечным тупиком.
     pub(crate) personal: bool,
+    /// Сколько выходов вещь выдерживает на коте (§12.268). Ноль — не
+    /// изнашивается (личные вещи и синтетические схемы).
+    pub(crate) wear: i32,
     /// Технологии, без которых база **не понимает, что это** (§12.114, §12.131).
     /// Пусто — предмет понятен сразу.
     ///
@@ -2043,7 +2081,7 @@ impl ItemRules {
     /// Сила всего надетого на коте. Компонента нет — кот не экипирован, и это
     /// ноль, а не отсутствие данных.
     pub(crate) fn force_of_gear(&self, gear: Option<&Gear>) -> i32 {
-        gear.map_or(0, |g| g.0.iter().map(|&i| self.force_of(i)).sum())
+        gear.map_or(0, |g| g.items().map(|i| self.force_of(i)).sum())
     }
 
     /// Несёт ли кот прибор сбора образцов (§12.256).
@@ -2053,14 +2091,14 @@ impl ItemRules {
 
     /// Несёт ли кот прибор, собирающий весь запас на отряд (§12.266).
     pub(crate) fn sweeps_any(&self, gear: Option<&Gear>) -> bool {
-        gear.is_some_and(|g| g.0.iter().any(|&i| self.0.get(i).is_some_and(|r| r.sweeps)))
+        gear.is_some_and(|g| g.items().any(|i| self.0.get(i).is_some_and(|r| r.sweeps)))
     }
 
     /// Насколько надетый прибор сбора удлиняет работу; ноль — прибора нет.
     pub(crate) fn toll_of_gear(&self, gear: Option<&Gear>) -> i32 {
         gear.map_or(0, |g| {
-            g.0.iter()
-                .map(|&i| self.0.get(i).map_or(0, |r| r.collects))
+            g.items()
+                .map(|i| self.0.get(i).map_or(0, |r| r.collects))
                 .max()
                 .unwrap_or(0)
         })
@@ -2079,8 +2117,8 @@ impl ItemRules {
     /// Возможности, которые вещи кота вешают на отряд (§12.260), маской.
     pub(crate) fn grants_of_gear(&self, gear: Option<&Gear>) -> u64 {
         gear.map_or(0, |g| {
-            g.0.iter()
-                .map(|&i| self.0.get(i).map_or(0, |r| r.grants))
+            g.items()
+                .map(|i| self.0.get(i).map_or(0, |r| r.grants))
                 .fold(0, |a, b| a | b)
         })
     }
@@ -2089,8 +2127,8 @@ impl ItemRules {
     /// цена в работе платится, только пока возможность освоена.
     pub(crate) fn toll_grants_of_gear(&self, gear: Option<&Gear>) -> u64 {
         gear.map_or(0, |g| {
-            g.0.iter()
-                .filter_map(|&i| self.0.get(i).filter(|r| r.collects > 0))
+            g.items()
+                .filter_map(|i| self.0.get(i).filter(|r| r.collects > 0))
                 .fold(0, |a, r| a | r.grants)
         })
     }
@@ -2099,13 +2137,28 @@ impl ItemRules {
     pub(crate) fn personal(&self, item: usize) -> bool {
         self.0.get(item).is_some_and(|r| r.personal)
     }
-}
 
-/// Шаблон снаряжения: какие предметы кот носит (§4.2, §12.29). Один на всех и
-/// задан рулсетом — редактор шаблонов это интерфейс поверх выбора, которого на
-/// POC нет. Пустой ресурс = снаряжения в мире нет: так живут тесты чужих механик.
-#[derive(Resource, Default)]
-pub(crate) struct LoadoutRules(pub(crate) Vec<usize>);
+    /// Надеваемая ли вещь вообще: у неё есть сила или она прибор (§12.268).
+    /// Этим списком говорит окно «Личное дело».
+    pub(crate) fn equippable(&self, item: usize) -> bool {
+        self.0
+            .get(item)
+            .is_some_and(|r| r.force > 0 || r.collects > 0 || r.grants != 0)
+    }
+
+    /// Сколько выходов выдерживает вещь; ноль — не изнашивается (§12.268).
+    pub(crate) fn wear_of(&self, item: usize) -> i32 {
+        self.0.get(item).map_or(0, |r| r.wear)
+    }
+
+    /// Новая вещь на коте — с полной прочностью.
+    pub(crate) fn fresh(&self, item: usize) -> Worn {
+        Worn {
+            item,
+            left: self.wear_of(item),
+        }
+    }
+}
 
 /// Миссии из рулсета по индексу записи. Пустой ресурс = вылазок в мире нет:
 /// так живут тесты чужих механик, как и с пустыми `SkillRules`/`NeedRules`.

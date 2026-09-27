@@ -164,17 +164,6 @@ fn consumers(rs: &Ruleset, depth: &BTreeMap<&str, u32>) -> Vec<(String, u32, Vec
             r.cost.keys().cloned().collect(),
         ));
     }
-    // Шаблон снаряжения: ступень у него своя у каждого предмета — та, на которой
-    // вещь становится понятной (§12.114).
-    for id in &rs.loadout {
-        let at = rs
-            .items
-            .iter()
-            .find(|it| &it.id == id)
-            .and_then(|it| depth_of(depth, &it.requires))
-            .unwrap_or(0);
-        out.push((format!("шаблон снаряжения («{id}»)"), at, vec![id.clone()]));
-    }
     out
 }
 
@@ -316,7 +305,10 @@ fn the_shipped_ruleset_names_only_items_it_has() {
         "стартовый склад",
         rs.stock.iter().map(|s| &s.item).collect(),
     );
-    check("шаблон снаряжения", rs.loadout.iter().collect());
+    check(
+        "снаряжение стартовых котов",
+        rs.units.iter().flat_map(|u| &u.gear).collect(),
+    );
 
     assert!(sins.is_empty(), "{}", sins.join("\n"));
 }

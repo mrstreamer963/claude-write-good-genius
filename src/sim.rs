@@ -1419,8 +1419,24 @@ fn spawn_cat(
     // С чем кот пришёл (§12.256): личная вещь другого пути в мир не имеет — ни
     // кучей, ни рецептом, — поэтому надевается прямо здесь, в единственном
     // месте сборки (инвариант 21).
+    //
+    // Неличная вещь заодно становится припиской (§12.268): пришёл в комбинезоне
+    // и потерял его — сходит за новым. Личная в приписку не идёт никогда.
     if !gear.is_empty() {
-        cat.insert(Gear(gear.to_vec()));
+        let (worn, outfit): (Vec<Worn>, Vec<usize>) = {
+            let items = cat.world().resource::<ItemRules>();
+            (
+                gear.iter().map(|&i| items.fresh(i)).collect(),
+                gear.iter()
+                    .copied()
+                    .filter(|&i| !items.personal(i))
+                    .collect(),
+            )
+        };
+        cat.insert(Gear(worn));
+        if !outfit.is_empty() {
+            cat.insert(Outfit(outfit));
+        }
     }
     cat.id()
 }
@@ -1937,12 +1953,10 @@ impl Sim {
                     grants: ability_mask(&i.grants),
                     collected: ability_index(&i.collected),
                     personal: i.personal,
+                    wear: i.wear,
                     requires: i.requires.clone(),
                 })
                 .collect(),
-        ));
-        world.insert_resource(LoadoutRules(
-            rs.loadout.iter().filter_map(|id| item_index(id)).collect(),
         ));
         world.insert_resource(UnitRules { carry: rs.carry });
         // Какой вылазкой осваивается возможность отряда (§12.261). Пропавший
@@ -2058,6 +2072,7 @@ impl Sim {
                 .iter()
                 .filter_map(|(id, &v)| stat_index(id).map(|i| (i, v)))
                 .collect();
+            let gear: Vec<usize> = u.gear.iter().filter_map(|id| item_index(id)).collect();
             let cat = spawn_cat(
                 &mut world,
                 &u.id,
@@ -2066,7 +2081,7 @@ impl Sim {
                 &u.perks,
                 &[],
                 &stats,
-                &[],
+                &gear,
             );
             // Стартовый отряд (§12.207): приписка та же, что ставит игрок в
             // штабе, — просто поставленная контентом. Задачи за ней нет
@@ -4522,23 +4537,20 @@ impl Sim {
         self.start_craft(def, count);
     }
 
-    /// Сколько штук предмета база обязана придержать под шаблон снаряжения
-    /// (§12.115): по одной на каждого кота **на базе**, у кого этой вещи ещё
-    /// нет. Предмет не из шаблона — ноль.
+    /// Сколько штук предмета база обязана придержать под приписки снаряжения
+    /// (§12.115, §12.268): по одной на каждого кота **на базе**, кому вещь
+    /// приписана, а надета ещё нет.
     ///
     /// Ушедших не считаем: они уже одеты или уже нет, и склад им сейчас не
     /// поможет (§12.22). Считается по `Gear`, то есть по надетому, — везомое к
     /// коту в счёт не идёт, и это осознанный перебор в пользу отряда: лишняя
     /// придержанная штука дешевле голого бойца.
     fn unequipped_need(&mut self, item: usize) -> i32 {
-        if !self.world.resource::<LoadoutRules>().0.contains(&item) {
-            return 0;
-        }
         let mut cats = self
             .world
-            .query_filtered::<Option<&Gear>, (With<UnitId>, Without<Away>)>();
+            .query_filtered::<(&Outfit, Option<&Gear>), (With<UnitId>, Without<Away>)>();
         cats.iter(&self.world)
-            .filter(|gear| !gear.is_some_and(|g| g.0.contains(&item)))
+            .filter(|(outfit, gear)| outfit.0.contains(&item) && !gear.is_some_and(|g| g.has(item)))
             .count() as i32
     }
 
@@ -4795,6 +4807,85 @@ impl Sim {
         self.world
             .entity_mut(cat_e)
             .remove::<(Enrolled, Study, Path, Stride)>();
+        true
+    }
+
+    /// Приписать коту вещь или снять приписку (§12.268): «этот кот носит
+    /// комбинезон». Приписка — конфигурация, а не задача: за вещью кот сходит
+    /// сам (`assign_equip`), а потерянную провалом или износом доберёт снова.
+    ///
+    /// **Снятие роняет надетое кучей под ноги** тем же вызовом — как заявка на
+    /// вылазку роняет ношу (инвариант 8); дальше её увозит уборка. Личную вещь
+    /// (§12.256) не снимает и не приписывает ничто: ворота одни на фасад и снимок
+    /// (`gear::outfit_gate`).
+    ///
+    /// Вернёт false, если кота нет или ворота закрыты.
+    pub fn set_outfit(&mut self, unit_id: &str, item: usize, on: bool) -> bool {
+        note(&mut self.world, format!("set_outfit {unit_id} {item} {on}"));
+        let found = {
+            let mut q = self.world.query::<(Entity, &UnitId)>();
+            q.iter(&self.world)
+                .find(|(_, id)| id.0 == unit_id)
+                .map(|(e, _)| e)
+        };
+        let Some(cat_e) = found else {
+            return false;
+        };
+        if item >= self.world.resource::<ItemRules>().0.len() {
+            return false;
+        }
+        let gate = crate::gear::outfit_gate(
+            self.world.resource::<ItemRules>(),
+            self.world.resource::<Techs>(),
+            self.world.resource::<Seen>(),
+            item,
+            on,
+            self.world.get::<Away>(cat_e).is_some(),
+            self.world.get::<Gear>(cat_e),
+            self.world.get::<Outfit>(cat_e),
+        );
+        if !gate.is_empty() {
+            return false;
+        }
+        let mut outfit = self.world.get::<Outfit>(cat_e).cloned().unwrap_or_default();
+        if on {
+            if outfit.0.contains(&item) {
+                return true;
+            }
+            outfit.0.push(item);
+            self.world.entity_mut(cat_e).insert(outfit);
+            return true;
+        }
+        outfit.0.retain(|&i| i != item);
+        match outfit.0.is_empty() {
+            true => self.world.entity_mut(cat_e).remove::<Outfit>(),
+            false => self.world.entity_mut(cat_e).insert(outfit),
+        };
+        // Идущий за этой вещью — больше не идёт.
+        if self
+            .world
+            .get::<Equipping>(cat_e)
+            .is_some_and(|j| j.item == item)
+        {
+            self.world
+                .entity_mut(cat_e)
+                .remove::<(Equipping, Path, Stride)>();
+        }
+        // Надетое — под ноги.
+        let worn = self.world.get::<Gear>(cat_e).map(|g| g.0.clone());
+        if let Some(worn) = worn
+            && worn.iter().any(|w| w.item == item)
+        {
+            let kept: Vec<Worn> = worn.into_iter().filter(|w| w.item != item).collect();
+            match kept.is_empty() {
+                true => self.world.entity_mut(cat_e).remove::<Gear>(),
+                false => self.world.entity_mut(cat_e).insert(Gear(kept)),
+            };
+            let at = self.world.get::<Position>(cat_e).map(|p| (p.x, p.y));
+            if let Some((x, y)) = at {
+                self.drop_stack(x, y, item, 1);
+            }
+        }
         true
     }
 
@@ -5168,6 +5259,27 @@ impl Sim {
                     .map(|(id, s)| (id.0.clone(), (s.to, s.left, s.span)))
                     .collect()
             };
+            // Приписка снаряжения (§12.268) — тем же отдельным запросом и по той
+            // же причине, что и зачисление в отряд.
+            let outfits: Vec<(String, Vec<usize>)> = {
+                let mut q = self.world.query::<(&UnitId, &Outfit)>();
+                q.iter(&self.world)
+                    .map(|(id, o)| (id.0.clone(), o.0.clone()))
+                    .collect()
+            };
+            // Сколько каждой вещи лежит кучами (склад и пол): рамке «нет на
+            // складе» в штабе (§12.268) важно одно — есть ли за чем сходить.
+            let piled: Vec<i32> = {
+                let n = self.world.resource::<ItemRules>().0.len();
+                let mut out = vec![0; n];
+                let mut q = self.world.query::<&Stack>();
+                for st in q.iter(&self.world) {
+                    if let Some(slot) = out.get_mut(st.item) {
+                        *slot += st.count;
+                    }
+                }
+                out
+            };
             // Приписка к парте (§12.84) — тем же отдельным запросом и по той же
             // причине, что и зачисление в отряд.
             let enrolled: Vec<(String, usize)> = {
@@ -5264,6 +5376,8 @@ impl Sim {
             // кота, а не узла: то же число объясняет карточку кота на карте.
             let raid = self.world.resource::<SkillRules>().index_of(SKILL_RAID);
             let items = self.world.resource::<ItemRules>();
+            let techs = self.world.resource::<Techs>();
+            let seen = self.world.resource::<Seen>();
             let stat_rules = self.world.resource::<StatRules>();
             for (
                 id,
@@ -5300,6 +5414,11 @@ impl Sim {
                     duty,
                     away,
                 ) = tasks;
+                let outfit: Vec<usize> = outfits
+                    .iter()
+                    .find(|(who, _)| who == &id.0)
+                    .map(|(_, o)| o.clone())
+                    .unwrap_or_default();
                 // Место для сна под лапами — то, из чего `Busy::of` соберёт
                 // «дремлет», если задач у кота не нашлось (§12.52). Считается
                 // здесь, потому что карта и правила тайлов в `Busy` не ходят.
@@ -5449,7 +5568,38 @@ impl Sim {
                     // Надетое видно в панели кота: снаряжение молча прибавляет
                     // отряду силы, и без этого игрок не свяжет пропавший со
                     // склада комбинезон с выросшим прогнозом вылазки (§12.29).
-                    gear: gear.map(|g| g.0.clone()).unwrap_or_default(),
+                    gear: gear.map(|g| g.items().collect()).unwrap_or_default(),
+                    // Сколько выходов осталось каждой надетой вещи (§12.268),
+                    // той же длины, что `gear`; ноль — не изнашивается.
+                    gear_left: gear
+                        .map(|g| g.0.iter().map(|w| w.left).collect())
+                        .unwrap_or_default(),
+                    // Приписка и ворота на каждую вещь палитры (§12.268): тег
+                    // считает `gear::outfit_gate`, то же выражение, что у фасада.
+                    outfit: outfit.clone(),
+                    outfit_gates: (0..items.0.len())
+                        .map(|i| {
+                            let on = !outfit.contains(&i);
+                            let o = Outfit(outfit.clone());
+                            crate::gear::outfit_gate(
+                                items,
+                                techs,
+                                seen,
+                                i,
+                                on,
+                                away.is_some(),
+                                gear,
+                                Some(&o),
+                            )
+                            .to_string()
+                        })
+                        .collect(),
+                    outfit_short: outfit
+                        .iter()
+                        .filter(|&&i| !gear.is_some_and(|g| g.has(i)))
+                        .copied()
+                        .filter(|&i| piled.get(i).copied().unwrap_or(0) <= 0)
+                        .collect(),
                     // Приписка, а не задача: `study` в `job` уже есть, но он
                     // молчит про кота, которого увёл сон (§12.84).
                     study: enrolled
@@ -5755,11 +5905,17 @@ impl Sim {
                     manned: !manned.is_empty(),
                     trails: traits.road_cut,
                     samples: traits.work_toll,
+                    gather: rule.map_or(100, |r| crate::missions::gather(traits, r.squad_max)),
                     loot: rule.map_or_else(Vec::new, |r| {
                         let items = self.world.resource::<ItemRules>();
                         r.loot
                             .iter()
-                            .map(|&(i, n)| (i, crate::missions::loot_count(items, traits, i, n)))
+                            .map(|&(i, n)| {
+                                (
+                                    i,
+                                    crate::missions::loot_count(items, traits, i, n, r.squad_max),
+                                )
+                            })
                             .collect()
                     }),
                 });
@@ -6049,6 +6205,18 @@ impl Sim {
                             .iter()
                             .map(|r| node_traits.fielded(r.abilities, active).work_toll)
                             .collect(),
+                        gathers: self
+                            .world
+                            .resource::<MissionRules>()
+                            .0
+                            .iter()
+                            .map(|r| {
+                                crate::missions::gather(
+                                    node_traits.fielded(r.abilities, active),
+                                    r.squad_max,
+                                )
+                            })
+                            .collect(),
                         loots: {
                             let items = self.world.resource::<ItemRules>();
                             self.world
@@ -6060,7 +6228,16 @@ impl Sim {
                                     r.loot
                                         .iter()
                                         .map(|&(i, n)| {
-                                            (i, crate::missions::loot_count(items, crew, i, n))
+                                            (
+                                                i,
+                                                crate::missions::loot_count(
+                                                    items,
+                                                    crew,
+                                                    i,
+                                                    n,
+                                                    r.squad_max,
+                                                ),
+                                            )
                                         })
                                         .collect()
                                 })

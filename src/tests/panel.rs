@@ -107,7 +107,7 @@ fn equipping_wins_over_the_gathering_squad() {
     sim.set_relay(1, true);
     sim.force_tile(6, 1, 1);
     sim.set_force(SUIT, 1);
-    sim.set_loadout(&[SUIT]);
+    sim.outfit_all(&[SUIT]);
     sim.put_item(3, 1, SUIT, 1);
     let m = sim.set_mission(1, 100, &[(0, 1)]);
     assert!(sim.launch(m, squad(&["a"])));
