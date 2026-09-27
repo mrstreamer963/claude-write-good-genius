@@ -2851,6 +2851,16 @@ main#stage.mode-cursor #mode-banner {
   border-radius: 3px;
   padding: 1px 6px;
 }
+/* Метка поздней грани (§12.265): тот же акцент, что у «Новой записи», но
+   мельче — это строка в статье, а не статья. */
+.wiki-added {
+  margin-left: 6px;
+  color: var(--accent);
+  font-size: 10px;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 0 4px;
+}
 .wiki-back {
   min-width: 24px;
   padding: 0 6px;
@@ -2903,6 +2913,14 @@ main#stage.mode-cursor #mode-banner {
   grid-template-columns: 110px 1fr;
   gap: 8px;
   padding: 2px 0;
+}
+/* Строка-грань (§12.265): фишки цены — блочный flex, и без ряда «· «Наука» 1»
+   и «→ выход» уезжали на следующую строку. */
+.wiki-fact-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
 }
 .wiki-fact > span:first-child {
   color: var(--muted);

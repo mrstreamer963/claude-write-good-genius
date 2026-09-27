@@ -903,6 +903,8 @@ worker.onmessage = (e) => {
     skillLevelsSeen = null;
     wikiOpenSeen = null;
     wikiQueue = [];
+    wikiFacetsSeen = null;
+    wikiAdded.clear();
     // Свёрнутость панели миру не принадлежит — это выбор игрока о своём экране,
     // и новая партия его не отменяет; берём то же, что и при загрузке страницы.
     goalsOpen = localStorage.getItem(GOALS_OPEN_KEY) === "1";
@@ -10831,9 +10833,17 @@ function wikiFacts(key) {
   const known = lastSnap?.techs ?? [];
   const techName = (t) =>
     (meta?.research ?? []).find((r) => r.id === t)?.label || t;
+  // Грани статьи (§12.265): тема, которая её открывает, уже стоит строкой
+  // «Изучение», и «Открывает: Пробоотборник» в статье «Пробоотборник» —
+  // ссылка на саму себя.
+  const facets = wikiFacetsOf(key);
+  const facetTopic = facets.some((k) => k.startsWith("topic:"));
   if (kind === "tile" && entry) {
     add("Цена", costChips(entry.cost));
-    add("Открывает", entry.tech ? esc(techName(entry.tech)) : "");
+    add(
+      "Открывает",
+      entry.tech && !facetTopic ? esc(techName(entry.tech)) : "",
+    );
     add("Роль", esc(tileRoleWords(entry)));
   }
   if (kind === "item" && entry) {
@@ -10847,7 +10857,9 @@ function wikiFacts(key) {
     add("Годен", uses.join(" · "));
     add(
       "Понимание",
-      entry.requires?.length ? esc(techName(entry.requires[0])) : "",
+      entry.requires?.length && !facetTopic
+        ? esc(techName(entry.requires[0]))
+        : "",
     );
   }
   if (kind === "topic" && entry) {
@@ -10875,7 +10887,36 @@ function wikiFacts(key) {
   }
   if (kind === "rule") {
     const gate = (meta?.auto_gates ?? []).find((g) => g.kind === id);
-    add("Открывает", gate?.tech ? esc(gate.tech) : "");
+    add("Открывает", gate?.tech && !facetTopic ? esc(gate.tech) : "");
+  }
+  const line = (html) => `<span class="wiki-fact-line">${html}</span>`;
+  for (const f of facets) {
+    const { kind: fk, entry: fe } = wikiEntry(f);
+    if (!fe) continue;
+    if (fk === "topic") {
+      // Изучение показывается всегда: «как это понять» — вопрос, который
+      // возникает раньше ответа, и тема в окне «Наука» стоит с той же ценой.
+      const parts = [costChips(fe.cost), costChips(fe.specimen)].filter(
+        Boolean,
+      );
+      if (fe.level > 0) parts.push(`«Наука» ${fe.level}`);
+      add("Изучение", line(parts.join(" · ") || "даром"));
+    }
+    // Рецепт — только открытый: статья знает не больше базы (§12.251).
+    if (fk === "recipe" && wikiOwnGate(f)) {
+      // Метка снимается тем же показом: окно строится на открытии статьи
+      // и кадром не перерисовывается, так что прочитанное гаснет к следующему.
+      const added = wikiAdded.delete(f)
+        ? '<span class="wiki-added">дополнено</span>'
+        : "";
+      if (fe.salvage) add("Разбор", line("→ " + costChips(fe.gives) + added));
+      else {
+        add(
+          "Производство",
+          line(`${costChips(fe.cost)} → ${costChips(fe.gives)}${added}`),
+        );
+      }
+    }
   }
   if (!rows.length) return "";
   return (
@@ -11018,7 +11059,6 @@ function wikiIndexHtml() {
     ["Объекты", "structure"],
     ["Вещи", "item"],
     ["Наука", "topic"],
-    ["Рецепты", "recipe"],
     ["Заказы", "raid"],
     ["Коты", "recruit"],
     ["Стороны", "faction"],
@@ -11036,7 +11076,9 @@ function wikiIndexHtml() {
         .map(
           (k) =>
             `<button class="wiki-link" data-key="wikitoc${k}" ` +
-            `data-go="${esc(k)}">${esc(wikiName(k))}</button>`,
+            `data-go="${esc(k)}">${esc(wikiName(k))}` +
+            (wikiAddedTo(k) ? '<span class="wiki-added">дополнено</span>' : "") +
+            "</button>",
         )
         .join("");
       return `<div class="wiki-group"><div class="wiki-group-head">${esc(title)}</div>${links}</div>`;
@@ -11109,7 +11151,16 @@ onPanelClick(document, ".wiki-mark", (b) => {
 // `shownRaid` у штаба, `factions_met` у шапки), а не второй список условий:
 // разойдись они, и значок «i» стоял бы у невидимого или пропадал у видимого.
 // Навыки, врождённое и перки видны у кота с первого кадра — открыты всегда.
+// Грань своей статьи не имеет, а статья владельца открыта, если открыт он сам
+// **или любая его грань** (§12.265): изученная тема «Пробоотборник» открывает
+// статью о пробоотборнике раньше, чем первый из них сделают, — одним модалом,
+// а не тремя по мере того, как откроются тема, рецепт и сам предмет.
 function wikiGateOpen(key) {
+  if (wikiOwnerOf(key)) return false;
+  return wikiOwnGate(key) || wikiFacetsOf(key).some(wikiOwnGate);
+}
+
+function wikiOwnGate(key) {
   const snap = lastSnap;
   if (!snap) return true;
   const [kind, id] = String(key).split(":");
@@ -11145,9 +11196,6 @@ function wikiGateOpen(key) {
       return !!st?.seen && (st.understood !== false || hasTeaser(key));
     }
     case "topic":
-      // Тема, одноимённая своей постройке, статьи не имеет — её заменяет
-      // статья постройки (`topicTwin`).
-      if (topicTwin(key)) return false;
       // Тема — только изученная: доступная к изучению стоит в окне «Наука» и
       // там же объясняет себя строкой «Даёт · Открывает». Статья о ней до
       // изучения рассказала бы ответ, который тема и должна добыть, а первое
@@ -11206,27 +11254,101 @@ function loreOpen(id, snap) {
 
 setArticleGate(wikiGateOpen);
 
-// Тема, которая открывает постройку того же имени («Стеллаж» → «Стеллаж»),
-// — это один вопрос с двумя статьями (§12.251). Остаётся постройка: про неё
-// игрок спрашивает дольше, а тема после изучения — пройденная ступень.
-// Считается перекличкой палитр (`tech` у тайла и объекта), а не списком пар.
-function topicTwin(key) {
-  const [kind] = String(key).split(":");
-  if (kind !== "topic") return null;
-  const { id, entry } = wikiEntry(key);
-  if (!entry) return null;
-  const name = entry.label || entry.id;
-  const tile = (meta?.palette ?? []).find(
-    (p) => p.tech === id && (p.label || p.id) === name,
-  );
-  if (tile) return `tile:${tile.id}`;
-  const st = (meta?.structures ?? []).find(
-    (d) => d.tech === id && (d.label || d.id) === name,
-  );
-  return st ? `structure:${st.id}` : null;
+// Одна вещь — одна статья (§12.265, обобщает §12.251). Тема, рецепт и разбор
+// — не отдельные вещи, а грани той, о которой они: игрок спрашивает про
+// «Пробоотборник», а не про «тему Пробоотборник», «рецепт Пробоотборник» и
+// «разбор пробоотборника», и четыре одноимённых статьи с четырьмя цитатами
+// читаются четырьмя разными пробоотборниками. Грань переадресуется к
+// владельцу, а тот показывает её строкой фактов («Изучение», «Производство»,
+// «Разбор»).
+//
+// Рецепт принадлежит своему предмету (разбор — входу, прочие — выходу, как
+// значок `craftItem`). Тема — тому **единственному**, что она открывает
+// (рецепты считаются их предметом, клетка-внутренность — своим объектом), а
+// если открывает она больше — одноимённой постройке (§12.251). Тема, которая
+// открывает вылазку или другие темы, остаётся своей статьёй: это ступень, а не
+// грань. Считается перекличкой палитр, а не списком пар.
+//
+// ⚠️ Дословно `wiki_owner` в `src/tests/wiki.rs`: сторож по нему решает, какой
+// статьи не должно быть в файлах, — разойдись они, и грань останется без
+// владельца или с мёртвым текстом.
+let wikiOwners = null;
+let wikiOwnersMeta = null;
+
+function wikiOwnerOf(key) {
+  if (wikiOwnersMeta !== meta) {
+    wikiOwnersMeta = meta;
+    wikiOwners = new Map();
+    const recipeOwner = (def) => {
+      const it = craftItem(def);
+      return it >= 0 ? `item:${meta.items[it].id}` : null;
+    };
+    (meta?.recipes ?? []).forEach((r, i) => {
+      const o = recipeOwner(i);
+      if (o) wikiOwners.set(`recipe:${r.id}`, o);
+    });
+    const pal = meta?.palette ?? [];
+    for (const t of meta?.research ?? []) {
+      const id = t.id;
+      const opens = [];
+      pal
+        .filter((p) => p.tech === id && !p.internal)
+        .forEach((p) => opens.push(`tile:${p.id}`));
+      (meta?.structures ?? [])
+        .filter(
+          (d) =>
+            d.tech === id ||
+            (d.shapes?.[0] ?? []).some(
+              ([, , ti]) => pal[ti]?.internal && pal[ti]?.tech === id,
+            ),
+        )
+        .forEach((d) => opens.push(`structure:${d.id}`));
+      (meta?.missions ?? [])
+        .filter((m) => m.tech === id)
+        .forEach(() => opens.push(null));
+      (meta?.research ?? [])
+        .filter((r) => (r.requires ?? []).includes(id))
+        .forEach(() => opens.push(null));
+      (meta?.recipes ?? []).forEach((r, i) => {
+        if ((r.requires ?? []).includes(id)) opens.push(recipeOwner(i));
+      });
+      (meta?.items ?? [])
+        .filter((it) => (it.requires ?? []).includes(id))
+        .forEach((it) => opens.push(`item:${it.id}`));
+      for (const g of meta?.auto_gates ?? []) {
+        // `auto_gates` везёт ярлык темы, а не `id` (см. `opensOf`).
+        if (g.tech === id || (t.label && g.tech === t.label)) {
+          opens.push(`rule:${g.kind}`);
+        }
+      }
+      const one = [...new Set(opens)];
+      let owner = one.length === 1 ? one[0] : null;
+      if (!owner) {
+        const name = t.label || t.id;
+        const tile = pal.find(
+          (p) => p.tech === id && (p.label || p.id) === name,
+        );
+        const st = (meta?.structures ?? []).find(
+          (d) => d.tech === id && (d.label || d.id) === name,
+        );
+        owner = tile ? `tile:${tile.id}` : st ? `structure:${st.id}` : null;
+      }
+      if (owner) wikiOwners.set(`topic:${id}`, owner);
+    }
+  }
+  return wikiOwners.get(String(key)) ?? null;
 }
 
-setArticleAlias((key) => topicTwin(key) ?? key);
+// Грани статьи — ключи, которые к ней переадресуются: темы первыми, потом
+// рецепты (так они и стоят в дереве: сперва узнать, потом делать).
+function wikiFacetsOf(key) {
+  wikiOwnerOf(key);
+  const out = [];
+  for (const [k, o] of wikiOwners) if (o === key) out.push(k);
+  return out.sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
+}
+
+setArticleAlias((key) => wikiOwnerOf(key) ?? key);
 // Короткая версия — у предмета, который база видела, но ещё не поняла.
 setArticleTeased((key) => {
   const tech = teaserTech(key);
@@ -11248,10 +11370,46 @@ let wikiQueue = [];
 // Плашка над открывшейся статьёй: «Новая запись» · «Запись дополнена»; "" — нет.
 let wikiFresh = "";
 
+// Грани, открывшиеся позже своей статьи (§12.265): рецепт пробоотборника,
+// пришедший после статьи о нём. Статья всплывает модалом «Запись дополнена»,
+// а новая строка фактов носит метку «дополнено» (и в оглавлении, если модал
+// закрыли, не дочитав очередь), пока статью не откроют. `null` у базовой
+// линии — как у `wikiOpenSeen`: первый снимок партии новостью не объявляется.
+let wikiFacetsSeen = null;
+const wikiAdded = new Set();
+
+function wikiAddedTo(key) {
+  return wikiFacetsOf(key).some((f) => wikiAdded.has(f));
+}
+
+function noteWikiFacets(open) {
+  const now = new Set();
+  for (const k of open.keys()) {
+    for (const f of wikiFacetsOf(k)) if (wikiOwnGate(f)) now.add(f);
+  }
+  if (wikiFacetsSeen !== null) {
+    for (const f of now) {
+      const owner = wikiOwnerOf(f);
+      // Статья открылась этим же снимком — её объявит «Новая запись»,
+      // и метка поверх неё сказала бы то же второй раз.
+      if (!wikiFacetsSeen.has(f) && wikiOpenSeen?.has(owner)) {
+        wikiAdded.add(f);
+        // Статья всплывает модалом с плашкой «Запись дополнена», как при
+        // понимании вещи: тихая строка фактов прошла бы мимо игрока.
+        if (!wikiQueue.some(([q]) => q === owner)) {
+          wikiQueue.push([owner, "Запись дополнена"]);
+        }
+      }
+    }
+  }
+  wikiFacetsSeen = now;
+}
+
 function noteWikiOpened() {
   // Помним и версию: переход «коротко → полно» (вещь поняли) объявляется
   // так же, как новая статья, но словами «Запись дополнена».
   const open = new Map(articleKeys().map((k) => [k, articleStage(k)]));
+  noteWikiFacets(open);
   if (wikiOpenSeen !== null) {
     for (const [k, stage] of open) {
       const was = wikiOpenSeen.get(k);

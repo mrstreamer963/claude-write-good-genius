@@ -179,7 +179,8 @@ fn every_palette_entry_has_an_article() {
     for (kind, ids) in palettes(&rs) {
         for id in ids {
             let key = format!("{kind}:{id}");
-            if !all.contains(&key) {
+            // Грань (§12.265) рассказана статьёй владельца.
+            if !all.contains(&key) && wiki_owner(&rs, &key).is_none() {
                 missing.push(key);
             }
         }
@@ -223,4 +224,135 @@ fn every_article_key_is_written_once() {
         .filter(|key| !seen.insert(key.clone()))
         .collect();
     assert!(twice.is_empty(), "статьи с повторным ключом: {twice:?}");
+}
+
+/// Кто владеет статьёй (§12.265): одна вещь — одна статья. Рецепт — грань
+/// своего предмета (разбор — входа, прочие — выхода); тема — грань того
+/// единственного, что она открывает (рецепты считаются их предметом), или
+/// одноимённой постройки (§12.251). `None` — статья своя.
+///
+/// ⚠️ Дословно `wikiOwner` в `main.js`: разойдись они, и вид переадресует на
+/// статью, которую сторож не требует, или потребует статью, которой вид не
+/// покажет.
+fn wiki_owner(rs: &Ruleset, key: &str) -> Option<String> {
+    let (kind, id) = key.split_once(':')?;
+    let recipe_owner = |r: &crate::ruleset::RecipeDef| {
+        let side = if r.salvage { &r.cost } else { &r.gives };
+        rs.items
+            .iter()
+            .find(|it| side.contains_key(&it.id))
+            .map(|it| format!("item:{}", it.id))
+    };
+    match kind {
+        "recipe" => recipe_owner(rs.recipes.iter().find(|r| r.id == id)?),
+        "topic" => {
+            let t = rs.research.iter().find(|t| t.id == id)?;
+            let mut opens: Vec<Option<String>> = Vec::new();
+            // Внутренность объекта (§12.163) своей статьи не имеет — её открытие
+            // и есть открытие объекта, в который она входит.
+            let inner = |t: &str| {
+                rs.tiles
+                    .iter()
+                    .any(|x| x.id == t && x.internal && x.tech == id)
+            };
+            opens.extend(
+                rs.tiles
+                    .iter()
+                    .filter(|x| x.tech == id && !x.internal)
+                    .map(|x| Some(format!("tile:{}", x.id))),
+            );
+            opens.extend(
+                rs.structures
+                    .iter()
+                    .filter(|x| {
+                        x.tech == id || x.cells.iter().flatten().flatten().any(|c| inner(c))
+                    })
+                    .map(|x| Some(format!("structure:{}", x.id))),
+            );
+            opens.extend(rs.missions.iter().filter(|x| x.tech == id).map(|_| None));
+            opens.extend(
+                rs.research
+                    .iter()
+                    .filter(|x| x.requires.iter().any(|r| r == id))
+                    .map(|_| None),
+            );
+            opens.extend(
+                rs.recipes
+                    .iter()
+                    .filter(|x| x.requires.iter().any(|r| r == id))
+                    .map(recipe_owner),
+            );
+            opens.extend(
+                rs.items
+                    .iter()
+                    .filter(|x| x.requires.iter().any(|r| r == id))
+                    .map(|x| Some(format!("item:{}", x.id))),
+            );
+            let a = &rs.automation;
+            for (k, tech) in [
+                ("sales", &a.sales),
+                ("crafting", &a.crafting),
+                ("raids", &a.raids),
+            ] {
+                if tech == id {
+                    opens.push(Some(format!("rule:{k}")));
+                }
+            }
+            let one: BTreeSet<Option<String>> = opens.into_iter().collect();
+            if one.len() == 1
+                && let Some(Some(owner)) = one.into_iter().next()
+            {
+                return Some(owner);
+            }
+            let name = if t.label.is_empty() { &t.id } else { &t.label };
+            let same = |l: &String, i: &String| if l.is_empty() { i == name } else { l == name };
+            rs.tiles
+                .iter()
+                .find(|x| x.tech == id && same(&x.label, &x.id))
+                .map(|x| format!("tile:{}", x.id))
+                .or_else(|| {
+                    rs.structures
+                        .iter()
+                        .find(|x| x.tech == id && same(&x.label, &x.id))
+                        .map(|x| format!("structure:{}", x.id))
+                })
+        }
+        _ => None,
+    }
+}
+
+/// Грань (§12.265) своей статьи не имеет: её текст не показывается никогда —
+/// вид переадресует ключ владельцу, — то есть лежал бы в файле мёртвым и
+/// расходился с тем, что игрок читает.
+#[test]
+fn a_facet_has_no_article_of_its_own() {
+    let rs = shipped();
+    let written: Vec<String> = keys()
+        .into_iter()
+        .filter(|k| wiki_owner(&rs, k).is_some())
+        .collect();
+    assert!(
+        written.is_empty(),
+        "грани с собственной статьёй: {written:?}"
+    );
+}
+
+/// Ссылка на грань ведёт к владельцу — сторожу это невидимо, поэтому ссылку
+/// ставят сразу на владельца: `[[topic:x]]` на грань сработал бы в игре, но
+/// выглядел бы битым здесь.
+#[test]
+fn a_facet_owner_is_written() {
+    let rs = shipped();
+    let all = keys();
+    for (kind, ids) in palettes(&rs) {
+        for id in ids {
+            let key = format!("{kind}:{id}");
+            if let Some(owner) = wiki_owner(&rs, &key) {
+                assert!(
+                    all.contains(&owner),
+                    "грань «{key}»: у владельца «{owner}» нет статьи"
+                );
+            }
+        }
+    }
 }
