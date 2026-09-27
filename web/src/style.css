@@ -2995,3 +2995,8 @@ main#stage.mode-cursor #mode-banner {
   border-top: 1.5px solid var(--text, currentColor);
   pointer-events: none;
 }
+/* Строка-причина (§12.259): имя и сказуемое одной фразой слева — внутри
+   `.news-label` вес задаёт `<b>`, а не сама ячейка. */
+.news-label:has(> .news-kind) {
+  font-weight: 400;
+}

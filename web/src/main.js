@@ -9120,6 +9120,16 @@ function renderNews(snap) {
     order.push(row);
   }
   for (const n of want) {
+    // Тема, ждавшая учёного (§12.259), приходит с отдельной строкой-причиной
+    // перед собой: кто дорос и до чего. Иначе «готова к теме» читается как
+    // случайность. Кого назвать, берём из снимка: учёным может прийти любой.
+    // Стопка растёт снизу вверх (`column-reverse`): причина кладётся в
+    // `order` **до** темы и читается под ней.
+    const cause = n.kind === "topic" && n.opened && masteryCauseRow(n);
+    if (cause) {
+      keep.add(cause.dataset.key);
+      order.push(cause);
+    }
     if (topics.has(n)) continue;
     const key = newsKey(n);
     keep.add(key);
@@ -9151,6 +9161,35 @@ function renderNews(snap) {
     row.remove();
     newsRows.delete(key);
   }
+}
+
+// Строка-причина к теме, открытой котом с навыком (`mastered`, §12.259):
+// «Мурка достигает 3 лвл науки и может учить». Живёт по ключу своей темы,
+// гаснет вместе с ней. Требования нет — `null`.
+function masteryCauseRow(n) {
+  const need = meta?.research?.[n.def]?.mastered;
+  if (!(need instanceof Map) || need.size === 0) return null;
+  const key = `${newsKey(n)}:who`;
+  let row = newsRows.get(key);
+  if (row) return row;
+  const [skillId, lvl] = [...need.entries()][0];
+  const skill = (meta?.skills ?? []).findIndex((s) => s.id === skillId);
+  const who = (lastSnap?.entities ?? []).find(
+    (e) => (e.skills?.[skill]?.level ?? 0) >= lvl,
+  );
+  const sk = skillLabel(skillId).toLowerCase().replace(/а$/, "и");
+  row = document.createElement("div");
+  row.className = "newsrow";
+  row.dataset.kind = n.kind;
+  row.dataset.def = n.def;
+  row.dataset.key = key;
+  row.dataset.keys = newsKey(n);
+  row.innerHTML =
+    `<span class="news-label"><b>${esc(who?.id ?? "Учёный")}</b> ` +
+    `<span class="news-kind">достигает ${lvl} лвл ${esc(sk)} и может учить</span></span>` +
+    '<button class="tool news-x" data-tip="Прочитал">×</button>';
+  newsRows.set(key, row);
+  return row;
 }
 
 // Клики по стопке — делегированием и парой `mousedown`/`mouseup`, как во всём
