@@ -10956,6 +10956,12 @@ function openWiki(key, back) {
     wikiTrail.push(wikiKey);
   }
   wikiKey = key;
+  // Прочитанная статья — уже не новость, как бы игрок до неё ни дошёл
+  // (ссылкой, значком «i», оглавлением): модалом «Новая запись» она после
+  // этого не всплывает.
+  if (key !== null) {
+    wikiQueue = wikiQueue.filter(([q]) => articleTarget(q) !== key);
+  }
   buildWikiWindow();
   wikiWinEl.hidden = false;
 }
