@@ -13304,17 +13304,19 @@ function missionLootRow(def, share, samples, counts) {
     }
   }
   const lost = samples ? [] : gathered.filter(([id]) => seenId(id));
+  // Не достанется — зачёркнутой фишкой в той же строке добычи, а причина — в
+  // подсказке (§12.53: названа, но не отдельной строкой под каждым заказом).
   const miss = lost.length
-    ? `<div class="cat-sub">без ${costChips(new Map(lost), true)}: в отряде нет прибора сбора</div>`
+    ? `<span class="sample-lost" data-tip="в отряде нет прибора сбора">${costChips(new Map(lost), true)}</span>`
     : "";
-  if (loot) {
+  if (loot || miss) {
     rows.unshift(
-      `<div class="raidwin-loot">добыча ${loot}` +
+      `<div class="raidwin-loot">добыча ${loot}${miss}` +
         (share > 0 && share < 100 ? ` <i>× ${share} %</i>` : "") +
         "</div>",
     );
   }
-  return rows.join("") + miss;
+  return rows.join("");
 }
 
 // Как фракция зовётся — **по `id`**, а не по индексу: у заказа стороны названы

@@ -2973,3 +2973,25 @@ main#stage.mode-cursor #mode-banner {
 .win-warn .warn-link:hover {
   filter: brightness(1.2);
 }
+
+/* Образец, который отряд без прибора не соберёт (§12.264): зачёркнутая фишка в
+   строке добычи, причина — в подсказке. `line-through` в flex-фишки не
+   проникает, поэтому черта — псевдоэлементом поверх. */
+.sample-lost {
+  position: relative;
+  display: inline-flex;
+  opacity: 0.55;
+  cursor: help;
+}
+.sample-lost .cost {
+  margin-left: 0;
+}
+.sample-lost::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: -2px;
+  top: 50%;
+  border-top: 1.5px solid var(--text, currentColor);
+  pointer-events: none;
+}
