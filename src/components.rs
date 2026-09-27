@@ -1955,6 +1955,8 @@ pub(crate) struct ItemRule {
     /// несёт, длиннее на столько процентов. Больше нуля — это прибор;
     /// свойство-число, как `force`.
     pub(crate) collects: i32,
+    /// Прибор собирает весь запас образцов на отряд (§12.266).
+    pub(crate) sweeps: bool,
     /// Возможности, которые вещь вешает на отряд (§12.260), — маска по
     /// индексам палитры `abilities:`.
     pub(crate) grants: u64,
@@ -2047,6 +2049,11 @@ impl ItemRules {
     /// Несёт ли кот прибор сбора образцов (§12.256).
     pub(crate) fn collects_any(&self, gear: Option<&Gear>) -> bool {
         self.toll_of_gear(gear) > 0
+    }
+
+    /// Несёт ли кот прибор, собирающий весь запас на отряд (§12.266).
+    pub(crate) fn sweeps_any(&self, gear: Option<&Gear>) -> bool {
+        gear.is_some_and(|g| g.0.iter().any(|&i| self.0.get(i).is_some_and(|r| r.sweeps)))
     }
 
     /// Насколько надетый прибор сбора удлиняет работу; ноль — прибора нет.

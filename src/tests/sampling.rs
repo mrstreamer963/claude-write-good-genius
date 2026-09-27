@@ -160,6 +160,22 @@ fn samples_split_by_collectors_per_paw() {
     }
 }
 
+/// Анализатор Антенны собирает весь запас на отряд (§12.266): прибор у одного
+/// кота из двух, а приходит полный запас, а не половина.
+#[test]
+fn a_sweeping_collector_gathers_everything() {
+    let rows = &["########", "#ab....#", "########"];
+    let (mut sim, m) = field(rows, 10, 0);
+    sim.set_item_traits(SAMPLE, 0, false, true);
+    sim.set_item_traits(COLLECTOR, 10, true, false);
+    sim.set_sweeps(COLLECTOR);
+    sim.put_gear("a", &[COLLECTOR]);
+    assert!(sim.launch(m, all(&["a", "b"])));
+    sim.tick_n(60);
+    assert!(!sim.is_away("a"), "отряд вернулся");
+    assert_eq!(sim.item_total(SAMPLE), 5, "весь запас заказа");
+}
+
 /// Сбор длиннее подбора на десятую долю работы — один раз на отряд, сколько бы
 /// приборов в нём ни несли.
 #[test]

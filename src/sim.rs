@@ -1933,6 +1933,7 @@ impl Sim {
                     nutrition: i.nutrition,
                     mends: i.mends,
                     collects: i.collects,
+                    sweeps: i.sweeps,
                     grants: ability_mask(&i.grants),
                     collected: ability_index(&i.collected),
                     personal: i.personal,
@@ -5657,6 +5658,7 @@ impl Sim {
                     toll_grants: a.toll_grants | c.toll_grants,
                     collectors: a.collectors + c.collectors,
                     paws: a.paws + c.paws,
+                    sweep: a.sweep || c.sweep,
                 });
                 let traits = match m.span {
                     0 => joined.fielded(rule.map_or(0, |r| r.abilities), active),
@@ -5667,6 +5669,7 @@ impl Sim {
                         toll_grants: 0,
                         collectors: m.gather,
                         paws: 100,
+                        sweep: false,
                     },
                 };
                 let paws = mine().count();

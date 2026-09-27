@@ -245,6 +245,8 @@ pub(crate) struct Crew {
     /// заказа, половина — половина. `paws == 0` — делить нечем, запас целиком.
     pub(crate) collectors: i32,
     pub(crate) paws: i32,
+    /// В отряде есть прибор, собирающий весь запас (§12.266): доля — 100 %.
+    pub(crate) sweep: bool,
 }
 
 impl Crew {
@@ -295,6 +297,7 @@ pub(crate) fn crew_traits<'a>(
         crew.toll_grants |= items.toll_grants_of_gear(gear);
         crew.paws += 1;
         crew.collectors += items.collects_any(gear) as i32;
+        crew.sweep |= items.sweeps_any(gear);
     }
     crew
 }
@@ -328,7 +331,8 @@ pub(crate) fn loot_count(items: &ItemRules, crew: Crew, item: usize, count: i32)
 
 /// Доля запаса образцов в процентах, которую соберёт отряд (§12.264).
 pub(crate) fn gather(crew: Crew) -> i32 {
-    if crew.paws <= 0 {
+    // Анализатор Антенны собирает весь запас сам (§12.266).
+    if crew.sweep || crew.paws <= 0 {
         return 100;
     }
     (crew.collectors.clamp(0, crew.paws) * 100 / crew.paws).max(0)
@@ -793,6 +797,7 @@ pub(crate) fn run_missions(
                     toll_grants: 0,
                     collectors: mission.gather,
                     paws: 100,
+                    sweep: false,
                 };
                 for &(item, count) in &rule.loot {
                     let got = loot_count(&items, crew, item, count) * verdict.share / 100;

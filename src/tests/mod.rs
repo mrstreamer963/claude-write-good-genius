@@ -801,6 +801,7 @@ impl Sim {
                 // Приборов сбора и личных вещей тоже нет (§12.256): их
                 // включает `set_item_traits`.
                 collects: 0,
+                sweeps: false,
                 grants: Vec::new(),
                 collected: String::new(),
                 personal: false,
@@ -2022,6 +2023,11 @@ impl Sim {
         // прибор вешает его на отряд, а `collected` его требует.
         rules.0[item].grants = u64::from(collects > 0);
         rules.0[item].collected = collected.then_some(0);
+    }
+
+    /// Прибор собирает весь запас на отряд (§12.266), как анализатор Антенны.
+    fn set_sweeps(&mut self, item: usize) {
+        self.world.resource_mut::<ItemRules>().0[item].sweeps = true;
     }
 
     /// Надеть на кота вещи мимо шаблона — как личную вещь кандидата (§12.256).
