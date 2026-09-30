@@ -2274,16 +2274,18 @@ function renderSnapshot(snap) {
     // фигуры шестьдесят раз в секунду на каждого кота.
     // Спящий — без одежды и с закрытыми глазами (только картинка: снаряжение
     // на нём, ядро его не снимало). Ключ перерисовки — пара «что видно».
-    const geared = (e.gear ?? []).length > 0;
+    // Рисуем то, что на коте надето (§12.268): одежда (`force` у предмета) —
+    // комбинезоном, прибор без силы (анализатор, пробоотборник) — на поясе.
     const napping = e.job === "rest" && !e.moving;
+    const worn = napping ? null : wornLook(e.gear);
     // Дремлет (§12.52: задачи нет, а место для сна под лапами) — глаза
     // полуприкрыты: не спит, но и не работает. Ключ `nap` даёт ядро (`Busy`).
     const drowsy = e.job === "nap" && !e.moving;
-    const look = `${geared && !napping}|${napping}|${drowsy}`;
+    const look = `${!!worn?.suit}|${worn?.belt.join(",") ?? ""}|${napping}|${drowsy}`;
     if (look !== c.look) {
       c.look = look;
       c.body.clear();
-      drawCat(c.body, c.fur, geared && !napping, c.arm, napping, drowsy);
+      drawCat(c.body, c.fur, worn, c.arm, napping, drowsy);
     }
     c.load.visible = e.carrying > 0;
     // Глиф груза — **новый узел** на смене типа, а не подмена контекста у
@@ -2598,8 +2600,20 @@ function drawTool(g, crowbar) {
   return g;
 }
 
-function drawCat(g, fur, geared, arm, asleep = false, drowsy = false) {
+// Что видно на силуэте: одежда и приборы на поясе (цветами предметов).
+function wornLook(gear) {
+  const items = (gear ?? []).map((i) => meta?.items?.[i]).filter(Boolean);
+  const dress = (it) => (it.force ?? 0) > 0;
+  return {
+    suit: items.some(dress),
+    belt: items.filter((it) => !dress(it)).map((it) => it.color ?? "#8fd6d0"),
+  };
+}
+
+function drawCat(g, fur, worn, arm, asleep = false, drowsy = false) {
   const r = TILE * 0.3;
+  const geared = !!worn?.suit;
+  const belt = worn?.belt ?? [];
   const dark = 0x0b0d12;
   const furDark = shade(fur, -0.3);
   const suit = 0x2c2e27;
@@ -2660,7 +2674,16 @@ function drawCat(g, fur, geared, arm, asleep = false, drowsy = false) {
   } else {
     // Светлая грудка — как у большинства окрасов.
     g.ellipse(0, -r * 0.05, r * 0.32, r * 0.42).fill({ color: shade(fur, 0.35), alpha: 0.9 });
+    // Прибор без комбинезона держится на простом ремне.
+    if (belt.length) g.rect(-r * 0.75, r * 0.3, r * 1.5, r * 0.12).fill(0x5a4a2a);
   }
+  // Приборы на поясе — коробочки цвета предмета с огоньком, по ходу взгляда.
+  belt.forEach((col, k) => {
+    const bx = r * 0.2 - k * r * 0.5;
+    g.roundRect(bx - 1, r * 0.18 - 1, r * 0.42 + 2, r * 0.36 + 2, 2).fill(dark);
+    g.roundRect(bx, r * 0.18, r * 0.42, r * 0.36, 1.5).fill(col);
+    g.circle(bx + r * 0.3, r * 0.3, r * 0.06).fill(0xf4f0d0);
+  });
 
   // Голова с ушами — поверх корпуса, чуть к правому плечу (смотрит вправо).
   const hy = -r * 1.3;
@@ -2732,7 +2755,7 @@ function createUnit(e) {
   const crowbar = drawTool(new Graphics(), true);
   hammer.visible = crowbar.visible = false;
   arm.addChild(hammer, crowbar);
-  drawCat(body, COLORS.unit[e.sprite] ?? COLORS.unitDefault, false, arm);
+  drawCat(body, COLORS.unit[e.sprite] ?? COLORS.unitDefault, null, arm);
   body.addChild(arm);
   // Кольцо выбора живёт **на самом узле**, как и кольцо «застрял» ниже
   // (§12.140): кот теперь едет между клетками, и кольцо, поставленное по
@@ -2862,7 +2885,7 @@ function createUnit(e) {
   // Что уже нарисовано, помним на самом узле: силуэт пересобирается только
   // когда кот оделся или разделся, а не каждым кадром (тот же довод, что у покадровых
   // `sync*`, §12.84 — безусловная перерисовка каждые 16 мс).
-  c.look = "false|false|false";
+  c.look = "";
   c.loadItem = -1;
   // Куда смотрит: 1 — вправо, −1 — влево. Двигает две вещи разом (зеркало тела
   // и сторону, с которой висит груз), поэтому живёт на узле, а не выводится
