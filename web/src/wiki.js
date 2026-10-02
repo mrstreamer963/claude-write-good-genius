@@ -38,6 +38,15 @@ const FILES = [
 const articles = new Map();
 
 let loaded = false;
+// Тексты разобраны. Отдельно от `loaded`: тот ставится в начале загрузки,
+// чтобы не грузить дважды, а этот — когда статьи уже есть.
+let ready = false;
+
+/// Доехал ли справочник. До этого `articleKeys()` пуст, и базовая линия
+/// «что открыто», снятая по нему, объявила бы новостью весь справочник разом.
+export function wikiReady() {
+  return ready;
+}
 
 /// Статьи, временно убранные из справочника. Текст лежит в `assets/wiki` и
 /// стережётся `src/tests/wiki.rs` как прежде — прячет его только вид. Сейчас здесь
@@ -66,6 +75,7 @@ export async function loadWiki() {
   );
   for (const text of texts) parseFile(text);
   for (const key of HIDDEN_ARTICLES) articles.delete(key);
+  ready = true;
 }
 
 // `---понято---` или `---понято tech_id---`: во втором случае полная версия
