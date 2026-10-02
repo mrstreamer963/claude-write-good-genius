@@ -96,7 +96,10 @@ function parseFile(text) {
     const cut = lines.findIndex((l) => UNDERSTOOD.test(l.trim()));
     const teaser = cut < 0 ? "" : lines.slice(0, cut).join("\n").trim();
     const tech = cut < 0 ? "" : (UNDERSTOOD.exec(lines[cut].trim())[1] ?? "");
-    const body = lines.slice(cut + 1).join("\n").trim();
+    const body = lines
+      .slice(cut + 1)
+      .join("\n")
+      .trim();
     articles.set(key, { title, teaser, body, tech });
   };
   for (const raw of text.split(/\r?\n/)) {

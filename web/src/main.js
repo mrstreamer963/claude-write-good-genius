@@ -19,7 +19,14 @@ import {
   setArticleTeased,
   teaserTech,
 } from "./wiki.js";
-import { play, setBusOn, setMuted, setPaused, setVolume, soundPrefs } from "./sound.js";
+import {
+  play,
+  setBusOn,
+  setMuted,
+  setPaused,
+  setVolume,
+  soundPrefs,
+} from "./sound.js";
 
 const TILE = 28;
 
@@ -1281,7 +1288,10 @@ function drawFurniture(g, id, x, y, tint, n) {
           .closePath()
           .fill(0xd9b64a);
       }
-      g.rect(px, py + T - T * 0.14, T, T * 0.14).stroke({ color: dark, width: 1 });
+      g.rect(px, py + T - T * 0.14, T, T * 0.14).stroke({
+        color: dark,
+        width: 1,
+      });
       break;
     }
     // Парта — штамп на три клетки (§12.258): табурет ученика, стол посередине и
@@ -1309,13 +1319,14 @@ function drawFurniture(g, id, x, y, tint, n) {
       // Спинка стоит **со стороны, противоположной столу**: штамп вращается
       // (§12.160), и спинка, нарисованная всегда сверху, в вертикальной парте
       // смотрела бы на стол. Стол ищем среди четырёх соседей; нет его — сверху.
-      const [dx, dy] =
-        [
-          [-1, 0],
-          [1, 0],
-          [0, -1],
-          [0, 1],
-        ].find(([ox, oy]) => tileDefAt(x + ox, y + oy)?.id === "desk_table") ?? [0, 1];
+      const [dx, dy] = [
+        [-1, 0],
+        [1, 0],
+        [0, -1],
+        [0, 1],
+      ].find(([ox, oy]) => tileDefAt(x + ox, y + oy)?.id === "desk_table") ?? [
+        0, 1,
+      ];
       shadowUnder(T * 0.26, T * 0.26, T * 0.48, T * 0.48);
       g.roundRect(px + T * 0.3, py + T * 0.3, T * 0.4, T * 0.4, 4).fill(
         shade(tint, 0.2),
@@ -1398,12 +1409,18 @@ function drawFurniture(g, id, x, y, tint, n) {
       g.rect(px + T * 0.08, py + T * 0.5, T * 0.84, T * 0.34).fill(0x7a5a34);
       g.rect(px + T * 0.08, py + T * 0.5, T * 0.84, 2.5).fill(0xa8824c);
       for (let i = 0; i < 4; i++) {
-        g.rect(px + T * 0.1 + i * T * 0.21, py + T * 0.12, T * 0.1, T * 0.1).fill(
-          i % 2 ? 0xd9b64a : 0xe6e1d2,
-        );
-        g.rect(px + T * 0.2 + i * T * 0.21, py + T * 0.12, T * 0.1, T * 0.1).fill(
-          i % 2 ? 0xe6e1d2 : 0xd9b64a,
-        );
+        g.rect(
+          px + T * 0.1 + i * T * 0.21,
+          py + T * 0.12,
+          T * 0.1,
+          T * 0.1,
+        ).fill(i % 2 ? 0xd9b64a : 0xe6e1d2);
+        g.rect(
+          px + T * 0.2 + i * T * 0.21,
+          py + T * 0.12,
+          T * 0.1,
+          T * 0.1,
+        ).fill(i % 2 ? 0xe6e1d2 : 0xd9b64a);
       }
       g.rect(px + T * 0.08, py + T * 0.22, T * 0.84, 1.5).fill(0x3a2e1e);
       break;
@@ -1466,7 +1483,10 @@ function drawMap(map) {
         const sx = x * T + cellNoise(x, y, 40) * T;
         const sy = y * T + cellNoise(x, y, 41) * T;
         g.moveTo(sx, sy)
-          .lineTo(sx + (cellNoise(x, y, 42) - 0.5) * T, sy + cellNoise(x, y, 43) * T * 0.8)
+          .lineTo(
+            sx + (cellNoise(x, y, 42) - 0.5) * T,
+            sy + cellNoise(x, y, 43) * T * 0.8,
+          )
           .lineTo(sx + (cellNoise(x, y, 44) - 0.5) * T * 1.4, sy + T * 0.9)
           .stroke({ color: 0x0f1014, width: 1, alpha: 0.7 });
       }
@@ -1487,8 +1507,14 @@ function drawMap(map) {
       // Шов: тонкая тёмная линия справа и снизу, блик слева и сверху.
       g.rect(x * T, y * T, T, 1).fill({ color: 0xffffff, alpha: 0.05 });
       g.rect(x * T, y * T, 1, T).fill({ color: 0xffffff, alpha: 0.04 });
-      g.rect(x * T, y * T + T - 1, T, 1).fill({ color: COLORS.seam, alpha: 0.9 });
-      g.rect(x * T + T - 1, y * T, 1, T).fill({ color: COLORS.seam, alpha: 0.9 });
+      g.rect(x * T, y * T + T - 1, T, 1).fill({
+        color: COLORS.seam,
+        alpha: 0.9,
+      });
+      g.rect(x * T + T - 1, y * T, 1, T).fill({
+        color: COLORS.seam,
+        alpha: 0.9,
+      });
       // Потёртость — пятно у каждой четвёртой плиты.
       if (n > 0.75) {
         g.ellipse(
@@ -1513,10 +1539,16 @@ function drawMap(map) {
       const py = y * T;
       // Тень от стены на пол — до самой стены, чуть шире её.
       if (wallAt(x, y - 1)) {
-        g.rect(px, py + wt, T, wt * 0.8).fill({ color: COLORS.shadow, alpha: 0.28 });
+        g.rect(px, py + wt, T, wt * 0.8).fill({
+          color: COLORS.shadow,
+          alpha: 0.28,
+        });
       }
       if (wallAt(x - 1, y)) {
-        g.rect(px + wt, py, wt * 0.6, T).fill({ color: COLORS.shadow, alpha: 0.2 });
+        g.rect(px + wt, py, wt * 0.6, T).fill({
+          color: COLORS.shadow,
+          alpha: 0.2,
+        });
       }
       if (wallAt(x, y - 1)) {
         g.rect(px, py, T, wt).fill(COLORS.wall);
@@ -1555,7 +1587,14 @@ function drawMap(map) {
       if (v < 0) continue;
       const def = (meta.palette ?? [])[v];
       if (!def) continue;
-      drawFurniture(f, def.id, x, y, paletteColors[v] ?? COLORS.floor, cellNoise(x, y, 7));
+      drawFurniture(
+        f,
+        def.id,
+        x,
+        y,
+        paletteColors[v] ?? COLORS.floor,
+        cellNoise(x, y, 7),
+      );
     }
   }
   tileLayer.addChild(f);
@@ -1775,8 +1814,7 @@ function drawScrap(list) {
       y + TILE * 0.5 + lift + TILE * 0.32 * shrink,
       TILE * 0.3 * (0.6 + n * 0.15) * shrink,
       TILE * 0.07 * shrink,
-    )
-      .fill({ color: COLORS.shadow, alpha: 0.35 });
+    ).fill({ color: COLORS.shadow, alpha: 0.35 });
     // Помечена «на склад» — за ней придёт свободный кот. При автоуборке помечено
     // всё, что лежит вне склада, так что метка заодно показывает, что режим включён.
     if (s.marked) {
@@ -2325,7 +2363,9 @@ function renderSnapshot(snap) {
       c.down = down;
       // Бок — случайный на каждое укладывание: ряд спящих, повёрнутых
       // одинаково, читался строем, а не сном. Случайность законна — это вид.
-      c.body.rotation = down ? (Math.random() < 0.5 ? -1 : 1) * (Math.PI / 2) : 0;
+      c.body.rotation = down
+        ? (Math.random() < 0.5 ? -1 : 1) * (Math.PI / 2)
+        : 0;
       c.body.y = down ? TILE * 0.1 : 0;
     }
     c.sleepMark.visible = asleep;
@@ -2591,7 +2631,12 @@ function drawTool(g, crowbar) {
         .lineTo(-r * 0.95, r * 0.62)
         .lineTo(-r * 1.1, r * 0.8);
     path(g).stroke({ color: dark, width: 3.2, cap: "round", join: "round" });
-    path(g).stroke({ color: 0x8a909c, width: 1.6, cap: "round", join: "round" });
+    path(g).stroke({
+      color: 0x8a909c,
+      width: 1.6,
+      cap: "round",
+      join: "round",
+    });
   } else {
     g.roundRect(-r * 0.08, r * 0.6, r * 0.16, r * 0.6, 1).fill(0x8a6a3a);
     g.roundRect(-r * 0.3, r * 1.12, r * 0.6, r * 0.26, 1.5)
@@ -2638,7 +2683,13 @@ function drawCat(g, fur, worn, arm, asleep = false, drowsy = false) {
     [0, geared ? suit : furDark],
   ]) {
     for (const lx of [-r * 0.42, r * 0.02]) {
-      g.roundRect(lx - k, r * 0.35 - k, r * 0.42 + 2 * k, r * 0.8 + 2 * k, r * 0.15).fill(col);
+      g.roundRect(
+        lx - k,
+        r * 0.35 - k,
+        r * 0.42 + 2 * k,
+        r * 0.8 + 2 * k,
+        r * 0.15,
+      ).fill(col);
     }
   }
   for (const lx of [-r * 0.42, r * 0.02]) {
@@ -2651,7 +2702,13 @@ function drawCat(g, fur, worn, arm, asleep = false, drowsy = false) {
     [1.5, dark],
     [0, geared ? suit : furDark],
   ]) {
-    g.roundRect(-r * 0.75 - k, -r * 0.55 - k, r * 1.5 + 2 * k, r * 1.05 + 2 * k, r * 0.3).fill(col);
+    g.roundRect(
+      -r * 0.75 - k,
+      -r * 0.55 - k,
+      r * 1.5 + 2 * k,
+      r * 1.05 + 2 * k,
+      r * 0.3,
+    ).fill(col);
   }
   // Руки по бокам. Передняя (по ходу взгляда, `+x`) — отдельный узел `arm`
   // с началом в плече: ею кот машет на стройке и сносе (§12.252, `hammerUnit`).
@@ -2661,8 +2718,22 @@ function drawCat(g, fur, worn, arm, asleep = false, drowsy = false) {
     [1, dark],
     [0, geared ? suit : furDark],
   ]) {
-    g.roundRect(-r * 0.98 - k, -r * 0.4 - k, r * 0.34 + 2 * k, r * 0.75 + 2 * k, r * 0.15).fill(col);
-    arm.roundRect(-r * 0.17 - k, -r * 0.05 - k, r * 0.34 + 2 * k, r * 0.75 + 2 * k, r * 0.15).fill(col);
+    g.roundRect(
+      -r * 0.98 - k,
+      -r * 0.4 - k,
+      r * 0.34 + 2 * k,
+      r * 0.75 + 2 * k,
+      r * 0.15,
+    ).fill(col);
+    arm
+      .roundRect(
+        -r * 0.17 - k,
+        -r * 0.05 - k,
+        r * 0.34 + 2 * k,
+        r * 0.75 + 2 * k,
+        r * 0.15,
+      )
+      .fill(col);
   }
   if (geared) {
     // Разгрузка: две лямки, два подсумка, ремень. Это и есть «комплект надет»
@@ -2674,9 +2745,13 @@ function drawCat(g, fur, worn, arm, asleep = false, drowsy = false) {
     g.rect(-r * 0.75, r * 0.3, r * 1.5, r * 0.12).fill(0x8a7a3a);
   } else {
     // Светлая грудка — как у большинства окрасов.
-    g.ellipse(0, -r * 0.05, r * 0.32, r * 0.42).fill({ color: shade(fur, 0.35), alpha: 0.9 });
+    g.ellipse(0, -r * 0.05, r * 0.32, r * 0.42).fill({
+      color: shade(fur, 0.35),
+      alpha: 0.9,
+    });
     // Прибор без комбинезона держится на простом ремне.
-    if (belt.length) g.rect(-r * 0.75, r * 0.3, r * 1.5, r * 0.12).fill(0x5a4a2a);
+    if (belt.length)
+      g.rect(-r * 0.75, r * 0.3, r * 1.5, r * 0.12).fill(0x5a4a2a);
   }
   // Приборы на поясе — коробочки цвета предмета с огоньком, по ходу взгляда.
   belt.forEach((col, k) => {
@@ -2724,7 +2799,10 @@ function drawCat(g, fur, worn, arm, asleep = false, drowsy = false) {
     for (const ex of [hr * 0.1, hr * 0.52]) {
       const ey = hy - hr * 0.08;
       const r = hr * 0.17;
-      g.moveTo(ex - r, ey).arc(ex, ey, r, Math.PI, 0, true).closePath().fill(0xf2f6e8);
+      g.moveTo(ex - r, ey)
+        .arc(ex, ey, r, Math.PI, 0, true)
+        .closePath()
+        .fill(0xf2f6e8);
       g.moveTo(ex - hr * 0.04, ey)
         .arc(ex + hr * 0.04, ey, hr * 0.08, Math.PI, 0, true)
         .closePath()
@@ -2741,7 +2819,10 @@ function drawCat(g, fur, worn, arm, asleep = false, drowsy = false) {
   }
   g.circle(hr * 0.72, hy + hr * 0.22, hr * 0.11).fill(0xe8a0a0);
   // Тёмное пятно на лбу — окрас, а не состояние.
-  g.ellipse(-hr * 0.35, hy - hr * 0.45, hr * 0.32, hr * 0.22).fill({ color: furDark, alpha: 0.7 });
+  g.ellipse(-hr * 0.35, hy - hr * 0.45, hr * 0.32, hr * 0.22).fill({
+    color: furDark,
+    alpha: 0.7,
+  });
 }
 
 function createUnit(e) {
@@ -3042,7 +3123,8 @@ function teachUnit(c, deltaMS) {
     return;
   }
   c.swaying = true;
-  c.teachPhase = (c.teachPhase ?? 0) + (deltaMS * Math.min(speed, TEACH_SPEED_CAP)) / 700;
+  c.teachPhase =
+    (c.teachPhase ?? 0) + (deltaMS * Math.min(speed, TEACH_SPEED_CAP)) / 700;
   c.body.rotation = Math.sin(c.teachPhase) * 0.14;
   c.body.y = -Math.abs(Math.sin(c.teachPhase * 2)) * TILE * 0.04;
 }
@@ -3100,7 +3182,12 @@ function hammerUnit(c, deltaMS) {
     spawnHit(cx - dx * TILE * 0.3, cy - dy * TILE * 0.3, c.workDemolish);
     // Слышно только тех, кого видно; панорама — по месту на экране.
     const at = c.getGlobalPosition();
-    if (at.x >= 0 && at.y >= 0 && at.x <= app.screen.width && at.y <= app.screen.height) {
+    if (
+      at.x >= 0 &&
+      at.y >= 0 &&
+      at.x <= app.screen.width &&
+      at.y <= app.screen.height
+    ) {
       play(c.workDemolish ? "crowbar" : "hammer", {
         pan: (at.x / app.screen.width) * 2 - 1,
       });
@@ -3977,8 +4064,8 @@ function crewList(snap, x, y) {
                 : atStudy(e)
                   ? "учёба встанет до его возвращения"
                   : e.job === "teach" || e.job === "wait_pupil"
-                  ? "ученик останется без учителя"
-                  : "заказ мастерской останется без него") +
+                    ? "ученик останется без учителя"
+                    : "заказ мастерской останется без него") +
               (mine
                 ? ". Исключить: клик"
                 : no
@@ -4142,14 +4229,21 @@ function fieldLine(e, led, node, guide) {
   for (const id of e.perks ?? []) {
     const road = (meta?.perks ?? []).find((p) => p.id === id)?.road ?? 0;
     if (road > 0) {
-      parts.push(`<u>${esc(perkLabel(id))}</u> — дорога <b class="cut">−${road} %</b>`);
+      parts.push(
+        `<u>${esc(perkLabel(id))}</u> — дорога <b class="cut">−${road} %</b>`,
+      );
     }
   }
-  const toll = Math.max(0, ...(e.gear ?? []).map((i) => meta?.items?.[i]?.collects ?? 0));
+  const toll = Math.max(
+    0,
+    ...(e.gear ?? []).map((i) => meta?.items?.[i]?.collects ?? 0),
+  );
   // Прибор без методики — железка (§12.261): пока база не освоила сбор,
   // строка о нём молчит вовсе — ни цены, ни причины. Освоено ли, говорит
   // ядро (`abilities_on`).
-  const idle = (e.abilities ?? []).some((a) => !(lastSnap?.abilities_on ?? []).includes(a));
+  const idle = (e.abilities ?? []).some(
+    (a) => !(lastSnap?.abilities_on ?? []).includes(a),
+  );
   if (toll > 0 && !idle) {
     // Цена, а не выгода: сбор удлиняет работу, поэтому число красное.
     parts.push(`<u>сбор образцов</u> — работа <b class="bad">+${toll} %</b>`);
@@ -5127,10 +5221,17 @@ function deskCell(snap, x, y, def) {
   const from = skill && skill.level > 0 ? (levels[skill.level - 1] ?? 0) : 0;
   // Цель — порог следующего уровня (`next`), но не выше потолка парты:
   // `desk` сам по себе — весь путь, докуда парта доводит, а не один уровень.
-  const to = skill ? (skill.next > 0 ? Math.min(skill.next, skill.desk) : skill.desk) : 0;
+  const to = skill
+    ? skill.next > 0
+      ? Math.min(skill.next, skill.desk)
+      : skill.desk
+    : 0;
   const pct =
     skill && to > from
-      ? Math.max(0, Math.min(100, Math.round(((skill.xp - from) / (to - from)) * 100)))
+      ? Math.max(
+          0,
+          Math.min(100, Math.round(((skill.xp - from) / (to - from)) * 100)),
+        )
       : 0;
   // Имя ученика стоит в заголовке, а не отдельной строкой под полоской: «sp2
   // занимается» при сидящем коте не добавляет к «Наука · sp2 — 25 %» ничего,
@@ -5923,7 +6024,10 @@ const TOAST_MS = 7000;
 function showGoalToast(goal) {
   play("goal");
   const def = goalDef(goal.def);
-  showToast(goal.kind === "hidden" ? "скрытая цель" : "цель закрыта", def.label || def.id || "?");
+  showToast(
+    goal.kind === "hidden" ? "скрытая цель" : "цель закрыта",
+    def.label || def.id || "?",
+  );
 }
 
 /// Рост навыка на ступень: уровень — единственное, что меняет скорость работы
@@ -5948,7 +6052,10 @@ function noteSkillUps(snap) {
     levels.forEach((lv, i) => {
       if (lv <= (was[i] ?? 0)) return;
       const def = (meta.skills ?? [])[i];
-      showToast("навык вырос", `${e.id}: ${def?.label || def?.id || "?"} ${lv}`);
+      showToast(
+        "навык вырос",
+        `${e.id}: ${def?.label || def?.id || "?"} ${lv}`,
+      );
     });
   }
   skillLevelsSeen = now;
@@ -5958,7 +6065,8 @@ function showToast(kind, label) {
   const node = document.createElement("div");
   node.className = "toast";
   node.innerHTML =
-    `<div class="toast-kind">${esc(kind)}</div>` + `<div class="toast-label">${esc(label)}</div>`;
+    `<div class="toast-kind">${esc(kind)}</div>` +
+    `<div class="toast-label">${esc(label)}</div>`;
 
   // Уходит либо само, либо по клику — но убирается **одним** путём: иначе клик
   // по уже угасающему уведомлению снимал бы его дважды.
@@ -7433,7 +7541,9 @@ function buildToolbar() {
   vol.max = "100";
   vol.value = String(Math.round(soundPrefs().master * 100));
   vol.className = "sound-vol";
-  vol.addEventListener("input", () => setVolume("master", Number(vol.value) / 100));
+  vol.addEventListener("input", () =>
+    setVolume("master", Number(vol.value) / 100),
+  );
   liveTitle(vol, "Громкость");
   snd.appendChild(vol);
   soundBusBtns = [];
@@ -7484,7 +7594,6 @@ function buildToolbar() {
   );
   liveTitle(dump, "Скачать снимок партии");
   game.appendChild(dump);
-
 
   const picker = document.createElement("input");
   picker.type = "file";
@@ -7857,7 +7966,10 @@ function syncTopicButtons(list) {
     // дальше», а не требует невиданной вещи, как у §12.143.
     const unmastered = !t.known && t.unlocked && !t.mastered;
     const teasing =
-      (!t.known && !t.unlocked && (t.specimen ?? []).length > 0 && !!t.sighted) ||
+      (!t.known &&
+        !t.unlocked &&
+        (t.specimen ?? []).length > 0 &&
+        !!t.sighted) ||
       unmastered;
     // **Тема, ждущая находки, не показывается вовсе** (§12.143). Витрина
     // §12.137 сюда не распространяется, и граница между ними ровно в том, что
@@ -7943,39 +8055,39 @@ function syncTopicButtons(list) {
         : unmastered
           ? `Нужен учёный: ${masteryHint((meta.research ?? [])[i]?.mastered)}`
           : teasing
-          ? // Причина названа классом блокера, а не конкретной темой-предком:
-            // «когда-нибудь ты это поймёшь» — обещание, а перечень требований
-            // превратил бы витрину в чек-лист (§12.137).
-            "Наука до этого ещё не доросла"
-          : !t.unlocked
-            ? "Нужны предыдущие технологии"
-            : t.busy
-              ? "Эта тема уже изучается"
-              : !t.sighted
-                ? // Первые из двух ворот вскрытия (§12.133) — «видели»: пока
-                  // предмет не попадался, вскрывать нечего вовсе.
-                  `Нужен образец: «${(t.specimen ?? []).map(itemLabel).join(", ")}» ` +
-                  `ещё не попадал на базу`
-                : !t.stocked
-                  ? // Вторые (§12.139) — склад: образец везут со складской кучи,
-                    // и надетое по котам ею не станет. Слово **дословно то же**,
-                    // что у платы ниже, и считает его тот же `payHint`: игрок
-                    // видит «Комбинезон ×4» в шапке, и ответить ему надо не
-                    // «нет», а «на складе 0 из 1, ещё столько-то валяется» —
-                    // то есть числом и следующим шагом. Два отказа про склад,
-                    // звучащие по-разному, читались бы как две разные механики.
-                    `На складе нет образцов: ${payHint((meta.research ?? [])[i]?.specimen)}`
-                  : !t.lab
-                    ? "Нет лаборатории"
-                    : !t.lab_free
-                      ? // «Нет лаборатории» чинится стройкой, «все заняты» —
-                        // окончанием чужой темы. Два разных решения (§12.124).
-                        "Все лаборатории заняты"
-                      : !t.staffed
-                        ? `Нужен кот с «Наукой» ${b.dataset.level} уровня`
-                        : !t.affordable
-                          ? `На складе нет образцов: ${payHint((meta.research ?? [])[i]?.cost)}`
-                          : "Взяться за тему",
+            ? // Причина названа классом блокера, а не конкретной темой-предком:
+              // «когда-нибудь ты это поймёшь» — обещание, а перечень требований
+              // превратил бы витрину в чек-лист (§12.137).
+              "Наука до этого ещё не доросла"
+            : !t.unlocked
+              ? "Нужны предыдущие технологии"
+              : t.busy
+                ? "Эта тема уже изучается"
+                : !t.sighted
+                  ? // Первые из двух ворот вскрытия (§12.133) — «видели»: пока
+                    // предмет не попадался, вскрывать нечего вовсе.
+                    `Нужен образец: «${(t.specimen ?? []).map(itemLabel).join(", ")}» ` +
+                    `ещё не попадал на базу`
+                  : !t.stocked
+                    ? // Вторые (§12.139) — склад: образец везут со складской кучи,
+                      // и надетое по котам ею не станет. Слово **дословно то же**,
+                      // что у платы ниже, и считает его тот же `payHint`: игрок
+                      // видит «Комбинезон ×4» в шапке, и ответить ему надо не
+                      // «нет», а «на складе 0 из 1, ещё столько-то валяется» —
+                      // то есть числом и следующим шагом. Два отказа про склад,
+                      // звучащие по-разному, читались бы как две разные механики.
+                      `На складе нет образцов: ${payHint((meta.research ?? [])[i]?.specimen)}`
+                    : !t.lab
+                      ? "Нет лаборатории"
+                      : !t.lab_free
+                        ? // «Нет лаборатории» чинится стройкой, «все заняты» —
+                          // окончанием чужой темы. Два разных решения (§12.124).
+                          "Все лаборатории заняты"
+                        : !t.staffed
+                          ? `Нужен кот с «Наукой» ${b.dataset.level} уровня`
+                          : !t.affordable
+                            ? `На складе нет образцов: ${payHint((meta.research ?? [])[i]?.cost)}`
+                            : "Взяться за тему",
     );
   });
 }
@@ -8347,7 +8459,9 @@ function stepWords(i) {
 function abilityWhy(lacks) {
   const names = lacks.map((a) => (meta.abilities ?? [])[a]?.label ?? "?");
   const carriers = (lastSnap?.entities ?? [])
-    .filter((e) => !e.away && lacks.some((a) => (e.abilities ?? []).includes(a)))
+    .filter(
+      (e) => !e.away && lacks.some((a) => (e.abilities ?? []).includes(a)),
+    )
     .map((e) => e.id);
   return (
     `нужен ${names.join(", ")}` +
@@ -8582,15 +8696,15 @@ function raidGate(i, node) {
                   ? `в отряде ${enlisted}, а больше ${most} этот заказ не уводит` +
                     ` — вычеркните лишних`
                   : !fit
-                  ? // Не в сборе — состояние **отряда**, а не заказа (§12.184):
-                    // причина одна на все карточки, и красной строкой в каждой
-                    // она была той же стеной, что «отряд занят» до §12.181.
-                    // Названа она один раз в шапке слева, где стоит и состав, —
-                    // а здесь остаётся в подсказке кнопки.
-                    null
-                  : paws < least
-                    ? `готовы идти ${paws}, а нужно ${need}`
-                    : // Строкой, а не только подсказкой (§12.181): причина
+                    ? // Не в сборе — состояние **отряда**, а не заказа (§12.184):
+                      // причина одна на все карточки, и красной строкой в каждой
+                      // она была той же стеной, что «отряд занят» до §12.181.
+                      // Названа она один раз в шапке слева, где стоит и состав, —
+                      // а здесь остаётся в подсказке кнопки.
+                      null
+                    : paws < least
+                      ? `готовы идти ${paws}, а нужно ${need}`
+                      : // Строкой, а не только подсказкой (§12.181): причина
                         // своя у этой карточки и чинится составом.
                         lackWhy;
   return {
@@ -9243,7 +9357,9 @@ function masteryCauseRow(n) {
 onPanelClick(newsEl, ".news-x", (b) => {
   const row = b.parentElement;
   // Строка-сводка тем (§12.258) гасит все свои темы разом.
-  const keys = row?.dataset.keys ? row.dataset.keys.split("|") : [row?.dataset.key];
+  const keys = row?.dataset.keys
+    ? row.dataset.keys.split("|")
+    : [row?.dataset.key];
   markNewsSeen(keys.filter(Boolean));
 });
 // «×» лежит внутри строки, и `closest` находит обоих: клик по крестику иначе
@@ -9389,7 +9505,9 @@ function syncSciWindow() {
   // Вторая причина той же строкой (§12.263): тема ждёт образца, а привезёт его
   // вылазка. Какая — считает ядро (`TopicSnap::bring`); строка кликабельна и
   // ведёт в штаб на участок заказа — дословно клик по новости о заказе.
-  const bring = noLab ? undefined : allTopics.find((t) => t.bring != null)?.bring;
+  const bring = noLab
+    ? undefined
+    : allTopics.find((t) => t.bring != null)?.bring;
   sciWarnEl.hidden = !noLab && bring == null;
   sciWarnEl.dataset.raid = bring ?? "";
   if (noLab || bring != null) {
@@ -9583,7 +9701,10 @@ function syncDoors(snap) {
     // ней есть что посмотреть — артефакт, до которого база ещё не доросла.
     const teasing = topics.some(
       (t) =>
-        (!t.known && !t.unlocked && (t.specimen ?? []).length > 0 && t.sighted) ||
+        (!t.known &&
+          !t.unlocked &&
+          (t.specimen ?? []).length > 0 &&
+          t.sighted) ||
         (!t.known && t.unlocked && !t.mastered),
     );
     const staffed = open.some((i) => topics[i].staffed);
@@ -10727,7 +10848,7 @@ function skillNeedWhy(def) {
 // Сколько выходов осталось надетой вещи; ноль — не изнашивается.
 function wearLeft(e, item) {
   const k = (e.gear ?? []).indexOf(item);
-  return k < 0 ? 0 : (e.gear_left ?? [])[k] ?? 0;
+  return k < 0 ? 0 : ((e.gear_left ?? [])[k] ?? 0);
 }
 
 function syncDossierGear(ui, e) {
@@ -11308,7 +11429,9 @@ function wikiIndexHtml() {
           (k) =>
             `<button class="wiki-link" data-key="wikitoc${k}" ` +
             `data-go="${esc(k)}">${esc(wikiName(k))}` +
-            (wikiAddedTo(k) ? '<span class="wiki-added">дополнено</span>' : "") +
+            (wikiAddedTo(k)
+              ? '<span class="wiki-added">дополнено</span>'
+              : "") +
             "</button>",
         )
         .join("");
@@ -11327,7 +11450,7 @@ function buildWikiWindow() {
     // Своего заголовка у оглавления нет: «Справочник» уже написан рамкой окна
     // (`mkWindow`), и второй такой строкой ниже он читался бы дублем.
     list.innerHTML =
-      (toc || '<div class="wiki-body"><p>Записей пока нет.</p></div>');
+      toc || '<div class="wiki-body"><p>Записей пока нет.</p></div>';
     return;
   }
   const title = wikiName(wikiKey);
@@ -11417,7 +11540,8 @@ function wikiOwnGate(key) {
         const tech = teaserTech(key);
         if (tech && !(snap.techs ?? []).includes(tech)) return false;
         return (meta?.recruits ?? []).some(
-          (r, i) => (r.gear ?? []).includes(id) && (snap.recruits ?? [])[i]?.hired,
+          (r, i) =>
+            (r.gear ?? []).includes(id) && (snap.recruits ?? [])[i]?.hired,
         );
       }
       // Непонятая вещь (`requires`, §12.131) показывает статью, только если у
@@ -12894,7 +13018,11 @@ function closeRaidWindow() {
   // Закрывшийся заказ карточкой не стоит (одноразовый после успеха, пропавший
   // участок), значит в `raidSeenDefs` не попадёт никогда, — и без этой строки
   // его новость висела бы непрочитанной вечно.
-  markNewsSeen(newsPending("raid").filter((n) => !n.opened).map(newsKey));
+  markNewsSeen(
+    newsPending("raid")
+      .filter((n) => !n.opened)
+      .map(newsKey),
+  );
   // Автовылазка тоже видна целиком: тумблер «↻» появился в каждой карточке
   // заказа (§12.202). Правила «Склада» здесь не гасим — их игрок не видел.
   readNews("rule", ruleDefsAt("raid"));
@@ -13271,7 +13399,9 @@ function summaryHtml(raid, node) {
 function fieldTraits(src) {
   const parts = [
     src?.trails ? `тропы: дорога −${src.trails} %` : "",
-    src?.samples ? `сбор образцов: работа <b class="bad">+${src.samples} %</b>` : "",
+    src?.samples
+      ? `сбор образцов: работа <b class="bad">+${src.samples} %</b>`
+      : "",
   ].filter(Boolean);
   return parts.length ? `<div class="cat-sub">${parts.join(" · ")}</div>` : "";
 }
@@ -13500,8 +13630,11 @@ function missionLootRow(def, share, samples, counts, gather) {
     return '<div class="cat-sub">возвращает пленного, а не добычу</div>';
   }
   const all =
-    def.loot instanceof Map ? [...def.loot.entries()] : Object.entries(def.loot ?? {});
-  const collected = (id) => (meta?.items ?? []).some((it) => it.id === id && it.collected);
+    def.loot instanceof Map
+      ? [...def.loot.entries()]
+      : Object.entries(def.loot ?? {});
+  const collected = (id) =>
+    (meta?.items ?? []).some((it) => it.id === id && it.collected);
   // Сколько штук принесёт **этот** отряд, считает ядро (§12.264): образцы
   // делятся по приборам на лапы тем же `loot_count`, что на возвращении.
   // Без чисел из ядра (карточка без узла) — полный запас заказа.
@@ -13511,7 +13644,8 @@ function missionLootRow(def, share, samples, counts, gather) {
   // Доля прогноза применена к самим числам, а не названа «× 88 %» у каждой
   // строки: она уже стоит вердиктом в заголовке карточки (дословно
   // `missionGainsText`), и та же округлённая вниз арифметика, что на возвращении.
-  const cut = (n) => (share > 0 && share < 100 ? Math.floor((n * share) / 100) : n);
+  const cut = (n) =>
+    share > 0 && share < 100 ? Math.floor((n * share) / 100) : n;
   const countOf = (id, n) => cut(counts ? (got.get(id) ?? 0) : n);
   const seenId = (id) => {
     const i = (meta?.items ?? []).findIndex((it) => it.id === id);
@@ -13554,9 +13688,7 @@ function missionLootRow(def, share, samples, counts, gather) {
     ? `<span class="sample-lost" data-tip="в отряде нет прибора сбора">${costChips(new Map(lost), true)}</span>`
     : "";
   if (loot || miss) {
-    rows.unshift(
-      `<div class="raidwin-loot">добыча ${loot}${miss}</div>`,
-    );
+    rows.unshift(`<div class="raidwin-loot">добыча ${loot}${miss}</div>`);
   }
   return rows.join("");
 }
@@ -13701,9 +13833,9 @@ function raidCard(i, node) {
   const work = terms ? node.works[i] : (def.work ?? 0);
   const roadN = terms ? node.roads[i] : (def.travel ?? 0);
   const road =
-    `дорога ${roadN}` +
-    (terms && roadN < (def.travel ?? 0) ? " (тропы)" : "");
-  const workTxt = `работа ${work}` + (terms && work > (def.work ?? 0) ? " (сбор)" : "");
+    `дорога ${roadN}` + (terms && roadN < (def.travel ?? 0) ? " (тропы)" : "");
+  const workTxt =
+    `работа ${work}` + (terms && work > (def.work ?? 0) ? " (сбор)" : "");
   if (slow != null) {
     if (work === 0) {
       facts.push(["срок", `${spanText(slow)} = ${road}, и только`]);
@@ -13739,7 +13871,16 @@ function raidCard(i, node) {
       "</div>",
   );
 
-  for (const row of [missionLootRow(def, g.share, !!(node?.samples_for?.[i] ?? node?.samples), node?.loots?.[i], node?.gathers?.[i]), missionSidesRow(def)]) {
+  for (const row of [
+    missionLootRow(
+      def,
+      g.share,
+      !!(node?.samples_for?.[i] ?? node?.samples),
+      node?.loots?.[i],
+      node?.gathers?.[i],
+    ),
+    missionSidesRow(def),
+  ]) {
     if (row) rows.push(row);
   }
 
@@ -13962,7 +14103,10 @@ function busyCard(raid, node) {
       facts.map(([k, v]) => `<i>${k}</i><span>${v}</span>`).join("") +
       "</div>",
   );
-  for (const row of [missionLootRow(def, raid.share, !!raid.samples, raid.loot, raid.gather), missionSidesRow(def)]) {
+  for (const row of [
+    missionLootRow(def, raid.share, !!raid.samples, raid.loot, raid.gather),
+    missionSidesRow(def),
+  ]) {
     if (row) rows.push(row);
   }
   // Ряд кнопок тот же, что у обычной карточки заказа, и это не украшение: пока
@@ -14097,10 +14241,10 @@ function ruleRow(node) {
             : naked
               ? "нечего надеть"
               : weak
-              ? node.auto_fail
-                ? "прогноз: провал"
-                : `прогноз: ${node.auto_share} %`
-              : "автовылазка";
+                ? node.auto_fail
+                  ? "прогноз: провал"
+                  : `прогноз: ${node.auto_share} %`
+                : "автовылазка";
   const hold = nogate
     ? nogate
     : over
@@ -14115,15 +14259,15 @@ function ruleRow(node) {
             `базе. Правило ждёт, пока она появится, — или снимите приписку ` +
             `в «Личном деле». Отправить как есть можно вручную, из штаба`
           : weak
-          ? `Правило уводит отряд только на полной доле, а сейчас ` +
-            `${
-              node.auto_fail
-                ? "прогноз — провал"
-                : `с добычи возьмут ${node.auto_share} %`
-            }. Добавьте кота в отряд, оденьте бригаду или подучите «Вылазки» — ` +
-            `и правило пойдёт само. Отправить как есть можно вручную, из штаба: ` +
-            `там доля написана до нажатия`
-          : "";
+            ? `Правило уводит отряд только на полной доле, а сейчас ` +
+              `${
+                node.auto_fail
+                  ? "прогноз — провал"
+                  : `с добычи возьмут ${node.auto_share} %`
+              }. Добавьте кота в отряд, оденьте бригаду или подучите «Вылазки» — ` +
+              `и правило пойдёт само. Отправить как есть можно вручную, из штаба: ` +
+              `там доля написана до нажатия`
+            : "";
   return (
     `<div class="raid-rule${node.auto_on ? "" : " off"}${
       blocked || nogate ? " blocked" : ""
