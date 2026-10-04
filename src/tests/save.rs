@@ -3,7 +3,8 @@
 
 use std::collections::BTreeSet;
 
-use bevy_ecs::prelude::Entity;
+use bevy_ecs::prelude::{Entity, EntityRef, Without};
+use bevy_ecs::resource::IsResource;
 
 use crate::components::*;
 use crate::map::BaseMap;
@@ -40,7 +41,11 @@ fn state_of(sim: &Sim) -> String {
     ];
 
     let mut lines: Vec<String> = Vec::new();
-    for e in w.iter_entities() {
+    for e in w
+        .try_query_filtered::<EntityRef, Without<IsResource>>()
+        .expect("`IsResource` регистрирует сам `World`")
+        .iter(w)
+    {
         let mut p: Vec<String> = Vec::new();
         if let Some(u) = e.get::<UnitId>() {
             p.push(format!("cat={}", u.0));
@@ -167,22 +172,25 @@ fn every_component_is_either_saved_or_skipped() {
     // самой вставкой. Тот же случай, что выше, и та же строчка.
     sim.world.register_component::<Trained>();
 
-    let listed: BTreeSet<&str> = SAVED
+    let listed: BTreeSet<String> = SAVED
         .iter()
         .copied()
         .chain(SKIPPED.iter().map(|(name, _)| *name))
+        .map(String::from)
         .collect();
 
-    let registered: BTreeSet<&str> = sim
+    // Имя типа живёт в `DebugName` только с фичей `bevy_utils/debug` — её
+    // включает dev-зависимость в `Cargo.toml`; без неё здесь были бы заглушки.
+    let registered: BTreeSet<String> = sim
         .world
         .components()
-        .iter()
-        .map(|info| info.name())
+        .iter_registered()
+        .map(|info| info.name().to_string())
         .filter(|name| name.starts_with("sp_sim::"))
-        .map(short_name)
+        .map(|name| short_name(&name).to_string())
         .collect();
 
-    let unlisted: Vec<&&str> = registered.difference(&listed).collect();
+    let unlisted: Vec<&String> = registered.difference(&listed).collect();
     assert!(
         unlisted.is_empty(),
         "в мире появились типы, которых нет ни в SAVED, ни в SKIPPED: {unlisted:?}.\n\
@@ -190,7 +198,7 @@ fn every_component_is_either_saved_or_skipped() {
          с причиной. Иначе снимок молча потеряет их, и мир после загрузки будет другим."
     );
 
-    let dead: Vec<&&str> = listed.difference(&registered).collect();
+    let dead: Vec<&String> = listed.difference(&registered).collect();
     assert!(
         dead.is_empty(),
         "в списках `src/save.rs` перечислены типы, которых в мире нет: {dead:?}.\n\
@@ -388,7 +396,11 @@ fn links_of(sim: &Sim) -> Vec<String> {
     };
 
     let mut out: Vec<String> = Vec::new();
-    for e in w.iter_entities() {
+    for e in w
+        .try_query_filtered::<EntityRef, Without<IsResource>>()
+        .expect("`IsResource` регистрирует сам `World`")
+        .iter(w)
+    {
         let who = e.get::<UnitId>().map(|u| u.0.clone());
         if let (Some(who), Some(a)) = (&who, e.get::<Assignment>()) {
             out.push(format!("build {who} -> {}", spot(a.0)));

@@ -30,6 +30,7 @@
 use std::collections::HashMap;
 
 use bevy_ecs::prelude::*;
+use bevy_ecs::resource::IsResource;
 use serde::{Deserialize, Serialize};
 
 use crate::components::*;
@@ -691,9 +692,14 @@ pub(crate) struct MissionDto {
 /// Сущности обходятся **в порядке `Entity::index()`**, а не в порядке архетипов:
 /// обход ECS зависит от истории вставок, а файл обязан получаться один и тот же
 /// (§11). Этот же порядок задаёт номера ссылок и порядок пересоздания при
-/// загрузке.
+/// загрузке. Сущности ресурсов (`IsResource`, bevy_ecs 0.19) в обход не идут:
+/// ресурсы едут в снимке своими полями, а номера остаются плотными, как прежде.
 pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
-    let mut ids: Vec<Entity> = world.iter_entities().map(|e| e.id()).collect();
+    let mut ids: Vec<Entity> = world
+        .try_query_filtered::<Entity, Without<IsResource>>()
+        .expect("`IsResource` регистрирует сам `World`")
+        .iter(world)
+        .collect();
     ids.sort_by_key(|e| e.index());
     let number: HashMap<Entity, u32> = ids
         .iter()
@@ -984,7 +990,13 @@ fn restore_seen(world: &mut World, file: &SaveFile) {
 }
 
 pub(crate) fn restore(world: &mut World, file: &SaveFile) {
-    let old: Vec<Entity> = world.iter_entities().map(|e| e.id()).collect();
+    // С bevy_ecs 0.19 ресурсы — тоже сущности (`IsResource`). Сносить их
+    // нельзя: ресурсы восстанавливаются ниже на месте, а снесённая сущность
+    // ресурса роняет его хуки паникой.
+    let old: Vec<Entity> = world
+        .query_filtered::<Entity, Without<IsResource>>()
+        .iter(world)
+        .collect();
     for id in old {
         world.despawn(id);
     }

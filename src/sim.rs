@@ -1580,7 +1580,7 @@ impl Sim {
                         .iter()
                         .map(|row| {
                             row.iter()
-                                .map(|c| c.as_deref().and_then(&tile_index))
+                                .map(|c| c.as_deref().and_then(tile_index))
                                 .collect()
                         })
                         .collect(),

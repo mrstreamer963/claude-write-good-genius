@@ -26,8 +26,7 @@ cargo test whole_room_is_erased_completely -- --nocapture
 
 Форматирование — `cargo fmt`, линт — `make lint` (`clippy --all-targets -- -D warnings`).
 ⚠️ `--all-targets` тут обязателен: без него `src/tests/` не линтуется вовсе, а это треть кода.
-Замечание clippy — такая же поломка сборки, как варнинг компилятора. Сборка под wasm требует cfg-флага `getrandom_backend="wasm_js"`
-из `.cargo/config.toml` — без него линковка падает; файл не удалять.
+Замечание clippy — такая же поломка сборки, как варнинг компилятора.
 
 ⚠️ После `make wasm` под уже запущенным Vite фронт может отдавать старую wasm-обёртку из кэша.
 Перезапусти `make dev` (или почисти `web/node_modules/.vite`).

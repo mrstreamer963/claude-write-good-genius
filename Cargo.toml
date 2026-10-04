@@ -16,13 +16,18 @@ serde_yaml = "0.9"
 serde_json = "1"
 serde-wasm-bindgen = "0.6"
 console_error_panic_hook = "0.1"
-# bevy_ecs тянет getrandom транзитивно; на wasm нужен бэкенд wasm_js
-# (плюс cfg-флаг в .cargo/config.toml).
-getrandom = { version = "0.3", features = ["wasm_js"] }
 
 [dependencies.bevy_ecs]
-version = "0.15"
+version = "0.19"
 default-features = false
+
+# Сторож снимка (`every_component_is_either_saved_or_skipped`) сверяет реестр
+# компонентов по именам типов, а `DebugName` хранит имя только с этой фичей.
+# Dev-зависимость включает её лишь в тестовых сборках — wasm от неё не растёт.
+[dev-dependencies.bevy_utils]
+version = "0.19"
+default-features = false
+features = ["debug"]
 
 [profile.release]
 opt-level = "s"
