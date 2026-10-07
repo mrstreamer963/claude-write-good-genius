@@ -173,8 +173,7 @@ header {
   gap: 6px;
 }
 
-.speed,
-.hint-toggle {
+.speed {
   min-width: 40px;
   padding: 5px 10px;
   background: #1b1f2a;
@@ -184,12 +183,10 @@ header {
   cursor: pointer;
   font: inherit;
 }
-.speed:hover,
-.hint-toggle:hover {
+.speed:hover {
   border-color: #3b4560;
 }
-.speed.active,
-.hint-toggle.active {
+.speed.active {
   background: var(--accent);
   color: #1a1608;
   border-color: var(--accent);
@@ -1379,34 +1376,6 @@ main#stage.mode-cursor #mode-banner {
 }
 .finale-close:hover {
   background: rgba(224, 192, 96, 0.12);
-}
-
-#hint {
-  position: fixed;
-  left: 50%;
-  bottom: 12px;
-  transform: translateX(-50%);
-  padding: 6px 12px;
-  background: rgba(21, 23, 31, 0.85);
-  border: 1px solid var(--line);
-  border-radius: 20px;
-  color: var(--muted);
-  font-size: 12px;
-  pointer-events: none;
-  /* Ширину ограничиваем: без неё строка растягивается на всю карту и текст
-     ложится в десять строк поверх базы. */
-  max-width: min(52ch, calc(100vw - 460px));
-}
-#hint[hidden] {
-  display: none;
-}
-
-/* Кнопка «?» — та же форма, что у скоростей, но **не** их класс: на `.speed`
-   висит обработчик переключения времени, и «?» с этим классом отправлял в
-   воркер скорость `NaN`, то есть паузу. Класс, за которым стоит поведение,
-   нельзя брать ради внешнего вида. */
-.hint-toggle {
-  margin-left: 6px;
 }
 
 /* Кто из отряда сейчас не уйдёт — спит, ранен или ещё в поле (§12.70). Не
