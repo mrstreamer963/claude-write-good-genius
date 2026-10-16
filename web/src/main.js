@@ -1537,6 +1537,11 @@ function drawMap(map) {
   // толще 0.5 их делать нельзя. За краем карты полоса ложится на фон рендерера,
   // он того же цвета, что скала.
   const wt = T * 0.24;
+  // Полосы стен — в свой узел, который ляжет **поверх** мебели: стена теперь
+  // снаружи клетки, и всё, что из клетки вылезло (кромка гаража, спинка
+  // стула), она обрезает сама, а не ждёт, пока кто-то проверит каждый рисунок.
+  // Тени и перегородки остаются на полу, под мебелью.
+  const w = new Graphics();
   const wallAt = (x, y) => at(x, y) < 0;
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
@@ -1555,20 +1560,20 @@ function drawMap(map) {
         g.rect(px, py, wt * 0.6, T).fill({ color: COLORS.shadow, alpha: 0.2 });
       }
       if (up) {
-        g.rect(px, py - wt, T, wt).fill(COLORS.wall);
-        g.rect(px, py - wt, T, 2).fill(COLORS.wallLight);
+        w.rect(px, py - wt, T, wt).fill(COLORS.wall);
+        w.rect(px, py - wt, T, 2).fill(COLORS.wallLight);
       }
       if (down) {
-        g.rect(px, py + T, T, wt).fill(shade(COLORS.wall, -0.15));
-        g.rect(px, py + T, T, 2).fill(COLORS.wallLight);
+        w.rect(px, py + T, T, wt).fill(shade(COLORS.wall, -0.15));
+        w.rect(px, py + T, T, 2).fill(COLORS.wallLight);
       }
       if (left) {
-        g.rect(px - wt, py, wt, T).fill(shade(COLORS.wall, -0.05));
-        g.rect(px - wt, py, 2, T).fill(COLORS.wallLight);
+        w.rect(px - wt, py, wt, T).fill(shade(COLORS.wall, -0.05));
+        w.rect(px - wt, py, 2, T).fill(COLORS.wallLight);
       }
       if (right) {
-        g.rect(px + T, py, wt, T).fill(shade(COLORS.wall, -0.1));
-        g.rect(px + T + wt - 2, py, 2, T).fill(shade(COLORS.wallLight, -0.2));
+        w.rect(px + T, py, wt, T).fill(shade(COLORS.wall, -0.1));
+        w.rect(px + T + wt - 2, py, 2, T).fill(shade(COLORS.wallLight, -0.2));
       }
       // Внешние углы: полосы снаружи не перекрываются, как перекрывались
       // внутри, и в диагональной клетке скалы остался бы вырез. Внутренние
@@ -1576,24 +1581,24 @@ function drawMap(map) {
       // Светлые кромки полос продолжаются через угол — без них квадрат
       // читался провалом между двумя гранями.
       if (up && left) {
-        g.rect(px - wt, py - wt, wt, wt).fill(COLORS.wall);
-        g.rect(px - wt, py - wt, wt, 2).fill(COLORS.wallLight);
-        g.rect(px - wt, py - wt, 2, wt).fill(COLORS.wallLight);
+        w.rect(px - wt, py - wt, wt, wt).fill(COLORS.wall);
+        w.rect(px - wt, py - wt, wt, 2).fill(COLORS.wallLight);
+        w.rect(px - wt, py - wt, 2, wt).fill(COLORS.wallLight);
       }
       if (up && right) {
-        g.rect(px + T, py - wt, wt, wt).fill(COLORS.wall);
-        g.rect(px + T, py - wt, wt, 2).fill(COLORS.wallLight);
-        g.rect(px + T + wt - 2, py - wt, 2, wt).fill(
+        w.rect(px + T, py - wt, wt, wt).fill(COLORS.wall);
+        w.rect(px + T, py - wt, wt, 2).fill(COLORS.wallLight);
+        w.rect(px + T + wt - 2, py - wt, 2, wt).fill(
           shade(COLORS.wallLight, -0.2),
         );
       }
       if (down && left) {
-        g.rect(px - wt, py + T, wt, wt).fill(shade(COLORS.wall, -0.05));
-        g.rect(px - wt, py + T, 2, wt).fill(COLORS.wallLight);
+        w.rect(px - wt, py + T, wt, wt).fill(shade(COLORS.wall, -0.05));
+        w.rect(px - wt, py + T, 2, wt).fill(COLORS.wallLight);
       }
       if (down && right) {
-        g.rect(px + T, py + T, wt, wt).fill(shade(COLORS.wall, -0.1));
-        g.rect(px + T + wt - 2, py + T, 2, wt).fill(
+        w.rect(px + T, py + T, wt, wt).fill(shade(COLORS.wall, -0.1));
+        w.rect(px + T + wt - 2, py + T, 2, wt).fill(
           shade(COLORS.wallLight, -0.2),
         );
       }
@@ -1618,7 +1623,7 @@ function drawMap(map) {
         if (at(x + dx, y) < 0 || at(x, y + dy) < 0) continue;
         const cx = dx < 0 ? x * T : x * T + T - wt;
         const cy = dy < 0 ? y * T : y * T + T - wt;
-        g.rect(cx, cy, wt, wt).fill(shade(COLORS.wall, -0.08));
+        w.rect(cx, cy, wt, wt).fill(shade(COLORS.wall, -0.08));
       }
     }
   }
@@ -1643,6 +1648,7 @@ function drawMap(map) {
     }
   }
   tileLayer.addChild(f);
+  tileLayer.addChild(w);
 
   // Вторым проходом — что клетка делает (§12.109). Заливка отвечает «какая это
   // комната», глиф — «зачем она». До него роль тайла жила только в цвете, то
