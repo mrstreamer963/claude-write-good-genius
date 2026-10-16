@@ -1280,11 +1280,13 @@ function drawFurniture(g, id, x, y, tint, n) {
         g.rect(px + 2, py + T * 0.2 + i * T * 0.19, T - 4, 1.5).fill(0x55514a);
       }
       // Диагональная полосатая кромка внизу — «здесь выезжают».
-      for (let i = 0; i < 5; i++) {
-        g.moveTo(px + i * T * 0.22, py + T)
-          .lineTo(px + i * T * 0.22 + T * 0.12, py + T - T * 0.14)
-          .lineTo(px + i * T * 0.22 + T * 0.22, py + T - T * 0.14)
-          .lineTo(px + i * T * 0.22 + T * 0.1, py + T)
+      // Четыре полосы с шагом в четверть клетки: пятая вылезала за край, и
+      // пока стена лежала внутри клетки, её прятала стена.
+      for (let i = 0; i < 4; i++) {
+        g.moveTo(px + i * T * 0.25, py + T)
+          .lineTo(px + i * T * 0.25 + T * 0.12, py + T - T * 0.14)
+          .lineTo(px + i * T * 0.25 + T * 0.22, py + T - T * 0.14)
+          .lineTo(px + i * T * 0.25 + T * 0.1, py + T)
           .closePath()
           .fill(0xd9b64a);
       }
