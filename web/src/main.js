@@ -1571,13 +1571,29 @@ function drawMap(map) {
       // Внешние углы: полосы снаружи не перекрываются, как перекрывались
       // внутри, и в диагональной клетке скалы остался бы вырез. Внутренние
       // углы закрывают полосы двух соседних клеток пола сами.
-      if (up && left) g.rect(px - wt, py - wt, wt, wt).fill(COLORS.wall);
-      if (up && right) g.rect(px + T, py - wt, wt, wt).fill(COLORS.wall);
+      // Светлые кромки полос продолжаются через угол — без них квадрат
+      // читался провалом между двумя гранями.
+      if (up && left) {
+        g.rect(px - wt, py - wt, wt, wt).fill(COLORS.wall);
+        g.rect(px - wt, py - wt, wt, 2).fill(COLORS.wallLight);
+        g.rect(px - wt, py - wt, 2, wt).fill(COLORS.wallLight);
+      }
+      if (up && right) {
+        g.rect(px + T, py - wt, wt, wt).fill(COLORS.wall);
+        g.rect(px + T, py - wt, wt, 2).fill(COLORS.wallLight);
+        g.rect(px + T + wt - 2, py - wt, 2, wt).fill(
+          shade(COLORS.wallLight, -0.2),
+        );
+      }
       if (down && left) {
-        g.rect(px - wt, py + T, wt, wt).fill(shade(COLORS.wall, -0.15));
+        g.rect(px - wt, py + T, wt, wt).fill(shade(COLORS.wall, -0.05));
+        g.rect(px - wt, py + T, 2, wt).fill(COLORS.wallLight);
       }
       if (down && right) {
-        g.rect(px + T, py + T, wt, wt).fill(shade(COLORS.wall, -0.15));
+        g.rect(px + T, py + T, wt, wt).fill(shade(COLORS.wall, -0.1));
+        g.rect(px + T + wt - 2, py + T, 2, wt).fill(
+          shade(COLORS.wallLight, -0.2),
+        );
       }
       // Внутренние перегородки между комнатами разного типа — тонкая линия:
       // это не стена, а граница зоны, через неё ходят.
