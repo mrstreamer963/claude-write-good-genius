@@ -1619,7 +1619,12 @@ function drawMap(map) {
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       if (at(x, y) >= 0) continue;
-      for (const [dx, dy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+      for (const [dx, dy] of [
+        [-1, -1],
+        [1, -1],
+        [-1, 1],
+        [1, 1],
+      ]) {
         if (at(x + dx, y) < 0 || at(x, y + dy) < 0) continue;
         const cx = dx < 0 ? x * T : x * T + T - wt;
         const cy = dy < 0 ? y * T : y * T + T - wt;
