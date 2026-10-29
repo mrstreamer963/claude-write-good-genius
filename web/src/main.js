@@ -314,6 +314,10 @@ const hireWinEl = document.getElementById("hirewin");
 const buyWinEl = document.getElementById("buywin");
 const binWinEl = document.getElementById("binwin");
 const dossierEl = document.getElementById("dossier");
+// Экраны (§12.301): класс один на все, ключи — в `SCREENS`.
+for (const el of [stockWinEl, sciWinEl, hireWinEl, buyWinEl, dossierEl]) {
+  el.classList.add("screen");
+}
 const toastsEl = document.getElementById("toasts");
 const newsEl = document.getElementById("news");
 const liveTipEl = document.getElementById("livetip");
@@ -11770,6 +11774,14 @@ function buildDossier(roster) {
   ui.body.appendChild(ui.tabs);
   box.appendChild(ui.body);
   ui.body.appendChild(list);
+  // Две колонки (§12.301): слева кот и навыки, справа снаряжение и история.
+  // Вне экрана они идут одна под другой; на экране встают рядом, и полоски
+  // навыков не тянутся на всю ширину.
+  const left = document.createElement("div");
+  left.className = "dos-col";
+  const right = document.createElement("div");
+  right.className = "dos-col";
+  list.append(left, right);
 
   ui.head = document.createElement("div");
   ui.head.className = "dos-head";
@@ -11807,15 +11819,15 @@ function buildDossier(roster) {
   ui.job.className = "cat-sub";
   ui.headText.appendChild(ui.job);
   ui.head.appendChild(ui.headText);
-  list.appendChild(ui.head);
+  left.appendChild(ui.head);
 
   ui.born = document.createElement("div");
   ui.born.className = "cat-sub";
-  list.appendChild(ui.born);
+  left.appendChild(ui.born);
 
   ui.life = document.createElement("div");
   ui.life.className = "cat-sub";
-  list.appendChild(ui.life);
+  left.appendChild(ui.life);
 
   // Навыки — все домены палитры, включая нулевые: в панели их прячут, потому
   // что там место одному, а здесь спрашивают «каков этот кот целиком».
@@ -11838,26 +11850,26 @@ function buildDossier(roster) {
     });
     btn.className = "tool dos-teach";
     row.appendChild(btn);
-    list.appendChild(row);
+    left.appendChild(row);
     ui.rows.push({ row, live, btn, def, i });
   });
 
   ui.kit = document.createElement("div");
   ui.kit.className = "cat-sub";
-  list.appendChild(ui.kit);
+  right.appendChild(ui.kit);
 
   // Снаряжение (§12.268): строка на каждую надеваемую вещь палитры, узлы
   // строятся раз — видимость и подписи правит `syncDossier` (§12.118).
   ui.gearHead = document.createElement("div");
   ui.gearHead.className = "cat-row";
   ui.gearHead.innerHTML = "<span>Снаряжение</span>";
-  list.appendChild(ui.gearHead);
+  right.appendChild(ui.gearHead);
   // Слоты (§12.297) — карточкой на слот, как в штабе (§12.293): что надето и
   // что можно надеть вместо — одним кликом, а не списком всей палитры.
   // Карточка — постоянный узел, внутри `setHtml` только на изменении.
   ui.slots = document.createElement("div");
   ui.slots.className = "dos-slots";
-  list.appendChild(ui.slots);
+  right.appendChild(ui.slots);
   ui.slotCards = slotsInPlay().map(({ id, label }) => {
     const card = document.createElement("div");
     card.className = "dos-slot";
@@ -11892,13 +11904,13 @@ function buildDossier(roster) {
     });
     btn.className = "tool dos-teach";
     row.appendChild(btn);
-    list.appendChild(row);
+    right.appendChild(row);
     ui.gear.push({ row, live, btn, def, i });
   });
 
   ui.log = document.createElement("div");
   ui.log.className = "dos-log";
-  list.appendChild(ui.log);
+  right.appendChild(ui.log);
 
   dossierUi = ui;
 }
@@ -13256,7 +13268,7 @@ function closeAnyWindow() {
 // скоростью остаётся видна — игрок, который хочет смотреть, как отряд идёт,
 // сам жмёт ×1. Переезжают окна по одному, поэтому экран — это ключ `WINDOWS`
 // в этом списке, а не второй реестр окон.
-const SCREENS = new Set(["raid"]);
+const SCREENS = new Set(["raid", "stock", "sci", "hire", "buy", "dossier"]);
 const screenBarEl = document.getElementById("screenbar");
 
 // Полоса вкладок экрана **зеркалит двери тулбара**, а не держит свой список:
@@ -14553,6 +14565,8 @@ function closeRaidWindow() {
   raidWinAt = null;
   if (slotPick?.host === "raid") slotPick = null;
   raidUi = null;
+  siteMapFit?.disconnect();
+  siteMapFit = null;
   raidWinEl.hidden = true;
   raidWinEl.innerHTML = "";
 }
@@ -14693,7 +14707,7 @@ function buildSiteGraph(holder) {
     `patternUnits="userSpaceOnUse" x="${hx}" y="${hy}">` +
     `<path class="map-gridline" d="M${SITE_STEP} 0 L0 0 L0 ${SITE_STEP}"/></pattern></defs>` +
     `<rect class="map-field" width="${w}" height="${h}" rx="10"/>` +
-    `<rect width="${w}" height="${h}" rx="10" fill="url(#map-grid)"/>` +
+    `<rect class="map-field-grid" width="${w}" height="${h}" rx="10" fill="url(#map-grid)"/>` +
     (pace > 0
       ? `<text class="map-scale" x="10" y="${h - 10}">клетка — ${pace} пути в один конец</text>`
       : "");
@@ -14726,6 +14740,7 @@ function buildSiteGraph(holder) {
       .join("") +
     `<g class="map-trips"></g>` +
     "</svg>";
+  fitSiteMap(holder.querySelector(".map-svg"), w, h);
   const marks = [...holder.querySelectorAll(".map-site")];
   // Клик по кружку — **выбор цели, а не отправка** (§12.75, §12.199): он
   // подсвечивает участок, прокручивает к его заказу и становится целью для
@@ -14762,6 +14777,39 @@ function buildSiteGraph(holder) {
     };
   });
   return marks;
+}
+
+// Поле карты — под пропорции колонки (§12.301). Участки вписываются целиком
+// (`meet`), а viewBox расширяется по той оси, где колонке остаётся место, —
+// и клетки поля заполняют её до краёв, вместо пустых полос над картой и под
+// ней. Масштаб от этого не меняется: шаг сетки тот же, расширяется только
+// поле вокруг. Наблюдатель один на окно: новый каркас снимает прежний.
+let siteMapFit = null;
+function fitSiteMap(svg, w, h) {
+  siteMapFit?.disconnect();
+  siteMapFit = null;
+  if (!svg) return;
+  const put = () => {
+    const box = svg.getBoundingClientRect();
+    if (!box.width || !box.height) return;
+    const scale = Math.min(box.width / w, box.height / h);
+    const vw = box.width / scale;
+    const vh = box.height / scale;
+    const x = -(vw - w) / 2;
+    const y = -(vh - h) / 2;
+    svg.setAttribute("viewBox", `${x} ${y} ${vw} ${vh}`);
+    for (const r of svg.querySelectorAll(".map-field, .map-field-grid")) {
+      r.setAttribute("x", x);
+      r.setAttribute("y", y);
+      r.setAttribute("width", vw);
+      r.setAttribute("height", vh);
+    }
+    const scaleText = svg.querySelector(".map-scale");
+    scaleText?.setAttribute("x", x + 10);
+    scaleText?.setAttribute("y", y + vh - 10);
+  };
+  siteMapFit = new ResizeObserver(put);
+  siteMapFit.observe(svg);
 }
 
 // Присваиваем разметку **только когда она изменилась**. Большую часть кадров
