@@ -269,7 +269,8 @@ body.marking #side button {
    `pointer-events: none`, иначе она съедала бы разметку верхнего ряда клеток. */
 #mode-banner {
   position: absolute;
-  top: 10px;
+  /* Под полосой дверей (§12.301): она стоит поверх сцены. */
+  top: calc(var(--screenbar-h) + 10px);
   left: 50%;
   transform: translateX(-50%);
   z-index: 2;
@@ -307,7 +308,8 @@ main#stage.mode-cursor #mode-banner {
 #toolbar {
   position: fixed;
   left: 12px;
-  top: 60px;
+  /* Под шапкой и полосой дверей (§12.301). */
+  top: calc(var(--header-h) + var(--screenbar-h) + 12px);
   /* ⚠️ **226, а не 190** (§12.228): значок «i» у кнопки палитры (§12.204) стоит
      первым в строке и стоит ~24px, а справа у той же кнопки цена набором с
      `margin-left: auto` — «Лежанка ≡1 ⚙1» теряла последнюю фишку за краем.
@@ -320,7 +322,7 @@ main#stage.mode-cursor #mode-banner {
   width: 226px;
   /* Инструментов стало больше экрана: тулбар растёт вниз, а окно — нет.
      По горизонтали не скроллим — цена просто прижата к правому краю. */
-  max-height: calc(100vh - 120px);
+  max-height: calc(100vh - var(--header-h) - var(--screenbar-h) - 40px);
   overflow-y: auto;
   overflow-x: hidden;
   display: flex;
@@ -341,7 +343,7 @@ main#stage.mode-cursor #mode-banner {
 #side {
   position: fixed;
   right: 12px;
-  top: 60px;
+  top: calc(var(--header-h) + var(--screenbar-h) + 12px);
   bottom: 12px;
   width: 200px;
   display: flex;
@@ -1389,7 +1391,7 @@ main#stage.mode-cursor #mode-banner {
 
 #toasts {
   position: fixed;
-  top: 60px;
+  top: calc(var(--header-h) + var(--screenbar-h) + 12px);
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -1628,6 +1630,10 @@ main#stage.mode-cursor #mode-banner {
   padding: 0 14px;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
+  /* На узком окне двери не переносятся — ряд прокручивается, а высота
+     полосы остаётся той, под которую сдвинуты тулбар и колонка. */
+  overflow-x: auto;
+  overflow-y: hidden;
   z-index: 12;
 }
 #screenbar .tool {
@@ -1642,6 +1648,7 @@ main#stage.mode-cursor #mode-banner {
 }
 #screenbar .tool.fresh::after {
   content: "";
+  margin-left: 2px;
   width: 6px;
   height: 6px;
   border-radius: 50%;
@@ -2601,11 +2608,8 @@ main#stage.mode-cursor #mode-banner {
    одном столбце, и одна дверь с обводкой, а другая с точкой читались как два
    разных состояния, хотя новость у них одна и та же. Внутри окон кольцо
    остаётся: там точки нет, и метить нечем. */
-#toolbar > .tool.fresh {
-  border-color: var(--line);
-  box-shadow: none;
-}
-#toolbar > .tool.fresh::after,
+/* С §12.301 двери живут в полосе `#screenbar` (точка — там же, ниже), а в
+   тулбаре метку носят только заголовки разделов. */
 .sec-head.fresh::after {
   content: "";
   width: 6px;

@@ -1117,7 +1117,11 @@ function layout() {
     ? Math.max(8, stageBox.right - sideBox.left + 12)
     : 8;
   const availW = Math.max(TILE, app.screen.width - padLeft - padRight);
-  const availH = Math.max(TILE, app.screen.height - 16);
+  // Сверху сцену накрывает полоса дверей (§12.301): она постоянная, а не
+  // растёт по разделам, поэтому её высоту вычитаем — карта не прыгает.
+  const topBox = document.getElementById("screenbar")?.getBoundingClientRect();
+  const padTop = topBox?.height ? Math.max(8, topBox.bottom - stageBox.top + 8) : 8;
+  const availH = Math.max(TILE, app.screen.height - padTop - 8);
   // Не мельчим ниже единицы: `TILE` подобран под самый маленький экран, и на нём
   // карта просто уезжает под панели, как уезжала всегда.
   worldScale = Math.max(1, Math.min(availW / w, availH / h));
@@ -1131,7 +1135,7 @@ function layout() {
       ? pad + Math.floor((avail - drawn) / 2)
       : Math.floor((whole - drawn) / 2);
   world.x = put(w * worldScale, padLeft, availW, app.screen.width);
-  world.y = put(h * worldScale, 8, availH, app.screen.height) + rise * worldScale;
+  world.y = put(h * worldScale, padTop, availH, app.screen.height) + rise * worldScale;
 }
 app.renderer.on("resize", layout);
 
@@ -8040,8 +8044,7 @@ function buildToolbar() {
     "Что есть на базе, почём его берут и какие правила это двигают",
   );
   stockDoor = ware;
-  el.appendChild(ware);
-
+  
   // «Постройка» стоит сразу под «Складом», а двери-реестры — ниже неё: это
   // единственный раздел-инструмент, то есть то, чем размечают карту, и держать
   // его в конце списка значило бы уводить самый частый клик за три двери.
@@ -8064,8 +8067,7 @@ function buildToolbar() {
       folds(() => openSciWindow()),
     );
     liveTitle(sciDoor, "За какую тему взяться и чего для этого не хватает");
-    el.appendChild(sciDoor);
-  }
+      }
   if ((meta.recruits ?? []).length) {
     hireDoor = mkTool(
       '<span class="sw sw-hire"></span><span>Найм</span>',
@@ -8075,8 +8077,7 @@ function buildToolbar() {
     // До первого снимка спрятана: показать её решает `syncDoors` (§12.275),
     // и видимая с рождения дверь мелькнула бы кадр на старте партии.
     hireDoor.hidden = true;
-    el.appendChild(hireDoor);
-  }
+      }
   // Четвёртая дверь (§12.150). Дверь, а не строка «Склада»: витрина приходит от
   // прайса, и в ней стоит то, чего база не видела ни разу, — то есть ровно то,
   // что окно «Склад» прячет (§12.131).
@@ -8107,8 +8108,7 @@ function buildToolbar() {
       buyDoor,
       "Что продают снаружи, почём и до чего база ещё не доросла",
     );
-    el.appendChild(buyDoor);
-  }
+      }
 
   tileButtons.length = 0;
   tileHints.length = 0;
@@ -8219,11 +8219,12 @@ function buildToolbar() {
   if ((meta.missions ?? []).length) {
     raidDoor = mkTool(
       '<span class="sw sw-gate"></span><span>Вылазки</span>',
-      folds(() => openRaidWindow()),
+      // Дверь стоит и над открытым штабом (§12.301): повторный клик по ней
+      // не должен сбрасывать выбранный отряд к первому.
+      folds(() => raidWinOpen || openRaidWindow()),
     );
     liveTitle(raidDoor, "Кто в каком отряде, чем занят и куда его отправить");
-    el.appendChild(raidDoor);
-  }
+      }
 
   // «Личные дела» (§12.N). Дверь не гаснет никогда: без котов партии не бывает,
   // значит ни ветки в `syncDoors`, ни `.off` ей не нужно. Кота окно выбирает
@@ -8234,12 +8235,11 @@ function buildToolbar() {
   // которое отвечало «где горит» и отсылало тушить в другое окно.
   const files = mkTool(
     '<span class="sw sw-desk"></span><span>Личные дела</span>',
-    folds(() => openDossier(null)),
+    folds(() => dossierOpen || openDossier(null)),
   );
   liveTitle(files, "Кто каков, что с ним было и чему его выучить");
   filesDoor = files;
-  el.appendChild(files);
-
+  
   // «Справочник» (§12.204). Дверь не гаснет и не прячется: лор партии не
   // принадлежит и от изученного не зависит — это единственная дверь в тулбаре,
   // у которой ворот нет вовсе. Ведёт она в оглавление, потому что адресата у
@@ -8250,8 +8250,7 @@ function buildToolbar() {
   );
   liveTitle(wiki, "Что это за мир, кто в нём есть и как всё устроено");
   wikiDoor = wiki;
-  el.appendChild(wiki);
-  buildScreenBar();
+    buildScreenBar();
 
   // Правила симуляции — не режимы ввода, а тумблеры поведения котов, поэтому
   // они живут отдельно от инструментов и своей подсветкой их не сбивают.
@@ -13271,17 +13270,28 @@ function closeAnyWindow() {
 const SCREENS = new Set(["raid", "stock", "sci", "hire", "buy", "dossier"]);
 const screenBarEl = document.getElementById("screenbar");
 
-// Полоса вкладок экрана **зеркалит двери тулбара**, а не держит свой список:
-// у дверей ворота (§12.151, §12.211, §12.275) и метка новостей (§12.120), и
-// вторая копия этих правил разошлась бы с первой на первой же новой двери.
-// Вкладка копирует у двери подпись (один раз), видимость, `.off`, метку и
-// подсказку (каждым кадром, только на изменении), а клик отдаёт самой двери.
-// «База» — единственная своя: она закрывает экран.
+// Полоса дверей (§12.301) — **постоянная**, под шапкой, и на базе, и на
+// экране. Двери живут в ней **сами**, а не копиями: узел у двери один, его
+// строит `buildToolbar`, ворота у него те же (`syncDoors`, §12.151, §12.211,
+// §12.275), метка новостей та же (`syncNewsMarks`, §12.120). До этого полоса
+// стояла только над экраном и каждым кадром повторяла видимость, `.off`,
+// метку и подсказку у дверей тулбара — второй узел на дверь ради одного ряда.
+// Своя кнопка одна — «База»: она закрывает экран (как Escape) и горит, пока
+// экрана нет. Тулбар остался инструментом карты: постройка, правила, звук,
+// свет, партия.
 let screenTabs = [];
+let baseTab = null;
 function buildScreenBar() {
   if (!screenBarEl) return;
   screenBarEl.innerHTML = "";
-  const doors = [
+  baseTab = mkTool('<span class="sw sw-build"></span><span>База</span>', () => {
+    if (SCREENS.has(WINDOWS.find(([, isOpen]) => isOpen())?.[0])) {
+      closeAnyWindow();
+    }
+  });
+  liveTitle(baseTab, "Карта базы: стройка и коты (Escape — назад сюда)");
+  screenBarEl.appendChild(baseTab);
+  screenTabs = [
     ["raid", raidDoor],
     ["stock", stockDoor],
     ["sci", sciDoor],
@@ -13289,37 +13299,28 @@ function buildScreenBar() {
     ["buy", buyDoor],
     ["dossier", filesDoor],
     ["wiki", wikiDoor],
-  ].filter(([, door]) => door);
-  const base = mkTool('<span class="sw sw-build"></span><span>База</span>', () =>
-    closeAnyWindow(),
-  );
-  liveTitle(base, "Вернуться к карте базы (Escape)");
-  screenBarEl.appendChild(base);
-  screenTabs = doors.map(([key, door]) => {
-    // Строка новости уже стоит в двери, значок «i» — нет: копируем только
-    // глиф и имя, без чужих слушателей.
-    const tab = mkTool(door.innerHTML, () => {
-      if (!SCREENS.has(key) || !WINDOWS.find(([k]) => k === key)?.[1]()) {
-        door.click();
-      }
+  ]
+    .filter(([, door]) => door)
+    .map(([key, door]) => {
+      screenBarEl.appendChild(door);
+      return { key, door };
     });
-    screenBarEl.appendChild(tab);
-    return { key, door, tab };
-  });
 }
 
+// Какой экран открыт — подсвечена его дверь; экрана нет — «База». Пишем
+// только на изменении: дверь живёт всю партию, и класс, переставленный
+// каждым кадром, сбросил бы ей наведённую подсказку (§12.125).
 function syncScreenBar() {
-  if (!screenBarEl) return;
+  if (!baseTab) return;
   const open = WINDOWS.find(([, isOpen]) => isOpen())?.[0];
-  const on = SCREENS.has(open);
-  if (screenBarEl.hidden === on) screenBarEl.hidden = !on;
-  if (!on) return;
-  for (const { key, door, tab } of screenTabs) {
-    if (tab.hidden !== door.hidden) tab.hidden = door.hidden;
-    tab.classList.toggle("off", door.classList.contains("off"));
-    tab.classList.toggle("fresh", door.classList.contains("fresh"));
-    tab.classList.toggle("active", key === open);
-    liveTitle(tab, door.dataset.tip ?? "");
+  const screen = SCREENS.has(open) ? open : null;
+  if (baseTab.classList.contains("active") !== !screen) {
+    baseTab.classList.toggle("active", !screen);
+  }
+  for (const { key, door } of screenTabs) {
+    if (door.classList.contains("active") !== (key === screen)) {
+      door.classList.toggle("active", key === screen);
+    }
   }
 }
 
