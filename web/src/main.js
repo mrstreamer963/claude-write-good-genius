@@ -305,6 +305,7 @@ const goalsEl = document.getElementById("goals");
 const goalsToggleEl = document.getElementById("goals-toggle");
 const finaleEl = document.getElementById("finale");
 const raidWinEl = document.getElementById("raidwin");
+raidWinEl.classList.add("screen");
 const stockWinEl = document.getElementById("stockwin");
 // Реестры-окна (§12.118): «Наука» и «Найм» — списки, из которых выбирают одно
 // из многих, и в колонке тулбара они не помещались.
@@ -925,6 +926,11 @@ let sciDoor = null;
 let hireDoor = null;
 let stockDoor = null;
 let buyDoor = null;
+// Две двери без ворот — «Личные дела» и «Справочник». Узлы им нужны вне
+// `buildToolbar` ровно ради полосы вкладок экрана (§12.301): она зеркалит
+// двери тулбара, а не держит свой список.
+let filesDoor = null;
+let wikiDoor = null;
 // Пороги автопроизводства в порядке палитры рецептов (§12.65). Число хранит
 // ядро; здесь оно нужно строке окна «Склад» — и подписи, и полю правки, которое
 // открывается **с него** (§12.100, §12.105, §12.108).
@@ -8227,6 +8233,7 @@ function buildToolbar() {
     folds(() => openDossier(null)),
   );
   liveTitle(files, "Кто каков, что с ним было и чему его выучить");
+  filesDoor = files;
   el.appendChild(files);
 
   // «Справочник» (§12.204). Дверь не гаснет и не прячется: лор партии не
@@ -8238,7 +8245,9 @@ function buildToolbar() {
     folds(() => openWikiDoor()),
   );
   liveTitle(wiki, "Что это за мир, кто в нём есть и как всё устроено");
+  wikiDoor = wiki;
   el.appendChild(wiki);
+  buildScreenBar();
 
   // Правила симуляции — не режимы ввода, а тумблеры поведения котов, поэтому
   // они живут отдельно от инструментов и своей подсветкой их не сбивают.
@@ -13242,6 +13251,66 @@ function closeAnyWindow() {
   return true;
 }
 
+// Экраны (§12.301): окно, которое занимает всё под шапкой, а не стоит коробкой
+// поверх карты. Пауза у экрана та же, что у модала (§12.254), но шапка со
+// скоростью остаётся видна — игрок, который хочет смотреть, как отряд идёт,
+// сам жмёт ×1. Переезжают окна по одному, поэтому экран — это ключ `WINDOWS`
+// в этом списке, а не второй реестр окон.
+const SCREENS = new Set(["raid"]);
+const screenBarEl = document.getElementById("screenbar");
+
+// Полоса вкладок экрана **зеркалит двери тулбара**, а не держит свой список:
+// у дверей ворота (§12.151, §12.211, §12.275) и метка новостей (§12.120), и
+// вторая копия этих правил разошлась бы с первой на первой же новой двери.
+// Вкладка копирует у двери подпись (один раз), видимость, `.off`, метку и
+// подсказку (каждым кадром, только на изменении), а клик отдаёт самой двери.
+// «База» — единственная своя: она закрывает экран.
+let screenTabs = [];
+function buildScreenBar() {
+  if (!screenBarEl) return;
+  screenBarEl.innerHTML = "";
+  const doors = [
+    ["raid", raidDoor],
+    ["stock", stockDoor],
+    ["sci", sciDoor],
+    ["hire", hireDoor],
+    ["buy", buyDoor],
+    ["dossier", filesDoor],
+    ["wiki", wikiDoor],
+  ].filter(([, door]) => door);
+  const base = mkTool('<span class="sw sw-build"></span><span>База</span>', () =>
+    closeAnyWindow(),
+  );
+  liveTitle(base, "Вернуться к карте базы (Escape)");
+  screenBarEl.appendChild(base);
+  screenTabs = doors.map(([key, door]) => {
+    // Строка новости уже стоит в двери, значок «i» — нет: копируем только
+    // глиф и имя, без чужих слушателей.
+    const tab = mkTool(door.innerHTML, () => {
+      if (!SCREENS.has(key) || !WINDOWS.find(([k]) => k === key)?.[1]()) {
+        door.click();
+      }
+    });
+    screenBarEl.appendChild(tab);
+    return { key, door, tab };
+  });
+}
+
+function syncScreenBar() {
+  if (!screenBarEl) return;
+  const open = WINDOWS.find(([, isOpen]) => isOpen())?.[0];
+  const on = SCREENS.has(open);
+  if (screenBarEl.hidden === on) screenBarEl.hidden = !on;
+  if (!on) return;
+  for (const { key, door, tab } of screenTabs) {
+    if (tab.hidden !== door.hidden) tab.hidden = door.hidden;
+    tab.classList.toggle("off", door.classList.contains("off"));
+    tab.classList.toggle("fresh", door.classList.contains("fresh"));
+    tab.classList.toggle("active", key === open);
+    liveTitle(tab, door.dataset.tip ?? "");
+  }
+}
+
 function openStockWindow() {
   if (stockWinOpen) return;
   closeOtherWindows("stock");
@@ -14613,8 +14682,24 @@ function buildSiteGraph(holder) {
       if (a < b) edges.push([a, b]);
     }),
   );
+  // Поле карты — клетками масштаба (§12.301): клетка — единица полотна, то
+  // есть `pace` тиков пути в один конец (§12.292), и линии сетки проходят
+  // через базу. Масштаб честный (его стережёт сторож дорог), значит клетки
+  // можно считать глазами: «до Логова две клетки — 120 туда и обратно».
+  // Ядро сетки не знает: это подача, как и сами `at`.
+  const pace = meta?.outskirts?.pace ?? 0;
+  const field =
+    `<defs><pattern id="map-grid" width="${SITE_STEP}" height="${SITE_STEP}" ` +
+    `patternUnits="userSpaceOnUse" x="${hx}" y="${hy}">` +
+    `<path class="map-gridline" d="M${SITE_STEP} 0 L0 0 L0 ${SITE_STEP}"/></pattern></defs>` +
+    `<rect class="map-field" width="${w}" height="${h}" rx="10"/>` +
+    `<rect width="${w}" height="${h}" rx="10" fill="url(#map-grid)"/>` +
+    (pace > 0
+      ? `<text class="map-scale" x="10" y="${h - 10}">клетка — ${pace} пути в один конец</text>`
+      : "");
   holder.innerHTML =
     `<svg class="map-svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet">` +
+    field +
     roads +
     edges
       .map(
@@ -16011,3 +16096,19 @@ function syncModalPause() {
   }
 }
 app.ticker.add(syncModalPause);
+app.ticker.add(syncScreenBar);
+
+// Экран встаёт **под шапку** (§12.301), а высота шапки не константа: в ней
+// счёт ресурсов по избранному (§12.112), и он переносится на узком окне.
+// Меряем сам узел, как ширины панелей у вписывания карты, — не переписываем
+// число из CSS.
+{
+  const head = document.querySelector("header");
+  const put = () =>
+    document.documentElement.style.setProperty(
+      "--header-h",
+      `${head.getBoundingClientRect().height}px`,
+    );
+  new ResizeObserver(put).observe(head);
+  put();
+}

@@ -1396,7 +1396,9 @@ main#stage.mode-cursor #mode-banner {
   flex-direction: column;
   align-items: center;
   gap: 8px;
-  z-index: 9;
+  /* Над экраном (§12.301): база за экраном не видна, и событие её обязано
+     дойти до игрока поверх него. */
+  z-index: 13;
   /* Колонка сквозная: иначе её пустая часть съедала бы клики по карте. Ловят
      клики только сами уведомления. */
   pointer-events: none;
@@ -1447,7 +1449,8 @@ main#stage.mode-cursor #mode-banner {
   justify-content: center;
   background: rgba(14, 15, 19, 0.75);
   backdrop-filter: blur(3px);
-  z-index: 10;
+  /* Поздравление — оверлей и поверх экрана (§12.301). */
+  z-index: 14;
 }
 #finale[hidden] {
   display: none;
@@ -1602,6 +1605,73 @@ main#stage.mode-cursor #mode-banner {
 #raidwin[hidden] {
   display: none;
 }
+
+/* Экран (§12.301): окно на всё место **под шапкой**, а не коробка поверх
+   карты. Шапка остаётся видна целиком — скорость, счёт ресурсов, цели, — и
+   это главное: пауза у экрана та же, что у модала (§12.254), но пустить
+   время на экране можно, не выходя из него. Тулбар и правую колонку экран
+   накрывает, двери тулбара ему заменяет полоса вкладок `#screenbar`.
+   Высоту шапки меряет JS (`--header-h`): счёт ресурсов в ней переносится. */
+:root {
+  --header-h: 45px;
+  --screenbar-h: 44px;
+}
+#screenbar {
+  position: fixed;
+  top: var(--header-h);
+  left: 0;
+  right: 0;
+  height: var(--screenbar-h);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  z-index: 12;
+}
+#screenbar .tool {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+}
+/* Метка новостей у вкладки — точкой, как у двери в тулбаре (§12.226): это
+   та же дверь, только в другом ряду. */
+#screenbar .tool.fresh {
+  border-color: var(--line);
+  box-shadow: none;
+}
+#screenbar .tool.fresh::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: 0 0 auto;
+}
+#screenbar .tool.active.fresh,
+#screenbar .tool.active {
+  border-color: var(--accent);
+}
+.screen {
+  top: calc(var(--header-h) + var(--screenbar-h)) !important;
+  align-items: stretch !important;
+  justify-content: stretch !important;
+  background: var(--bg) !important;
+  backdrop-filter: none !important;
+}
+.screen > .raidwin-box,
+.screen > .win-box {
+  width: 100%;
+  max-height: none;
+  height: 100%;
+  border: none;
+  border-radius: 0;
+  padding: 12px 18px 14px;
+}
+/* «Закрыть» на экране не нужна: дорога назад — вкладка «База» и Escape. */
+.screen .raidwin-close {
+  display: none;
+}
 .raidwin-box {
   display: flex;
   flex-direction: column;
@@ -1697,6 +1767,34 @@ main#stage.mode-cursor #mode-banner {
    над колонками, а не четверть ширины между ними. */
 @media (max-width: 1100px) {
   .raidwin-map {
+    display: none;
+  }
+}
+/* На экране (§12.301) колонки меняются ролями: карта забирает всё, что
+   остаётся между составом и заказами, — ради неё штаб и стал экраном, — а
+   заказы получают фиксированную ширину, которой хватает на слова §12.80.
+   Карте здесь нужен не «ярус над колонками», о котором говорит отказ выше, а
+   просто место: его и дал полный экран. Уходит она теперь на 900 px. */
+.screen .raidwin-crew {
+  flex: 0 0 340px;
+}
+.screen .raidwin-map {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.screen .raidwin-jobs {
+  flex: 0 0 min(520px, 36vw);
+}
+.screen .map-holder {
+  flex: 1 1 auto;
+}
+.screen .map-svg {
+  height: 100%;
+  max-height: none;
+}
+@media (max-width: 900px) {
+  .screen .raidwin-map {
     display: none;
   }
 }
@@ -2395,7 +2493,8 @@ main#stage.mode-cursor #mode-banner {
   align-items: stretch;
   gap: 6px;
   width: min(460px, calc(100vw - 420px));
-  z-index: 9;
+  /* Над экраном (§12.301), как и #toasts. */
+  z-index: 13;
   pointer-events: none;
 }
 /* Строка — не кнопка-переключатель, а сообщение, по которому можно пойти:
@@ -2819,6 +2918,22 @@ main#stage.mode-cursor #mode-banner {
 .map-svg {
   width: 100%;
   max-height: 42vh;
+}
+/* Поле карты клетками масштаба (§12.301): клетка — `pace` пути в один
+   конец. Сетка тусклая — она мерило, а не содержание. */
+.map-field {
+  fill: #12141b;
+  stroke: var(--line);
+}
+.map-gridline {
+  fill: none;
+  stroke: #232937;
+  stroke-width: 1.5;
+}
+.map-scale {
+  fill: var(--muted);
+  font-size: 11px;
+  pointer-events: none;
 }
 /* Ребро — это «куда очаг может пойти», а не дорога: дорогу мерят от базы
    (§12.292), а ребро связывает соседей (§12.198). Поэтому линия тонкая и
