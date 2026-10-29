@@ -1680,23 +1680,7 @@ main#stage.mode-cursor #mode-banner {
 .screen .win-close {
   display: none;
 }
-/* Узкая коробка реестра (`.narrow`) на экране тоже во всю ширину: её
-   раскладку решает каждое окно само, ниже. */
-.screen > .win-box.narrow {
-  width: 100%;
-}
-/* «Ресурсы» на экране (§12.301) — та же таблица, только без коробки: строка
-   склада это сетка с колонкой торговли справа, и растянутая на 1440 px она
-   разводит предмет и его курс по разным краям экрана. Поэтому колонка
-   содержимого ограничена и стоит по центру, а лишняя ширина уходит в поля. */
-#stockwin.screen > .win-box > * {
-  width: 100%;
-  max-width: 1280px;
-  margin-inline: auto;
-}
-#stockwin.screen .ware-row {
-  padding: 9px 0;
-}
+
 .raidwin-box {
   display: flex;
   flex-direction: column;
@@ -2057,6 +2041,9 @@ main#stage.mode-cursor #mode-banner {
 #wikiwin {
   position: fixed;
   inset: 0;
+  /* Под шапкой и полосой дверей (§12.301): скорость, счёт ресурсов и двери
+     остаются видны и нажимаются, переход из окна в окно — один клик. */
+  top: calc(var(--header-h) + var(--screenbar-h));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2077,7 +2064,7 @@ main#stage.mode-cursor #mode-banner {
   display: flex;
   flex-direction: column;
   width: min(1180px, calc(100vw - 60px));
-  max-height: calc(100vh - 80px);
+  max-height: calc(100vh - var(--header-h) - var(--screenbar-h) - 40px);
   padding: 16px 18px;
   background: var(--panel);
   border: 1px solid var(--accent);
@@ -2653,7 +2640,7 @@ main#stage.mode-cursor #mode-banner {
   width: min(1040px, calc(100vw - 60px));
   /* Высота — по экрану, а не по содержимому: старт, отмена и конец темы
      меняли число строк, и окно прыгало вместе с ними. */
-  height: calc(100vh - 80px);
+  height: calc(100vh - var(--header-h) - var(--screenbar-h) - 40px);
 }
 /* Заголовок группы отбивается только от строки над ним. `:first-child` тут не
    годится: перед первым видимым заголовком стоят спрятанные, и левая колонка
@@ -2826,19 +2813,15 @@ main#stage.mode-cursor #mode-banner {
   opacity: 0.8;
 }
 
-/* Дело на экране (§12.301): две колонки рядом. Левая — кот и навыки — уже,
-   полоска навыка длиннее 560 px не читается; правая забирает остальное. */
-#dossier.screen .win-list {
+/* Дело в две колонки (§12.301): слева кот и навыки, справа снаряжение и
+   история. Одной колонкой полоска навыка тянулась на всю коробку, а
+   снаряжение уходило под сгиб. */
+#dossier .win-list {
   display: grid;
-  grid-template-columns: minmax(0, 560px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   align-items: start;
   align-content: start;
-  column-gap: 36px;
-  max-width: 1280px;
-}
-#dossier.screen .dos-portrait img {
-  width: 96px;
-  height: 96px;
+  column-gap: 28px;
 }
 .dos-head {
   display: flex;
@@ -3083,6 +3066,13 @@ main#stage.mode-cursor #mode-banner {
 .map-note {
   display: flex;
   flex-direction: column;
+  /* Высота постоянная — под самый длинный случай: имя участка, очаг, его
+     следующая ступень и «сюда идёт Отряд N» (`syncRaidMap`). Карта берёт
+     остаток колонки, и подпись, растущая по строкам, ужимала бы её на каждом
+     выборе участка (§12.301): карта обязана стоять одного размера. */
+  flex: 0 0 auto;
+  height: 96px;
+  overflow: hidden;
   gap: 3px;
   padding-top: 8px;
   border-top: 1px solid var(--line);
@@ -3440,42 +3430,4 @@ main#stage.mode-cursor #mode-banner {
   color: var(--bad);
   font-size: 13px;
   font-weight: 400;
-}
-
-/* --- реестры на экране (§12.301) -------------------------------------------
-   «Наука», «Найм» и «Покупка» были узкой коробкой (`.narrow`) со столбиком
-   строк-кнопок. На экране столбик в 560 px оставлял бы две трети места пустыми,
-   а растянутый на всю ширину — разводил бы имя и цену по краям. Поэтому строки
-   встают **плиткой**: столько колонок, сколько влезает по 360 px. Заголовки
-   групп («Только что открылись», «Пока не по зубам») и строка «пусто» тянутся
-   через весь ряд — группа остаётся группой, порядок `orderNewFirst` цел. */
-.screen > .win-box.narrow.sci {
-  width: 100%;
-  height: 100%;
-}
-#sciwin.screen .sci-cols {
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
-}
-#sciwin.screen .sci-cols > .win-list:first-child,
-#hirewin.screen .win-list,
-#buywin.screen .win-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
-  align-content: start;
-  align-items: start;
-  gap: 8px;
-}
-#sciwin.screen .sci-cols > .win-list:first-child > .cat-sub,
-#hirewin.screen .win-list > .cat-sub,
-#buywin.screen .win-list > .cat-sub {
-  grid-column: 1 / -1;
-}
-/* В плитке отбивка заголовка от строки над ним — та же, что в столбике. */
-#hirewin.screen .win-list > .tool ~ .crew-head,
-#buywin.screen .win-list > .tool ~ .crew-head {
-  margin-top: 10px;
-}
-#sciwin.screen .sci-run {
-  padding-left: 16px;
-  border-left: 1px solid var(--line);
 }

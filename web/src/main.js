@@ -314,10 +314,7 @@ const hireWinEl = document.getElementById("hirewin");
 const buyWinEl = document.getElementById("buywin");
 const binWinEl = document.getElementById("binwin");
 const dossierEl = document.getElementById("dossier");
-// Экраны (§12.301): класс один на все, ключи — в `SCREENS`.
-for (const el of [stockWinEl, sciWinEl, hireWinEl, buyWinEl, dossierEl]) {
-  el.classList.add("screen");
-}
+
 const toastsEl = document.getElementById("toasts");
 const newsEl = document.getElementById("news");
 const liveTipEl = document.getElementById("livetip");
@@ -13263,11 +13260,14 @@ function closeAnyWindow() {
 }
 
 // Экраны (§12.301): окно, которое занимает всё под шапкой, а не стоит коробкой
-// поверх карты. Пауза у экрана та же, что у модала (§12.254), но шапка со
-// скоростью остаётся видна — игрок, который хочет смотреть, как отряд идёт,
-// сам жмёт ×1. Переезжают окна по одному, поэтому экран — это ключ `WINDOWS`
-// в этом списке, а не второй реестр окон.
-const SCREENS = new Set(["raid", "stock", "sci", "hire", "buy", "dossier"]);
+// поверх карты. Экран один — штаб: полный экран ему нужен ради карты.
+// Реестры («Ресурсы», «Наука», «Найм», «Покупка», «Личные дела») побывали
+// экранами и вернулись коробками: показать на весь экран им нечего, и
+// растянутый короткий список читался пустотой. Коробки встают под шапку и
+// полосу дверей, как и экран. Пауза у обоих та же (§12.254), а скорость в
+// шапке остаётся под рукой. Экран — ключ `WINDOWS` в этом списке, а не второй
+// реестр окон.
+const SCREENS = new Set(["raid"]);
 const screenBarEl = document.getElementById("screenbar");
 
 // Полоса дверей (§12.301) — **постоянная**, под шапкой, и на базе, и на
@@ -13276,19 +13276,17 @@ const screenBarEl = document.getElementById("screenbar");
 // §12.275), метка новостей та же (`syncNewsMarks`, §12.120). До этого полоса
 // стояла только над экраном и каждым кадром повторяла видимость, `.off`,
 // метку и подсказку у дверей тулбара — второй узел на дверь ради одного ряда.
-// Своя кнопка одна — «База»: она закрывает экран (как Escape) и горит, пока
-// экрана нет. Тулбар остался инструментом карты: постройка, правила, звук,
+// Своя кнопка одна — «База»: она закрывает открытое окно (как Escape) и
+// горит, пока окна с дверью нет. Тулбар остался инструментом карты: постройка, правила, звук,
 // свет, партия.
 let screenTabs = [];
 let baseTab = null;
 function buildScreenBar() {
   if (!screenBarEl) return;
   screenBarEl.innerHTML = "";
-  baseTab = mkTool('<span class="sw sw-build"></span><span>База</span>', () => {
-    if (SCREENS.has(WINDOWS.find(([, isOpen]) => isOpen())?.[0])) {
-      closeAnyWindow();
-    }
-  });
+  baseTab = mkTool('<span class="sw sw-build"></span><span>База</span>', () =>
+    closeAnyWindow(),
+  );
   liveTitle(baseTab, "Карта базы: стройка и коты (Escape — назад сюда)");
   screenBarEl.appendChild(baseTab);
   screenTabs = [
@@ -13307,19 +13305,20 @@ function buildScreenBar() {
     });
 }
 
-// Какой экран открыт — подсвечена его дверь; экрана нет — «База». Пишем
+// Полоса видна и над окнами (они встают под неё), поэтому подсвечена дверь
+// открытого окна — экрана или коробки; окна с дверью нет — «База». Пишем
 // только на изменении: дверь живёт всю партию, и класс, переставленный
 // каждым кадром, сбросил бы ей наведённую подсказку (§12.125).
 function syncScreenBar() {
   if (!baseTab) return;
   const open = WINDOWS.find(([, isOpen]) => isOpen())?.[0];
-  const screen = SCREENS.has(open) ? open : null;
-  if (baseTab.classList.contains("active") !== !screen) {
-    baseTab.classList.toggle("active", !screen);
+  const lit = screenTabs.some(({ key }) => key === open) ? open : null;
+  if (baseTab.classList.contains("active") !== !lit) {
+    baseTab.classList.toggle("active", !lit);
   }
   for (const { key, door } of screenTabs) {
-    if (door.classList.contains("active") !== (key === screen)) {
-      door.classList.toggle("active", key === screen);
+    if (door.classList.contains("active") !== (key === lit)) {
+      door.classList.toggle("active", key === lit);
     }
   }
 }
