@@ -16356,11 +16356,14 @@ app.ticker.add((t) => lighting.frame(units, t.deltaMS, speed));
 //
 // ⚠️ **Штаб время не останавливает** (§12.306): в нём ждут сбора отряда после
 // «Отправить», и на паузе отряд стоял, а игрок решал, что игра зависла.
+// **«Наука» тоже** (§12.309): там смотрят, как идёт начатая тема.
+const RUNNING_WINDOWS = new Set(["raid", "sci"]);
 let modalWas = false;
 let modalResume = null;
 function syncModalPause() {
   const open =
-    WINDOWS.some(([key, isOpen]) => key !== "raid" && isOpen()) || !finaleEl.hidden;
+    WINDOWS.some(([key, isOpen]) => !RUNNING_WINDOWS.has(key) && isOpen()) ||
+    !finaleEl.hidden;
   if (open === modalWas) return;
   modalWas = open;
   if (open) {
