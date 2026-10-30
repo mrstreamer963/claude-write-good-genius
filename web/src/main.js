@@ -16310,10 +16310,14 @@ app.ticker.add((t) => lighting.frame(units, t.deltaMS, speed));
 // Паузу игрока модал не трогает: открыт на паузе — закрытие её оставит. А темп,
 // выбранный игроком при открытом окне (пробел, цифры), закрытие не перебивает:
 // вернуть прежний значило бы отменить его решение молча.
+//
+// ⚠️ **Штаб время не останавливает** (§12.306): в нём ждут сбора отряда после
+// «Отправить», и на паузе отряд стоял, а игрок решал, что игра зависла.
 let modalWas = false;
 let modalResume = null;
 function syncModalPause() {
-  const open = WINDOWS.some(([, isOpen]) => isOpen()) || !finaleEl.hidden;
+  const open =
+    WINDOWS.some(([key, isOpen]) => key !== "raid" && isOpen()) || !finaleEl.hidden;
   if (open === modalWas) return;
   modalWas = open;
   if (open) {
