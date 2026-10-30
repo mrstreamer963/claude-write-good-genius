@@ -2937,6 +2937,20 @@ main#stage.mode-cursor #mode-banner {
 .map-svg {
   width: 100%;
   max-height: 42vh;
+  border-radius: 6px;
+}
+/* Пятно заражения (§12.305): штриховка цветом очага, край чуть плотнее. */
+.map-blight {
+  fill: url(#map-hatch);
+  stroke: var(--bad);
+  stroke-width: 1.5;
+  stroke-opacity: 0.65;
+  pointer-events: none;
+}
+.map-hatch-line {
+  stroke: var(--bad);
+  stroke-width: 2.5;
+  stroke-opacity: 0.5;
 }
 /* Поле карты клетками масштаба (§12.301): клетка — `pace` пути в один
    конец. Сетка тусклая — она мерило, а не содержание. */
@@ -2946,7 +2960,8 @@ main#stage.mode-cursor #mode-banner {
 }
 .map-gridline {
   fill: none;
-  stroke: #232937;
+  /* Светлая: под сеткой теперь рельеф (§12.305), тёмная линия на нём пропадала бы. */
+  stroke: rgba(225, 228, 210, 0.1);
   stroke-width: 1.5;
 }
 .map-scale {
@@ -2958,16 +2973,15 @@ main#stage.mode-cursor #mode-banner {
    (§12.292), а ребро связывает соседей (§12.198). Поэтому линия тонкая и
    приглушённая: она называет соседство, а не путь. */
 .map-link {
-  stroke: var(--line);
+  stroke: rgba(225, 228, 210, 0.3);
   stroke-width: 2;
-  opacity: 0.5;
 }
 .map-site {
   cursor: pointer;
 }
 .map-ring {
   fill: var(--panel);
-  stroke: var(--line);
+  stroke: rgba(225, 228, 210, 0.6);
   stroke-width: 2;
 }
 /* Заражённый участок красится заливкой, а густота её — доля ступени к пределу
@@ -2989,10 +3003,14 @@ main#stage.mode-cursor #mode-banner {
   pointer-events: none;
 }
 .map-name {
-  fill: var(--muted);
+  fill: var(--text);
   font-size: 12px;
   text-anchor: middle;
   pointer-events: none;
+  /* Обводка держит подпись читаемой поверх рельефа и штриховки (§12.305). */
+  paint-order: stroke;
+  stroke: rgba(10, 12, 12, 0.85);
+  stroke-width: 3px;
 }
 /* База на карте (§12.292) — откуда отряды выходят и куда меряется дорога. */
 .map-home path {
@@ -3004,7 +3022,7 @@ main#stage.mode-cursor #mode-banner {
    Шире и плотнее ребра соседства: это путь, а не «куда может пойти очаг». */
 .map-road {
   fill: none;
-  stroke: var(--line);
+  stroke: rgba(225, 228, 210, 0.28);
   stroke-width: 7;
   stroke-linecap: round;
   stroke-linejoin: round;

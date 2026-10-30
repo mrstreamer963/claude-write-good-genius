@@ -4,6 +4,7 @@
 import { Application, Container, Graphics, Text } from "pixi.js";
 import { ITEM_GLYPHS, TILE_GLYPHS } from "./glyphs.js";
 import { createLighting } from "./light.js";
+import { blightBlob, terrainTexture } from "./terrain.js";
 import {
   COVERS_CELL,
   drawGlass,
@@ -10117,6 +10118,18 @@ function syncRaidMap() {
     g.querySelector(".map-ring").style.opacity = lit
       ? String(0.25 + 0.6 * (st.stage / Math.max(1, st.top)))
       : "";
+    // Пятно растёт со ступенью (§12.305), но до половины расстояния между
+    // соседями не дотягивает: задевшее соседа, оно говорило бы, что очаг уже
+    // там. Контур меняется только на смене ступени, а не каждым кадром.
+    const zone = lit ? String(st.stage) : "";
+    if (g.blight.dataset.zone !== zone) {
+      g.blight.dataset.zone = zone;
+      g.blight.style.display = lit ? "" : "none";
+      if (lit) {
+        const share = st.stage / Math.max(1, st.top);
+        g.blight.setAttribute("d", blightBlob(i, SITE_R * (1.3 + 1.1 * share)));
+      }
+    }
   });
 
   syncRaidTrips();
@@ -14865,6 +14878,8 @@ function buildSiteGraph(holder) {
     `patternUnits="userSpaceOnUse" x="${hx}" y="${hy}">` +
     `<path class="map-gridline" d="M${SITE_STEP} 0 L0 0 L0 ${SITE_STEP}"/></pattern></defs>` +
     `<rect class="map-field" width="${w}" height="${h}" rx="10"/>` +
+    // Местность — между полем и сеткой (§12.305): клетки масштаба читаются поверх.
+    `<image href="${terrainTexture(w, h)}" width="${w}" height="${h}" pointer-events="none"/>` +
     `<rect class="map-field-grid" width="${w}" height="${h}" rx="10" fill="url(#map-grid)"/>` +
     (pace > 0
       ? `<text class="map-scale" x="10" y="${h - 10}">клетка — ${pace} пути в один конец</text>`
@@ -14872,6 +14887,12 @@ function buildSiteGraph(holder) {
   holder.innerHTML =
     `<svg class="map-svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet">` +
     field +
+    `<defs><pattern id="map-hatch" width="9" height="9" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">` +
+    `<line class="map-hatch-line" x1="0" y1="0" x2="0" y2="9"/></pattern></defs>` +
+    // Пятна — под дорогами и кружками (§12.305): заражение лежит на местности.
+    all
+      .map((_, i) => `<path class="map-blight" transform="translate(${px(i)},${py(i)})" style="display:none"/>`)
+      .join("") +
     roads +
     edges
       .map(
@@ -14900,6 +14921,8 @@ function buildSiteGraph(holder) {
     "</svg>";
   fitSiteMap(holder.querySelector(".map-svg"), w, h);
   const marks = [...holder.querySelectorAll(".map-site")];
+  const blights = holder.querySelectorAll(".map-blight");
+  marks.forEach((g, i) => (g.blight = blights[i]));
   // Клик по кружку — **выбор цели, а не отправка** (§12.75, §12.199): он
   // подсвечивает участок, прокручивает к его заказу и становится целью для
   // зачистки. Сама отправка остаётся кнопкой в карточке, где рядом написана
