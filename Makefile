@@ -2,7 +2,7 @@
 # Требуется: rust + wasm-pack, node/npm. Первый раз: `make setup`.
 
 WASM_OUT := web/src/wasm
-PORT     := 5173
+PORT     ?= 5173
 
 .PHONY: dev build wasm run lint web-install setup clean help
 
