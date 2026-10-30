@@ -8377,7 +8377,9 @@ function buildToolbar() {
       '<span class="sw sw-gate"></span><span>Вылазки</span>',
       // Дверь стоит и над открытым штабом (§12.301): повторный клик по ней
       // не должен сбрасывать выбранный отряд к первому.
-      folds(() => raidWinOpen || openRaidWindow()),
+      // А коробку поверх него (§12.308) снимает: дверь подсвечена, и щелчок по
+      // ней значит «вернуться в штаб».
+      folds(() => (raidWinOpen ? closeOtherWindows("raid") : openRaidWindow())),
     );
     liveTitle(raidDoor, "Кто в каком отряде, чем занят и куда его отправить");
       }
@@ -13049,8 +13051,10 @@ wikiWinEl.addEventListener("change", (e) => {
 // который однажды забудут пополнить (довод `onPanelClick` про делегирование).
 // Возврат считается здесь же: какое окно было открыто, знает только реестр.
 onPanelClick(document, ".wiki-mark", (b) => {
-  const open = WINDOWS.find(([, isOpen]) => isOpen());
-  openWiki(b.dataset.go, open ? open[3]() : null);
+  const open = topWindow();
+  // Экран справочник не закрывает (§12.308): штаб и так останется под ним, а
+  // возврат построил бы его заново и сбросил бы прокрутку.
+  openWiki(b.dataset.go, open && !SCREENS.has(open[0]) ? open[3]() : null);
 });
 
 // Статья открывается вместе с вещью (§12.251): справочник знает не больше
@@ -13412,7 +13416,16 @@ const WINDOWS = [
 // было негде — в каждое вёл свой вход, — а теперь в окно ведёт ещё и тикер, и
 // клик по нему из открытого «Склада» положил бы «Найм» поверх него. Закрываем
 // соседей, а не запрещаем открытие: игрок нажал именно то, что хотел увидеть.
+//
+// ⚠️ **Экран коробка не закрывает** (§12.308): штаб — место, а не окно, и «Найм»
+// встаёт поверх него. Закрыв коробку, игрок возвращается к тому же отряду и той
+// же прокрутке. Заменить экран может только другой экран; лежат они по порядку
+// DOM (`#raidwin` раньше коробок), отдельного `z-index` им не нужно.
 function closeOtherWindows(keep) {
+  // Уход дверью — не возврат: иначе закрытый здесь справочник открыл бы окно,
+  // из которого пришёл, рядом с тем, что открывают сейчас.
+  if (keep !== "wiki") wikiBack = null;
+  closeSlotPop();
   // Дверь в окно — такой же «другой пункт меню», как соседний раздел: открывая
   // «Склад» или штаб, игрок ушёл из разметки, и держать инструмент в руке под
   // модалом незачем — карта под ним всё равно не отвечает. Кладём его тем же
@@ -13420,18 +13433,32 @@ function closeOtherWindows(keep) {
   if (openSection === "Постройка") openOnly(null);
   else if (mode !== "cursor") selectCursor();
   for (const [key, , close] of WINDOWS) {
-    if (key !== keep) close();
+    if (key !== keep && (SCREENS.has(keep) || !SCREENS.has(key))) close();
   }
+}
+
+/// Верхнее из открытых окон: коробка, если она есть, иначе экран под ней.
+function topWindow() {
+  const open = WINDOWS.filter(([, isOpen]) => isOpen());
+  return open.find(([key]) => !SCREENS.has(key)) ?? open[0];
 }
 
 /// Закрыть открытое окно, если оно есть. Вернёт `true`, если закрыли, — по
 /// этому признаку Escape решает, съел он нажатие или пропускает дальше.
 function closeAnyWindow() {
-  const open = WINDOWS.find(([, isOpen]) => isOpen());
+  const open = topWindow();
   if (!open) return false;
   play("close");
   open[2]();
   return true;
+}
+
+/// «База»: снять всё разом, экран включительно (§12.308).
+function closeAllWindows() {
+  if (!topWindow()) return;
+  play("close");
+  wikiBack = null;
+  for (const [, , close] of WINDOWS) close();
 }
 
 // Экраны (§12.301): окно, которое занимает всё под шапкой, а не стоит коробкой
@@ -13460,7 +13487,7 @@ function buildScreenBar() {
   if (!screenBarEl) return;
   screenBarEl.innerHTML = "";
   baseTab = mkTool('<span class="sw sw-build"></span><span>База</span>', () =>
-    closeAnyWindow(),
+    closeAllWindows(),
   );
   liveTitle(baseTab, "Карта базы: стройка и коты (Escape — назад сюда)");
   screenBarEl.appendChild(baseTab);
@@ -13486,8 +13513,13 @@ function buildScreenBar() {
 // каждым кадром, сбросил бы ей наведённую подсказку (§12.125).
 function syncScreenBar() {
   if (!baseTab) return;
-  const open = WINDOWS.find(([, isOpen]) => isOpen())?.[0];
-  const lit = screenTabs.some(({ key }) => key === open) ? open : null;
+  const open = topWindow()?.[0];
+  // У «Ящика» двери нет: под ним горит штаб, если игрок пришёл из него.
+  const lit = screenTabs.some(({ key }) => key === open)
+    ? open
+    : raidWinOpen
+      ? "raid"
+      : null;
   if (baseTab.classList.contains("active") !== !lit) {
     baseTab.classList.toggle("active", !lit);
   }
