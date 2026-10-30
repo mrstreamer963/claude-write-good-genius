@@ -3431,3 +3431,10 @@ main#stage.mode-cursor #mode-banner {
   font-size: 13px;
   font-weight: 400;
 }
+
+/* Отказ приказа с вещью словом (§12.303). */
+.cell-refuse {
+  color: #e0705a;
+  font-size: 12px;
+  margin-top: 4px;
+}

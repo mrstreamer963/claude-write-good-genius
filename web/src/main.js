@@ -53,6 +53,7 @@ const COLORS = {
   wallLight: 0x676c7a, // блик по верху стены
   shadow: 0x000000,
   select: 0x6cf0a0, // выбор кота / метка цели / взведённая клетка
+  placeable: 0x6cf0a0, // режим стройки: сюда тайл в руке поставить можно (§12.302)
   cell: 0x9fb0ff, // осмотренная клетка: уголки вокруг того, о чём говорит панель
   erase: 0xff5566,
   // Хром режима стройки. Цвет самого тайла для этого не годится: тайлы тёмные
@@ -695,6 +696,13 @@ const cellMarker = new Graphics();
 // внутри освещаемого слоя её гасила тень, и в тёмной скале она не читалась.
 const gridGfx = new Graphics();
 overlay.addChild(gridGfx);
+// Куда тайл в руке поставить можно (§12.302) — по всей карте, а не только в
+// рамке под курсором: крест в рамке отвечает «почему не здесь», а этот слой —
+// «куда вообще», ещё до того, как игрок повёл мышь. Узел постоянный и
+// перерисовывается только на смене маски (§12.84). Стоит под рамкой: рамка —
+// ответ про конкретный жест и читается поверх.
+const placeGfx = new Graphics();
+overlay.addChild(placeGfx);
 overlay.addChild(hoverRect);
 overlay.addChild(orderMarker);
 overlay.addChild(cellMarker);
@@ -752,6 +760,7 @@ let selectedUnits = [];
 // Клетка под последним кликом: о ней говорит панель, и она же взводит приказ —
 // повторный клик по ней отправляет туда выбранных котов (§12.58).
 let selectedCell = null; // { x, y } в тайлах
+let lastHand = null; // ответ ядра по выбранной клетке (§12.303)
 let dragFrom = null; // якорь рамки (клетка, где нажали), null = не тянем
 let dragTo = null; // текущий угол рамки; переживает выход курсора за карту
 // Кот, стоявший под началом рамки. Запоминается в момент нажатия, а не читается
@@ -1017,12 +1026,15 @@ worker.onmessage = (e) => {
     puffChanged(mapCells, m.map.cells);
     drawMap(m.map);
   } else if (m.type === "snapshot") {
+    lastHand = m.hand ?? null;
+    syncHandAim();
     // Перерисовываем рамку только на **изменение** маски: `snapshot` приходит
     // каждые 16 мс, а безусловный `clear()` живого `Graphics` — это разбор
     // фигуры шестьдесят раз в секунду на ровном месте (§12.84, §12.109).
     const mask = m.mask ?? null;
     if (!sameMask(mask, buildMask)) {
       buildMask = mask;
+      drawPlaceable();
       if (hoverAt) updateHover(hoverAt);
     }
     renderSnapshot(m.snap);
@@ -4156,7 +4168,16 @@ function renderCellPanel(snap) {
   // `walkable`), и зелёная рамка «пойдут» обещала бы то, чего не будет. Своей
   // строки отказа тут нет: причину словом уже говорит роль клетки ниже («на
   // клетку не встать»), и вторая такая же читалась бы эхом.
-  if (cellIsArmed() && def?.solid) {
+  const hand = handOnCell();
+  if (hand && HAND_WORDS[hand]) {
+    parts.push(
+      `<div class="cell-armed">ещё клик сюда — ${selectedUnits
+        .map(esc)
+        .join(" · ")}: ${HAND_WORDS[hand]}</div>`,
+    );
+  } else if (hand && HAND_REFUSALS[hand]) {
+    parts.push(`<div class="cell-refuse">${HAND_REFUSALS[hand]}</div>`);
+  } else if (cellIsArmed() && def?.solid) {
     // обещать нечего
   } else if (cellIsArmed() && !alreadyHere(def, x, y)) {
     const who = selectedUnits.map(esc).join(" · ");
@@ -4245,6 +4266,10 @@ function renderCellPanel(snap) {
     // которые игрок прочтёт как поломку. Остаётся факт строкой.
     const marked = piles.some((s) => s.marked);
     const auto = def?.capacity > 0 || autoTidy;
+    // Почему куча не едет — словом (§12.53, §12.303): считает ядро (`pile_why`).
+    const pileWhy =
+      lastHand?.key === handAimKey() ? PILE_WHY[lastHand.why] : null;
+    if (pileWhy) parts.push(`<div class="cat-sub">${pileWhy}</div>`);
     if (auto) {
       if (marked) parts.push('<div class="cat-sub">помечено на склад</div>');
     } else {
@@ -7189,7 +7214,16 @@ function command(global, add) {
     else updateSelectionOverlay();
     return;
   }
-  if (cellReleases()) {
+  const hand = handOnCell();
+  if (hand && HAND_WORDS[hand]) {
+    // Метки приказа нет: работают с соседней клетки, и встать на эту кот не обязан.
+    for (const id of selectedUnits) {
+      worker.postMessage({ type: "move", id, x: t.tx, y: t.ty });
+      orders.delete(id);
+    }
+  } else if (hand) {
+    // Отказ назван в панели, клик ничего не отдаёт.
+  } else if (cellReleases()) {
     selectedUnits = [];
   } else if (isWalkable(t.tx, t.ty)) {
     // Приказ уходит каждому выбранному: коты друг друга не блокируют, и толпа
@@ -7200,6 +7234,53 @@ function command(global, add) {
     }
   }
   updateSelectionOverlay();
+}
+
+// Приказ с вещью (§12.303): что он значит, решает ядро (`hand_tag`), а вид только
+// называет. Ответ едет снимком и подписан клеткой — чужой клетке он не годится.
+const HAND_WORDS = {
+  take: "взять из кучи",
+  put: "положить сюда",
+  site: "отнести на стройку",
+  shop: "отнести к станку",
+};
+const HAND_REFUSALS = {
+  full: "Сюда не положить: ячейка полна",
+  refuses: "Сюда не положить: ячейка этого не принимает",
+  unneeded: "Здесь этот груз не нужен",
+  booked: "Не взять: всё обещано покупателю",
+  unreachable: "Не дойти",
+  asleep: "Кот спит и приказ не примет",
+};
+const PILE_WHY = {
+  untidy: "Лежит: уборка выключена",
+  nostore: "Лежит: нет склада",
+  noroom: "Лежит: на складах нет места для этого",
+  waiting: "Ждёт свободного кота",
+};
+let handKey = "";
+function handAimKey() {
+  return selectedCell
+    ? `${selectedUnits[0] ?? ""}@${selectedCell.x},${selectedCell.y}`
+    : "";
+}
+function syncHandAim() {
+  const key = handAimKey();
+  if (key === handKey) return;
+  handKey = key;
+  worker.postMessage({
+    type: "setHandAim",
+    aim: selectedCell && {
+      key,
+      id: selectedUnits[0] ?? "",
+      x: selectedCell.x,
+      y: selectedCell.y,
+    },
+  });
+}
+function handOnCell() {
+  const h = lastHand;
+  return h && h.key === handAimKey() && selectedUnits.length ? h.verb : "";
 }
 
 // Клик по функциональной клетке раскрывает её раздел тулбара (§12.55). Это
@@ -7289,6 +7370,9 @@ function modeChrome() {
 // читаться до клика — периферийным зрением и там, куда игрок смотрит.
 function applyModeChrome() {
   syncWallsDown();
+  // Смена инструмента: тайл → объект или выход из режима гасит зелёные клетки
+  // сразу, не дожидаясь следующей маски (§12.302).
+  drawPlaceable();
   const m = modeChrome();
   stageEl.classList.remove("mode-cursor", "mode-build", "mode-erase");
   stageEl.classList.add(`mode-${m.key}`);
@@ -7362,7 +7446,10 @@ function askBuildMask(r) {
   if (key === maskAsked) return;
   maskAsked = key;
   // Курсор и ластик правилу не подчиняются.
-  if (tile < 0 && structure < 0) buildMask = null;
+  if (tile < 0 && structure < 0 && buildMask) {
+    buildMask = null;
+    drawPlaceable();
+  }
   worker.postMessage({
     type: "setBuildTile",
     tile,
@@ -7370,6 +7457,77 @@ function askBuildMask(r) {
     structure,
     rot: buildRot,
   });
+}
+
+// Зелёные клетки «сюда можно» (§12.302) — та же маска, что даёт кресты в
+// рамке, только по всей карте. Своей арифметики здесь нет: считает ядро, и
+// второй экземпляр правила показал бы зелёной клетку, которую фасад отклонит
+// (инвариант 14). Без маски (`null` — правило к тайлу не применимо, ластик,
+// курсор) слой пуст: «можно везде» мы не знаем.
+//
+// У объекта-штампа маска отвечает про **якорь** — «встанет ли отсюда весь
+// штамп», — и якорь это левый верхний угол. Покрась его одного, и область
+// читалась бы сдвинутой влево-вверх от комнаты, куда объект на деле встаёт.
+// Поэтому красится **след**: все клетки, которые займёт хоть одна разрешённая
+// постановка (силуэт и свободные слоты, тот же, что рисует рамка). Это не
+// правило, а геометрия уже посчитанного ответа: силуэт и слоты присылает ядро.
+function placeableArea() {
+  if (!buildMask || mode !== "build") return null;
+  const shape = structShape();
+  if (!shape) return buildMask;
+  const W = meta.width;
+  const H = buildMask.length / W;
+  const foot = [...shape.map(([dx, dy]) => [dx, dy]), ...structSlots()];
+  const area = new Uint8Array(buildMask.length);
+  for (let i = 0; i < buildMask.length; i++) {
+    if (!buildMask[i]) continue;
+    const x = i % W;
+    const y = (i - x) / W;
+    for (const [dx, dy] of foot) {
+      const fx = x + dx;
+      const fy = y + dy;
+      if (fx < W && fy < H) area[fy * W + fx] = 1;
+    }
+  }
+  return area;
+}
+
+function drawPlaceable() {
+  placeGfx.clear();
+  const area = placeableArea();
+  if (!area) return;
+  const W = meta.width;
+  const H = area.length / W;
+  const ok = (x, y) => x >= 0 && y >= 0 && x < W && y < H && area[y * W + x];
+  let any = false;
+  for (let i = 0; i < area.length; i++) {
+    if (!area[i]) continue;
+    const x = i % W;
+    const y = (i - x) / W;
+    placeGfx.rect(x * TILE + 3, y * TILE + 3, TILE - 6, TILE - 6);
+    any = true;
+  }
+  if (!any) return;
+  // Одна заливка на все квадраты: путь общий, и это один разбор фигуры, а не
+  // по разбору на клетку.
+  placeGfx.fill({ color: COLORS.placeable, alpha: 0.16 });
+  // Граница области — ярко (§12.302): бледные квадраты говорят «тут можно»,
+  // а край отвечает на вопрос, который задают глазами, — «докуда». Ребро
+  // рисуется с разрешённой стороны, полосой внутри клетки: у двух областей,
+  // разделённых одной запрещённой клеткой, края не сливаются в один.
+  const B = 2;
+  for (let i = 0; i < area.length; i++) {
+    if (!area[i]) continue;
+    const x = i % W;
+    const y = (i - x) / W;
+    const px = x * TILE;
+    const py = y * TILE;
+    if (!ok(x, y - 1)) placeGfx.rect(px, py, TILE, B);
+    if (!ok(x, y + 1)) placeGfx.rect(px, py + TILE - B, TILE, B);
+    if (!ok(x - 1, y)) placeGfx.rect(px, py, B, TILE);
+    if (!ok(x + 1, y)) placeGfx.rect(px + TILE - B, py, B, TILE);
+  }
+  placeGfx.fill({ color: COLORS.placeable, alpha: 0.9 });
 }
 
 // Та же маска или другая. Байт на клетку — сравнить её дешевле, чем перерисовать

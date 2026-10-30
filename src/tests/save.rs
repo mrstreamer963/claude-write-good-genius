@@ -414,6 +414,8 @@ fn links_of(sim: &Sim) -> Vec<String> {
                 HaulTo::Shop(t) => format!("shop {}", spot(t)),
                 HaulTo::Lab(t) => format!("lab {}", spot(t)),
                 HaulTo::Store(t) => format!("store {}", t.map_or("-".into(), name)),
+                HaulTo::Hand(t, wait) => format!("hand {} {wait}", t.map_or("-".into(), name)),
+                HaulTo::Put(x, y) => format!("put {x},{y}"),
             };
             out.push(format!("haul {who} -> {to}"));
             // Наводка — тоже ссылка на сущность, и она обязана пережить круг

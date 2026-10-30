@@ -112,7 +112,7 @@ fn tidy_promises<'a>(
 ) -> Vec<(Entity, i32)> {
     let mut promised: Vec<(Entity, i32)> = Vec::new();
     for (haul, load, carry) in going {
-        let HaulTo::Store(Some(pile)) = haul.to else {
+        let (HaulTo::Store(Some(pile)) | HaulTo::Hand(Some(pile), _)) = haul.to else {
             continue;
         };
         if load.is_some() {
@@ -231,7 +231,7 @@ pub(crate) fn assign_hauls(
     for (id, haul, load, carry) in &going {
         let target = match haul.to {
             HaulTo::Site(e) | HaulTo::Sale(e) | HaulTo::Shop(e) | HaulTo::Lab(e) => e,
-            HaulTo::Store(_) => continue,
+            HaulTo::Store(_) | HaulTo::Hand(..) | HaulTo::Put(..) => continue,
         };
         match (load, haul.aim) {
             (Some(load), _) => incoming.push((target, load.item, load.count)),
@@ -807,7 +807,7 @@ pub(crate) fn assign_tidy(
         // (§12.49): носильщик подвоза, не попавший в счёт, уносит лом из-под
         // приехавшего за ним уборщика — и наоборот.
         let pile_e = match (haul.to, haul.aim) {
-            (HaulTo::Store(Some(pile)), _) => pile,
+            (HaulTo::Store(Some(pile)) | HaulTo::Hand(Some(pile), _), _) => pile,
             (_, Some(aim)) => aim.pile,
             _ => continue,
         };
@@ -950,7 +950,7 @@ pub(crate) fn work_hauls(
         .filter_map(|(_, _, haul, load, ..)| {
             let target = match haul.to {
                 HaulTo::Site(e) | HaulTo::Sale(e) | HaulTo::Shop(e) | HaulTo::Lab(e) => e,
-                HaulTo::Store(_) => return None,
+                HaulTo::Store(_) | HaulTo::Hand(..) | HaulTo::Put(..) => return None,
             };
             load.map(|l| (target, l.item, l.count))
         })
@@ -1301,6 +1301,80 @@ pub(crate) fn work_hauls(
                 commands.entity(cat_e).remove::<Haul>();
             }
 
+            // Приказ игрока (§12.303). Предел лап и бронь те же, что у всех: ручная
+            // ходка покупает очерёдность, а не объём.
+            HaulTo::Hand(pile_e, wait) => {
+                if path.is_some() {
+                    continue; // ещё в дороге
+                }
+                if load.is_some() {
+                    if wait == 0 {
+                        commands.entity(cat_e).remove::<Haul>();
+                    } else {
+                        commands.entity(cat_e).insert(Haul {
+                            to: HaulTo::Hand(None, wait - 1),
+                            aim: None,
+                        });
+                    }
+                    continue;
+                }
+                let free = pile_e.and_then(|e| stacks.get(e).ok()).map(|(_, _, s)| {
+                    let item = s.item;
+                    let piles: Vec<&Stack> = stacks.iter().map(|(_, _, s)| s).collect();
+                    crate::trade::free_to_spend(
+                        piles.into_iter(),
+                        deals.iter(),
+                        cats.iter().filter_map(|(_, _, h, l, ..)| l.map(|l| (h, l))),
+                        item,
+                    )
+                });
+                let from = pile_e
+                    .and_then(|e| stacks.get(e).ok())
+                    .map(|(_, p, _)| (p.x, p.y));
+                let taken = take_from_pile(
+                    &mut commands,
+                    &mut stacks,
+                    pile_e,
+                    &worked_cells(&map, &rules, (pos.x, pos.y)),
+                    portion(carry, free.unwrap_or(0).max(0)),
+                );
+                match (taken, from) {
+                    (Some((item, taken)), Some(from)) => {
+                        note(&mut stock, from, -taken);
+                        commands.entity(cat_e).insert((
+                            Carrying { item, count: taken },
+                            Haul {
+                                to: HaulTo::Hand(None, HAND_HOLD),
+                                aim: None,
+                            },
+                        ));
+                    }
+                    _ => {
+                        commands.entity(cat_e).remove::<Haul>();
+                    }
+                }
+            }
+            HaulTo::Put(x, y) => {
+                if path.is_some() {
+                    continue; // ещё в дороге
+                }
+                // Пока кот шёл, ячейка могла заполниться: остаток при нём, и его
+                // разберёт обычная раздача (инвариант 8).
+                if let Some(load) = load
+                    && worked_cells(&map, &rules, (pos.x, pos.y)).contains(&(x, y))
+                {
+                    let given =
+                        load.count
+                            .min(free_space(&map, &rules, &bins, &stock, (x, y), load.item));
+                    if given > 0 {
+                        spill(&mut commands, &mut stacks, (x, y), load.item, given);
+                        note(&mut stock, (x, y), given);
+                        keep_rest(&mut commands, cat_e, load.item, load.count - given);
+                    }
+                }
+                commands.entity(cat_e).remove::<Haul>();
+            }
+
             HaulTo::Store(pile_e) => {
                 if path.is_some() {
                     continue; // ещё в дороге
@@ -1379,6 +1453,10 @@ pub(crate) fn work_hauls(
         }
     }
 }
+
+/// Сколько тиков кот с грузом ждёт, куда его нести, прежде чем груз заберёт
+/// раздача (§12.303): десять секунд на ×1 — на второй приказ из двух кликов.
+pub(crate) const HAND_HOLD: u16 = 60;
 
 /// Сколько кот унесёт за эту ходку: `Carry` — предел лап, его отсутствие (и
 /// ноль) читается как «без предела», по правилу нулей у тайлов (§12.17).
@@ -1602,7 +1680,10 @@ pub(crate) fn on_base_counts<'a>(
 /// Сколько всего добра лежит на каждой клетке — сеткой, чтобы не искать
 /// линейно. Тип здесь не важен: склад типо-агностичен, ёмкость считает штуки
 /// (§12.21).
-fn stock_grid(map: &BaseMap, piles: impl Iterator<Item = ((i32, i32), i32)>) -> Vec<i32> {
+pub(crate) fn stock_grid(
+    map: &BaseMap,
+    piles: impl Iterator<Item = ((i32, i32), i32)>,
+) -> Vec<i32> {
     let mut grid = vec![0; (map.width * map.height) as usize];
     for ((x, y), count) in piles {
         if let Some(i) = map.index(x, y) {
@@ -1618,7 +1699,7 @@ fn stock_grid(map: &BaseMap, piles: impl Iterator<Item = ((i32, i32), i32)>) -> 
 /// Набор принимаемого (§12.195) режет ёмкость до нуля, а не заводит вторую
 /// проверку рядом: «сюда не влезет» и «сюда не положат» — для всех, кто ищет
 /// место, один и тот же ответ.
-fn free_space(
+pub(crate) fn free_space(
     map: &BaseMap,
     rules: &TileRules,
     bins: &Bins,
@@ -1639,7 +1720,7 @@ fn free_space(
 /// Считается **одним проходом по карте на тик**, а не обходом на каждую кучу:
 /// спрашивает это `mark_loose_scrap` про все кучи разом, и обход внутри обхода
 /// стоил бы карту в квадрате. Порядок row-major — детерминизм цел (§11).
-fn best_tiers(
+pub(crate) fn best_tiers(
     map: &BaseMap,
     rules: &TileRules,
     bins: &Bins,

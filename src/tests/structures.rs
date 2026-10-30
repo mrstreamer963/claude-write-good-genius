@@ -131,7 +131,7 @@ fn the_preview_mask_answers_for_the_whole_stamp() {
     let mut sim = sim_from(&["#######", "#.....#", "#.....#", "#######"]);
     let def = two_rows(&mut sim, 1, 2, 3);
 
-    let mask = sim.structure_buildable(def as i32, 0, 0, 7, 4, 0);
+    let mask = sim.structure_buildable(def as i32, 0);
     let at = |x: i32, y: i32| mask[(y * 7 + x) as usize];
 
     assert_eq!(at(2, 1), 1, "штамп целиком на карте — можно");

@@ -32,8 +32,8 @@ use bevy_ecs::system::RunSystemOnce;
 use crate::components::*;
 use crate::gear::OutfitPlan;
 use crate::goals::{WorldFacts, built_counts, progress_of};
-use crate::hauling::{plan_spend, stored_counts};
-use crate::jobs::{BUILD_WORK, Plan, may_build, site_clutter};
+use crate::hauling::{HAND_HOLD, best_tiers, free_space, plan_spend, stock_grid, stored_counts};
+use crate::jobs::{BUILD_WORK, Plan, build_spot, may_build, site_clutter, work_spot};
 use crate::map::{BaseMap, rect_cells};
 use crate::missions::{
     Crew, crew_danger, crew_force, crew_traits, duration, exit_cells, faction_is_met, gather_squad,
@@ -66,6 +66,20 @@ use crate::snapshot::{
     Snapshot, StackSnap, StockSnap, StructureSnap, TallySnap, TickerSnap, TopicSnap,
 };
 use crate::timeline::{ready_for, revealed};
+
+/// Что значит приказ на этой клетке (§12.303); вектор — маршрут до места работы.
+enum HandVerb {
+    Take(Entity, Vec<(i32, i32)>),
+    Put(Vec<(i32, i32)>),
+    Site(Entity, Vec<(i32, i32)>),
+    Shop(Entity, Vec<(i32, i32)>),
+    Refuse(&'static str),
+}
+
+/// Есть ли в наборе `(предмет, сколько)` положительная запись на этот предмет.
+fn need_has(miss: &[(usize, i32)], item: usize) -> bool {
+    miss.iter().any(|&(i, n)| i == item && n > 0)
+}
 
 #[wasm_bindgen]
 pub struct Sim {
@@ -2721,31 +2735,30 @@ impl Sim {
             .all(|&t| self.tech_allows(t))
     }
 
-    /// Маска превью для штампа: влезает ли он якорем в каждую клетку рамки.
+    /// Маска превью для штампа: влезает ли он якорем в каждую клетку карты.
     ///
     /// Байт на клетку, как у `buildable`, но отвечает он не «можно ли сюда
     /// тайл», а «встанет ли отсюда весь штамп»: у объекта запрещённой бывает
     /// только постановка целиком, и красить половину рамки было бы враньём.
-    pub fn structure_buildable(
-        &mut self,
-        def: i32,
-        rx: i32,
-        ry: i32,
-        rw: i32,
-        rh: i32,
-        rot: i32,
-    ) -> Vec<u8> {
+    ///
+    /// Считается **по всей карте**, а не по рамке под курсором (§12.302): из неё
+    /// вид красит, куда объект вообще встанет, ещё до того, как игрок повёл
+    /// мышь. Рамки у штампа нет и накопления тоже — штамп ставится одним
+    /// кликом, и ответ по якорю от соседних якорей не зависит. Дорого (штамп
+    /// на каждую клетку), поэтому воркер зовёт её не каждым кадром, а только
+    /// когда ответ мог измениться.
+    pub fn structure_buildable(&mut self, def: i32, rot: i32) -> Vec<u8> {
         let (def, rot) = (def.max(0) as usize, rot.rem_euclid(4) as u8);
         if def >= self.world.resource::<StructureRules>().0.len() {
             return Vec::new();
         }
         let mut out = vec![0u8; (self.width * self.height) as usize];
-        for (cx, cy) in rect_cells(rx, ry, rw, rh) {
-            let ok = self
-                .stamp_cells(def, cx, cy, rot)
-                .is_some_and(|cells| self.stamp_fits(def, (cx, cy), rot, &cells));
-            if let Some(i) = self.cell_index(cx, cy) {
-                out[i] = u8::from(ok);
+        for cy in 0..self.height {
+            for cx in 0..self.width {
+                let ok = self
+                    .stamp_cells(def, cx, cy, rot)
+                    .is_some_and(|cells| self.stamp_fits(def, (cx, cy), rot, &cells));
+                out[(cy * self.width + cx) as usize] = u8::from(ok);
             }
         }
         out
@@ -5755,6 +5768,250 @@ impl Sim {
             }
         }
         true
+    }
+
+    /// Приказ игрока с карты (§12.303): куча и ячейка отвечают действием с вещью,
+    /// остальное — обычное «иди туда». Парта отвечает первой, как и в `set_target`.
+    pub fn command_at(&mut self, unit_id: &str, x: i32, y: i32) -> bool {
+        if self.teach_at(unit_id, x, y) {
+            return true;
+        }
+        match self.hand_verb(unit_id, x, y) {
+            Some(HandVerb::Refuse(_)) => false,
+            Some(verb) => self.give_hand(unit_id, x, y, verb),
+            None => self.set_target(unit_id, x, y),
+        }
+    }
+
+    /// Что сделает приказ этому коту на этой клетке (§12.303), тегом: `take` ·
+    /// `put` · `site` · `shop` или причина отказа `full` · `refuses` · `unneeded` ·
+    /// `booked` · `unreachable` · `asleep`. Пустая строка — обычное «иди туда».
+    /// Вид по тегу подбирает слово, а решает одно выражение на клик и панель.
+    pub fn hand_tag(&mut self, unit_id: &str, x: i32, y: i32) -> String {
+        match self.hand_verb(unit_id, x, y) {
+            None => "",
+            Some(HandVerb::Take(..)) => "take",
+            Some(HandVerb::Put(_)) => "put",
+            Some(HandVerb::Site(..)) => "site",
+            Some(HandVerb::Shop(..)) => "shop",
+            Some(HandVerb::Refuse(why)) => why,
+        }
+        .to_string()
+    }
+
+    fn hand_verb(&mut self, unit_id: &str, x: i32, y: i32) -> Option<HandVerb> {
+        let mut cats = self.world.query::<(Entity, &UnitId, &Position)>();
+        let (cat, from) = cats
+            .iter(&self.world)
+            .find(|(_, id, _)| id.0 == unit_id)
+            .map(|(e, _, p)| (e, (p.x, p.y)))?;
+        if self.world.get::<Away>(cat).is_some() {
+            return None;
+        }
+        let load = self.world.get::<Carrying>(cat).map(|c| c.item);
+        let verb = match load {
+            Some(item) => self.hand_put(item, x, y)?,
+            None => self.hand_take(x, y)?,
+        };
+        if matches!(verb, HandVerb::Refuse(_)) {
+            return Some(verb);
+        }
+        if self.world.resource::<AutoRest>().0 && self.world.get::<Rest>(cat).is_some() {
+            return Some(HandVerb::Refuse("asleep"));
+        }
+        let map = self.world.resource::<BaseMap>();
+        let rules = self.world.resource::<TileRules>();
+        let reach = Reach::all(map, rules, from);
+        let spot = match verb {
+            HandVerb::Site(..) | HandVerb::Shop(..) => {
+                build_spot(map, rules, &reach, (x, y), map.tile_at(x, y), None, &[])
+            }
+            _ => work_spot(map, rules, &reach, (x, y), &[]),
+        };
+        let Some((spot, _)) = spot else {
+            return Some(HandVerb::Refuse("unreachable"));
+        };
+        let steps = reach.path_to(spot.0, spot.1).unwrap_or_default();
+        Some(match verb {
+            HandVerb::Take(pile, _) => HandVerb::Take(pile, steps),
+            HandVerb::Put(_) => HandVerb::Put(steps),
+            HandVerb::Site(e, _) => HandVerb::Site(e, steps),
+            HandVerb::Shop(e, _) => HandVerb::Shop(e, steps),
+            refuse => refuse,
+        })
+    }
+
+    /// Адресат груза на клетке: площадка и станок раньше склада — на клетке
+    /// чертежа кот несёт материал чертежу (§12.303).
+    fn hand_put(&mut self, item: usize, x: i32, y: i32) -> Option<HandVerb> {
+        let mut sites = self.world.query::<(Entity, &Blueprint)>();
+        let site = sites
+            .iter(&self.world)
+            .find(|(_, bp)| (bp.x, bp.y) == (x, y) && bp.tile >= 0)
+            .map(|(e, bp)| {
+                (
+                    e,
+                    need_has(&missing(self.world.resource::<TileRules>(), bp), item),
+                )
+            });
+        if let Some((e, needed)) = site {
+            return Some(if needed {
+                HandVerb::Site(e, Vec::new())
+            } else {
+                HandVerb::Refuse("unneeded")
+            });
+        }
+        let mut crafts = self.world.query::<(Entity, &Craft)>();
+        let shop = crafts
+            .iter(&self.world)
+            .find(|(_, c)| c.cell == (x, y))
+            .map(|(e, c)| {
+                let miss = craft_missing(self.world.resource::<CraftRules>(), c);
+                (e, need_has(&miss, item))
+            });
+        if let Some((e, needed)) = shop {
+            return Some(if needed {
+                HandVerb::Shop(e, Vec::new())
+            } else {
+                HandVerb::Refuse("unneeded")
+            });
+        }
+        let map = self.world.resource::<BaseMap>();
+        let rules = self.world.resource::<TileRules>();
+        if rules.capacity_of(map.tile_at(x, y)) <= 0 {
+            return None;
+        }
+        if !self.world.resource::<Bins>().accepts(x, y, item) {
+            return Some(HandVerb::Refuse("refuses"));
+        }
+        let mut stacks = self.world.query::<(&Position, &Stack)>();
+        let map = self.world.resource::<BaseMap>();
+        let rules = self.world.resource::<TileRules>();
+        let stock = stock_grid(
+            map,
+            stacks.iter(&self.world).map(|(p, s)| ((p.x, p.y), s.count)),
+        );
+        let bins = self.world.resource::<Bins>();
+        Some(if free_space(map, rules, bins, &stock, (x, y), item) > 0 {
+            HandVerb::Put(Vec::new())
+        } else {
+            HandVerb::Refuse("full")
+        })
+    }
+
+    /// Куча, которую кот возьмёт с клетки: первая по палитре со свободным от
+    /// брони запасом (§12.50, §12.303). Выбирать тип игрока не просим: лишний тип
+    /// разберёт следующая ходка.
+    fn hand_take(&mut self, x: i32, y: i32) -> Option<HandVerb> {
+        let mut q = self.world.query::<(Entity, &Position, &Stack)>();
+        let mut here: Vec<(usize, Entity)> = q
+            .iter(&self.world)
+            .filter(|(_, p, s)| (p.x, p.y) == (x, y) && s.count > 0)
+            .map(|(e, _, s)| (s.item, e))
+            .collect();
+        here.sort_unstable_by_key(|&(item, e)| (item, e.index()));
+        if here.is_empty() {
+            return None;
+        }
+        let free: Vec<(usize, i32)> = {
+            let mut piles = self.world.query::<&Stack>();
+            let mut deals = self.world.query::<&Deal>();
+            let mut paws = self.world.query::<(&Haul, &Carrying)>();
+            here.iter()
+                .map(|&(item, _)| {
+                    let n = crate::trade::free_to_spend(
+                        piles.iter(&self.world),
+                        deals.iter(&self.world),
+                        paws.iter(&self.world),
+                        item,
+                    );
+                    (item, n)
+                })
+                .collect()
+        };
+        Some(
+            here.iter()
+                .find(|&&(item, _)| need_has(&free, item))
+                .map_or(HandVerb::Refuse("booked"), |&(_, pile)| {
+                    HandVerb::Take(pile, Vec::new())
+                }),
+        )
+    }
+
+    fn give_hand(&mut self, unit_id: &str, x: i32, y: i32, verb: HandVerb) -> bool {
+        note(&mut self.world, format!("hand {unit_id} {x} {y}"));
+        let mut cats = self.world.query::<(Entity, &UnitId)>();
+        let Some(cat) = cats
+            .iter(&self.world)
+            .find(|(_, id)| id.0 == unit_id)
+            .map(|(e, _)| e)
+        else {
+            return false;
+        };
+        let (to, steps) = match verb {
+            HandVerb::Take(pile, steps) => (HaulTo::Hand(Some(pile), HAND_HOLD), steps),
+            HandVerb::Put(steps) => (HaulTo::Put(x, y), steps),
+            HandVerb::Site(e, steps) => (HaulTo::Site(e), steps),
+            HandVerb::Shop(e, steps) => (HaulTo::Shop(e), steps),
+            HandVerb::Refuse(_) => return false,
+        };
+        self.release_task(cat);
+        if let Some(mission_e) = self.world.get::<Squad>(cat).map(|s| s.0) {
+            self.disband(mission_e);
+        }
+        self.world
+            .entity_mut(cat)
+            .remove::<Order>()
+            .insert((Haul { to, aim: None }, Path { steps }));
+        true
+    }
+
+    /// Почему куча на клетке никуда не едет (§12.303): `untidy` — уборка
+    /// выключена, `nostore` — склада нет, `noroom` — некуда положить этот тип,
+    /// `waiting` — ждёт свободного кота. Пусто — лежит на своём месте.
+    pub fn pile_why(&mut self, x: i32, y: i32) -> String {
+        let mut q = self.world.query::<(&Position, &Stack, Option<&ToStore>)>();
+        let all: Vec<((i32, i32), usize, i32, bool)> = q
+            .iter(&self.world)
+            .map(|(p, s, m)| ((p.x, p.y), s.item, s.count, m.is_some()))
+            .collect();
+        let map = self.world.resource::<BaseMap>();
+        let rules = self.world.resource::<TileRules>();
+        let bins = self.world.resource::<Bins>();
+        let stock = stock_grid(map, all.iter().map(|&(at, _, n, _)| (at, n)));
+        let mut items: Vec<usize> = all
+            .iter()
+            .filter(|&&(at, ..)| at == (x, y))
+            .map(|&(_, item, ..)| item)
+            .collect();
+        items.sort_unstable();
+        items.dedup();
+        let best = best_tiers(map, rules, bins, &stock, &items);
+        let tile = map.tile_at(x, y);
+        let tier = rules.priority_of(tile);
+        for (item, top) in best {
+            let misplaced = rules.capacity_of(tile) <= 0
+                || !bins.accepts(x, y, item)
+                || top.is_some_and(|t| t > tier);
+            if !misplaced {
+                continue;
+            }
+            let marked = all
+                .iter()
+                .any(|&(at, i, _, m)| at == (x, y) && i == item && m);
+            let any_store = map.cells.iter().any(|&c| rules.capacity_of(c) > 0);
+            return if !marked && !self.world.resource::<AutoTidy>().0 {
+                "untidy"
+            } else if !any_store {
+                "nostore"
+            } else if top.is_none() {
+                "noroom"
+            } else {
+                "waiting"
+            }
+            .to_string();
+        }
+        String::new()
     }
 
     /// Один фиксированный шаг симуляции.

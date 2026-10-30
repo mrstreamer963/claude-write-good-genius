@@ -56,7 +56,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 47;
+pub(crate) const FORMAT: u32 = 48;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -527,6 +527,8 @@ pub(crate) enum HaulDto {
     Shop(u32),
     Lab(u32),
     Store(Option<u32>),
+    Hand(Option<u32>, u16),
+    Put(i32, i32),
 }
 
 /// Наводка носильщика: за какой кучей и за каким типом он пошёл (§12.49).
@@ -764,6 +766,8 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                     HaulTo::Shop(t) => HaulDto::Shop(at(t).unwrap_or(u32::MAX)),
                     HaulTo::Lab(t) => HaulDto::Lab(at(t).unwrap_or(u32::MAX)),
                     HaulTo::Store(t) => HaulDto::Store(t.and_then(at)),
+                    HaulTo::Hand(t, wait) => HaulDto::Hand(t.and_then(at), wait),
+                    HaulTo::Put(x, y) => HaulDto::Put(x, y),
                 }),
                 aim: e
                     .get::<Haul>()
@@ -1226,6 +1230,8 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
                 HaulDto::Shop(n) => at(n).map(HaulTo::Shop),
                 HaulDto::Lab(n) => at(n).map(HaulTo::Lab),
                 HaulDto::Store(n) => Some(HaulTo::Store(n.and_then(at))),
+                HaulDto::Hand(n, wait) => Some(HaulTo::Hand(n.and_then(at), wait)),
+                HaulDto::Put(x, y) => Some(HaulTo::Put(x, y)),
             };
             // Наводка без кучи — не беда: кот дойдёт и возьмёт что под ногами,
             // а раздатчик пересчитает обещания (§12.49).

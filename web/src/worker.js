@@ -25,7 +25,7 @@ const AUTOSAVE_EVERY = 120; // сим-тиков (20 с на ×1)
 const AUTOSAVE_EVERY_MS = 20000; // и не реже этого по реальным часам
 
 // Команды, которые мир не меняют: после них сохранять нечего.
-const READ_ONLY = new Set(["setSpeed", "save", "trace", "setBuildTile"]);
+const READ_ONLY = new Set(["setSpeed", "save", "trace", "setBuildTile", "setHandAim"]);
 
 let sim = null;
 let speed = 1; // 0 (пауза) | 1 | 5 | 10
@@ -47,6 +47,13 @@ let maskStruct = -1;
 // Четверть оборота в руке. Едет вместе с инструментом: поворот меняет и рамку,
 // и ответ ворот, значит маску надо пересчитать.
 let maskRot = 0;
+// Маска штампа считается по всей карте (§12.302) — это штамп на каждую клетку,
+// и каждым кадром её не гоняем. Ответ меняется только от объекта и поворота
+// в руке, от карты (`map_version`) и от команд игрока (чертёж, постановка):
+// ключ ловит первые два, `structStale` — команды.
+let structMask = null;
+let structKey = "";
+let structStale = true;
 // Текст рулсета нужен и после старта: из него собирается и новая партия, и
 // загруженная — правил в снимке нет и быть не должно (§12.45).
 let yamlText = null;
@@ -127,28 +134,48 @@ function loop() {
     }
     // Маска едет вместе со снимком: она про тот же кадр. Пустая (тайл правилу
     // не подчиняется) — не едет вовсе, и рендер не красит ничего.
-    const mask =
-      maskStruct >= 0
-        ? sim.structure_buildable(maskStruct, ...maskRect, maskRot)
-        : maskTile >= 0
-          ? sim.buildable(maskTile, ...maskRect)
-          : null;
+    let mask = null;
+    if (maskStruct >= 0) {
+      const key = `${maskStruct}:${maskRot}:${v}`;
+      if (structStale || key !== structKey) {
+        structMask = sim.structure_buildable(maskStruct, maskRot);
+        structKey = key;
+        structStale = false;
+      }
+      mask = structMask;
+    } else if (maskTile >= 0) {
+      mask = sim.buildable(maskTile, ...maskRect);
+    }
     postMessage({
       type: "snapshot",
       snap: sim.snapshot(),
       mask: mask && mask.length ? mask : null,
+      // Что сделает клик по выбранной клетке и почему лежит куча (§12.303):
+      // считает ядро и только для клетки под вниманием игрока.
+      hand: handAim && {
+        key: handAim.key,
+        verb: handAim.id ? sim.hand_tag(handAim.id, handAim.x, handAim.y) : "",
+        why: sim.pile_why(handAim.x, handAim.y),
+      },
     });
   }
   setTimeout(loop, 16);
 }
 
+let handAim = null;
+
 onmessage = (e) => {
   const m = e.data;
   // Любая команда, кроме читающих, делает мир несохранённым — в том числе на
   // паузе, где тиков нет, а разметка есть.
-  if (!READ_ONLY.has(m.type)) dirty = true;
+  if (!READ_ONLY.has(m.type)) {
+    dirty = true;
+    structStale = true;
+  }
   if (m.type === "setSpeed") {
     speed = m.speed;
+  } else if (m.type === "setHandAim") {
+    handAim = m.aim;
   } else if (m.type === "setBuildTile") {
     // Инструмент в руке игрока — состояние вида, и живёт оно здесь: ядру он не
     // нужен ни для чего, кроме ответа «где этот тайл поставить можно».
@@ -184,7 +211,7 @@ onmessage = (e) => {
     // (см. `set_auto_rest` в ядре, §12.33). Выключение никого не будит.
     sim.set_auto_rest(m.on);
   } else if (m.type === "move" && sim) {
-    sim.set_target(m.id, m.x, m.y);
+    sim.command_at(m.id, m.x, m.y);
   } else if (m.type === "launch" && sim) {
     // **Узел заменяет выбор отряда** (§12.61): состав живёт на клетке рации, и
     // кнопка адресуется узлом, а не списком котов. С двумя узлами иначе не

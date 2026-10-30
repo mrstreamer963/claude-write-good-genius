@@ -16,6 +16,7 @@ mod fame;
 mod food;
 mod gear;
 mod goals;
+mod hand;
 mod hauling;
 mod health;
 mod items;
