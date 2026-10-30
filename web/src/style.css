@@ -2955,14 +2955,21 @@ main#stage.mode-cursor #mode-banner {
 /* Поле карты клетками масштаба (§12.301): клетка — `pace` пути в один
    конец. Сетка тусклая — она мерило, а не содержание. */
 .map-field {
-  fill: #12141b;
+  fill: #0c1517;
   stroke: var(--line);
+}
+/* Кольца дальности вокруг базы (§12.310) — та же мера, что клетки. */
+.map-range {
+  fill: none;
+  stroke: rgba(130, 215, 225, 0.13);
+  stroke-width: 1;
+  pointer-events: none;
 }
 .map-gridline {
   fill: none;
-  /* Светлая: под сеткой теперь рельеф (§12.305), тёмная линия на нём пропадала бы. */
-  stroke: rgba(225, 228, 210, 0.1);
-  stroke-width: 1.5;
+  /* Светлая: под сеткой рельеф (§12.305). Едва видна: главное мерило теперь кольца (§12.310). */
+  stroke: rgba(190, 225, 225, 0.05);
+  stroke-width: 1;
 }
 .map-scale {
   fill: var(--muted);
@@ -2973,16 +2980,48 @@ main#stage.mode-cursor #mode-banner {
    (§12.292), а ребро связывает соседей (§12.198). Поэтому линия тонкая и
    приглушённая: она называет соседство, а не путь. */
 .map-link {
-  stroke: rgba(225, 228, 210, 0.3);
-  stroke-width: 2;
+  stroke: rgba(200, 225, 225, 0.16);
+  stroke-width: 1;
+  stroke-dasharray: 2 5;
 }
 .map-site {
   cursor: pointer;
 }
+/* Непрозрачная подложка: заливка очага полупрозрачна, а местность под значком шумела бы. */
+.map-hex {
+  fill: #101c20;
+}
 .map-ring {
-  fill: var(--panel);
-  stroke: rgba(225, 228, 210, 0.6);
+  fill: transparent;
+  stroke: var(--tint);
   stroke-width: 2;
+}
+/* Ореол заливкой, а не фильтром: `drop-shadow` пересчитывался бы с каждым кадром,
+   где едет значок отряда (тот же довод, что у `feTurbulence`, §12.305). */
+.map-halo {
+  fill: var(--tint);
+  fill-opacity: 0.14;
+  stroke: var(--tint);
+  stroke-opacity: 0.25;
+  stroke-width: 1;
+}
+.map-glyph {
+  fill: var(--tint, #cfe3e0);
+  pointer-events: none;
+}
+.map-plate {
+  fill: rgba(6, 11, 13, 0.82);
+  pointer-events: none;
+}
+/* Счёт заказов и ступень очага — кружком в углу (§12.310): центр занял глиф места. */
+.map-count circle {
+  fill: #101c20;
+  stroke: var(--tint);
+  stroke-width: 1.5;
+}
+.map-site.hot .map-count circle {
+  fill: var(--bad);
+  stroke: var(--bad);
 }
 /* Заражённый участок красится заливкой, а густота её — доля ступени к пределу
    (см. `syncRaidMap`): ступеней у породы бывает сколько угодно, и словаря
@@ -2991,13 +3030,16 @@ main#stage.mode-cursor #mode-banner {
   fill: var(--bad);
   stroke: var(--bad);
 }
-.map-site.on .map-ring {
-  stroke: var(--accent);
-  stroke-width: 3;
+/* Выбор — светлой рамкой по ореолу: цвет кольца занят типом места (§12.310). */
+.map-site.on .map-halo {
+  fill-opacity: 0.24;
+  stroke: #eef6f6;
+  stroke-opacity: 1;
+  stroke-width: 2;
 }
 .map-stage {
   fill: var(--text);
-  font-size: 15px;
+  font-size: 11px;
   font-weight: 700;
   text-anchor: middle;
   pointer-events: none;
@@ -3007,42 +3049,43 @@ main#stage.mode-cursor #mode-banner {
   font-size: 12px;
   text-anchor: middle;
   pointer-events: none;
-  /* Обводка держит подпись читаемой поверх рельефа и штриховки (§12.305). */
-  paint-order: stroke;
-  stroke: rgba(10, 12, 12, 0.85);
-  stroke-width: 3px;
+  /* Читаемость держит плашка `.map-plate` под подписью (§12.310). */
 }
-/* База на карте (§12.292) — откуда отряды выходят и куда меряется дорога. */
-.map-home path {
-  fill: var(--panel);
-  stroke: var(--text);
-  stroke-width: 2;
+/* База на карте (§12.292) — откуда отряды выходят и куда меряется дорога.
+   Крупнее участков и с ореолом: это центр колец (§12.310). */
+.map-home .map-hex {
+  stroke: #82d7e1;
+  stroke-width: 2.5;
+}
+.map-home-halo {
+  fill: rgba(130, 215, 225, 0.1);
+  stroke: rgba(130, 215, 225, 0.35);
+  stroke-width: 1;
 }
 /* Участок-дорога (§12.292): караван ведут вдоль неё, и длина её — часть срока.
    Шире и плотнее ребра соседства: это путь, а не «куда может пойти очаг». */
 .map-road {
   fill: none;
-  stroke: rgba(225, 228, 210, 0.28);
-  stroke-width: 7;
+  stroke: rgba(229, 138, 78, 0.5);
+  stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
-  opacity: 0.8;
 }
 /* Ушедший отряд (§12.292): пунктир его пути и кружок с номером там, где он
    сейчас. Своим цветом, а не цветом очага: это про нас, а не про угрозу. */
 .map-trip-path {
   fill: none;
-  stroke: var(--accent);
-  stroke-width: 1.5;
-  stroke-dasharray: 3 4;
-  opacity: 0.7;
+  stroke: var(--squad, var(--accent));
+  stroke-width: 2;
+  stroke-dasharray: 5 5;
+  stroke-linejoin: round;
   pointer-events: none;
 }
 /* Отряд на карте — **квадратная** плашка с номером (§12.292): и на пути, и у
    участка, куда он назначен. Круг с числом в центре участка — счёт заказов
    (§12.245), и отряд той же формы читался бы ещё одним заказом. */
 .squad-tag rect {
-  fill: var(--accent);
+  fill: var(--squad, var(--accent));
   stroke: var(--panel);
   stroke-width: 2;
 }
@@ -3073,7 +3116,6 @@ main#stage.mode-cursor #mode-banner {
   opacity: 0.45;
 }
 .map-site.mine .map-ring {
-  stroke: var(--accent);
   stroke-dasharray: 4 3;
 }
 /* Непрочитанный заказ на участке красит число в кружке акцентом (§12.245) —

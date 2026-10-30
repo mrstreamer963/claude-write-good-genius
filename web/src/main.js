@@ -2,7 +2,7 @@
 // и шлём команды (постройка тайлов, приказы движения).
 
 import { Application, Container, Graphics, Text } from "pixi.js";
-import { ITEM_GLYPHS, TILE_GLYPHS } from "./glyphs.js";
+import { ITEM_GLYPHS, SITE_GLYPHS, TILE_GLYPHS } from "./glyphs.js";
 import { createLighting } from "./light.js";
 import { blightBlob, terrainTexture } from "./terrain.js";
 import {
@@ -9863,12 +9863,14 @@ let mapPick = -1;
 // Радиус кружка и шаг сетки в единицах SVG. `at` у участка — подача, а не
 // механика (§12.198), но с §12.292 карта держит масштаб: единица полотна —
 // `outskirts.pace` тиков пути, и шаг у обеих осей один.
-const SITE_R = 22;
-const SITE_STEP = 78;
+const SITE_R = 20;
+const SITE_STEP = 100;
 // Сторона текстуры местности (§12.305). Поле карты тянется за колонкой (§12.301),
 // и печь текстуру под каждый его размер значило бы платить шумом за ресайз: одна
 // квадратная кроется по полю, как `background-size: cover`.
 const SITE_LAND = 1200;
+// Печём заранее, под загрузку: иначе первое открытие штаба замирает на полсекунды.
+setTimeout(() => terrainTexture(SITE_LAND, SITE_LAND), 0);
 // Путь от базы к каждому участку в координатах полотна (§12.292): база, `at`
 // и изгибы дороги. Собирается вместе с графом (`buildSiteGraph`), читается
 // значками отрядов (`syncRaidTrips`).
@@ -9990,12 +9992,15 @@ function syncRaidTrips() {
         `<g class="map-trip-mark squad-tag"><rect x="-9" y="-9" width="18" height="18" rx="4"/><text y="4"></text></g>`;
       layer.appendChild(g);
     }
-    const path = trail.map((p) => p.join(",")).join(" ");
+    const path = trail.map((p) => p.map((v) => v.toFixed(1)).join(",")).join(" ");
     const line = g.querySelector(".map-trip-path");
     if (line.getAttribute("points") !== path) line.setAttribute("points", path);
     const n = nodes.findIndex((o) => o.x === m.x && o.y === m.y) + 1;
     const label = g.querySelector("text");
-    if (label.textContent !== String(n)) label.textContent = String(n);
+    if (label.textContent !== String(n)) {
+      label.textContent = String(n);
+      g.style.setProperty("--squad", squadTint(n));
+    }
     const [x, y] = pointAlong(trail, (m.way ?? 0) / 1000);
     const at = `translate(${x.toFixed(1)},${y.toFixed(1)})`;
     const mark = g.querySelector(".map-trip-mark");
@@ -10006,7 +10011,7 @@ function syncRaidTrips() {
     // там значок остаётся.
     // Отряд ещё на базе (собирается или только вышел) не рисуется тоже: где он,
     // и так ясно, а цель уже названа плашкой у кружка и пунктиром пути.
-    const there = m.way >= 1000 && trail.length === 2;
+    const there = m.way >= 1000 && !(meta?.sites?.[m.site]?.road ?? []).length;
     const show = there || !(m.way > 0) ? "none" : "";
     if (mark.style.display !== show) mark.style.display = show;
     const what = (meta?.missions ?? [])[m.def]?.label ?? "";
@@ -10075,7 +10080,10 @@ function syncRaidMap() {
     const mark = going.has(i) ? String(going.get(i).n) : "";
     claim.style.display = mark ? "" : "none";
     const tag = claim.querySelector("text");
-    if (tag.textContent !== mark) tag.textContent = mark;
+    if (tag.textContent !== mark) {
+      tag.textContent = mark;
+      if (mark) claim.style.setProperty("--squad", squadTint(going.get(i).n));
+    }
     liveTitle(claim, mark ? `${going.get(i).who} уже назначен сюда` : "");
     // Правило автовылазки — полой плашкой в другом углу (§12.294): «назначен»
     // — разовое решение и залито, правило — повторяющееся и контуром. На паузе
@@ -10118,7 +10126,10 @@ function syncRaidMap() {
     // чистого участка на том же месте — счёт заказов.
     const stage = g.querySelector(".map-stage");
     const shown = lit ? String(st.stage) : n;
-    if (stage.textContent !== shown) stage.textContent = shown;
+    if (stage.textContent !== shown) {
+      stage.textContent = shown;
+      stage.parentNode.style.display = shown ? "" : "none";
+    }
     // Чем гуще заливка, тем ближе предел. Доля, а не три цвета: ступеней у
     // породы бывает сколько угодно, и словарь цветов под них не заведёшь.
     g.querySelector(".map-ring").style.opacity = lit
@@ -14866,6 +14877,66 @@ function buildRaidWindow() {
 //
 // Координаты `at` — подача, а не механика (§12.198): расстояние между кружками
 // ни на что не влияет, дорога до места — свойство заказа (`travel`).
+// Цвет места и цвет отряда (§12.310). Только подача: ядро о них не знает, и
+// запись в рулсете сменила бы отпечаток партии. Место без записи — нейтральное.
+const SITE_TINT = {
+  junkyard: "#e0a94f",
+  rust_road: "#e58a4e",
+  hangar_yard: "#e6cf5a",
+  lair: "#e8626a",
+  mines: "#b184e8",
+  sump: "#5fc9b8",
+  greenhouse: "#7fcf6e",
+};
+const SQUAD_TINT = ["#5fd8e6", "#e6cf5a", "#7fcf6e", "#e58ac0"];
+const squadTint = (n) => SQUAD_TINT[(Math.max(1, n) - 1) % SQUAD_TINT.length];
+
+// Плавная кривая по ломаной (Чайкин) с сохранёнными концами. Результат — та же
+// ломаная, только густая: `pointAlong` и пунктир едут по ней без второй арифметики.
+function smoothTrail(line) {
+  let out = line;
+  for (let pass = 0; pass < 4 && out.length > 2; pass++) {
+    const next = [out[0]];
+    for (let k = 0; k < out.length - 1; k++) {
+      const [a, b] = [out[k], out[k + 1]];
+      next.push([a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25]);
+      next.push([a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75]);
+    }
+    next.push(out[out.length - 1]);
+    out = next;
+  }
+  return out;
+}
+// Путь от базы — дуга: прямые из одной точки читались схемой. Изгиб постоянный
+// и малый, а положение значка считается долей пути, так что срок он не меняет.
+function bowedTrail(a, b) {
+  const mid = [(a[0] + b[0]) / 2 - (b[1] - a[1]) * 0.14, (a[1] + b[1]) / 2 + (b[0] - a[0]) * 0.14];
+  return smoothTrail([a, mid, b]);
+}
+const siteName = (label, y) => {
+  const w = label.length * 7 + 12;
+  return (
+    `<rect class="map-plate" x="${-w / 2}" y="${y - 13}" width="${w}" height="18" rx="3"/>` +
+    `<text class="map-name" y="${y}">${esc(label)}</text>`
+  );
+};
+
+// Шестигранник острым углом вверх и глиф места в нём (§12.310).
+function siteHex(r) {
+  const pts = Array.from({ length: 6 }, (_, k) => {
+    const a = Math.PI / 3 * k - Math.PI / 2;
+    return `${(Math.cos(a) * r).toFixed(1)} ${(Math.sin(a) * r).toFixed(1)}`;
+  });
+  return `M${pts.join(" L")} Z`;
+}
+function siteGlyph(id, size) {
+  const d = SITE_GLYPHS[id];
+  const k = size / 24;
+  return d
+    ? `<path class="map-glyph" transform="translate(${-size / 2},${-size / 2}) scale(${k})" d="${d}"/>`
+    : "";
+}
+
 function buildSiteGraph(holder) {
   const all = meta?.sites ?? [];
   if (!holder || !all.length) return [];
@@ -14883,12 +14954,15 @@ function buildSiteGraph(holder) {
   const py = (i) => P(all[i].at ?? [0, 0])[1];
   // Путь отряда к участку — от базы до `at` и дальше вдоль дороги (§12.292).
   // Назад отряд идёт им же, поэтому одного списка точек хватает на обе стадии.
-  siteTrails = all.map((s) => [home, s.at ?? [0, 0], ...(s.road ?? [])].map(P));
+  const roadLines = all.map((s) =>
+    (s.road ?? []).length ? smoothTrail([s.at ?? [0, 0], ...s.road].map(P)) : [],
+  );
+  siteTrails = all.map((s, i) => [...bowedTrail(P(home), P(s.at ?? [0, 0])), ...roadLines[i].slice(1)]);
   const [hx, hy] = P(home);
   const roads = all
-    .map((s, i) =>
-      (s.road ?? []).length
-        ? `<polyline class="map-road" points="${siteTrails[i].slice(1).map((p) => p.join(",")).join(" ")}"/>`
+    .map((_, i) =>
+      roadLines[i].length
+        ? `<polyline class="map-road" points="${roadLines[i].map((p) => p.map((v) => v.toFixed(1)).join(",")).join(" ")}"/>`
         : "",
     )
     .join("");
@@ -14918,11 +14992,19 @@ function buildSiteGraph(holder) {
     `<image class="map-terrain" href="${terrainTexture(SITE_LAND, SITE_LAND)}" width="${w}" height="${h}" preserveAspectRatio="xMidYMid slice" pointer-events="none"/>` +
     `<rect class="map-field-grid" width="${w}" height="${h}" rx="10" fill="url(#map-grid)"/>` +
     (pace > 0
-      ? `<text class="map-scale" x="10" y="${h - 10}">клетка — ${pace} пути в один конец</text>`
+      ? `<text class="map-scale" x="10" y="${h - 10}">клетка и кольцо — ${pace} пути в один конец</text>`
       : "");
+  // Кольца вокруг базы — та же мера, что и клетки (§12.310): участок на втором
+  // кольце в двух единицах пути от базы. Обводят с запасом, по самой дальней точке.
+  const far = Math.max(...pts.map((p) => Math.hypot(p[0] - home[0], p[1] - home[1])));
+  const rings = Array.from(
+    { length: Math.ceil(far) + 1 },
+    (_, k) => `<circle class="map-range" cx="${hx}" cy="${hy}" r="${(k + 1) * SITE_STEP}"/>`,
+  ).join("");
   holder.innerHTML =
     `<svg class="map-svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet">` +
     field +
+    rings +
     `<defs><pattern id="map-hatch" width="9" height="9" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">` +
     `<line class="map-hatch-line" x1="0" y1="0" x2="0" y2="9"/></pattern></defs>` +
     // Пятна — под дорогами и кружками (§12.305): заражение лежит на местности.
@@ -14937,15 +15019,22 @@ function buildSiteGraph(holder) {
       )
       .join("") +
     `<g class="map-home" transform="translate(${hx},${hy})">` +
-    `<path d="M-11 2 L0 -9 L11 2 L11 11 L-11 11 Z"/>` +
-    `<text class="map-name" y="${SITE_R + 6}">База</text></g>` +
+    `<path class="map-home-halo" d="${siteHex(SITE_R * 1.75)}"/>` +
+    `<path class="map-hex" d="${siteHex(SITE_R * 1.4)}"/>` +
+    siteGlyph("home", SITE_R * 1.3) +
+    siteName("База", SITE_R * 1.75 + 16) +
+    `</g>` +
     all
       .map(
         (s, i) =>
-          `<g class="map-site" data-site="${i}" transform="translate(${px(i)},${py(i)})">` +
-          `<circle class="map-ring" r="${SITE_R}"/>` +
-          `<text class="map-stage" y="6"></text>` +
-          `<text class="map-name" y="${SITE_R + 18}">${esc(s.label || s.id)}</text>` +
+          `<g class="map-site" data-site="${i}" style="--tint:${SITE_TINT[s.id] ?? "#aee1e1"}" transform="translate(${px(i)},${py(i)})">` +
+          `<path class="map-halo" d="${siteHex(SITE_R * 1.3)}"/>` +
+          `<path class="map-hex" d="${siteHex(SITE_R)}"/>` +
+          `<path class="map-ring" d="${siteHex(SITE_R)}"/>` +
+          siteGlyph(s.id, SITE_R * 1.05) +
+          `<g class="map-count" transform="translate(${SITE_R * 0.8},${SITE_R * 0.62})" style="display:none">` +
+          `<circle r="9"/><text class="map-stage" y="4"></text></g>` +
+          siteName(s.label || s.id, SITE_R + 22) +
           `<g class="map-claim squad-tag" transform="translate(${SITE_R * 0.95},${-SITE_R * 0.95})" style="display:none">` +
           `<rect x="-9" y="-9" width="18" height="18" rx="4"/><text y="4"></text></g>` +
           `<g class="map-rule rule-tag" transform="translate(${-SITE_R * 0.95},${-SITE_R * 0.95})" style="display:none">` +

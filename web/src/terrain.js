@@ -1,12 +1,13 @@
-// Подача карты штаба (§12.305): местность под участками и пятно заражения вокруг
+// Подача карты штаба (§12.305, §12.310): местность под участками и пятно заражения вокруг
 // очага. Только картинка — ни клетки, ни скорости, ни маршруты от неё не зависят,
 // поэтому случайность здесь законна, а сид постоянный: окрестности базы не должны
 // меняться от того, что игрок закрыл и открыл окно.
 
 const SEED = 9173;
-const SCALE = 1;
+// Текстура мельче поля: карта размыта не видна, а печь её вдвое дешевле.
+const SCALE = 0.7;
 
-// Детерминированный генератор (mulberry32): пятно и река каждый раз те же.
+// Детерминированный генератор (mulberry32): пятно и вода каждый раз те же.
 function rng(seed) {
   let a = seed >>> 0;
   return () => {
@@ -18,7 +19,7 @@ function rng(seed) {
   };
 }
 
-function makeNoise(seed) {
+function makeNoise(seed, octaves = 4) {
   const rand = rng(seed);
   const table = Float32Array.from({ length: 65536 }, rand);
   const at = (x, y) => table[((x & 255) << 8) | (y & 255)];
@@ -36,23 +37,34 @@ function makeNoise(seed) {
     let sum = 0;
     let amp = 0.5;
     let f = 1;
-    for (let o = 0; o < 4; o++) {
+    for (let o = 0; o < octaves; o++) {
       sum += value(x * f, y * f) * amp;
       amp *= 0.5;
       f *= 2;
     }
-    return sum / 0.9375;
+    return sum / (1 - 0.5 ** octaves);
   };
 }
 
-const LOW = [36, 46, 46];
-const HIGH = [78, 80, 64];
-const BANDS = 11;
+// Опорные цвета земли: тёмные и холодные, чтобы значки и подписи стояли поверх
+// (§12.310). Низина, лес и нагорье смешиваются плавно: ступени читались пятнами.
+const LOWLAND = [9, 15, 18];
+const MEADOW = [15, 24, 27];
+const FOREST = [9, 21, 20];
+const UPLAND = [27, 33, 36];
+const WATER = [70, 120, 140];
+const BANDS = 14;
 
-// Рельеф — горизонтали по шуму, вода — лента по его же ложбинам. Сетку масштаба
-// рисует сама карта (§12.301). Шум на миллион пикселей стоит десятки миллисекунд,
-// поэтому текстура печётся один раз, а в SVG едет `<image>`:
-// фильтр `feTurbulence` пересчитывался бы на каждом кадре, где едет значок отряда.
+const clamp01 = (t) => Math.min(1, Math.max(0, t));
+const ramp = (a, b, t) => {
+  const k = clamp01((t - a) / (b - a));
+  return k * k * (3 - 2 * k);
+};
+
+// Рельеф, лес и водная сеть по шуму; сетку масштаба рисует сама карта (§12.301).
+// Шум на миллион пикселей стоит сотни миллисекунд, поэтому текстура печётся один
+// раз, а в SVG едет `<image>`: фильтр `feTurbulence` пересчитывался бы на каждом
+// кадре, где едет значок отряда.
 const baked = new Map();
 
 export function terrainTexture(w, h) {
@@ -65,6 +77,8 @@ export function terrainTexture(w, h) {
   canvas.height = ch;
   const ctx = canvas.getContext("2d");
   const noise = makeNoise(SEED);
+  // Русла — по гладкому шуму: мелкие октавы рвали их в зубчатые штрихи.
+  const soft = makeNoise(SEED, 2);
   const heights = new Float32Array(cw * ch);
   for (let y = 0; y < ch; y++) {
     for (let x = 0; x < cw; x++) {
@@ -75,54 +89,57 @@ export function terrainTexture(w, h) {
       heights[y * cw + x] = noise(u + warp, v - warp);
     }
   }
+  const band = (n) => Math.floor(clamp01((n - 0.22) / 0.56) * BANDS);
   const img = ctx.createImageData(cw, ch);
+  const c = [0, 0, 0];
+  const mix = (to, k) => {
+    for (let n = 0; n < 3; n++) c[n] += (to[n] - c[n]) * k;
+  };
   for (let y = 0; y < ch; y++) {
     for (let x = 0; x < cw; x++) {
       const i = y * cw + x;
-      const t = Math.min(1, Math.max(0, (heights[i] - 0.22) / 0.56));
-      const band = Math.floor(t * BANDS);
-      const k = band / (BANDS - 1);
+      const height = heights[i];
+      const u = x / SCALE;
+      const v = y / SCALE;
+      c[0] = LOWLAND[0];
+      c[1] = LOWLAND[1];
+      c[2] = LOWLAND[2];
+      mix(MEADOW, ramp(0.3, 0.55, height));
+      mix(FOREST, ramp(0.5, 0.62, soft(u / 62 + 31.7, v / 62 + 11.3)) * 0.9);
+      mix(UPLAND, ramp(0.6, 0.76, height));
+
+      // Вода — гребень шума: линия, где он пересекает середину, сама виляет и
+      // ветвится. Второй шум рвёт её на притоки, иначе сеть замыкается в кольца.
+      const flow = soft(u / 190 + 41.3 + height * 0.5, v / 190 + 17.9 - height * 0.5);
+      const reach = ramp(0.3, 0.42, soft(u / 300 + 3.7, v / 300 + 59.1));
+      const off = Math.abs(flow - 0.5);
+      mix(WATER, (1 - ramp(0.0, 0.02, off)) * 0.06 * reach); // свечение берега
+      mix(WATER, (1 - ramp(0.002, 0.005, off)) * 0.28 * reach); // само русло
+
       const right = heights[y * cw + Math.min(x + 1, cw - 1)];
       const down = heights[Math.min(y + 1, ch - 1) * cw + x];
-      const near = (n) => Math.floor(Math.min(1, Math.max(0, (n - 0.22) / 0.56)) * BANDS);
-      const edge = near(right) !== band || near(down) !== band;
-      const lift = edge ? 13 : 0;
+      const b = band(height);
+      const lift = band(right) !== b || band(down) !== b ? 4 : 0;
+      const grain = (soft(u / 5 + 90.1, v / 5 + 70.3) - 0.5) * 6;
       const o = i * 4;
-      img.data[o] = LOW[0] + (HIGH[0] - LOW[0]) * k + lift;
-      img.data[o + 1] = LOW[1] + (HIGH[1] - LOW[1]) * k + lift;
-      img.data[o + 2] = LOW[2] + (HIGH[2] - LOW[2]) * k + lift;
+      img.data[o] = c[0] + lift + grain;
+      img.data[o + 1] = c[1] + lift + grain;
+      img.data[o + 2] = c[2] + lift + grain;
       img.data[o + 3] = 255;
     }
   }
   ctx.putImageData(img, 0, 0);
   ctx.scale(SCALE, SCALE);
 
-  // Река: идёт через полотно, виляя по тому же шуму.
-  const trace = [];
-  let ry = h * 0.72;
-  for (let x = -10; x <= w + 10; x += 8) {
-    ry += (noise(x / 90 + 3.1, 5.7) - 0.5) * 16 - 0.9;
-    trace.push([x, ry]);
-  }
-  const stroke = (color, width) => {
-    ctx.strokeStyle = color;
-    ctx.lineWidth = width;
-    ctx.lineJoin = "round";
-    ctx.beginPath();
-    trace.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-    ctx.stroke();
-  };
-  stroke("rgba(70, 120, 135, 0.13)", 11);
-  stroke("rgba(95, 150, 165, 0.32)", 2.5);
-
   // Виньетка уводит край: участки стоят с запасом, и смотреть туда незачем.
   const glow = ctx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.35, w / 2, h / 2, Math.max(w, h) * 0.72);
-  glow.addColorStop(0, "rgba(10, 12, 12, 0)");
-  glow.addColorStop(1, "rgba(10, 12, 12, 0.6)");
+  glow.addColorStop(0, "rgba(6, 12, 14, 0)");
+  glow.addColorStop(1, "rgba(6, 12, 14, 0.65)");
   ctx.fillStyle = glow;
   ctx.fillRect(0, 0, w, h);
 
-  const url = canvas.toDataURL("image/png");
+  // JPEG: зернистый PNG такого размера весит мегабайты, а альфа здесь не нужна.
+  const url = canvas.toDataURL("image/jpeg", 0.88);
   baked.set(key, url);
   return url;
 }
