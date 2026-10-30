@@ -9863,6 +9863,10 @@ let mapPick = -1;
 // `outskirts.pace` тиков пути, и шаг у обеих осей один.
 const SITE_R = 22;
 const SITE_STEP = 78;
+// Сторона текстуры местности (§12.305). Поле карты тянется за колонкой (§12.301),
+// и печь текстуру под каждый его размер значило бы платить шумом за ресайз: одна
+// квадратная кроется по полю, как `background-size: cover`.
+const SITE_LAND = 1200;
 // Путь от базы к каждому участку в координатах полотна (§12.292): база, `at`
 // и изгибы дороги. Собирается вместе с графом (`buildSiteGraph`), читается
 // значками отрядов (`syncRaidTrips`).
@@ -14879,7 +14883,7 @@ function buildSiteGraph(holder) {
     `<path class="map-gridline" d="M${SITE_STEP} 0 L0 0 L0 ${SITE_STEP}"/></pattern></defs>` +
     `<rect class="map-field" width="${w}" height="${h}" rx="10"/>` +
     // Местность — между полем и сеткой (§12.305): клетки масштаба читаются поверх.
-    `<image href="${terrainTexture(w, h)}" width="${w}" height="${h}" pointer-events="none"/>` +
+    `<image class="map-terrain" href="${terrainTexture(SITE_LAND, SITE_LAND)}" width="${w}" height="${h}" preserveAspectRatio="xMidYMid slice" pointer-events="none"/>` +
     `<rect class="map-field-grid" width="${w}" height="${h}" rx="10" fill="url(#map-grid)"/>` +
     (pace > 0
       ? `<text class="map-scale" x="10" y="${h - 10}">клетка — ${pace} пути в один конец</text>`
@@ -14979,7 +14983,7 @@ function fitSiteMap(svg, w, h) {
     const x = -(vw - w) / 2;
     const y = -(vh - h) / 2;
     svg.setAttribute("viewBox", `${x} ${y} ${vw} ${vh}`);
-    for (const r of svg.querySelectorAll(".map-field, .map-field-grid")) {
+    for (const r of svg.querySelectorAll(".map-field, .map-field-grid, .map-terrain")) {
       r.setAttribute("x", x);
       r.setAttribute("y", y);
       r.setAttribute("width", vw);
