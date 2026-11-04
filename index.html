@@ -4,9 +4,9 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>SP / Эсперы — POC</title>
-    <script type="module" crossorigin src="/cats-of-base/assets/index-DdL5p8OB.js"></script>
+    <script type="module" crossorigin src="/cats-of-base/assets/index-BFMl8FkP.js"></script>
     <link rel="modulepreload" crossorigin href="/cats-of-base/assets/pixi-Cj9fCruj.js">
-    <link rel="stylesheet" crossorigin href="/cats-of-base/assets/index-DIXjEIcr.css">
+    <link rel="stylesheet" crossorigin href="/cats-of-base/assets/index-Czuv3Slm.css">
   </head>
   <body>
     <header>
@@ -97,6 +97,9 @@
          решения, а состав правился в панели рации — то есть в другом месте
          экрана, чем прогноз, который от него зависит. Здесь оба ответа стоят
          рядом, и переключение кота сразу видно числом. -->
+    <!-- Полоса дверей (§12.301): постоянная, под шапкой — и над картой базы, и
+         над экраном. Двери живут в ней сами; тулбар остался инструментом карты. -->
+    <div id="screenbar"></div>
     <div id="raidwin" hidden></div>
     <!-- Склад (§12.100): всё имущество базы, курсы всех сторон и оба порога в
          одной таблице. Тулбар шириной 190px такую строку не держит — тот же
@@ -117,6 +120,7 @@
          это та же граница адресности, по которой §12.119 разводит окно и
          раздел тулбара. -->
     <div id="buywin" hidden></div>
+    <div id="setwin" hidden></div>
     <!-- Что держать в ящике (§12.195). Единственное окно, чья дверь стоит **в
          панели клетки**, а не в тулбаре, — потому что решение адресно клетке
          (§12.119). §12.101 при этом цел: модал открывает не клик по карте, а
