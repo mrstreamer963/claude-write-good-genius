@@ -251,6 +251,7 @@ fn sim_from(rows: &[&str]) -> Sim {
             noisy: false,
             clean: false,
             dirty: false,
+            surface: false,
             // Внутренних тайлов у схемы нет (§12.163): штампов в ней тоже нет,
             // и прятать из палитры нечего.
             internal: false,
@@ -771,6 +772,11 @@ impl Sim {
 
     fn set_dirty(&mut self, tile: i16, on: bool) {
         self.tile_rule(tile, |r| r.dirty = on);
+    }
+
+    /// Выход на поверхность (§12.348): тайл встаёт только в верхнем ряду.
+    fn set_surface(&mut self, tile: i16, on: bool) {
+        self.tile_rule(tile, |r| r.surface = on);
     }
 
     fn tile_rule(&mut self, tile: i16, edit: impl FnOnce(&mut TileRule)) {

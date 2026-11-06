@@ -995,3 +995,211 @@ fn ticks_to_arrive(sim: &mut Sim, at: (i32, i32)) -> Option<usize> {
     }
     None
 }
+
+// --- выход на поверхность (§12.348) -------------------------------------------
+
+/// Тайл-выход в этих тестах: шлюз.
+const HATCH: i16 = 4;
+
+/// Выход ставится только в верхнем ряду карты: ниже него разметка отклоняется,
+/// и маска превью говорит то же самое.
+#[test]
+fn a_surface_tile_is_placed_only_in_the_top_row() {
+    let mut sim = sim_from(&["......", ".a....", "......"]);
+    sim.set_surface(HATCH, true);
+
+    let mask = sim.buildable(HATCH as i32, 0, 0, 0, 0);
+    assert_eq!(mask[3], 1, "верхний ряд открыт");
+    assert_eq!(mask[6 + 3], 0, "второй ряд закрыт");
+    assert_eq!(mask[2 * 6 + 3], 0, "и нижний тоже");
+
+    assert!(
+        !sim.add_blueprint(3, 1, HATCH as i32),
+        "ниже верхнего ряда нельзя"
+    );
+    assert!(
+        sim.add_blueprint(3, 0, HATCH as i32),
+        "в верхнем ряду можно"
+    );
+}
+
+/// Правило — про постановку, а не про снос: выход, оказавшийся ниже верхнего
+/// ряда (старое сохранение), сносится как обычно.
+#[test]
+fn a_misplaced_surface_tile_can_still_be_demolished() {
+    let mut sim = sim_from(&["......", ".a....", "......"]);
+    sim.set_surface(HATCH, true);
+    sim.force_tile(3, 1, HATCH);
+
+    assert!(
+        sim.plan_demolish_rect(3, 1, 1, 1),
+        "снос воротами не закрыт"
+    );
+}
+
+/// Верхний ряд — **только для выходов** (§12.348): с выходом в палитре ни пол,
+/// ни прочее в него не встают, а ниже пол кладётся как обычно.
+#[test]
+fn the_top_row_takes_nothing_but_exits() {
+    let mut sim = sim_from(&["##.##", "..a..", "#####"]);
+    sim.set_base(0, true);
+    sim.set_surface(HATCH, true);
+
+    assert!(!sim.add_blueprint(1, 0, 0), "пол в верхний ряд не кладётся");
+    assert!(sim.add_blueprint(1, 2, 0), "ниже — как обычно");
+    let mask = sim.buildable(0, 0, 0, 0, 0);
+    assert_eq!(mask[1], 0, "маска пола закрывает верхний ряд");
+    assert_eq!(mask[2 * 5 + 3], 1, "и открывает пустоту ниже");
+}
+
+/// Без выхода в палитре верхний ряд обычный: правило включает контент, а не
+/// карта, иначе все схемы с полом в нулевом ряду сломались бы разом.
+#[test]
+fn without_an_exit_the_top_row_is_ordinary() {
+    let mut sim = sim_from(&["##.##", "..a..", "....."]);
+    sim.set_base(0, true);
+
+    assert!(sim.add_blueprint(1, 0, 0), "пол в верхний ряд кладётся");
+}
+
+/// Выходу нужен **подход** (§12.348): шлюз строят с соседней клетки по стороне,
+/// и над пустотой он висел бы чертежом, который никто не возьмёт. Маска
+/// говорит то же, что разметка.
+#[test]
+fn an_exit_needs_an_approach() {
+    let mut sim = sim_from(&["######", "#..a.#", "######"]);
+    sim.set_base(0, true);
+    sim.set_surface(HATCH, true);
+
+    let mask = sim.buildable(HATCH as i32, 0, 0, 0, 0);
+    assert_eq!(mask[0], 0, "над пустотой подхода нет");
+    assert_eq!(mask[2], 1, "над полом есть");
+    assert!(
+        !sim.add_blueprint(0, 0, HATCH as i32),
+        "без подхода не размечается"
+    );
+    assert!(sim.add_blueprint(2, 0, HATCH as i32), "с подходом — да");
+}
+
+/// Подход считается **по плану**: пол под шлюзом и сам шлюз размечаются одним
+/// заходом, без ожидания постройки.
+#[test]
+fn a_planned_floor_is_an_approach() {
+    let mut sim = sim_from(&["######", "#..a.#", "#....#"]);
+    sim.set_base(0, true);
+    sim.set_surface(HATCH, true);
+
+    assert!(
+        !sim.add_blueprint(0, 0, HATCH as i32),
+        "пока пола под ним нет"
+    );
+    assert!(sim.add_blueprint(0, 1, 0), "пол размечен");
+    assert!(
+        sim.add_blueprint(0, 0, HATCH as i32),
+        "и шлюз над ним — тоже"
+    );
+}
+
+/// Соседний шлюз — тоже подход: по нему ходят, и с него строят. Ряд шлюзов
+/// растёт от одного, у которого есть пол.
+#[test]
+fn a_neighbouring_exit_is_an_approach() {
+    let mut sim = sim_from(&["#####", "##a##", "#####"]);
+    sim.set_base(0, true);
+    sim.set_surface(HATCH, true);
+    sim.force_tile(2, 0, HATCH);
+
+    assert!(
+        sim.add_blueprint(3, 0, HATCH as i32),
+        "рядом с шлюзом можно"
+    );
+    assert!(!sim.add_blueprint(0, 0, HATCH as i32), "через клетку — нет");
+}
+
+/// Рамка под курсором ещё не размечена, и за рамкой маска на неё не опирается
+/// (§12.302): наведённый шлюз не служит подходом соседней клетке, иначе та
+/// вспыхивала бы зелёным под рукой и гасла, стоило курсору уйти.
+#[test]
+fn the_frame_does_not_light_its_neighbours() {
+    let mut sim = sim_from(&["######", "##a###", "######"]);
+    sim.set_base(0, true);
+    sim.set_surface(HATCH, true);
+    sim.force_tile(2, 0, HATCH);
+
+    let mask = sim.buildable(HATCH as i32, 3, 0, 1, 1);
+    assert_eq!(mask[3], 1, "в рамке шлюз встаёт: рядом шлюз");
+    assert_eq!(mask[4], 0, "а сосед рамки подхода не получил");
+}
+
+/// Полка не встаёт в последний подход к шлюзу — иначе его замуровали бы
+/// одним мазком.
+#[test]
+fn a_shelf_never_walls_off_an_exit() {
+    let mut sim = sim_from(&["#####", "#.a.#", "#...#"]);
+    sim.set_surface(HATCH, true);
+    sim.set_solid(RACK, true);
+    sim.force_tile(2, 0, HATCH);
+
+    assert!(
+        !sim.add_blueprint(2, 1, RACK as i32),
+        "последний подход не занять"
+    );
+    assert!(
+        sim.add_blueprint(1, 2, RACK as i32),
+        "полка в стороне — можно"
+    );
+}
+
+/// По слою выход — основание (§12.348): с полом в палитре он кладётся прямо на
+/// пустоту верхнего ряда, на пол не встаёт, а снос оставляет пустоту.
+#[test]
+fn a_surface_tile_lies_on_the_void_like_a_floor() {
+    let mut sim = sim_from(&["##.##", "..a..", "....."]);
+    sim.set_base(0, true);
+    sim.set_surface(HATCH, true);
+
+    assert!(
+        sim.add_blueprint(1, 0, HATCH as i32),
+        "на пустоту верхнего ряда можно"
+    );
+    assert!(
+        !sim.add_blueprint(2, 0, HATCH as i32),
+        "на пол — нет, как и пол на пол"
+    );
+
+    sim.force_tile(3, 0, HATCH);
+    assert!(sim.plan_demolish_rect(3, 0, 1, 1), "снос размечен");
+    sim.tick_n(300);
+    assert_eq!(sim.tile(3, 0), -1, "после сноса яма, а не пол");
+}
+
+/// **Боевой рулсет: шлюз — выход наверх, стартовый стоит по правилу, и
+/// верхний ряд занят только выходами** (§12.348). Стартовая застройка кладётся мимо ворот разметки, поэтому рулсет
+/// может нарушить правило сам, и заметить это можно только глазами — тот же
+/// довод, что у сторожей доступа и зонирования.
+#[test]
+fn the_shipped_ruleset_keeps_its_gates_on_the_surface() {
+    let sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
+    let garage = sim.tile_index("garage").expect("шлюз в палитре");
+    let rules = sim.world.resource::<TileRules>();
+    assert!(rules.is_surface(garage), "шлюз ставится только наверху");
+
+    let map = sim.world.resource::<BaseMap>();
+    let gates: Vec<(i32, i32)> = (0..map.height)
+        .flat_map(|y| (0..map.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| map.tile_at(x, y) == garage)
+        .collect();
+    assert!(!gates.is_empty(), "стартовый шлюз на месте");
+    assert!(
+        gates.iter().all(|&(_, y)| y == 0),
+        "стартовый шлюз ниже верхнего ряда: {gates:?}",
+    );
+    let squatters: Vec<(i32, i32)> = (0..map.width)
+        .filter(|&x| map.tile_at(x, 0) >= 0 && !rules.is_surface(map.tile_at(x, 0)))
+        .map(|x| (x, 0))
+        .collect();
+    assert!(
+        squatters.is_empty(),
+        "в верхнем ряду стоит не выход: {squatters:?}",
+    );
+}

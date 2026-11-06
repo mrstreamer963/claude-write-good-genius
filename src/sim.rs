@@ -1785,6 +1785,7 @@ impl Sim {
                     noisy: t.noisy,
                     clean: t.clean,
                     dirty: t.dirty,
+                    surface: t.surface,
                 })
                 .collect(),
         ));
@@ -2623,14 +2624,20 @@ impl Sim {
         if !self.gated_by_placement(t) {
             return Vec::new();
         }
-        let mut plan = self.plan();
+        // Вне рамки маска отвечает по плану **без** рамки (§12.302): рамка ещё
+        // не размечена, и клетка, загоревшаяся оттого, что её сосед в рамке
+        // будто бы уже стоит, обещала бы то, чего мира нет. Выход наверх
+        // (§12.348) это и вскрыл: наведённый шлюз служил подходом соседней
+        // клетке, и та вспыхивала зелёным под рукой.
+        let plan = self.plan();
+        let mut framed = plan.clone();
         let rules = self.world.resource::<TileRules>();
         let mut mask = vec![0u8; (self.width * self.height) as usize];
         let mut done = vec![false; mask.len()];
         for (cx, cy) in rect_cells(rx, ry, rw, rh) {
-            let ok = may_build(&plan, rules, (cx, cy), t);
+            let ok = may_build(&framed, rules, (cx, cy), t);
             if ok {
-                plan.set(cx, cy, t);
+                framed.set(cx, cy, t);
             }
             if let Some(i) = self.cell_index(cx, cy) {
                 mask[i] = u8::from(ok);
@@ -2649,7 +2656,8 @@ impl Sim {
     }
 
     /// Подчиняется ли тайл воротам разметки вообще: полка (§12.111), клетка
-    /// со свойством зонирования (§12.157) или слой (§12.237 — с основанием в
+    /// со свойством зонирования (§12.157), любой тайл при выходе наверх в палитре
+    /// (§12.348 — верхний ряд только для выходов) или слой (§12.237 — с основанием в
     /// палитре ворота есть у **любого** тайла: пол не ложится на пол, прочее не
     /// ложится на пустоту). Одно выражение на маску, потому что «правило
     /// неприменимо» — это её пустой вектор, и ошибиться здесь значит не
@@ -2662,6 +2670,7 @@ impl Sim {
             || rules.is_noisy(tile)
             || rules.is_clean(tile)
             || rules.is_dirty(tile)
+            || rules.has_surface()
     }
 
     /// Номер клетки в маске; `None` — за картой.

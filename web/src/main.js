@@ -114,14 +114,26 @@ function placementHint(def, known = []) {
   if ((meta.palette ?? []).some((t) => t.base)) {
     const on = def.on && (meta.palette ?? []).find((t) => t.id === def.on);
     hints.push(
-      def.base
+      def.base || def.surface
         ? "Кладётся на пустоту"
         : on
           ? `Ставится поверх: ${on.label || on.id}`
           : "Ставится только на пол",
     );
   }
+  // Верхний ряд только для выходов (§12.348): пол туда не кладётся, а на
+  // карте ряд ничем не отмечен, — без слова крест на нём читался бы поломкой.
+  if (def.base && (meta.palette ?? []).some((t) => t.surface))
+    hints.push("Не в верхнем ряду: он только для выходов наверх");
   if (def.solid) hints.push(ACCESS_HINT);
+  // Выход на поверхность (§12.348): где именно — решает ядро маской, а слово
+  // говорит, почему зелёным горит один верхний ряд.
+  if (def.surface) {
+    hints.push("Только в верхнем ряду: это выход наверх");
+    // Подход (§12.348): строят его с соседней клетки, и без слова тусклый
+    // верхний ряд вдали от базы читался бы поломкой.
+    hints.push("Нужен пол или шлюз рядом: оттуда его строят");
+  }
   for (const [has, avoids, say] of ZONING_PAIRS) {
     if (!def[has]) continue;
     const names = (meta.palette ?? [])
