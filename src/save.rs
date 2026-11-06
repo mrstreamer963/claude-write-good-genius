@@ -56,7 +56,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 50;
+pub(crate) const FORMAT: u32 = 51;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -119,6 +119,9 @@ pub(crate) const SAVED: &[&str] = &[
     // Состояния кота, которые не задачи.
     "Away",
     "Captive",
+    // Одиночный выход наверх (§12.349): кот наверху и кот, идущий к шлюзу.
+    "Outing",
+    "Outbound",
     // Объекты мира: разметка работы, кучи и сделки.
     "Blueprint",
     "Structure",
@@ -185,6 +188,9 @@ pub(crate) const SAVED: &[&str] = &[
     "Chronicle",
     "Goals",
     "Raids",
+    // Сколько выходов наверх вернулось (§12.349): по нему истощаются
+    // окрестности, и без него загруженная партия снова нашла бы их полными.
+    "Outings",
     "Crafted",
     "Earned",
     // Лента новостей (§12.120). В снимке она ради **базовой линии**: без неё
@@ -223,6 +229,10 @@ pub(crate) const SKIPPED: &[(&str, &str)] = &[
     (
         "MissionRules",
         "правила: пересобирает `Sim::new` из рулсета",
+    ),
+    (
+        "OutingRules",
+        "правила: пересобирает `Sim::new` из рулсета (§12.349)",
     ),
     (
         "FactionRules",
@@ -391,6 +401,9 @@ pub(crate) struct StateDto {
     /// расхождение было бы тихим: панель права, а условие «ещё не было».
     #[serde(default)]
     pub(crate) raids: Vec<usize>,
+    /// Вернувшиеся выходы наверх (§12.349).
+    #[serde(default)]
+    pub(crate) outings: u32,
     #[serde(default)]
     pub(crate) crafted: Vec<usize>,
     #[serde(default)]
@@ -518,6 +531,12 @@ pub(crate) struct EntityDto {
     pub(crate) away: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) captive: bool,
+    /// Наверху один (§12.349): шлюз и сколько тиков до возвращения. `FORMAT` 51.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) outing: Option<((i32, i32), i32)>,
+    /// Идёт к шлюзу, чтобы выйти наверх (§12.349).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) outbound: Option<(i32, i32)>,
 
     // Объекты мира.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -858,6 +877,8 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
 
                 away: e.contains::<Away>(),
                 captive: e.contains::<Captive>(),
+                outing: e.get::<Outing>().map(|o| (o.gate, o.left)),
+                outbound: e.get::<Outbound>().map(|o| o.gate),
 
                 blueprint: e.get::<Blueprint>().map(|b| BlueprintDto {
                     x: b.x,
@@ -995,6 +1016,7 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                 .collect(),
             goal_holds: world.resource::<GoalHolds>().0.clone(),
             raids: world.resource::<Raids>().0.clone(),
+            outings: world.resource::<Outings>().0,
             crafted: world.resource::<Crafted>().0.clone(),
             earned: world.resource::<Earned>().0,
             news_open: world.resource::<News>().open.clone(),
@@ -1214,6 +1236,7 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
         .collect();
     world.resource_mut::<GoalHolds>().0 = s.goal_holds.clone();
     world.resource_mut::<Raids>().0 = s.raids.clone();
+    world.resource_mut::<Outings>().0 = s.outings;
     world.resource_mut::<Crafted>().0 = s.crafted.clone();
     world.resource_mut::<Earned>().0 = s.earned;
     {
@@ -1398,6 +1421,12 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
         }
         if dto.captive {
             e.insert(Captive);
+        }
+        if let Some((gate, left)) = dto.outing {
+            e.insert(Outing { gate, left });
+        }
+        if let Some(gate) = dto.outbound {
+            e.insert(Outbound { gate });
         }
 
         if let Some(b) = &dto.blueprint {

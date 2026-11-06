@@ -2026,6 +2026,20 @@ impl Sim {
         world.insert_resource(Goals::default());
         world.insert_resource(GoalHolds::default());
         world.insert_resource(Raids::default());
+        // Одиночный выход наверх (§12.349): правила из `outing:` и счёт
+        // вернувшихся выходов — по нему окрестности истощаются.
+        let pile = |set: &std::collections::BTreeMap<String, i32>| -> Vec<(usize, i32)> {
+            set.iter()
+                .filter_map(|(id, &n)| item_index(id).map(|i| (i, n)))
+                .collect()
+        };
+        world.insert_resource(OutingRules {
+            ticks: rs.outing.ticks,
+            toll: rs.outing.toll,
+            yields: rs.outing.yields.iter().map(pile).collect(),
+            floor: pile(&rs.outing.floor),
+        });
+        world.insert_resource(Outings::default());
         world.insert_resource(Crafted::default());
         world.insert_resource(Earned::default());
         // Фракции — такая же палитра, как предметы и параметры: в правилах от
@@ -3338,12 +3352,14 @@ impl Sim {
         let mut crew: Vec<(Entity, (i32, i32))> = Vec::new();
         let mut q = self
             .world
-            .query::<(Entity, &UnitId, &Position, Option<&Away>)>();
+            .query::<(Entity, &UnitId, &Position, Option<&Away>, Has<Outing>)>();
         for id in units {
+            // Вышедший наверх один (§12.349) — на базе по сути: вернётся сам и
+            // скоро, и отряд его ждёт, а не уходит без него.
             let found = q
                 .iter(&self.world)
-                .find(|(_, u, _, away)| u.0 == *id && away.is_none())
-                .map(|(e, _, p, _)| (e, (p.x, p.y)));
+                .find(|(_, u, _, away, out)| u.0 == *id && (away.is_none() || *out))
+                .map(|(e, _, p, ..)| (e, (p.x, p.y)));
             if let Some(cat) = found
                 && !crew.iter().any(|&(e, _)| e == cat.0)
             {
@@ -6161,6 +6177,16 @@ impl Sim {
     /// Приказ игрока с карты (§12.303): куча и ячейка отвечают действием с вещью,
     /// остальное — обычное «иди туда». Парта отвечает первой, как и в `set_target`.
     pub fn command_at(&mut self, unit_id: &str, x: i32, y: i32) -> bool {
+        // Любой новый приказ гасит прежнее намерение выйти наверх (§12.349).
+        if let Some(cat) = self.cat_by_id(unit_id) {
+            self.world.entity_mut(cat).remove::<Outbound>();
+        }
+        // Шлюз отвечает на приказ своей ролью (§12.85): кот выходит наверх.
+        match self.outing_gate(unit_id, x, y) {
+            Some("") => return self.send_out(unit_id, x, y),
+            Some(_) => return false,
+            None => {}
+        }
         if self.teach_at(unit_id, x, y) {
             return true;
         }
@@ -6176,6 +6202,12 @@ impl Sim {
     /// `booked` · `unreachable` · `asleep`. Пустая строка — обычное «иди туда».
     /// Вид по тегу подбирает слово, а решает одно выражение на клик и панель.
     pub fn hand_tag(&mut self, unit_id: &str, x: i32, y: i32) -> String {
+        // Выход наверх (§12.349) — тегом `outing` или причиной отказа.
+        match self.outing_gate(unit_id, x, y) {
+            Some("") => return "outing".to_string(),
+            Some(why) => return why.to_string(),
+            None => {}
+        }
         match self.hand_verb(unit_id, x, y) {
             None => "",
             Some(HandVerb::Take(..)) => "take",
@@ -6185,6 +6217,64 @@ impl Sim {
             Some(HandVerb::Refuse(why)) => why,
         }
         .to_string()
+    }
+
+    /// Кот по `id`, где бы он ни был.
+    fn cat_by_id(&mut self, unit_id: &str) -> Option<Entity> {
+        let mut q = self.world.query::<(Entity, &UnitId)>();
+        q.iter(&self.world)
+            .find(|(_, id)| id.0 == unit_id)
+            .map(|(e, _)| e)
+    }
+
+    /// Ворота одиночного выхода наверх (§12.349): `None` — клетка не шлюз или
+    /// выхода в рулсете нет (приказ тогда обычный), `Some("")` — можно, иначе
+    /// тег отказа: `squad` (кот собирается с отрядом), `outside` (наверху уже
+    /// кто-то есть или туда идут — окрестности на одного). Одно выражение на
+    /// приказ и на подсказку под курсором (`hand_tag`).
+    fn outing_gate(&mut self, unit_id: &str, x: i32, y: i32) -> Option<&'static str> {
+        if self.world.resource::<OutingRules>().ticks <= 0 {
+            return None;
+        }
+        let tile = self.world.resource::<BaseMap>().tile_at(x, y);
+        if !self.world.resource::<TileRules>().is_gate(tile) {
+            return None;
+        }
+        let cat = self.cat_by_id(unit_id)?;
+        if self.world.get::<Away>(cat).is_some() {
+            return None;
+        }
+        if self.world.get::<Squad>(cat).is_some() {
+            return Some("squad");
+        }
+        let mut q = self
+            .world
+            .query_filtered::<Entity, Or<(With<Outing>, With<Outbound>)>>();
+        if q.iter(&self.world).any(|e| e != cat) {
+            return Some("outside");
+        }
+        Some("")
+    }
+
+    /// Послать кота наверх (§12.349): ношу — под ноги, как перед вылазкой
+    /// (§12.38), потом обычный приказ к шлюзу с намерением выйти.
+    fn send_out(&mut self, unit_id: &str, x: i32, y: i32) -> bool {
+        let Some(cat) = self.cat_by_id(unit_id) else {
+            return false;
+        };
+        if let Some(load) = self.world.get::<Carrying>(cat) {
+            let (item, count) = (load.item, load.count);
+            let at = self.world.get::<Position>(cat).map(|p| (p.x, p.y));
+            if let Some((px, py)) = at {
+                self.drop_stack(px, py, item, count, Some(Place::Paws(cat)));
+                self.world.entity_mut(cat).remove::<Carrying>();
+            }
+        }
+        if !self.set_target(unit_id, x, y) {
+            return false;
+        }
+        self.world.entity_mut(cat).insert(Outbound { gate: (x, y) });
+        true
     }
 
     fn hand_verb(&mut self, unit_id: &str, x: i32, y: i32) -> Option<HandVerb> {
@@ -6550,6 +6640,18 @@ impl Sim {
                     .map(|(id, e)| (id.0.clone(), e.spot))
                     .collect()
             };
+            // Одиночный выход наверх (§12.349) — тем же отдельным запросом:
+            // кто наверху и сколько ему осталось, кто идёт к шлюзу.
+            let upstairs: Vec<(String, i32)> = {
+                let mut q = self.world.query::<(&UnitId, &Outing)>();
+                q.iter(&self.world)
+                    .map(|(id, o)| (id.0.clone(), o.left))
+                    .collect()
+            };
+            let heading_up: Vec<String> = {
+                let mut q = self.world.query_filtered::<&UnitId, With<Outbound>>();
+                q.iter(&self.world).map(|id| id.0.clone()).collect()
+            };
             // Шаг, который кот делает прямо сейчас (§12.140), — тем же отдельным
             // запросом и по той же причине: кортеж выше уже упёрся в предел
             // арности `QueryData`.
@@ -6820,6 +6922,11 @@ impl Sim {
                     // обязан быть объясним: «ушёл на вылазку» видно в панели
                     // миссии, а «остался там» — только здесь (§12.40).
                     captive: captive.is_some(),
+                    outing: upstairs
+                        .iter()
+                        .find(|(u, _)| *u == id.0)
+                        .map_or(0, |&(_, left)| left),
+                    outbound: heading_up.contains(&id.0),
                     // Куда уже послан (§12.86): панель клетки этим отличает
                     // «пойдут» от «уже идёт».
                     order_x: order.map_or(-1, |o| o.x),

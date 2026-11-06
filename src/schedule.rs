@@ -16,6 +16,7 @@ use crate::jobs::{assign_jobs, prune_structures, work_jobs};
 use crate::missions::{gather_squad, run_missions};
 use crate::movement::{escape_voids, move_units, note_clutter, retry_orders, spread_units};
 use crate::needs::{assign_nap, assign_rest, collapse_exhausted, doze, sleep, tire};
+use crate::outing::run_outings;
 use crate::relay::assign_relay;
 use crate::research::{assign_research, work_research};
 use crate::seen::note_seen;
@@ -224,6 +225,10 @@ pub(crate) fn build_schedule() -> Schedule {
     // за это научился.
     let settle = (
         retry_orders,
+        // Одиночный выход наверх (§12.349): сразу за `retry_orders`, который
+        // снимает приказ дошедшему, и до `settle_stacks` — добыча ложится на
+        // шлюз, а тот мог стать ямой.
+        run_outings,
         escape_voids,
         spread_units,
         settle_stacks,

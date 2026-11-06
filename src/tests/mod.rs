@@ -27,6 +27,7 @@ mod muster;
 mod needs;
 mod news;
 mod orders;
+mod outing;
 mod panel;
 mod paths;
 mod record;
@@ -198,6 +199,10 @@ fn sim_from(rows: &[&str]) -> Sim {
     world.insert_resource(Goals::default());
     world.insert_resource(GoalHolds::default());
     world.insert_resource(Raids::default());
+    // Одиночного выхода наверх у схемы нет (§12.349): `ticks` ноль, и шлюз
+    // отвечает на приказ обычным «иди туда». Включает `set_outing`.
+    world.insert_resource(OutingRules::default());
+    world.insert_resource(Outings::default());
     world.insert_resource(Crafted::default());
     world.insert_resource(Earned::default());
     world.insert_resource(ItemRules::default());
@@ -3182,6 +3187,32 @@ impl Sim {
     fn in_squad(&mut self, unit: &str) -> bool {
         let cat = self.entity_of(unit);
         self.world.get::<Squad>(cat).is_some()
+    }
+
+    /// Включить одиночный выход наверх (§12.349).
+    fn set_outing(
+        &mut self,
+        ticks: i32,
+        toll: i32,
+        yields: &[&[(usize, i32)]],
+        floor: &[(usize, i32)],
+    ) {
+        let mut rules = self.world.resource_mut::<OutingRules>();
+        rules.ticks = ticks;
+        rules.toll = toll;
+        rules.yields = yields.iter().map(|y| y.to_vec()).collect();
+        rules.floor = floor.to_vec();
+    }
+
+    /// Кот наверху один (§12.349).
+    fn is_outside(&mut self, unit: &str) -> bool {
+        let cat = self.entity_of(unit);
+        self.world.get::<Outing>(cat).is_some()
+    }
+
+    /// Сколько выходов наверх вернулось (§12.349).
+    fn outings_done(&self) -> u32 {
+        self.world.resource::<Outings>().0
     }
 
     /// Кота нет на базе: отряд ушёл на вылазку.

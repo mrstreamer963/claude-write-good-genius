@@ -65,6 +65,7 @@ mod map;
 mod missions;
 mod movement;
 mod needs;
+mod outing;
 mod path;
 mod relay;
 mod research;
