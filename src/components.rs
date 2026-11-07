@@ -538,6 +538,10 @@ pub(crate) struct Mission {
     /// Доля запаса образцов, которую соберёт отряд (§12.264), в процентах —
     /// приборы на лапы, замороженные на уходе по тому же доводу.
     pub(crate) gather: i32,
+    /// Одиночка (§12.349): один свободный кот без стола брифинга. Слота не
+    /// занимает, за столом не рассаживается, идёт прямо к ближайшему шлюзу —
+    /// `node` у такой вылазки и есть этот шлюз.
+    pub(crate) solo: bool,
 }
 
 /// Чем кончилась работа на месте (§12.244) — то, что отряд несёт домой.
@@ -1866,6 +1870,8 @@ pub(crate) struct TileRule {
     /// Индекс **строго меньше собственного** — как у очереди целей (§12.209):
     /// цепочка идёт вперёд по палитре, и цикла не бывает по построению.
     pub(crate) after: Option<i16>,
+    /// Заказ, который обязан быть выполнен хоть раз (§12.349); `None` — ворот нет.
+    pub(crate) raided: Option<usize>,
     /// Поверх какого тайла ставится этот (§12.238); `None` — на основание.
     /// Индекс строго меньше собственного, как у `after`.
     pub(crate) on: Option<i16>,
@@ -2112,6 +2118,11 @@ impl TileRules {
     /// Тайл, который обязан быть построен, чтобы этот открылся (§12.210).
     pub(crate) fn after_of(&self, tile: i16) -> Option<i16> {
         self.of(tile).and_then(|r| r.after)
+    }
+
+    /// Какой заказ обязан быть выполнен, чтобы тайл открылся (§12.349).
+    pub(crate) fn raided_of(&self, tile: i16) -> Option<usize> {
+        self.of(tile).and_then(|r| r.raided)
     }
 }
 
@@ -2473,12 +2484,52 @@ pub(crate) struct MissionRule {
     /// Однократный заказ (§12.260): после первого успеха (журнал `Raids`) его
     /// больше не существует — прячется, как вылазка за своим без пленных.
     pub(crate) once: bool,
+    /// Заказ без отряда (§12.349): ходят только свободные коты, без стола и
+    /// слота; отряду и правилу автовылазки он не назначается.
+    pub(crate) nearby: bool,
     /// Возможности, которые отряд обязан нести (§12.260), маской по палитре
     /// `abilities:`. Ноль — любой отряд.
     pub(crate) abilities: u64,
+    /// Убывающая добыча по выполнениям (§12.349); пусто — обычный `loot`.
+    pub(crate) yields: Vec<Vec<(usize, i32)>>,
+    /// Круг порций за концом `yields` (§12.349).
+    pub(crate) floor: Vec<Vec<(usize, i32)>>,
 }
 
 impl MissionRule {
+    /// Добыча выполнения под номером `n` (с нуля) при полной доле (§12.349).
+    /// У обычного заказа — `loot` всегда; у истощаемого — запись `yields`, а
+    /// за концом списка — порция круга `floor`. Номер — сколько раз заказ уже
+    /// выполнен (журнал `Raids`). **Одно выражение на возвращение и прогноз**
+    /// (инвариант 14): карточка обещает ровно то, что ляжет на шлюз.
+    pub(crate) fn loot_for(&self, n: usize) -> &[(usize, i32)] {
+        if self.yields.is_empty() && self.floor.is_empty() {
+            return &self.loot;
+        }
+        if let Some(y) = self.yields.get(n) {
+            return y;
+        }
+        if self.floor.is_empty() {
+            return &[];
+        }
+        &self.floor[(n - self.yields.len()) % self.floor.len()]
+    }
+
+    /// Всё, что заказ вообще умеет принести, — для вопросов «кто привезёт
+    /// этот предмет» (§12.263), а не для добычи конкретного выхода.
+    pub(crate) fn loot_items(&self) -> Vec<usize> {
+        let mut out: Vec<usize> = self
+            .loot
+            .iter()
+            .chain(self.yields.iter().flatten())
+            .chain(self.floor.iter().flatten())
+            .map(|&(i, _)| i)
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
     /// Открыт ли заказ по шкалам-воротам: известность и технология (§12.24,
     /// §12.260). Одно выражение на снимок, ленту и заявку.
     pub(crate) fn unlocked(&self, fame: i32, techs: &Techs) -> bool {
@@ -3276,6 +3327,27 @@ impl AbilityRules {
 /// известность: это единственный момент, когда вылазка засчитана. Только растёт.
 #[derive(Resource, Default)]
 pub(crate) struct Raids(pub(crate) Vec<usize>);
+
+/// Сколько раз выполнен каждый заказ, по индексу `missions:` (§12.349). Журнал
+/// `Raids` помнит только «было ли», а убывающей добыче нужен номер выполнения.
+/// Пишется там же и тем же условием, что `Raids` (не провал), и только растёт.
+#[derive(Resource, Default)]
+pub(crate) struct RaidTally(pub(crate) Vec<u32>);
+
+impl RaidTally {
+    /// Сколько раз выполнен заказ.
+    pub(crate) fn of(&self, def: usize) -> usize {
+        self.0.get(def).copied().unwrap_or(0) as usize
+    }
+
+    /// Засчитать ещё одно выполнение.
+    pub(crate) fn bump(&mut self, def: usize) {
+        if self.0.len() <= def {
+            self.0.resize(def + 1, 0);
+        }
+        self.0[def] += 1;
+    }
+}
 
 /// Журнал: рецепты, по которым сделана хоть одна штука, по индексу в `recipes:`.
 ///

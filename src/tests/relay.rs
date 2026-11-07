@@ -575,6 +575,7 @@ fn dismissing_touches_config_only() {
 #[test]
 fn the_shipped_ruleset_puts_someone_on_the_radio() {
     let mut sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
+    sim.add_squad(); // стартовый отряд до §12.349
     sim.without_timeline();
     let relay = 11; // индекс `relay` в палитре тайлов
     assert!(sim.comms_of_tile(relay) > 0, "у рации есть сила связи");

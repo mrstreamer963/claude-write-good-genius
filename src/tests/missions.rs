@@ -960,6 +960,7 @@ fn a_node_never_becomes_a_workplace() {
 #[test]
 fn the_shipped_ruleset_sends_a_squad_out_and_back() {
     let mut sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
+    sim.add_squad(); // стартовый отряд до §12.349
     let parts = 1; // индекс `part` в палитре предметов
     let before = sim.item_total(parts);
 
@@ -981,55 +982,43 @@ fn the_shipped_ruleset_sends_a_squad_out_and_back() {
     assert_eq!(sim.mission_left(), None, "миссия закрыта");
 }
 
-/// Стартовая застройка даёт **ровно один** гараж и **ни одной** рации
-/// (§12.59, §12.152).
-///
-/// Гараж один — потому что первая вылазка обязана быть доступна сразу (без неё
-/// не берётся обязательная цель «Первая вылазка», §12.58), и ровно один —
-/// потому что с §12.152 гараж держит слот вылазки: заложи его залом, и база
-/// стартует с двумя десятками одновременных отрядов, то есть счётность
-/// выключена молча. Ровно этим сторож и полезен: правку `rect` в `build:`
-/// сделать легко, а увидеть её последствие — нет.
-///
-/// Рации нет **намеренно**: слота она больше не держит, значит первая вылазка
-/// без неё уходит, — и разница «с рацией / без» стала тем, что игрок открывает
-/// сам. Вернуть её в `build:` легко и по привычке, поэтому и стережём.
+/// Стартовая застройка (§12.349): **один шлюз, ни стола брифинга, ни рации**.
+/// Партия начинается с «Пошарить рядом» свободными котами — без стола и без
+/// связи, — а стол открывается первым выполнением. Вернуть стол или рацию в
+/// `build:` легко и по привычке, поэтому и стережём. Шлюз технологией не закрыт:
+/// это дорога назад.
 #[test]
-fn the_shipped_ruleset_starts_with_one_relay_node() {
+fn the_shipped_ruleset_starts_with_one_door_and_no_table() {
     let mut sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
-    let relay = 11; // индекс `relay` в палитре тайлов
-    let garage = 3; // индекс `garage` в палитре тайлов
+    let relay = sim.tile_index("relay").expect("рация в палитре");
+    let garage = sim.tile_index("garage").expect("шлюз в палитре");
 
-    assert_eq!(sim.gate_count(), 1, "гараж — одна клетка, а не зал");
-    assert_eq!(sim.relay_count(), 0, "а рации на старте нет вовсе");
+    assert_eq!(sim.exit_cells_of().len(), 1, "шлюз — одна клетка");
+    assert_eq!(sim.gate_count(), 0, "стола брифинга на старте нет");
+    assert_eq!(sim.relay_count(), 0, "и рации тоже");
     assert_eq!(sim.tile_tech(relay), None, "рация технологией не закрыта");
-    assert_eq!(sim.tile_tech(garage), None, "и гараж тоже");
+    assert_eq!(sim.tile_tech(garage), None, "и шлюз тоже");
+    let scavenge = sim.mission_index("scavenge").expect("«Пошарить рядом»");
     assert!(
-        sim.launch(0, squad(&["excellent", "sp2"])),
-        "первая вылазка доступна с первого тика и без связи",
+        sim.scavenge(scavenge, vec!["excellent".into()], -1),
+        "первое «Пошарить» доступно с первого тика, без стола и без связи",
     );
 }
 
-/// Стартовый отряд стоит в гараже с нулевого тика (§12.207).
-///
-/// Промах тут тихий: приписка ничего не делает сама, и забытое (или уехавшее
-/// вслед за перенесённым гаражом) поле `garage:` даёт не ошибку, а пустой штаб
-/// — то есть ровно тот обряд, ради отмены которого §12.207 и написана.
+/// Стартовые коты **ничьи** (§12.349): отряда нет, пока нет стола, и все трое
+/// могут пошарить рядом с нулевого тика.
 #[test]
-fn the_shipped_ruleset_starts_with_a_crew_in_the_garage() {
+fn the_shipped_ruleset_starts_with_free_cats() {
     let mut sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
-    let node = *sim.node_cells_of().first().expect("гараж в застройке");
-
-    assert_eq!(
-        sim.roster_at(node.0, node.1).len(),
-        sim.unit_count(),
-        "в отряде единственного гаража все стартовые коты",
-    );
+    for id in ["excellent", "sp2", "sp3"] {
+        assert_eq!(sim.enlisted_at(id), None, "{id} ни в каком отряде");
+    }
 }
 
 #[test]
 fn the_shipped_ruleset_has_a_mission_that_is_out_of_reach() {
     let mut sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
+    sim.add_squad(); // стартовый отряд до §12.349
     // Связь глушим: тест про лестницу сложности, а дежурный у рации прибавляет
     // отряду силы и делает «заведомо провальную» вылазку спорной (§12.60).
     sim.without_comms();

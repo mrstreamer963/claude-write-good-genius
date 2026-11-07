@@ -344,6 +344,7 @@ fn the_base_may_leave_him_there_and_go_for_loot() {
 #[test]
 fn the_shipped_ruleset_can_always_come_for_its_own() {
     let mut sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
+    sim.add_squad(); // стартовый отряд до §12.349
     sim.without_timeline(); // мир по расписанию — шум для чужой механики (§12.28)
     // И связь тоже (§12.60): тест про обратимость плена, а дежурный у рации
     // добавляет отряду силы и может вытянуть заведомо провальную вылазку.

@@ -25,7 +25,14 @@ const AUTOSAVE_EVERY = 120; // сим-тиков (20 с на ×1)
 const AUTOSAVE_EVERY_MS = 20000; // и не реже этого по реальным часам
 
 // Команды, которые мир не меняют: после них сохранять нечего.
-const READ_ONLY = new Set(["setSpeed", "save", "trace", "setBuildTile", "setHandAim"]);
+const READ_ONLY = new Set([
+  "setSpeed",
+  "save",
+  "trace",
+  "setBuildTile",
+  "setHandAim",
+  "setNearbyPick",
+]);
 
 let sim = null;
 let speed = 1; // 0 (пауза) | 1 | 5 | 10
@@ -174,6 +181,9 @@ onmessage = (e) => {
   }
   if (m.type === "setSpeed") {
     speed = m.speed;
+  } else if (m.type === "setNearbyPick") {
+    // Кого отметили в «Пошарить рядом» (§12.349): только для прогноза.
+    sim?.set_nearby_pick(m.units);
   } else if (m.type === "setHandAim") {
     handAim = m.aim;
   } else if (m.type === "setBuildTile") {
@@ -212,6 +222,10 @@ onmessage = (e) => {
     sim.set_auto_rest(m.on);
   } else if (m.type === "move" && sim) {
     sim.command_at(m.id, m.x, m.y);
+  } else if (m.type === "scavenge" && sim) {
+    // «Пошарить рядом» (§12.349): свободные коты без стола и слота. Ворота и
+    // прогноз считает ядро.
+    sim.scavenge(m.mission, m.units, m.site ?? -1);
   } else if (m.type === "launch" && sim) {
     // **Узел заменяет выбор отряда** (§12.61): состав живёт на клетке рации, и
     // кнопка адресуется узлом, а не списком котов. С двумя узлами иначе не
@@ -239,7 +253,9 @@ onmessage = (e) => {
   } else if (m.type === "cancelMission" && sim) {
     // По столу отряда (§12.315): у стола вылазка всегда одна, а по заказу две
     // зачистки разных очагов не различить.
-    sim.cancel_mission_at(m.x, m.y);
+    // Вылазка свободных котов стола не держит (§12.349) — по заказу.
+    if (m.def != null) sim.cancel_mission(m.def);
+    else sim.cancel_mission_at(m.x, m.y);
   } else if (m.type === "research" && sim) {
     // Тема — разметка работы: кота не выбираем, за неё сядет ближайший, кому
     // хватает «Науки» (см. `start_research` в ядре, §12.26). Платит склад.

@@ -56,7 +56,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 50;
+pub(crate) const FORMAT: u32 = 51;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -185,6 +185,9 @@ pub(crate) const SAVED: &[&str] = &[
     "Chronicle",
     "Goals",
     "Raids",
+    // Сколько раз выполнен каждый заказ (§12.349): по нему истощаются
+    // окрестности, и без него загруженная партия снова нашла бы их полными.
+    "RaidTally",
     "Crafted",
     "Earned",
     // Лента новостей (§12.120). В снимке она ради **базовой линии**: без неё
@@ -391,6 +394,9 @@ pub(crate) struct StateDto {
     /// расхождение было бы тихим: панель права, а условие «ещё не было».
     #[serde(default)]
     pub(crate) raids: Vec<usize>,
+    /// Номера выполнений по заказам (§12.349). `FORMAT` 51.
+    #[serde(default)]
+    pub(crate) raid_tally: Vec<u32>,
     #[serde(default)]
     pub(crate) crafted: Vec<usize>,
     #[serde(default)]
@@ -756,6 +762,9 @@ pub(crate) struct MissionDto {
     /// Доля сбора образцов (§12.264); `FORMAT` 42.
     #[serde(default)]
     pub(crate) gather: i32,
+    /// Одиночка (§12.349). `FORMAT` 51.
+    #[serde(default)]
+    pub(crate) solo: bool,
 }
 
 // ── Снять снимок ──────────────────────────────────────────────────────────
@@ -917,6 +926,7 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                     toll: m.toll,
                     abilities: m.abilities,
                     gather: m.gather,
+                    solo: m.solo,
                 }),
                 thing: match (e.get::<Thing>(), e.get::<Place>()) {
                     (Some(t), Some(p)) => {
@@ -995,6 +1005,7 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                 .collect(),
             goal_holds: world.resource::<GoalHolds>().0.clone(),
             raids: world.resource::<Raids>().0.clone(),
+            raid_tally: world.resource::<RaidTally>().0.clone(),
             crafted: world.resource::<Crafted>().0.clone(),
             earned: world.resource::<Earned>().0,
             news_open: world.resource::<News>().open.clone(),
@@ -1214,6 +1225,7 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
         .collect();
     world.resource_mut::<GoalHolds>().0 = s.goal_holds.clone();
     world.resource_mut::<Raids>().0 = s.raids.clone();
+    world.resource_mut::<RaidTally>().0 = s.raid_tally.clone();
     world.resource_mut::<Crafted>().0 = s.crafted.clone();
     world.resource_mut::<Earned>().0 = s.earned;
     {
@@ -1492,6 +1504,7 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
                 toll: m.toll,
                 abilities: m.abilities,
                 gather: m.gather,
+                solo: m.solo,
             });
         }
     }

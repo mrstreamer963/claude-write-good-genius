@@ -464,6 +464,7 @@ fn the_shipped_ruleset_opens_one_door_by_closing_another() {
     // Две «Свалки» — нейтральный старт: обе стороны ещё на нуле.
     fn base() -> Sim {
         let mut sim = shipped();
+        sim.add_squad(); // стартовый отряд до §12.349
         sim.without_timeline(); // мир по расписанию — шум для чужой механики
         for _ in 0..2 {
             assert!(sim.launch(0, squad(&["excellent", "sp2"])), "«Свалка»");

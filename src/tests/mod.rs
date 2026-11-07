@@ -24,6 +24,7 @@ mod jobs;
 mod layers;
 mod missions;
 mod muster;
+mod nearby;
 mod needs;
 mod news;
 mod orders;
@@ -198,6 +199,7 @@ fn sim_from(rows: &[&str]) -> Sim {
     world.insert_resource(Goals::default());
     world.insert_resource(GoalHolds::default());
     world.insert_resource(Raids::default());
+    world.insert_resource(RaidTally::default());
     world.insert_resource(Crafted::default());
     world.insert_resource(Earned::default());
     world.insert_resource(ItemRules::default());
@@ -236,6 +238,7 @@ fn sim_from(rows: &[&str]) -> Sim {
             mastered: Default::default(),
             lectern: false,
             after: String::new(),
+            raided: String::new(),
             // Улучшений у схемы нет (§12.238): всё стоит на основании, если
             // оно есть. Включает `set_on`.
             on: String::new(),
@@ -289,6 +292,8 @@ fn sim_from(rows: &[&str]) -> Sim {
         // Схема собрана мимо YAML, рулсета за ней нет — отпечатывать нечего.
         // Тесты сохранения работают на боевом `core.yaml`, где он настоящий.
         ruleset: 0,
+        nearby_pick: Vec::new(),
+        crew_view: None,
     }
 }
 
@@ -1833,6 +1838,24 @@ impl Sim {
         }
     }
 
+    /// Стартовый отряд боевого рулсета, каким он был до §12.349: стол брифинга
+    /// якорем в `(3, 10)` и три стартовых кота в его составе.
+    ///
+    /// С §12.349 стола на старте нет — партия начинается с «Пошарить рядом», а
+    /// стол открывается первым выполнением. Тестам, которые про вылазки
+    /// отрядом, а не про дорогу к столу, отряд ставится сразу; что стол
+    /// открывается «Пошарить», стережёт `the_shipped_ruleset_opens_the_table_by_scavenging`.
+    /// Возвращает якорь стола.
+    fn add_squad(&mut self) -> (i32, i32) {
+        let def = self.structure_index("muster").expect("место брифинга");
+        self.force_structure(def, 3, 10);
+        let node = self.node_cells_of()[0];
+        for id in ["excellent", "sp2", "sp3"] {
+            assert!(self.enlist(id, node.0, node.1), "{id} в отряд");
+        }
+        node
+    }
+
     /// Класс и лаборатория в жилой комнате боевого рулсета.
     ///
     /// Со §12.208 стартовая застройка их не содержит — парту и лабораторию
@@ -2063,6 +2086,11 @@ impl Sim {
     }
 
     /// В отряде какого узла кот числится (§12.61).
+    /// Индекс заказа по `id` — для тестов на боевом рулсете.
+    fn mission_index(&self, id: &str) -> Option<usize> {
+        self.missions.iter().position(|m| m.id == id)
+    }
+
     fn enlisted_at(&mut self, unit: &str) -> Option<(i32, i32)> {
         let mut q = self.world.query::<(&UnitId, &Enlisted)>();
         q.iter(&self.world)
@@ -2666,6 +2694,44 @@ impl Sim {
         if let Some(rule) = rules.0.get_mut(mission) {
             rule.work = work;
         }
+    }
+
+    /// Убывающая добыча заказа (§12.349): порции по выполнениям и круг пола.
+    fn set_yields(
+        &mut self,
+        mission: usize,
+        yields: &[&[(usize, i32)]],
+        floor: &[&[(usize, i32)]],
+    ) {
+        let mut rules = self.world.resource_mut::<MissionRules>();
+        let rule = &mut rules.0[mission];
+        rule.yields = yields.iter().map(|y| y.to_vec()).collect();
+        rule.floor = floor.iter().map(|y| y.to_vec()).collect();
+    }
+
+    /// Сколько раз выполнен заказ (§12.349).
+    fn tally_of(&self, mission: usize) -> usize {
+        self.world.resource::<RaidTally>().of(mission)
+    }
+
+    /// Заказ без отряда (§12.349): пометить заказ `nearby`.
+    fn set_nearby(&mut self, mission: usize) {
+        self.world.resource_mut::<MissionRules>().0[mission].nearby = true;
+    }
+
+    /// Кто в снимке «Пошарить рядом» свободен идти (§12.349), по порядку.
+    fn nearby_free(&mut self) -> Vec<String> {
+        self.nearby_snaps()
+            .into_iter()
+            .next()
+            .map(|n| n.free)
+            .unwrap_or_default()
+    }
+
+    /// Идёт ли сейчас заказ без отряда (§12.349).
+    fn mission_is_nearby(&mut self) -> bool {
+        let mut q = self.world.query::<&Mission>();
+        q.iter(&self.world).any(|m| m.solo)
     }
 
     /// Вылазка за своим (§12.40): за добычей не ходит, зато возвращает пленных.

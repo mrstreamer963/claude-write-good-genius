@@ -604,6 +604,7 @@ fn worn_out_gear_vanishes_and_the_cat_fetches_a_new_one() {
 #[test]
 fn the_shipped_ruleset_equips_its_cats_from_loot() {
     let mut sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
+    sim.add_squad(); // стартовый отряд до §12.349
     sim.without_timeline(); // караван приносит своё: здесь считаем добычу вылазки
     let suit = 3; // индекс `suit` в палитре предметов
 

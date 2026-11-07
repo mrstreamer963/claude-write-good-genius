@@ -229,6 +229,7 @@ fn the_two_lists_do_not_overlap() {
 #[test]
 fn a_saved_game_continues_identically() {
     let mut live = Sim::new(CORE).expect("рулсет");
+    live.add_squad(); // стартовый отряд до §12.349
     let sample = 2; // индекс `sample` в палитре предметов
     let bed = 4; // индекс `bed` в палитре тайлов: технологией не закрыт
 
@@ -294,6 +295,7 @@ fn a_saved_game_continues_identically() {
 #[test]
 fn a_crew_survives_a_save() {
     let mut live = Sim::new(CORE).expect("рулсет");
+    live.add_squad(); // стартовый отряд до §12.349
     let node = *live
         .node_cells_of()
         .first()
@@ -347,6 +349,7 @@ fn bookmarks_survive_a_save() {
 #[test]
 fn claims_survive_a_save() {
     let mut live = Sim::new(CORE).expect("рулсет");
+    live.add_squad(); // стартовый отряд до §12.349
     let sample = 2;
     let bed = 4;
 
@@ -672,6 +675,7 @@ fn a_bin_setting_survives_a_save() {
 #[test]
 fn an_auto_raid_rule_survives_a_save() {
     let mut live = Sim::new(CORE).expect("рулсет");
+    live.add_squad(); // стартовый отряд до §12.349
     live.without_timeline();
     let node = live
         .node_cells_of()
@@ -827,6 +831,7 @@ fn an_old_snapshot_does_not_hide_the_shelves() {
 #[test]
 fn a_personal_record_survives_a_save() {
     let mut live = Sim::new(CORE).expect("рулсет");
+    live.add_squad(); // стартовый отряд до §12.349
     live.without_timeline();
     assert!(
         live.launch(0, vec!["excellent".to_string(), "sp2".to_string()]),

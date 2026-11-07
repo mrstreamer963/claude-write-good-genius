@@ -772,6 +772,32 @@ pub(crate) fn gather_squad(
             continue;
         }
 
+        // **Заказ без отряда** (§12.349) стола не знает: дверь выбрана на заявке, и кот
+        // идёт прямо к ней. Снесли её — берётся ближайшая к ней; нет ни одной —
+        // заявка снимается, коты возвращаются к делам.
+        if mission.solo {
+            let at = mission.exit.unwrap_or(mission.node);
+            if !tiles.is_gate(map.tile_at(at.0, at.1)) {
+                mission.exit = nearest_exit(map, &tiles, at);
+            }
+            let Some(exit) = mission.exit else {
+                for &(cat_e, ..) in &squad {
+                    commands.entity(cat_e).remove::<(Squad, Path, Stride)>();
+                }
+                commands.entity(mission_e).despawn();
+                continue;
+            };
+            for &(cat_e, _, at, walking) in &squad {
+                if walking || at == exit {
+                    continue;
+                }
+                if let Some(steps) = find_path(map, &tiles, at, exit) {
+                    commands.entity(cat_e).insert(Path { steps });
+                }
+            }
+            continue;
+        }
+
         // **Снесённое место брифинга распускает собирающийся отряд** (§12.152,
         // §12.279). Правило то же, по которому снесённый станок уносит свой
         // заказ (§12.96): вылазка живёт в объекте, а объекта больше нет.
@@ -933,7 +959,9 @@ pub(crate) fn run_missions(
     factions: Res<FactionRules>,
     mut fame: ResMut<Fame>,
     mut standing: ResMut<Standing>,
-    mut raids: ResMut<Raids>,
+    // Журнал и номер выполнения (§12.349) — одним параметром: система упёрлась
+    // в предел арности.
+    (mut raids, mut tally): (ResMut<Raids>, ResMut<RaidTally>),
     mut blights: ResMut<Blights>,
     mut commands: Commands,
     mut missions: Query<(Entity, &mut Mission)>,
@@ -1152,7 +1180,11 @@ pub(crate) fn run_missions(
                     paws: 100,
                     sweep: false,
                 };
-                for &(item, count) in &rule.loot {
+                // Номер этого выполнения (§12.349): счёт уже вырос на конце
+                // работы, значит своё — на единицу меньше. У обычного заказа
+                // `loot_for` номера не читает.
+                let n = tally.of(mission.def).saturating_sub(1);
+                for &(item, count) in rule.loot_for(n) {
                     let got = loot_count(&items, crew, item, count, 0) * verdict.share / 100;
                     if got > 0 {
                         spill(&mut commands, &mut stacks, gate, item, got);
@@ -1209,7 +1241,8 @@ pub(crate) fn run_missions(
             // биологическая угроза от природы, у неё нет ни воли, ни лагеря, и
             // брать в плен там некому. Провал зачистки стоит добычи и здоровья,
             // но кот возвращается всегда. Отдельного поля у правила нет и не
-            // нужно: `cleanses` уже говорит, с чем отряд имел дело.
+            // нужно: `cleanses` уже говорит, с чем отряд имел дело. Третье —
+            // «Пошарить рядом» (§12.349): у порога брать в плен некому.
             //
             // Считается это **личным составом за вычетом пленных и минус один
             // за нового** (§12.59), а не «кто сейчас дома»: иначе число зависело
@@ -1222,6 +1255,7 @@ pub(crate) fn run_missions(
             let captive = if out.failed
                 && !rule.rescue
                 && rule.cleanses.is_none()
+                && !rule.nearby
                 && rescue_is_possible(&rules, fame.0, on_base)
             {
                 crew.iter()
@@ -1325,6 +1359,10 @@ pub(crate) fn run_missions(
             // «сходил и вернулся ни с чем» — не поступок, за который дают цель.
             if !out.failed && !raids.0.contains(&mission.def) {
                 raids.0.push(mission.def);
+            }
+            // Номер выполнения (§12.349) — тем же условием, рядом с журналом.
+            if !out.failed {
+                tally.bump(mission.def);
             }
             // Зачистка снимает очаг **целиком на полном успехе, а на неполном
             // сбивает ступень** (§12.206). Провал не двигает ничего.

@@ -2043,6 +2043,10 @@ body.rail-wide #screenbar .door-label {
   gap: 6px;
   margin-top: 8px;
 }
+.raidwin-act .nearby-go {
+  flex: 1 1 auto;
+  justify-content: center;
+}
 .raidwin-act .raid-go {
   flex: 1 1 auto;
   justify-content: center;
@@ -3264,6 +3268,17 @@ body.rail-wide #screenbar .door-label {
   fill: rgba(130, 215, 225, 0.1);
   stroke: rgba(130, 215, 225, 0.35);
   stroke-width: 1;
+  /* Ореол — окрестности (§12.349): бледнеет с каждым заметным выходом,
+     долю даёт ядро (`NearbySnap::left`). */
+  opacity: var(--near, 1);
+}
+/* База — вход в окрестности (§12.349): кликается, выбранная светится. */
+.map-home.pick {
+  cursor: pointer;
+}
+.map-home.on .map-home-halo {
+  fill: rgba(130, 215, 225, 0.28);
+  stroke: rgba(130, 215, 225, 0.8);
 }
 /* Участок-дорога (§12.292): караван ведут вдоль неё, и длина её — часть срока.
    Шире и плотнее ребра соседства: это путь, а не «куда может пойти очаг». */

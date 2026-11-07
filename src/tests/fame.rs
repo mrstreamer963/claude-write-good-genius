@@ -218,6 +218,7 @@ fn a_hired_cat_can_be_sent_on_a_raid() {
 #[test]
 fn the_shipped_ruleset_has_a_reachable_ladder() {
     let mut sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
+    sim.add_squad(); // стартовый отряд до §12.349
     sim.without_timeline(); // известность здесь только от вылазок (§12.28)
     sim.add_storage(); // найм платит **складом** (§12.24), а его со §12.215 строит игрок
 

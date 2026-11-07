@@ -894,6 +894,7 @@ fn every_target_gets_its_own_forecast() {
 #[test]
 fn the_shipped_ruleset_lets_the_first_squad_answer_a_fresh_blight() {
     let mut sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
+    sim.add_squad(); // стартовый отряд до §12.349
     // Связь глушим по тому же доводу, что и в лестнице вылазок: дежурный у
     // рации прибавляет силы, а тут меряется сам заказ (§12.60).
     sim.without_comms();
