@@ -556,8 +556,24 @@ onPanelClick(raidWinEl, ".raidwin-card[data-pick]", (card, e) => {
 });
 onPanelClick(raidWinEl, ".squad-sel", (b) => {
   const key = `${b.dataset.x},${b.dataset.y}`;
-  if (groupNodes.has(key)) groupNodes.delete(key);
-  else if (groupDef >= 0 && !b.classList.contains("off")) groupNodes.add(key);
+  if (groupNodes.has(key)) dropGroupNode(key);
+  else if (groupDef >= 0 && !b.classList.contains("off")) {
+    groupNodes.add(key);
+    // Добавленный отряд сразу становится целью «+» (§12.352): только что
+    // выбранный — тот, кого и собираются добирать.
+    groupAim = key;
+  }
+  syncGroupPick();
+  renderRaidWindow();
+});
+// Шапка отряда в «Идут» — выбор цели «+» (§12.352), а не уход из вылазки:
+// для этого рядом «×».
+onPanelClick(raidWinEl, ".squad-aim", (b) => {
+  groupAim = `${b.dataset.x},${b.dataset.y}`;
+  renderRaidWindow();
+});
+onPanelClick(raidWinEl, ".squad-drop", (b) => {
+  dropGroupNode(`${b.dataset.x},${b.dataset.y}`);
   syncGroupPick();
   renderRaidWindow();
 });
@@ -10408,8 +10424,21 @@ function raidGate(i, node) {
   // заявку; здесь только называем словом — и кто на базе её несёт.
   const lacks = node.lacks?.[i] ?? [];
   const lackWhy = lacks.length ? abilityWhy(lacks) : null;
+  // Пустой отряд не идёт (§12.352): у сборной список считает ядро
+  // (`NodeSnap::empty`, те же `empty_squads`, что отклонят заявку), у
+  // одиночного отряда — его же состав.
+  const empties = node.empty?.length
+    ? node.empty
+    : !node.nearby && node.crew.length === 0
+      ? [node.name]
+      : [];
+  const emptyWhy = empties.length
+    ? `${empties.length > 1 ? "пустые отряды" : "пустой отряд"}: ` +
+      `${empties.map((n) => `«${n}»`).join(", ")} — зачислите котов «+» или уберите «×»`
+    : null;
   const ready =
     !nogate &&
+    !emptyWhy &&
     !busyHere &&
     !taken &&
     known &&
@@ -10461,7 +10490,9 @@ function raidGate(i, node) {
                 : // ⚠️ **Перебор называется раньше сбора**: он чинится решением
                   // игрока (вычеркнуть), а сбор — временем (§12.116), и пока
                   // отряд спит, «вычеркните лишних» иначе не прозвучало бы.
-                  over
+                  emptyWhy
+                  ? `${hint} · ${emptyWhy}`
+                  : over
                   ? `${hint} · в отряде ${enlisted}, а больше ${most} этот заказ` +
                     ` не уводит — вычеркните лишних`
                   : !fit
@@ -10498,7 +10529,9 @@ function raidGate(i, node) {
               ? `нужна известность ${def.requires ?? 0}, у базы ${fame}`
               : nobody
                 ? nothingWhy
-                : over
+                : emptyWhy
+                  ? emptyWhy
+                  : over
                   ? `в отряде ${enlisted}, а больше ${most} этот заказ не уводит` +
                     ` — вычеркните лишних`
                   : !fit
@@ -13332,7 +13365,15 @@ function syncSlotPop(host) {
   const card = host === "dos" && anchor.closest(".dos-slot");
   const r = (card || anchor).getBoundingClientRect();
   const below = r.bottom + 4 + pop.offsetHeight <= innerHeight - 8;
-  const left = `${Math.round(card ? r.left : r.right + 6)}px`;
+  // Справа не влезает — встаёт слева от кнопки (§12.352): с «Идут» (§12.351)
+  // строки состава стоят в правой колонке, у самого края окна.
+  const w = pop.offsetWidth;
+  const x = card
+    ? r.left
+    : r.right + 6 + w <= innerWidth - 8
+      ? r.right + 6
+      : r.left - 6 - w;
+  const left = `${Math.round(Math.max(8, Math.min(x, innerWidth - 8 - w)))}px`;
   const top = `${Math.round(
     card
       ? below
@@ -15734,6 +15775,13 @@ function syncNearbyPick() {
 // «x,y» стола). Свободные коты — в `nearbyPick`.
 let groupDef = -1;
 const groupNodes = new Set();
+// Активный отряд (§12.352): куда «+» у свободного кота зачисляет. Ключ из
+// `groupNodes`; выпал оттуда — целью становится последний оставшийся.
+let groupAim = null;
+function dropGroupNode(key) {
+  groupNodes.delete(key);
+  if (groupAim === key) groupAim = [...groupNodes].at(-1) ?? null;
+}
 // Отмеченных ядро должно знать: прогноз под заказом оно считает тем же
 // `NodeSnap` по всем, кто идёт. Мир это не меняет.
 function syncGroupPick() {
@@ -16330,7 +16378,7 @@ function renderRaidWindow() {
   // кот из отметок выпадают сами.
   for (const k of [...groupNodes]) {
     const [x, y] = k.split(",").map(Number);
-    if (!nodeAt(x, y) || nodeAt(x, y).busy) groupNodes.delete(k);
+    if (!nodeAt(x, y) || nodeAt(x, y).busy) dropGroupNode(k);
   }
   syncCrewRows(groupLead());
   // Прогноз — по всем, кто идёт: ровно один отряд — его узел (с правилом
@@ -16343,9 +16391,10 @@ function renderRaidWindow() {
   raidWinEl.hidden = false;
 }
 
-// Первый отмеченный отряд — к нему «+» зачисляет свободного кота (§12.351).
+// Активный отряд — к нему «+» зачисляет свободного кота (§12.352). Цель
+// названа подсветкой шапки в «Идут», а не порядком кликов.
 function groupLead() {
-  const k = [...groupNodes][0];
+  const k = groupNodes.has(groupAim) ? groupAim : [...groupNodes].at(-1);
   if (!k) return null;
   const [x, y] = k.split(",").map(Number);
   return nodeAt(x, y) ?? null;
@@ -16360,19 +16409,43 @@ function groupForecast() {
 // составом, — и свободные коты. Клик по шапке или коту возвращает его влево.
 function groupHtml() {
   const parts = [];
+  const lead = groupLead();
+  const aimKey = lead ? `${lead.x},${lead.y}` : null;
   for (const k of groupNodes) {
     const [x, y] = k.split(",").map(Number);
     const n = nodeAt(x, y);
     if (!n) continue;
+    // Подсвечена одна цель «+»; пометка «сюда «+»» — когда есть из чего выбирать.
+    const aim = k === aimKey;
+    const many = groupNodes.size > 1;
+    const aimTip = aim
+      ? "Сюда «+» у свободного кота зачисляет"
+      : "Зачислять сюда «+» у свободного кота";
     parts.push(
-      `<button class="tool squad-sel on" data-key="sel@${k}" data-x="${x}" data-y="${y}"` +
-        ` data-tip="Убрать отряд из вылазки">${esc(n.name)}</button>`,
+      `<div class="squad-head">` +
+        `<button class="tool squad-aim${aim ? " aim" : ""}" data-key="aim@${k}"` +
+        ` data-x="${x}" data-y="${y}" data-tip="${esc(aimTip)}">${esc(n.name)}` +
+        (aim && many ? '<i class="squad-aim-note">сюда «+»</i>' : "") +
+        `</button>` +
+        `<button class="tool squad-drop" data-key="drop@${k}" data-x="${x}" data-y="${y}"` +
+        ` data-tip="Убрать отряд из вылазки">×</button></div>`,
     );
-    for (const g of crewList(lastSnap, x, y)) {
-      if (g.head !== "" && !g.op) continue;
-      if (g.op && g.rows.length) parts.push(`<div class="cat-sub crew-head">${esc(g.head)}</div>`);
+    const list = crewList(lastSnap, x, y);
+    if (!list.some((g) => g.head === "" && g.rows.length)) {
       parts.push(
-        `<div class="crew-list">${g.rows.map((r) => `<div class="crew-row">${r.html}</div>`).join("")}</div>`,
+        `<div class="cat-sub squad-empty squad-crew">${
+          aim
+            ? "состав пуст · «+» у свободного кота зачислит сюда"
+            : "состав пуст · щёлкните имя, чтобы зачислять сюда"
+        }</div>`,
+      );
+    }
+    for (const g of list) {
+      if (g.head !== "" && !g.op) continue;
+      if (g.op && g.rows.length)
+        parts.push(`<div class="cat-sub crew-head squad-crew">${esc(g.head)}</div>`);
+      parts.push(
+        `<div class="crew-list squad-crew">${g.rows.map((r) => `<div class="crew-row">${r.html}</div>`).join("")}</div>`,
       );
     }
   }
@@ -16650,10 +16723,13 @@ function syncCrewRows(sel) {
     }
     if (g.head) {
       const head = mk(`head:${g.key}`, "cat-sub crew-head");
+      head.classList.toggle("squad-crew", g.key.startsWith("sq"));
       if (head.textContent !== g.head) head.textContent = g.head;
       order.push(head);
     }
     const list = mk(`list:${g.key}`, "crew-list");
+    // Состав и радист отряда — с отступом под его шапкой (§12.352).
+    list.classList.toggle("squad-crew", g.key.startsWith("sq"));
     order.push(list);
     const rows = g.rows.map((r) => {
       const row = mk(`row:${r.id}`, "crew-row");

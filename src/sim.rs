@@ -3286,7 +3286,12 @@ impl Sim {
     /// Кого игрок собрал в сборную вылазку (§12.351): столы отрядов парами
     /// `x, y` и свободные коты. Только для прогноза, мир не меняет.
     pub fn set_group_pick(&mut self, nodes: Vec<i32>, units: Vec<String>) {
-        self.group_pick = nodes.as_chunks::<2>().0.iter().map(|p| (p[0], p[1])).collect();
+        self.group_pick = nodes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|p| (p[0], p[1]))
+            .collect();
         self.nearby_pick = units;
     }
 
@@ -3347,6 +3352,11 @@ impl Sim {
         }
         // «Пошарить» — заказ без отряда (§12.349).
         if rule.nearby && !nodes.is_empty() {
+            return false;
+        }
+        // Пустой отряд не идёт (§12.352): он ничего не прибавит, а уходом
+        // занял бы свой стол на всю вылазку.
+        if !self.empty_squads(&nodes).is_empty() {
             return false;
         }
         let aim = self.pick_aim(def, usize::try_from(site).ok());
@@ -4016,6 +4026,7 @@ impl Sim {
             auto_fail,
             fit,
             unfit: self.unfit_of(x, y),
+            empty: Vec::new(),
             operator: self.operator_of(x, y),
             boost: self.boost_at(x, y),
             operator_boost: self.operator_boost_at(x, y),
@@ -4102,6 +4113,20 @@ impl Sim {
         ids
     }
 
+    /// Имена отрядов из списка, у которых нет ни одного кота в составе
+    /// (§12.352). Одно выражение на ворота `send_group` и прогноз «Идут».
+    pub(crate) fn empty_squads(&mut self, nodes: &[(i32, i32)]) -> Vec<String> {
+        let cells = self.node_cells_of();
+        let labels = self.squad_labels();
+        nodes
+            .iter()
+            .filter_map(|&(x, y)| {
+                let i = cells.iter().position(|&c| c == (x, y))?;
+                self.roster_of(x, y).is_empty().then(|| labels[i].clone())
+            })
+            .collect()
+    }
+
     /// Прогноз «Окрестностей» (§12.349): тот же `NodeSnap`, что у отряда
     /// стола, по отмеченным свободным котам — на все заказы разом. Состав на
     /// время сборки подменяется клеткой-заглушкой (`crew_view`).
@@ -4122,8 +4147,9 @@ impl Sim {
         }
         self.crew_view = Some((NEARBY_AT, picked));
         let plan = self.outfit_plan();
-        let node = self.node_snap(NEARBY_AT.0, NEARBY_AT.1, String::new(), false, &plan);
+        let mut node = self.node_snap(NEARBY_AT.0, NEARBY_AT.1, String::new(), false, &plan);
         self.crew_view = None;
+        node.empty = self.empty_squads(&self.group_pick.clone());
         node
     }
 

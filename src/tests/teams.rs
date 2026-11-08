@@ -132,3 +132,23 @@ fn fatigue_is_paid_while_working() {
         "полработы — полцены: {start} → {mid}"
     );
 }
+
+/// Пустой отряд на вылазку не идёт (§12.352): сборная с ним отклоняется
+/// целиком, а прогноз «Идут» называет его по имени — тем же выражением.
+#[test]
+fn an_empty_squad_cannot_go() {
+    let mut sim = two_tables();
+    let m = sim.set_mission(1, 20, &[(0, 6)]);
+    sim.set_squad_range(m, 1, 3);
+    assert!(sim.enlist("a", 1, 2));
+    sim.set_group_pick(vec![1, 2, 5, 2], vec![]);
+    assert_eq!(sim.outskirts_snap().empty, vec!["Отряд 2".to_string()]);
+    assert!(!sim.launch_group(m, vec![1, 2, 5, 2], vec![], -1));
+    assert_eq!(sim.raid_count(), 0, "не ушёл никто");
+    assert!(!sim.in_squad("a"));
+
+    // Пустой убрали — непустой уходит.
+    sim.set_group_pick(vec![1, 2], vec![]);
+    assert!(sim.outskirts_snap().empty.is_empty());
+    assert!(sim.launch_group(m, vec![1, 2], vec![], -1));
+}
