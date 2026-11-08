@@ -543,12 +543,14 @@ onPanelClick(raidWinEl, ".squad-sel", (b) => {
   const x = Number(b.dataset.x);
   const y = Number(b.dataset.y);
   const again = !raidHome && raidWinAt?.x === x && raidWinAt?.y === y;
+  // Выбранная База переживает смену отряда (§12.355).
+  mapHome = atHome();
   raidHome = again;
   raidWinAt = again ? null : { x, y };
   nearbyPick.clear();
   syncNearbyPick();
-  const at = nodeSite(x, y);
-  if (!again && at >= 0) mapPick = at;
+  // Карту выбор отряда не трогает (§12.355): участок выбирает игрок, и
+  // прыжок к участку правила отряда уводил его от заказов, которые он смотрел.
   renderRaidWindow();
 });
 // Свёрнутые отряды штаба (§12.353): ключ — клетка стола «x,y». Это вид, а не
@@ -10865,7 +10867,7 @@ function syncRaidMap() {
     }
     // В «Окрестностях» участок выбирается так же (§12.349): по нему
     // фильтруется колонка заказов свободных котов.
-    g.classList.toggle("on", i === pick && !(raidHome && mapPick < 0));
+    g.classList.toggle("on", i === pick && !atHome());
     g.classList.toggle("hot", lit);
     g.classList.toggle("mine", going.has(i));
     // Участок занят отрядом — номером отряда на плашке у кружка (§12.292),
@@ -10951,7 +10953,7 @@ function syncRaidMap() {
   });
 
   syncRaidTrips();
-  raidUi.home?.classList.toggle("on", raidHome && mapPick < 0);
+  raidUi.home?.classList.toggle("on", atHome());
   // Окрестности: подпись про базу (§12.349). Сколько заметных выходов
   // осталось, говорит ядро (`NearbySnap::left`); ореол базы бледнеет вместе
   // с ним — картинка того, что окрестности пустеют.
@@ -10965,7 +10967,7 @@ function syncRaidMap() {
   }
   // Подпись про базу — пока в «Окрестностях» не выбран участок: выбранный
   // на карте участок подписывается как у отряда (§12.349).
-  if (raidHome && mapPick < 0) {
+  if (atHome()) {
     setHtml(
       raidUi.note,
       '<div class="map-h">База</div>' +
@@ -15713,6 +15715,7 @@ function openRaidWindow(x, y, pick = null) {
   // и окно открывается сразу на окрестностях.
   nearbyPick = new Set(pick ?? []);
   if (pick != null) mapPick = -1;
+  mapHome = false;
   syncNearbyPick();
   raidHome = pick != null;
   // Адресата дверь тулбара не называет: узел выбирает вид — первый свободный,
@@ -15746,6 +15749,13 @@ function syncNearbyPick() {
 // «Окрестности» и клик свободным котом по шлюзу. Пока столов нет, окно
 // другим и не бывает.
 let raidHome = false;
+// На карте выбрана База (§12.355). Отдельно от `raidHome` («отряд не выбран»):
+// раньше одно значило другое, и выбор отряда молча уводил карту с Базы.
+let mapHome = false;
+// База на карте — одно выражение на подсветку, подпись и колонку заказов.
+function atHome() {
+  return mapPick < 0 && (raidHome || mapHome);
+}
 
 
 // Прогноз «Окрестностей» в форме узла отряда (§12.349): ядро считает его тем
@@ -16131,6 +16141,7 @@ function buildSiteGraph(holder) {
     homeMark.classList.add("pick");
     homeMark.onmousedown = () => {
       raidHome = true;
+      mapHome = true;
       mapPick = -1;
       renderRaidWindow();
     };
@@ -16181,6 +16192,7 @@ function buildSiteGraph(holder) {
         }
       }
       mapPick = i;
+      mapHome = false;
       readNews(
         "raid",
         (meta?.missions ?? [])
@@ -16705,7 +16717,7 @@ function syncRaidCards(trips, node) {
   // «Пошарить рядом» — заказ **базы** (§12.349): стоит, пока на карте
   // выбрана база, и пропадает, когда выбран участок; заказы участков — только
   // при выбранном участке.
-  const base = !!node.nearby && mapPick < 0;
+  const base = atHome();
   const here = (i) =>
     meta.missions[i]?.nearby
       ? base
@@ -16733,7 +16745,11 @@ function syncRaidCards(trips, node) {
       "none",
       raid
         ? '<div class="cat-sub">других заказов нет — этот отряд уже в деле</div>'
-        : open.some(Boolean)
+        : base && !node.nearby
+          ? // Отряд на Базе (§12.355): «Пошарить рядом» — только свободным
+            // котам (§12.349), и пустая колонка без слова читалась бы поломкой.
+            '<div class="cat-sub">у Базы заказ один — «Пошарить рядом», и ходят туда только свободные коты: снимите выбор отряда или выберите участок на карте</div>'
+          : open.some(Boolean)
           ? `<div class="cat-sub">на участке «${esc(siteLabel(pick))}» заказов нет — выбери другой на карте</div>`
           : nothing,
     ]);

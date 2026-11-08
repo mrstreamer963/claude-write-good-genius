@@ -867,6 +867,12 @@ main#stage.mode-cursor #mode-banner {
 /* Рамки «в составе» нет (§12.353): кот стоит под шапкой своего отряда, и
    жёлтым каждой строки отряд говорил о себе второй раз — а цветом в списке
    говорят только причины (`idle`). */
+/* Но отмеченный свободный кот (§12.349) рамку держит (§12.355): под шапку он
+   не переезжает, и рамка — единственное, что говорит «пойдёт без отряда». */
+.raidwin-crew .crew-row:has(> .nearby-pick.on) {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
 .raidwin-crew .crew-row:has(> .crew-pick.idle) {
   border-color: var(--bad);
   box-shadow: inset 0 0 0 1px var(--bad);
