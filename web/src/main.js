@@ -17286,7 +17286,17 @@ function missionSidesRow(def, drops = []) {
 // только от заказа (добыча, раны, репутация), из палитры.
 function raidCard(i, node) {
   const def = (meta.missions ?? [])[i] ?? {};
-  const g = raidGate(i, node);
+  const g0 = raidGate(i, node);
+  // Заказ уже ведёт другой отряд (в сборе или в поле): прогноз «по этому
+  // составу» про него — неправда, молчим, как у занятого узла (§12.182).
+  // Кто ведёт и когда вернутся, называет строка «эту вылазку уже ведёт».
+  const g = missionsOut.some(
+    (m) =>
+      !(m.x === node.x && m.y === node.y) &&
+      raidKey(m.def, m.site) === raidKey(i, pickedTarget(i)),
+  )
+    ? { ...g0, busy: true }
+    : g0;
   const at = `${node.x}, ${node.y}`;
   const on = node.auto === i && node.auto_on;
   // Усыплённое правило на этом же заказе — не «нет правила»: заказ узел помнит,
@@ -17529,7 +17539,11 @@ function raidCard(i, node) {
   if (leadBy.length) {
     rows.push(
       `<div class="cat-sub">эту вылазку уже ведёт: ${leadBy
-        .map((k) => esc(nodes[k - 1].name))
+        .map((k) => {
+          const o = nodes[k - 1];
+          const m = missionsOut.find((r) => r.x === o.x && r.y === o.y);
+          return esc(o.name) + (m?.away ? ` — вернутся через ${m.left}` : "");
+        })
         .join(", ")}</div>`,
     );
   }
