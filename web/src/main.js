@@ -10428,7 +10428,14 @@ function raidGate(i, node) {
   // заявку; здесь только называем словом — и кто на базе её несёт.
   const lacks = node.lacks?.[i] ?? [];
   const lackWhy = lacks.length ? abilityWhy(lacks) : null;
+  // «Пошарить рядом» — только свободным котам (§12.349): ядро отклонит заявку
+  // отряда, и кнопка гаснет с причиной словом (§12.355).
+  const squadOut =
+    def.nearby && !node.nearby
+      ? "отряды сюда не ходят — только свободные коты: снимите выбор отряда"
+      : null;
   const ready =
+    !squadOut &&
     !nogate &&
     !busyHere &&
     !taken &&
@@ -10452,7 +10459,9 @@ function raidGate(i, node) {
   // заказчиком только тогда. То же и у «эту вылазку уже ведёт другой отряд».
   // Сперва то, что чинится решением игрока, потом то, что чинится временем, —
   // тот же порядок, что у строки правила автовылазки (§12.116).
-  const title = nogate
+  const title = squadOut
+    ? squadOut
+    : nogate
     ? `${hint} · ${nogate}`
     : distrust
       ? `${hint} · ${distrust}`
@@ -10501,7 +10510,9 @@ function raidGate(i, node) {
   // не пропала: она осталась в подсказке кнопки (`title`), где отвечает на «что
   // будет, если нажать», — §12.53 требует названной причины, а не названной
   // причины в каждой карточке.
-  const reason = nogate
+  const reason = squadOut
+    ? squadOut
+    : nogate
     ? nogate
     : distrust
       ? distrust
@@ -16727,7 +16738,9 @@ function syncRaidCards(trips, node) {
   // карточки.
   const open = (meta.missions ?? []).map(
     (_, i) =>
-      !hiddenRaid(i, !!node.nearby) &&
+      // У Базы карточка «Пошарить рядом» стоит и отряду (§12.355): с
+      // погашенной кнопкой и причиной словом, а не пустой колонкой.
+      !hiddenRaid(i, !!node.nearby || base) &&
       !going(i) &&
       (!untrustedRaid(i) || node.auto === i),
   );
@@ -16745,11 +16758,7 @@ function syncRaidCards(trips, node) {
       "none",
       raid
         ? '<div class="cat-sub">других заказов нет — этот отряд уже в деле</div>'
-        : base && !node.nearby
-          ? // Отряд на Базе (§12.355): «Пошарить рядом» — только свободным
-            // котам (§12.349), и пустая колонка без слова читалась бы поломкой.
-            '<div class="cat-sub">у Базы заказ один — «Пошарить рядом», и ходят туда только свободные коты: снимите выбор отряда или выберите участок на карте</div>'
-          : open.some(Boolean)
+        : open.some(Boolean)
           ? `<div class="cat-sub">на участке «${esc(siteLabel(pick))}» заказов нет — выбери другой на карте</div>`
           : nothing,
     ]);
@@ -17282,7 +17291,7 @@ function raidCard(i, node) {
   // называется словом — по `.off` браузер события мыши шлёт, в отличие от
   // `disabled` (§12.71).
   // Правила автовылазки у «Пошарить» нет (§12.349): оно живёт на столе.
-  const autoGate = autoGateHint("raids") || node.nearby;
+  const autoGate = autoGateHint("raids") || node.nearby || !!meta.missions[i]?.nearby;
   // Тумблер доступен и у закрытого заказа: правило ждёт ворот, как порог
   // производства ждёт материала, и поставить его заранее — это план (§12.67).
   // А вот до самой технологии тумблера нет вовсе: автоматики в игре ещё не
