@@ -16755,10 +16755,18 @@ function squadStats(away, raid, node, guide) {
 // две функции отрисовки, и они расходились молча (пропал список слота).
 // `sel` — выбранный отряд или `null` (идут отмеченные свободные).
 function crewGroups(sel) {
-  const groups = [];
+  // Порядок списка: сперва то, что можно отправить, — отряды дома и свободные
+  // коты, — ниже занятые вылазкой, по остатку до возвращения: кто вернётся
+  // раньше, тот выше. Ещё не ушедшим остаток — весь срок.
+  const idle = [];
+  const busy = [];
+  const eta = (m) => (m.away ? m.left : m.total);
   for (const n of nodes) {
+    const groups = [];
     const on = sel === n;
     const raid = missionsOut.find((m) => m.x === n.x && m.y === n.y);
+    if (n.busy && raid) busy.push({ eta: eta(raid), groups });
+    else idle.push(groups);
     const status = n.busy ? ` · ${squadMark(raid)}` : "";
     const folded = squadFolds.has(`${n.x},${n.y}`);
     // Свёрнутый отряд называет состав числом — иначе пустой и полный
@@ -16810,7 +16818,14 @@ function crewGroups(sel) {
     if (e.away) return "на вылазке";
     return jobLabel(e) || "";
   };
-  const rows = cats.map((e) => {
+  // Ушедшие «Пошарить рядом» (§12.349) отряда не имеют, но заняты так же:
+  // своя группа на вылазку, внизу вместе с отрядами в деле.
+  const outOf = (e) =>
+    missionsOut.find(
+      (m) => !nodes.some((n) => n.x === m.x && n.y === m.y) && m.squad.includes(e.id),
+    );
+  const freeGroups = [];
+  const rowOf = (e) => {
     const note = why(e);
     // Выбран отряд — строка зачисляет в него, иначе отмечает «без отряда».
     const into = !!sel;
@@ -16841,9 +16856,32 @@ function crewGroups(sel) {
       `<i class="crew-note${can ? " quiet" : ""}">${note ? esc(note) : "&nbsp;"}</i>` +
       "</span></button>";
     return { id: `free:${e.id}`, html: pick + gearSlots(e) };
-  });
-  if (rows.length) groups.push({ key: "free", head: "Свободные коты · без отряда", rows });
-  return groups;
+  };
+  const rows = [];
+  const raidRows = new Map();
+  for (const e of cats) {
+    const m = outOf(e);
+    if (!m) rows.push(rowOf(e));
+    else {
+      if (!raidRows.has(m)) raidRows.set(m, []);
+      raidRows.get(m).push(rowOf(e));
+    }
+  }
+  if (rows.length) freeGroups.push({ key: "free", head: "Свободные коты · без отряда", rows });
+  for (const [m, r] of raidRows) {
+    busy.push({
+      eta: eta(m),
+      groups: [
+        {
+          key: `out${m.def}`,
+          head: `${missionLabel(m.def)} · ${squadMark(m)}`,
+          rows: r,
+        },
+      ],
+    });
+  }
+  busy.sort((a, b) => a.eta - b.eta);
+  return [...idle.flat(), ...freeGroups, ...busy.flatMap((b) => b.groups)];
 }
 
 function syncCrewRows(sel) {
