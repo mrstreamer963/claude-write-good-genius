@@ -16847,7 +16847,9 @@ function crewGroups(sel) {
   const rowOf = (e) => {
     const note = why(e);
     // Выбран отряд — строка зачисляет в него, иначе отмечает «без отряда».
-    const into = !!sel;
+    // Выбран отряд в деле — его смотрят, а не набирают: клик отмечает кота
+    // идти без отряда, как без выбора.
+    const into = !!sel && !sel.busy;
     const can = into
       ? !sel.busy && !e.away && !wounded.has(e.id)
       : free.includes(e.id);
