@@ -7160,6 +7160,9 @@ impl Sim {
             let techs = self.world.resource::<Techs>();
             let seen = self.world.resource::<Seen>();
             let stat_rules = self.world.resource::<StatRules>();
+            // Рации базы — на вклад кандидата в радисты (§12.357): по лучшей,
+            // как `operator_boost_at` у ещё не севшего.
+            let radios: Vec<(i32, i32)> = crate::relay::relay_cells(map, tiles).collect();
             for (
                 id,
                 r,
@@ -7464,6 +7467,13 @@ impl Sim {
                     guide_step: guide_of(stat_rules, stats),
                     guide_cut: guide_cut(guide_of(stat_rules, stats)),
                     may_relay: crate::relay::may_operate(rules, skills),
+                    relay_boost: crate::relay::road_boost(
+                        radios
+                            .iter()
+                            .map(|&r| crate::relay::duty_gain(tiles, map, rules, skills, r))
+                            .max()
+                            .unwrap_or(0),
+                    ),
                 });
             }
         }

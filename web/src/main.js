@@ -507,15 +507,18 @@ onPanelClick(raidWinEl, ".crew-pick", (b) => {
     y: Number(b.dataset.y),
   });
 });
-onPanelClick(raidWinEl, ".crew-duty", (b) => {
-  // Не умеет «Связь» (§12.291): кнопка погашена классом, причина в подсказке.
+// Строка списка радиста (§12.357): приписать или снять — те же команды, что
+// раньше у кнопки рации в строке кота.
+onPanelClick(raidWinEl, ".radio-pick", (b) => {
+  // Не умеет «Связь» (§12.291) или в заявке: погашено классом, причина в подсказке.
   if (b.classList.contains("off")) return;
   sendAction({
-    type: b.dataset.in ? "unpostRelay" : "postRelay",
+    type: b.dataset.off ? "unpostRelay" : "postRelay",
     id: b.dataset.id,
     x: Number(b.dataset.x),
     y: Number(b.dataset.y),
   });
+  closeSlotPop();
 });
 // Слот снаряжения (§12.293): открывает список вещей для слота, повторный клик
 // закрывает. Это осмотр, а не команда — мимо `sendAction`.
@@ -4876,33 +4879,16 @@ function crewList(snap, x, y) {
         note ? esc(note) : "&nbsp;"
       }</i>` +
       "</span></button>";
-    // Слоты и рация стоят внутри карточки кота (§12.335), но кнопкой-соседом
+    // Слоты стоят внутри карточки кота (§12.335), но кнопкой-соседом
     // `.crew-pick`, а не её ребёнком: кнопка в кнопке недопустима. Карточкой
-    // рисуется сама строка `.crew-row` (стиль). Рация — **перед** слотами: у
-    // не умеющего «Связь» на её месте пустышка, и стоя последней, она оставляла
-    // справа дыру у каждой карточки без радиста; первой она лишь сдвигает
-    // слоты, и те стоят ровным столбцом по правому краю у всех.
-    // Дежурство — вторая кнопка той же строки: радист приписан к **этому**
-    // отряду (§12.285), а сядет за любую свободную рацию. Нет на базе ни одной
-    // рации — дежурить негде, и кнопки нет вовсе (§12.60).
+    // рисуется сама строка `.crew-row` (стиль).
+    // Рации у каждого кота больше нет (§12.357): радист у отряда один, и
+    // спрашивает о нём слот под составом (`radioSlotHtml`), а не столбик
+    // одинаковых кнопок. У самого радиста слот стоит в его строке.
     const kit = gearSlots(e);
-    if (!radioOnBase()) return { band, id: e.id, html: pick + kit };
-    const on = e.post_x === x && e.post_y === y;
-    // Допуск считает ядро (`may_relay`, §12.291). Снять приписку можно всегда:
-    // запертая отмена оставила бы её несбрасываемой.
-    // Не умеющему «Связь» значка нет вовсе: серые 📻 у всей колонки прятали
-    // ту одну, что отличает радиста. Место под кнопку остаётся пустым, чтобы
-    // строки не разъезжались по ширине.
-    const gap = `<span class="tool crew-duty void" aria-hidden="true">${statGlyph("relay")}</span>`;
-    if (!on && !e.may_relay) return { band, id: e.id, html: pick + gap + kit };
-    const dutyTip = on
-      ? "Снять с рации — останется в отряде бойцом"
-      : "Радист этого отряда: сядет за свободную рацию, когда отряд выйдет";
-    const duty =
-      `<button class="tool crew-duty${on ? " on" : ""}" data-id="${esc(e.id)}"` +
-      ` data-x="${x}" data-y="${y}"${on ? ' data-in="1"' : ""}` +
-      ` data-tip="${dutyTip}">${statGlyph("relay")}</button>`;
-    return { band, id: e.id, html: pick + duty + kit };
+    if (op && radioOnBase())
+      return { band, id: e.id, html: pick + radioSlotButton(x, y, e) + kit };
+    return { band, id: e.id, html: pick + kit };
   });
 
   // Четыре группы с подписями. Вопрос «почему сила 0, когда в отряде трое»
@@ -13297,6 +13283,12 @@ function syncSlotPop(host) {
   const pop = at?.pop;
   if (!pop) return;
   const mine = slotPick?.host === host;
+  // Слот радиста (§12.357) — тот же узел и тот же жест, но список не вещей,
+  // а котов, и адрес у него — отряд, а не кот.
+  if (mine && slotPick.slot === "radio") {
+    syncRadioPop(at, pop);
+    return;
+  }
   const e =
     mine && (lastSnap?.entities ?? []).find((c) => c.id === slotPick.id);
   const anchor =
@@ -13371,6 +13363,141 @@ function syncSlotPop(host) {
         : r.top - 4 - pop.offsetHeight
       : Math.min(r.top, innerHeight - pop.offsetHeight - 8),
   )}px`;
+  if (pop.style.left !== left) pop.style.left = left;
+  if (pop.style.top !== top) pop.style.top = top;
+}
+
+// Слот радиста (§12.357). Радист у отряда один, и вопрос «кто радист» — про
+// отряд, а не про кота: поэтому вместо кнопки рации у каждого кота — одно
+// место под составом, по клику список кандидатов (идиома слота снаряжения,
+// §12.293). Адрес слота — стол отряда: `data-id="@x,y"`.
+function radioSlotButton(x, y, op) {
+  const open =
+    slotPick?.host === "raid" && slotPick.slot === "radio" && slotPick.id === `@${x},${y}`;
+  const tip = op
+    ? `Радист: ${op.id}. Клик — сменить или снять`
+    : "Радист не назначен: отряд уйдёт без связи. Клик — выбрать";
+  return (
+    `<button class="tool crew-slot crew-radio ${op ? "worn" : "empty"}${open ? " open" : ""}"` +
+    ` data-id="@${x},${y}" data-slot="radio" data-tip="${esc(tip)}">${statGlyph("relay")}</button>`
+  );
+}
+
+// Пустое место радиста — строка во всю ширину: слот и подпись. «Отряд уйдёт
+// без связи» не пишем — пустой слот говорит это сам.
+function radioSlotHtml(n) {
+  const open =
+    slotPick?.host === "raid" && slotPick.slot === "radio" && slotPick.id === `@${n.x},${n.y}`;
+  return (
+    `<button class="tool crew-slot crew-radio wide empty${open ? " open" : ""}"` +
+    ` data-id="@${n.x},${n.y}" data-slot="radio"` +
+    ' data-tip="Радист сидит за рацией на базе и сокращает отряду дорогу. Клик — выбрать">' +
+    `${statGlyph("relay")}<span class="radio-text">Радист · не назначен</span></button>`
+  );
+}
+
+// Список кандидатов в радисты. Кто умеет «Связь» и сколько срежет дороги —
+// из ядра (`may_relay`, `relay_boost`); группы — по цене решения: свободного
+// берут даром, своего бойца — ценой его силы в поле (роли взаимоисключающие,
+// §12.278), чужого — отняв у соседнего отряда.
+function syncRadioPop(at, pop) {
+  const [x, y] = slotPick.id.slice(1).split(",").map(Number);
+  const node = nodeAt(x, y);
+  const anchor = at.root.querySelector(
+    `.crew-slot[data-id="${CSS.escape(slotPick.id)}"][data-slot="radio"]`,
+  );
+  if (!node || !anchor) {
+    slotPick = null;
+    pop.hidden = true;
+    return;
+  }
+  const cats = (lastSnap?.entities ?? []).filter((e) => !e.away);
+  const cur = cats.find((e) => e.post_x === x && e.post_y === y);
+  const busyAt = (cx, cy) => !!nodeAt(cx, cy)?.busy;
+  const nameAt = (cx, cy) => nodeAt(cx, cy)?.name ?? "";
+  const band = (e) =>
+    !e.may_relay
+      ? 3
+      : e.crew_x === x && e.crew_y === y
+        ? 1
+        : e.crew_x >= 0 || e.post_x >= 0
+          ? 2
+          : 0;
+  const heads = ["Свободные", "Из этого отряда", "Из других отрядов", "Не умеют «Связь»"];
+  const list = cats
+    .filter((e) => e !== cur)
+    .sort(
+      (a, b) =>
+        band(a) - band(b) ||
+        (b.relay_boost ?? 0) - (a.relay_boost ?? 0) ||
+        (a.id < b.id ? -1 : 1),
+    );
+  const rows = [];
+  if (cur) {
+    rows.push(
+      `<button class="tool slot-pick radio-pick" data-id="${esc(cur.id)}" data-x="${x}" data-y="${y}" data-off="1"` +
+        ' data-tip="Снять с рации — останется в отряде бойцом">' +
+        `<span class="slot-name">Снять</span><span class="slot-meta">${esc(cur.id)}</span></button>`,
+    );
+  }
+  let last = -1;
+  for (const e of list) {
+    const b = band(e);
+    if (b !== last) {
+      rows.push(`<div class="slot-group">${heads[b]}</div>`);
+      last = b;
+    }
+    const lvl = relayLevel(e);
+    // Боец этого или чужого отряда, уже ушедшего собираться, — в заявке
+    // (`Squad`), и `post_relay` его не примет: состав ушедшего не переигрывают.
+    const why = !e.may_relay
+      ? `Не умеет «${lvl.name}» — радистом не сядет`
+      : wounded.has(e.id)
+        ? "Ранен"
+        : e.crew_x >= 0 && busyAt(e.crew_x, e.crew_y)
+          ? `«${nameAt(e.crew_x, e.crew_y)}» в деле — состав не переигрывают`
+          : "";
+    const meta = [];
+    // Глифами, как в шапке отряда (§12.357): рация с «−N %» — тот же срез
+    // дороги, что `squadStats` пишет у отряда; меч с числом — сила бойца,
+    // которую отряд потеряет. Словами — в подсказке строки.
+    if (e.may_relay)
+      meta.push(`<span class="stat stat-ic on">${statGlyph("relay")}−${roadCut(e.relay_boost ?? 0)} %</span>`);
+    if (b === 1)
+      meta.push(`<span class="stat stat-ic">${statGlyph("force")}${e.raid_force ?? 0}</span>`);
+    if (b === 2)
+      meta.push(
+        e.crew_x >= 0 ? `из «${esc(nameAt(e.crew_x, e.crew_y))}»` : `радист «${esc(nameAt(e.post_x, e.post_y))}»`,
+      );
+    const facts = e.may_relay
+      ? `${lvl.name} ${lvl.lvl}: дорога отряда ${roadCutWord(e.relay_boost ?? 0)}` +
+        (b === 1 ? `. Сейчас боец, сила ${e.raid_force ?? 0}` : "") +
+        ". "
+      : "";
+    const tip =
+      why ||
+      facts +
+      (b === 1
+        ? "Станет радистом: в поле не пойдёт, сила отряда пересчитается без него"
+        : b === 2
+          ? "Станет радистом этого отряда: в прежнем его больше не будет"
+          : cur
+            ? `Станет радистом вместо ${cur.id} — тот останется в отряде бойцом`
+            : "Станет радистом: сядет за рацию, когда отряд выйдет");
+    rows.push(
+      `<button class="tool slot-pick radio-pick${why ? " off" : ""}" data-id="${esc(e.id)}" data-x="${x}" data-y="${y}"` +
+        ` data-tip="${esc(tip)}">` +
+        `<span class="slot-name">${esc(e.id)}</span>` +
+        `<span class="slot-meta radio-meta">${meta.join("")}</span></button>`,
+    );
+  }
+  if (!list.length && !cur)
+    rows.push('<div class="slot-row empty">На базе нет котов, кого посадить за рацию</div>');
+  setHtml(pop, `<div class="slot-head">${esc(node.name)} · радист</div>` + rows.join(""));
+  pop.hidden = false;
+  const r = anchor.getBoundingClientRect();
+  const left = `${Math.round(Math.min(r.right + 6, innerWidth - pop.offsetWidth - 8))}px`;
+  const top = `${Math.round(Math.max(8, Math.min(r.top, innerHeight - pop.offsetHeight - 8)))}px`;
   if (pop.style.left !== left) pop.style.left = left;
   if (pop.style.top !== top) pop.style.top = top;
 }
@@ -16591,16 +16718,15 @@ function crewGroups(sel) {
     // под своими шапками.
     for (const g of crewList(lastSnap, n.x, n.y)) {
       if (g.head === "" || g.op) {
+        const rows = g.rows.map((r) => ({ id: `${n.x},${n.y}:${r.id}`, html: r.html }));
+        // Пустое место радиста — слот (§12.357): клик открывает список
+        // кандидатов, как пустой слот снаряжения.
+        if (g.op && !rows.length)
+          rows.push({ id: `${n.x},${n.y}:radio`, html: radioSlotHtml(n) });
         groups.push({
           key: `sq${n.x},${n.y}:${g.op ? "op" : "crew"}`,
-          head: g.op
-            ? g.rows.length
-              ? g.head
-              : on
-                ? "Радист · не назначен — кнопка рации у кота, отряд уйдёт без связи"
-                : ""
-            : "",
-          rows: g.rows.map((r) => ({ id: `${n.x},${n.y}:${r.id}`, html: r.html })),
+          head: g.op && g.rows.length ? g.head : "",
+          rows,
         });
       }
     }
