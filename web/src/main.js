@@ -16888,7 +16888,7 @@ function crewGroups(sel) {
       raidRows.get(m).push(rowOf(e));
     }
   }
-  if (rows.length) freeGroups.push({ key: "free", head: "Свободные коты · без отряда", rows });
+  if (rows.length) freeGroups.push({ key: "free", head: "Без отряда", rows });
   for (const [m, r] of raidRows) {
     busy.push({
       eta: eta(m),
