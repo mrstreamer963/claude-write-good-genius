@@ -16772,7 +16772,7 @@ function squadStats(away, raid, node, guide) {
 // Когда вернутся: у ушедших — остаток, тем же числом, что в
 // карточке идущей вылазки («вернутся через N»); у собирающихся срока ещё нет.
 function backIn(m) {
-  return m?.away ? ` · через ${m.left}` : "";
+  return m?.away ? `осталось ${m.left} · ` : "";
 }
 
 function crewGroups(sel) {
@@ -16793,7 +16793,7 @@ function crewGroups(sel) {
     if (n.busy && raid)
       groups.push({
         key: `sqm${n.x},${n.y}`,
-        head: `${missionLabel(raid.def)} · ${squadMark(raid)}${backIn(raid)}`,
+        head: `${backIn(raid)}${missionLabel(raid.def)} · ${squadMark(raid)}`,
         bare: true,
         rows: [],
       });
@@ -16906,7 +16906,7 @@ function crewGroups(sel) {
       groups: [
         {
           key: `out${m.def}`,
-          head: `${missionLabel(m.def)} · ${squadMark(m)}${backIn(m)}`,
+          head: `${backIn(m)}${missionLabel(m.def)} · ${squadMark(m)}`,
           rows: r,
         },
       ],
