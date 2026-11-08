@@ -16348,7 +16348,8 @@ function renderRaidWindow() {
   raidUi.nearby.hidden = true;
   raidUi.crew.hidden = false;
   raidUi.cards.hidden = false;
-  raidUi.sum.hidden = !sel;
+  // Сводка живёт в шапке отряда (§12.356); блок над списком больше не нужен.
+  raidUi.sum.hidden = true;
   raidUi.rule.hidden = !sel;
   const raid = sel
     ? missionsOut.find((m) => m.x === sel.x && m.y === sel.y)
@@ -16453,6 +16454,31 @@ function summaryHtml(raid, node) {
   );
 }
 
+// Сводка отряда в его шапке (§12.356): сила и значки-итоги справа от имени,
+// у каждого отряда, а не блоком над списком у одного выбранного. Числа те же,
+// что считала `summaryHtml`: сила из ядра, значки — `squadStats`.
+function squadHeadSum(raid, node) {
+  const away = !!raid?.away;
+  const crew = away ? raid.squad : (node.ready ?? []);
+  if (!away && !node.crew.length) return '<span class="squad-sum quiet">пуст</span>';
+  const guide = (away ? raid.guide : node.guide) || "";
+  const force = away ? raid.strength : (node.force ?? 0);
+  const next =
+    !away && (node.force_next ?? node.force) !== node.force
+      ? `<b class="next" data-tip="Станет, когда отряд наденет приписанное. Уйдёт отряд в том, что на нём сейчас">→ ${node.force_next}</b>`
+      : "";
+  const lost = away ? commsLost(raid) : [];
+  return (
+    '<span class="squad-sum">' +
+    squadStats(away, raid, node, guide) +
+    (crew.length && !guide ? '<i class="quiet">без проводника</i>' : "") +
+    (lost.length ? `<i class="quiet">${esc(lost.join(" · "))}</i>` : "") +
+    `<b class="squad-force" data-tip="${esc(`Сила отряда. ${SQUAD_FORCE_RULE}`)}">${force}</b>` +
+    next +
+    "</span>"
+  );
+}
+
 function summarySub(comms, crewCount) {
   const sub = [
     ...comms,
@@ -16543,7 +16569,15 @@ function crewGroups(sel) {
     const count = folded ? ` · ${plural(n.crew.length, "кот", "кота", "котов")}` : "";
     groups.push({
       key: `sq${n.x},${n.y}`,
-      sel: { x: n.x, y: n.y, on, folded, text: `${n.name}${count}${status}` },
+      sel: {
+        x: n.x,
+        y: n.y,
+        on,
+        folded,
+        html:
+          `<span class="squad-title">${esc(n.name)}${count}${status}</span>` +
+          squadHeadSum(raid, n),
+      },
       rows: [],
     });
     if (folded) continue;
@@ -16659,7 +16693,13 @@ function syncCrewRows(sel) {
       b.dataset.x = g.sel.x;
       b.dataset.y = g.sel.y;
       b.classList.toggle("on", g.sel.on);
-      if (b.textContent !== g.sel.text) b.textContent = g.sel.text;
+      // Разметка шапки — только на изменении (§12.84), и сравнивается с
+      // записанной строкой, а не с `innerHTML`: браузер сериализует его по-своему,
+      // и сравнение с ним переписывало бы шапку каждым кадром.
+      if (b._html !== g.sel.html) {
+        b._html = g.sel.html;
+        b.innerHTML = g.sel.html;
+      }
       orderChildren(head, [fold, b]);
       order.push(head);
       continue;

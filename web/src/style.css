@@ -817,8 +817,41 @@ main#stage.mode-cursor #mode-banner {
 }
 .squad-sel {
   flex: 1;
+  min-width: 0;
   justify-content: flex-start;
+  gap: 8px;
   font-weight: 600;
+}
+.squad-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Сводка отряда в шапке (§12.356): значки и сила — справа от имени. */
+.squad-sum {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  font-weight: 400;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.squad-sum .squad-stats {
+  display: inline-flex;
+}
+.squad-sum .quiet,
+.squad-sum.quiet {
+  color: var(--muted);
+  font-style: normal;
+}
+.squad-force {
+  color: var(--accent);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+.squad-sum b.next {
+  color: var(--muted);
 }
 /* Стрелка свёртки состава (§12.353) — слева от имени, как у раскрывающихся
    разделов тулбара. */
