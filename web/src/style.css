@@ -861,6 +861,10 @@ main#stage.mode-cursor #mode-banner {
 .squad-line .stat,
 .squad-line .stat-pair,
 .squad-force,
+/* У отряда в деле сила серая, как всё в его приглушённой шапке. */
+.squad-sel.away .squad-force b {
+  color: inherit;
+}
 .squad-force i {
   white-space: nowrap;
   flex-shrink: 0;
