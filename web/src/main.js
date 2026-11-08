@@ -16796,6 +16796,7 @@ function crewGroups(sel) {
         x: n.x,
         y: n.y,
         on,
+        busy: n.busy,
         folded,
         html: squadHeadHtml(`${esc(n.name)}${count}`, raid, n),
       },
@@ -16954,6 +16955,7 @@ function syncCrewRows(sel) {
       b.dataset.x = g.sel.x;
       b.dataset.y = g.sel.y;
       b.classList.toggle("on", g.sel.on);
+      b.classList.toggle("away", !!g.sel.busy);
       // Разметка шапки — только на изменении (§12.84), и сравнивается с
       // записанной строкой, а не с `innerHTML`: браузер сериализует его по-своему,
       // и сравнение с ним переписывало бы шапку каждым кадром.
