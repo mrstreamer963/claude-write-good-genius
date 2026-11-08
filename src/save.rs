@@ -56,7 +56,7 @@ use crate::map::BaseMap;
 /// помнить — чинится тем же приёмом, что и сторож состава: тест считает
 /// отпечаток имён полей всех DTO и сверяет с константой рядом, а расхождение
 /// требует поднять `FORMAT`. На POC решено не заводить (§12.45).
-pub(crate) const FORMAT: u32 = 51;
+pub(crate) const FORMAT: u32 = 52;
 
 /// Что уходит в снимок. Порядок — как в `components.rs`: сперва компоненты,
 /// потом ресурсы состояния.
@@ -188,6 +188,9 @@ pub(crate) const SAVED: &[&str] = &[
     // Сколько раз выполнен каждый заказ (§12.349): по нему истощаются
     // окрестности, и без него загруженная партия снова нашла бы их полными.
     "RaidTally",
+    // Общая работа сборных вылазок (§12.351): без неё загруженная вылазка
+    // начала бы работу заново.
+    "Teams",
     "Crafted",
     "Earned",
     // Лента новостей (§12.120). В снимке она ради **базовой линии**: без неё
@@ -397,6 +400,9 @@ pub(crate) struct StateDto {
     /// Номера выполнений по заказам (§12.349). `FORMAT` 51.
     #[serde(default)]
     pub(crate) raid_tally: Vec<u32>,
+    /// Общая работа сборных вылазок (§12.351). `FORMAT` 52.
+    #[serde(default)]
+    pub(crate) teams: (u32, Vec<(u32, i32, i32)>),
     #[serde(default)]
     pub(crate) crafted: Vec<usize>,
     #[serde(default)]
@@ -765,6 +771,22 @@ pub(crate) struct MissionDto {
     /// Одиночка (§12.349). `FORMAT` 51.
     #[serde(default)]
     pub(crate) solo: bool,
+    /// Сборная вылазка (§12.351): номер, дорога в один конец, пройденное,
+    /// дошли ли, набранная работа, дорога домой и несомая добыча. `FORMAT` 52.
+    #[serde(default)]
+    pub(crate) team: u32,
+    #[serde(default)]
+    pub(crate) road: i32,
+    #[serde(default)]
+    pub(crate) gone: i32,
+    #[serde(default)]
+    pub(crate) arrived: bool,
+    #[serde(default)]
+    pub(crate) worked: i32,
+    #[serde(default)]
+    pub(crate) back: i32,
+    #[serde(default)]
+    pub(crate) haul: Vec<(usize, i32)>,
 }
 
 // ── Снять снимок ──────────────────────────────────────────────────────────
@@ -927,6 +949,13 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
                     abilities: m.abilities,
                     gather: m.gather,
                     solo: m.solo,
+                    team: m.team,
+                    road: m.road,
+                    gone: m.gone,
+                    arrived: m.arrived,
+                    worked: m.worked,
+                    back: m.back,
+                    haul: m.haul.clone(),
                 }),
                 thing: match (e.get::<Thing>(), e.get::<Place>()) {
                     (Some(t), Some(p)) => {
@@ -1006,6 +1035,13 @@ pub(crate) fn capture(world: &World, ruleset: u64) -> SaveFile {
             goal_holds: world.resource::<GoalHolds>().0.clone(),
             raids: world.resource::<Raids>().0.clone(),
             raid_tally: world.resource::<RaidTally>().0.clone(),
+            teams: {
+                let t = world.resource::<Teams>();
+                (
+                    t.next,
+                    t.work.iter().map(|(&k, &(l, w))| (k, l, w)).collect(),
+                )
+            },
             crafted: world.resource::<Crafted>().0.clone(),
             earned: world.resource::<Earned>().0,
             news_open: world.resource::<News>().open.clone(),
@@ -1226,6 +1262,11 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
     world.resource_mut::<GoalHolds>().0 = s.goal_holds.clone();
     world.resource_mut::<Raids>().0 = s.raids.clone();
     world.resource_mut::<RaidTally>().0 = s.raid_tally.clone();
+    {
+        let mut t = world.resource_mut::<Teams>();
+        t.next = s.teams.0;
+        t.work = s.teams.1.iter().map(|&(k, l, w)| (k, (l, w))).collect();
+    }
     world.resource_mut::<Crafted>().0 = s.crafted.clone();
     world.resource_mut::<Earned>().0 = s.earned;
     {
@@ -1505,6 +1546,13 @@ pub(crate) fn restore(world: &mut World, file: &SaveFile) {
                 abilities: m.abilities,
                 gather: m.gather,
                 solo: m.solo,
+                team: m.team,
+                road: m.road,
+                gone: m.gone,
+                arrived: m.arrived,
+                worked: m.worked,
+                back: m.back,
+                haul: m.haul.clone(),
             });
         }
     }

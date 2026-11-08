@@ -806,6 +806,18 @@ main#stage.mode-cursor #mode-banner {
   letter-spacing: 0.04em;
   font-size: 10px;
 }
+/* Выбранный заказ и блок «Идут» под ним (§12.351). */
+.raidwin-card[data-pick] {
+  cursor: pointer;
+}
+.raidwin-card.picked {
+  border-color: var(--accent);
+}
+.raid-group {
+  margin: -4px 0 10px 12px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--accent);
+}
 /* Шапка отряда в общем списке штаба (§12.349): клик выбирает, кто идёт. */
 .squad-sel {
   width: 100%;

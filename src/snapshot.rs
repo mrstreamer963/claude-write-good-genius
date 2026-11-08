@@ -1240,6 +1240,9 @@ pub(crate) struct MissionSnap {
     /// ушёл, `left == total`: сбор в срок вылазки не входит.
     pub(crate) left: i32,
     pub(crate) total: i32,
+    /// Номер сборной вылазки (§12.351): группы с одним номером идут на один
+    /// заказ, у каждой своя дорога.
+    pub(crate) team: u32,
     /// Кто в отряде и сколько нужно всего.
     pub(crate) squad: Vec<String>,
     pub(crate) size: usize,

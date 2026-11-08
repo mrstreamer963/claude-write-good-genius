@@ -293,7 +293,7 @@ pub(crate) fn sway(
     }
 }
 
-fn capped_paws(rule: &MissionRule, paws: usize) -> usize {
+pub(crate) fn capped_paws(rule: &MissionRule, paws: usize) -> usize {
     if rule.squad_max == 0 {
         paws
     } else {
@@ -584,34 +584,6 @@ impl Phase {
             Phase::Work => "work",
             Phase::Back => "back",
         }
-    }
-}
-
-pub(crate) fn phase(travel: i32, span: i32, left: i32) -> Phase {
-    let gone = span - left;
-    if gone < travel / 2 {
-        Phase::Travel
-    } else if left > back_ticks(travel, span) {
-        Phase::Work
-    } else {
-        Phase::Back
-    }
-}
-
-/// Докуда отряд дошёл по пути к месту, в тысячных (§12.292): 0 — у шлюза,
-/// 1000 — на месте (у участка-дороги — в конце дороги). Туда доля растёт за
-/// первую половину дороги, на работе стоит на 1000, назад убывает по
-/// `back_ticks` — **тем же разложением срока**, что и `phase`, поэтому значок
-/// на карте не скажет «на месте» про отряд, который ещё в пути (инвариант 14).
-///
-/// Срез связью (§12.277) двигает `left` быстрее — и значок идёт быстрее сам,
-/// без отдельного знания о радисте.
-pub(crate) fn way(travel: i32, span: i32, left: i32) -> i32 {
-    let gone = span - left;
-    match phase(travel, span, left) {
-        Phase::Travel => (gone * 1000 / (travel / 2).max(1)).clamp(0, 1000),
-        Phase::Work => 1000,
-        Phase::Back => (left * 1000 / back_ticks(travel, span).max(1)).clamp(0, 1000),
     }
 }
 
@@ -961,7 +933,7 @@ pub(crate) fn run_missions(
     mut standing: ResMut<Standing>,
     // Журнал и номер выполнения (§12.349) — одним параметром: система упёрлась
     // в предел арности.
-    (mut raids, mut tally): (ResMut<Raids>, ResMut<RaidTally>),
+    (mut raids, mut tally, mut teams): (ResMut<Raids>, ResMut<RaidTally>, ResMut<Teams>),
     mut blights: ResMut<Blights>,
     mut commands: Commands,
     mut missions: Query<(Entity, &mut Mission)>,
@@ -1053,7 +1025,11 @@ pub(crate) fn run_missions(
     // Есть ли кому платить опытом: домен «Связь» растёт от дежурства, но только
     // пока в поле кто-то есть — пустой эфир это не работа (§12.17, §12.60).
     let mut anyone_away = false;
+    // Живые вылазки (§12.351): у сборной общая работа в `teams`, и запись о
+    // ней уходит вместе с последней группой.
+    let mut alive: Vec<u32> = Vec::new();
     for (mission_e, mut mission) in &mut missions {
+        alive.push(mission.team);
         let Some(rule) = rules.0.get(mission.def) else {
             continue;
         };
@@ -1062,353 +1038,90 @@ pub(crate) fn run_missions(
         let exit = mission.exit;
         let gate = exit.unwrap_or(mission.node);
 
-        let squad: Vec<(Entity, (i32, i32), bool, bool, i32, i32)> = crew
+        let squad: Vec<(Entity, (i32, i32), bool, bool)> = crew
             .iter()
             .filter(|(_, s, ..)| s.0 == mission_e)
-            .map(|(e, _, _, p, path, away, skills, _, gear, _, stats, ..)| {
+            .map(|(e, _, _, p, path, away, ..)| {
                 let walking = path.is_some_and(|p| !p.steps.is_empty());
-                // Вклад кота в силу отряда: сам он стоит единицу, навык —
-                // сверху, надетое — ещё сверху. Нулевой навык поэтому не значит
-                // «бесполезен», а снаряжение — второе слагаемое, которое растёт
-                // не от навыка и не упирается в его потолок (§12.29).
-                let force = 1
-                    + raid.map_or(0, |s| level_of(&skill_rules, skills, s))
-                    + items.force_of_gear(gear);
-                (
-                    e,
-                    (p.x, p.y),
-                    walking,
-                    away.is_some(),
-                    force,
-                    guide_of(&stat_rules, stats),
-                )
+                (e, (p.x, p.y), walking, away.is_some())
             })
             .collect();
 
-        // Отряд в поле. База о нём ничего не знает: ни усталости, ни маршрутов —
-        // вылазка считается разом на конце работы (§12.22, §12.244), а не
-        // симулируется; домой отряд несёт только долю добычи.
-        if squad.iter().any(|&(.., away, _, _)| away) {
-            // Опыт капает за тик в поле, как и на любой другой работе (§12.17):
-            // начисляет его `train_skills` в конце цепочки, здесь только маркер.
+        // Группа в поле (§12.351): дорога туда своя, работа на месте общая с
+        // другими группами вылазки (считается ниже, по вылазкам), дорога
+        // домой снова своя.
+        if squad.iter().any(|&(.., away)| away) {
+            // Опыт капает за тик в поле, как и на любой другой работе (§12.17).
             if let Some(skill) = raid {
                 for &(cat_e, ..) in &squad {
                     commands.entity(cat_e).insert(Worked(skill));
                 }
             }
-            // Связь копится **за каждый тик**, пока где-то на базе сидит
-            // дежурный (§12.60, §12.152). Одним замером её мерить нельзя: на
-            // уходе хватило бы посадить кота на тик, а на возвращении бонус
-            // повис бы на том, кто случайно оказался у рации в последний тик, —
-            // это уже не решение игрока, а расписание.
-            // Отряд, который уже отработал, только идёт домой (§12.244): эфир
-            // ему больше ничего не даёт, и связь за эти тики не копится —
-            // иначе дежурство после дела поднимало бы уже посчитанный исход.
             anyone_away = true;
-            mission.left -= 1;
-
-            // Связь режет **дорогу** (§12.277): туда и обратно, но не работу на
-            // месте. Срез идёт лишними шагами срока и никогда не переступает
-            // границу стадии — иначе он съел бы тики работы, а переход в
-            // `Back` (где считается исход) случился бы мимо проверки ниже.
-            let (trip, span) = (mission.travel, mission.span);
-            let road = |left: i32| phase(trip, span, left);
-            let here = road(mission.left);
-            if here != Phase::Work && mission.left > 0 {
-                let node = mission.node;
-                let duty_here: i32 = duty_at
-                    .iter()
-                    .filter(|(spot, _)| *spot == node)
-                    .map(|(_, g)| g)
-                    .sum();
-                mission.covered += road_boost(duty_here);
-                while mission.covered >= 100 && mission.left > 0 && road(mission.left - 1) == here {
-                    mission.left -= 1;
-                    mission.saved += 1;
-                    mission.covered -= 100;
-                }
-                // Упёршийся в границу остаток не копится впрок: работа его
-                // не тратит, а на дорогу домой он дал бы рывок без дежурного.
-                mission.covered = mission.covered.min(100);
-            }
-
-            // Возвращение (§12.244): исход посчитан на конце работы, домой отряд
-            // несёт только добычу и (если шли за своим) пленных. Ниже — только
-            // то, что случается на шлюзе.
-            if mission.left <= 0 {
-                let Some(verdict) = mission.verdict else {
-                    // Срок без дороги назад не бывает короче работы (`back_ticks`
-                    // не больше `span`), поэтому сюда не попасть; на всякий
-                    // случай отряд вернётся ни с чем, а не повиснет в поле.
-                    commands.entity(mission_e).despawn();
-                    for &(cat_e, ..) in &squad {
-                        commands.entity(cat_e).remove::<(Away, Squad)>();
-                    }
-                    continue;
-                };
-                // Успешное спасение возвращает **всех**, кого нашли: делить
-                // своих на «этого забрали, а за тем сходите ещё раз» — это не
-                // сложность, а вторая ходка за тем же самым. Частичный успех
-                // тоже возвращает: доля считается в добыче, а кот либо дома,
-                // либо нет (§12.40).
-                if rule.rescue && !verdict.failed {
-                    for cat_e in &captives {
-                        commands
-                            .entity(cat_e)
-                            .remove::<(Away, Captive)>()
-                            .insert(Position {
-                                x: gate.0,
-                                y: gate.1,
-                            });
-                    }
-                }
-                for &(cat_e, ..) in &squad {
-                    commands.entity(cat_e).remove::<(Away, Squad)>();
-                }
-                // Добыча ложится кучей на шлюз — ровно как возврат от сноса
-                // ложится под ноги сносильщику. Развозит её обычная уборка
-                // (§12.16). Доля — та, что посчитана на месте.
-                // Образцы — только отряду, который нёс прибор (§12.256): его
-                // возможность «сбор образцов» (§12.260) заморожена на уходе, потому что провал ломает снаряжение раньше,
-                // чем отряд доберётся домой.
-                let crew = Crew {
-                    road_cut: 0,
-                    work_toll: mission.toll,
-                    abilities: mission.abilities,
-                    toll_grants: 0,
-                    collectors: mission.gather,
-                    paws: 100,
-                    sweep: false,
-                };
-                // Номер этого выполнения (§12.349): счёт уже вырос на конце
-                // работы, значит своё — на единицу меньше. У обычного заказа
-                // `loot_for` номера не читает.
-                let n = tally.of(mission.def).saturating_sub(1);
-                for &(item, count) in rule.loot_for(n) {
-                    let got = loot_count(&items, crew, item, count, 0) * verdict.share / 100;
-                    if got > 0 {
-                        spill(&mut commands, &mut stacks, gate, item, got);
-                    }
-                }
-                commands.entity(mission_e).despawn();
+            let stage = mission.stage();
+            if stage == Phase::Work {
                 continue;
             }
-
-            // Ещё идут туда или работают — либо уже отработали и идут домой.
-            if mission.verdict.is_some()
-                || phase(mission.travel, mission.span, mission.left) != Phase::Back
-            {
-                continue;
-            }
-
-            // Конец работы (§12.244): исход считается **здесь**, а не на
-            // возвращении. Очаг гаснет, известность и репутация двигаются, раны
-            // и плен случаются в тот тик, когда отряд закончил дело, — иначе
-            // зачищенный участок горел бы на карте всю дорогу домой.
-            //
-            // Сила берётся по составу **сейчас**: за дорогу и работу навык
-            // вырос, и отнимать этот рост у самой вылазки было бы странно.
-            // Связь входит сюда же, в **ту же** силу, а не пятым слагаемым
-            // исхода: инвариант 14 держит `outcome` одним выражением на прогноз
-            // и на результат. Делится она на срок **до конца работы**, потому
-            // что дальше не копится.
-            let force: i32 = crew_force(rule, squad.iter().map(|&(.., f, _)| f));
-            // Опасность — та, какую встретил этот отряд: проводник режет её
-            // делением (§12.70), а разведка умножает на число лап (§12.113).
-            // Считается тем же выражением, что и в прогнозе для панели: игрок
-            // обязан получить то, что ему показали.
-            let guide = squad.iter().map(|&(.., g)| g).max().unwrap_or(0);
-            // Надбавка за очаг там, куда ходили (§12.198). Цель заморожена в
-            // момент заявки, а ступень берётся **сейчас**: отряд встретил то,
-            // что успело вырасти за дорогу, — в этом и цена промедления.
-            let extra = stage_danger(&blight_rules, mission.site.and_then(|s| blights.at(s)));
-            let out = outcome(crew_danger(rule, extra, guide, squad.len()), force);
-
-            // Кто из отряда остался там (§12.40). Выбор — **первый по `id`**, и
-            // это намеренно ничего не значит: причины плена игра не называет.
-            // Ни здоровье, ни навык сюда не входят — «оставили того, кому
-            // досталось больше» рассказывало бы, что своих раненых бросают, а
-            // это не про боевых котов. Что известно игроку — то и решает:
-            // провал вылазки, дальше подробности за кадром. `id` здесь ровно
-            // за детерминизмом (§11): порядок сущностей в ECS зависит от
-            // истории вставок, а «кого оставили» игрок увидит и запомнит.
-            //
-            // Своя же вылазка за пленным пленных не оставляет никогда, иначе
-            // неудачное спасение плодит второго пленника и база уходит в
-            // спираль. И некому идти — тоже не оставляет: см. `rescue_is_possible`.
-            //
-            // **Зачистка очага — второе такое исключение** (§12.198): очаг это
-            // биологическая угроза от природы, у неё нет ни воли, ни лагеря, и
-            // брать в плен там некому. Провал зачистки стоит добычи и здоровья,
-            // но кот возвращается всегда. Отдельного поля у правила нет и не
-            // нужно: `cleanses` уже говорит, с чем отряд имел дело. Третье —
-            // «Пошарить рядом» (§12.349): у порога брать в плен некому.
-            //
-            // Считается это **личным составом за вычетом пленных и минус один
-            // за нового** (§12.59), а не «кто сейчас дома»: иначе число зависело
-            // бы от того, сколько отрядов случайно в поле, и второй отряд
-            // страховал бы первый от потери.
-            let on_base = roster
+            // Связь режет **дорогу** (§12.277) туда и обратно, но не работу.
+            // Радист ведёт **свою** группу (§12.278, §12.351) — ту, к столу
+            // которой приписан. У свободных котов радиста нет.
+            let node = mission.node;
+            let duty_here: i32 = duty_at
                 .iter()
-                .count()
-                .saturating_sub(captives.iter().count() + lost_this_tick + 1);
-            let captive = if out.failed
-                && !rule.rescue
-                && rule.cleanses.is_none()
-                && !rule.nearby
-                && rescue_is_possible(&rules, fame.0, on_base)
-            {
-                crew.iter()
-                    .filter(|(_, s, ..)| s.0 == mission_e)
-                    .map(|(e, _, id, ..)| (id.0.as_str(), e))
-                    .min()
-                    .map(|(_, e)| e)
-            } else {
-                None
-            };
-            if captive.is_some() {
-                lost_this_tick += 1;
+                .filter(|(spot, _)| *spot == node)
+                .map(|(_, g)| g)
+                .sum();
+            mission.covered += road_boost(duty_here);
+            let mut step = 1;
+            while mission.covered >= 100 {
+                step += 1;
+                mission.saved += 1;
+                mission.covered -= 100;
             }
-
-            for &(cat_e, ..) in &squad {
-                let taken_captive = Some(cat_e) == captive;
-                // Пленный остаётся в поле: `Away` при нём, из отряда он выбыл
-                // здесь же — домой идут без него, и на возвращении его уже нет
-                // в составе.
-                if taken_captive {
-                    commands.entity(cat_e).remove::<Squad>().insert(Captive);
+            if stage == Phase::Travel {
+                let step = step.min(mission.road - mission.gone).max(0);
+                mission.gone += step;
+                mission.left = (mission.road - mission.gone) + mission.back;
+                if mission.gone >= mission.road {
+                    mission.arrived = true;
+                    // Срез связи на работу не переносится (§12.277).
+                    mission.covered = 0;
                 }
-                // Плата за вылазку — котовремя: та же валюта, в которой
-                // измеряется и сама отправка отряда. Провал забирает всё, и
-                // коты валятся у шлюза — `collapse_exhausted` подберёт их.
-                //
-                // Раны считаются **той же долей**, что и добыча: полный успех не
-                // царапает никого, полсилы стоят половины `harm`, провал — всего
-                // (§12.37). Отдельной формулы для урона нет намеренно: две
-                // арифметики исхода разошлись бы, а прогноз в панели показывал
-                // бы игроку не то, что случится (§12.23).
-                if let Ok((.., energy, _, health, _, record, _)) = crew.get_mut(cat_e) {
-                    if let Some(mut energy) = energy {
-                        let toll = if out.failed { energy.0 } else { rule.toll };
-                        energy.0 = (energy.0 - toll).max(0);
-                    }
-                    // Личное дело помнит не урон, а **выход из строя**: сколько
-                    // раз вылазка довела кота до порога ранения. Царапина, после
-                    // которой он продолжил работать, — не то, о чём игрок
-                    // рассказывает про своего кота.
-                    let mut crossed = false;
-                    if let Some(mut health) = health {
-                        // Раны у всех одни — те, что посчитал исход. Пленному
-                        // сверх этого не достаётся ничего: плен — это место, а
-                        // не наказание, и добивать оставленного там кота ядру
-                        // незачем (§12.40).
-                        let before = health.0;
-                        health.0 = (health.0 - rule.harm * (100 - out.share) / 100).max(0);
-                        let hurt = hurts.hurt;
-                        crossed = before > hurt && health.0 <= hurt;
-                    }
-                    // Три поля дела из пяти — здесь, соседними строками с самими
-                    // событиями, как и журнал `Raids` ниже. Вылазка засчитывается
-                    // и провальная: «сходил» — это про кота, а не про добычу.
-                    if let Some(mut record) = record {
-                        record.note_raid(mission.def);
-                        if crossed {
-                            record.wounds += 1;
-                        }
-                        if taken_captive {
-                            record.captures += 1;
-                        }
-                    }
-                }
-                // Провал ломает снаряжение: до него он стоил только бодрости, а
-                // она восстанавливается бесплатно — то есть заведомо провальная
-                // вылазка была способом качать «Вылазку» за одно лишь время
-                // (§12.29). С §12.268 успех тоже изнашивает — но по выходу, а не
-                // целиком: `wear` у предмета говорит, сколько выходов вещь
-                // выдержит, и та же доля `share`, что у добычи и ран, решает,
-                // сколько снимет эта вылазка (`gear::wear_toll`). Потерянное
-                // кот доберёт сам — по приписке (`Outfit`).
-                // Личная вещь не ломается и не изнашивается (§12.256):
-                // анализатор Антенны другого пути в мир не имеет, и его потеря
-                // заперла бы образцы навсегда.
-                if let Ok((.., Some(gear), _, _, _, _)) = crew.get(cat_e) {
-                    let kept: Vec<usize> = match out.failed {
-                        true => gear.items().filter(|&i| items.personal(i)).collect(),
-                        false => crate::gear::worn_after(
-                            &items,
-                            gear,
-                            cat_e,
-                            &mut worn_things,
-                            out.share,
-                        ),
-                    };
-                    match kept.is_empty() {
-                        true => commands.entity(cat_e).remove::<Gear>(),
-                        false => commands.entity(cat_e).insert(Gear(kept)),
-                    };
-                }
+                continue;
             }
-            // Известность идёт той же долей, что и добыча: слухи расходятся по
-            // сделанному, а не по задуманному. Провал не приносит ничего — но и
-            // не отнимает: ворота, которые закрываются, читаются как поломка
-            // (§12.24).
-            fame.0 += rule.fame * out.share / 100;
-            // Журнал совершённого (§12.58). Пишется **здесь и только здесь**:
-            // это единственный момент, когда вылазка засчитана, — как деньги за
-            // продажу считает только `work_hauls`. Провал в журнал не идёт:
-            // «сходил и вернулся ни с чем» — не поступок, за который дают цель.
-            if !out.failed && !raids.0.contains(&mission.def) {
-                raids.0.push(mission.def);
+            mission.left -= step;
+            if mission.left > 0 {
+                continue;
             }
-            // Номер выполнения (§12.349) — тем же условием, рядом с журналом.
-            if !out.failed {
-                tally.bump(mission.def);
-            }
-            // Зачистка снимает очаг **целиком на полном успехе, а на неполном
-            // сбивает ступень** (§12.206). Провал не двигает ничего.
-            //
-            // Новой арифметики здесь нет: читается та же `out.share`, которой
-            // меряются добыча, известность, раны и репутация (инвариант 14), —
-            // просто у очага она читается ступенью, а не долей. Гриндом это не
-            // становится ровно потому, что очаг растёт, пока раненый отлёживается:
-            // отряд, сбивающий ступень медленнее, чем она возвращается, не
-            // выигрывает никогда — это гонка, а не терпение. Отсюда и то, что
-            // ступень сбивает **любой** неполный успех: доля уже назвала, чего
-            // отряд стоит, и второй порог поверх неё был бы четвёртым числом там,
-            // где хватает трёх.
-            //
-            // Породу сверяем **на месте**: пока отряд шёл, очаг могли зачистить
-            // с соседнего гаража, а на освободившийся участок могло сесть
-            // что-то другое. Снять чужой очаг «за компанию» значило бы отдать
-            // игроку работу, которой он не делал.
-            if let (Some(kind), Some(site)) = (rule.cleanses, mission.site)
-                && !out.failed
-                && blights.at(site).is_some_and(|b| b.def == kind)
-            {
-                if out.share >= 100 {
-                    // Земля выжжена на круг роста этой породы (§12.323).
-                    let ward = blight_rules.0.get(kind).map_or(0, |b| b.grows);
-                    blights.scorch(site, ward);
-                } else {
-                    blights.knock(site);
-                }
-            }
-            // Репутация расходится **по сделанному** — тем же выражением, что и
-            // добыча с известностью (§12.43). Отсюда её главное свойство: у
-            // провала доля нулевая, значит провал не двигает репутацию вовсе.
-            // Сорванный налёт на Синдикат Синдикат не разозлил — базе просто
-            // нечего ему предъявить, и наказания поверх наказания не выходит
-            // (§12.23 уже забрал добычу, силы, снаряжение и кота).
-            //
-            // Заказчику вверх, пострадавшему вниз, и **ровно настолько же**:
-            // это и делает нейтралитет нулевым, а не бесплатным. Две зеркальные
-            // вылазки, взятые по очереди, оставляют базу там же, где нашли.
-            sway(&mut standing, &factions, rule, out.share);
-            // Домой отряд несёт долю — по ней возвращение положит добычу.
-            mission.verdict = Some(Verdict {
-                share: out.share,
-                failed: out.failed,
+            // Возвращение (§12.244, §12.351): исход посчитан на конце работы,
+            // группа несёт свою долю добычи и (если шли за своим) пленных.
+            let verdict = mission.verdict.unwrap_or(Verdict {
+                share: 0,
+                failed: false,
             });
+            // Успешное спасение возвращает **всех**, кого нашли (§12.40), —
+            // группа, бывшая на месте.
+            if rule.rescue && !verdict.failed && mission.arrived {
+                for cat_e in &captives {
+                    commands
+                        .entity(cat_e)
+                        .remove::<(Away, Captive)>()
+                        .insert(Position {
+                            x: gate.0,
+                            y: gate.1,
+                        });
+                }
+            }
+            for &(cat_e, ..) in &squad {
+                commands.entity(cat_e).remove::<(Away, Squad)>();
+            }
+            // Добыча ложится кучей на свой шлюз (§12.22).
+            for &(item, got) in &mission.haul {
+                if got > 0 {
+                    spill(&mut commands, &mut stacks, gate, item, got);
+                }
+            }
+            commands.entity(mission_e).despawn();
             continue;
         }
 
@@ -1466,12 +1179,350 @@ pub(crate) fn run_missions(
             mission.toll = traits.work_toll;
             mission.abilities = traits.abilities;
             mission.gather = gather(traits, rule.squad_max);
-            mission.left = mission.span;
+            // Дорога у группы своя (§12.351): туда половина, обратно остаток.
+            mission.road = mission.travel / 2;
+            mission.back = mission.travel - mission.road;
+            mission.gone = 0;
+            mission.left = mission.road + mission.back;
+            // Работу вылазке назначает первая ушедшая группа: прибор сбора
+            // удлиняет её всем (§12.256).
+            if let Some(w) = teams.work.get_mut(&mission.team)
+                && w.1 < 0
+            {
+                let points = work(rule, traits);
+                *w = (points, points);
+            }
             for &(cat_e, ..) in &squad {
                 commands.entity(cat_e).insert(Away);
             }
         }
     }
+
+    // Работа на месте — **по вылазкам, а не по группам** (§12.351): очки
+    // убывают по лапам всех дошедших групп, каждая следующая работу ускоряет.
+    // Усталость списывается за тик, долей набранной работы: кот, пробывший
+    // на месте всю работу, отдаёт `toll` целиком, опоздавший — меньше.
+    let mut onsite_by_team: std::collections::BTreeMap<u32, Vec<(Entity, usize)>> =
+        Default::default();
+    for (mission_e, mission) in &missions {
+        if mission.arrived && mission.verdict.is_none() {
+            let paws = crew.iter().filter(|(_, s, ..)| s.0 == mission_e).count();
+            onsite_by_team
+                .entry(mission.team)
+                .or_default()
+                .push((mission_e, paws));
+        }
+    }
+    for (team, here) in onsite_by_team {
+        let Some(&(left, total)) = teams.work.get(&team) else {
+            continue;
+        };
+        let Some(def) = here
+            .first()
+            .and_then(|&(e, _)| missions.get(e).ok())
+            .map(|(_, m)| m.def)
+        else {
+            continue;
+        };
+        let Some(rule) = rules.0.get(def) else {
+            continue;
+        };
+        let paws: usize = here.iter().map(|&(_, p)| p).sum();
+        let rate = capped_paws(rule, paws) as i32;
+        let left = left - rate;
+        teams.work.insert(team, (left, total));
+        for &(party, _) in &here {
+            let Ok((_, mut m)) = missions.get_mut(party) else {
+                continue;
+            };
+            let before = if total > 0 {
+                rule.toll * m.worked / total
+            } else {
+                0
+            };
+            m.worked = (m.worked + rate).min(total.max(0));
+            let after = if total > 0 {
+                rule.toll * m.worked / total
+            } else {
+                0
+            };
+            if after > before {
+                for (_, s, .., energy, _, _, _, _, _) in crew.iter_mut() {
+                    if s.0 != party {
+                        continue;
+                    }
+                    if let Some(mut energy) = energy {
+                        energy.0 = (energy.0 - (after - before)).max(0);
+                    }
+                }
+            }
+        }
+        if left > 0 {
+            continue;
+        }
+
+        // Конец работы (§12.244): исход считается **по всем, кто был на
+        // месте** (§12.351) — сила их всех, проводник лучший из них.
+        let onsite: Vec<Entity> = crew
+            .iter()
+            .filter(|(_, s, ..)| here.iter().any(|&(p, _)| p == s.0))
+            .map(|(e, ..)| e)
+            .collect();
+        let site = here
+            .first()
+            .and_then(|&(e, _)| missions.get(e).ok())
+            .and_then(|(_, m)| m.site);
+        let forces: Vec<(i32, i32)> = crew
+            .iter()
+            .filter(|(e, ..)| onsite.contains(e))
+            .map(|(_, _, _, _, _, _, skills, _, gear, _, stats, ..)| {
+                let force = 1
+                    + raid.map_or(0, |s| level_of(&skill_rules, skills, s))
+                    + items.force_of_gear(gear);
+                (force, guide_of(&stat_rules, stats))
+            })
+            .collect();
+        let force: i32 = crew_force(rule, forces.iter().map(|&(f, _)| f));
+        let guide = forces.iter().map(|&(_, g)| g).max().unwrap_or(0);
+        let extra = stage_danger(&blight_rules, site.and_then(|s| blights.at(s)));
+        let out = outcome(crew_danger(rule, extra, guide, onsite.len()), force);
+        // Добыча — по тем, кто был на месте (§12.256, §12.260): прибор и
+        // возможности до износа, номер выполнения до журнала.
+        let traits = crew_traits(
+            &items,
+            &perk_rules,
+            crew.iter()
+                .filter(|(e, ..)| onsite.contains(e))
+                .map(|(.., gear, _, _, _, perks)| (perks, gear)),
+        )
+        .fielded(rule.abilities, ability_rules.active(&raids));
+        let n = tally.of(def);
+        let loot: Vec<(usize, i32)> = rule
+            .loot_for(n)
+            .iter()
+            .map(|&(item, count)| {
+                (
+                    item,
+                    loot_count(&items, traits, item, count, rule.squad_max) * out.share / 100,
+                )
+            })
+            .collect();
+
+        let on_base = roster
+            .iter()
+            .count()
+            .saturating_sub(captives.iter().count() + lost_this_tick + 1);
+        let captive = if out.failed
+            && !rule.rescue
+            && rule.cleanses.is_none()
+            && !rule.nearby
+            && rescue_is_possible(&rules, fame.0, on_base)
+        {
+            crew.iter()
+                .filter(|(e, ..)| onsite.contains(e))
+                .map(|(e, _, id, ..)| (id.0.as_str(), e))
+                .min()
+                .map(|(_, e)| e)
+        } else {
+            None
+        };
+        if captive.is_some() {
+            lost_this_tick += 1;
+        }
+
+        for &cat_e in &onsite {
+            let taken_captive = Some(cat_e) == captive;
+            // Пленный остаётся в поле: `Away` при нём, из отряда он выбыл
+            // здесь же — домой идут без него, и на возвращении его уже нет
+            // в составе.
+            if taken_captive {
+                commands.entity(cat_e).remove::<Squad>().insert(Captive);
+            }
+            // Плата за вылазку — котовремя: та же валюта, в которой
+            // измеряется и сама отправка отряда. Провал забирает всё, и
+            // коты валятся у шлюза — `collapse_exhausted` подберёт их.
+            //
+            // Раны считаются **той же долей**, что и добыча: полный успех не
+            // царапает никого, полсилы стоят половины `harm`, провал — всего
+            // (§12.37). Отдельной формулы для урона нет намеренно: две
+            // арифметики исхода разошлись бы, а прогноз в панели показывал
+            // бы игроку не то, что случится (§12.23).
+            if let Ok((.., energy, _, health, _, record, _)) = crew.get_mut(cat_e) {
+                if let Some(mut energy) = energy {
+                    // Усталость списана за тики работы (§12.351); разом — только
+                    // у заказа без работы на месте и у провала (всё).
+                    let toll = if out.failed {
+                        energy.0
+                    } else if total <= 0 {
+                        rule.toll
+                    } else {
+                        0
+                    };
+                    energy.0 = (energy.0 - toll).max(0);
+                }
+                // Личное дело помнит не урон, а **выход из строя**: сколько
+                // раз вылазка довела кота до порога ранения. Царапина, после
+                // которой он продолжил работать, — не то, о чём игрок
+                // рассказывает про своего кота.
+                let mut crossed = false;
+                if let Some(mut health) = health {
+                    // Раны у всех одни — те, что посчитал исход. Пленному
+                    // сверх этого не достаётся ничего: плен — это место, а
+                    // не наказание, и добивать оставленного там кота ядру
+                    // незачем (§12.40).
+                    let before = health.0;
+                    health.0 = (health.0 - rule.harm * (100 - out.share) / 100).max(0);
+                    let hurt = hurts.hurt;
+                    crossed = before > hurt && health.0 <= hurt;
+                }
+                // Три поля дела из пяти — здесь, соседними строками с самими
+                // событиями, как и журнал `Raids` ниже. Вылазка засчитывается
+                // и провальная: «сходил» — это про кота, а не про добычу.
+                if let Some(mut record) = record {
+                    record.note_raid(def);
+                    if crossed {
+                        record.wounds += 1;
+                    }
+                    if taken_captive {
+                        record.captures += 1;
+                    }
+                }
+            }
+            // Провал ломает снаряжение: до него он стоил только бодрости, а
+            // она восстанавливается бесплатно — то есть заведомо провальная
+            // вылазка была способом качать «Вылазку» за одно лишь время
+            // (§12.29). С §12.268 успех тоже изнашивает — но по выходу, а не
+            // целиком: `wear` у предмета говорит, сколько выходов вещь
+            // выдержит, и та же доля `share`, что у добычи и ран, решает,
+            // сколько снимет эта вылазка (`gear::wear_toll`). Потерянное
+            // кот доберёт сам — по приписке (`Outfit`).
+            // Личная вещь не ломается и не изнашивается (§12.256):
+            // анализатор Антенны другого пути в мир не имеет, и его потеря
+            // заперла бы образцы навсегда.
+            if let Ok((.., Some(gear), _, _, _, _)) = crew.get(cat_e) {
+                let kept: Vec<usize> = match out.failed {
+                    true => gear.items().filter(|&i| items.personal(i)).collect(),
+                    false => {
+                        crate::gear::worn_after(&items, gear, cat_e, &mut worn_things, out.share)
+                    }
+                };
+                match kept.is_empty() {
+                    true => commands.entity(cat_e).remove::<Gear>(),
+                    false => commands.entity(cat_e).insert(Gear(kept)),
+                };
+            }
+        }
+        // Известность идёт той же долей, что и добыча: слухи расходятся по
+        // сделанному, а не по задуманному. Провал не приносит ничего — но и
+        // не отнимает: ворота, которые закрываются, читаются как поломка
+        // (§12.24).
+        fame.0 += rule.fame * out.share / 100;
+        // Журнал совершённого (§12.58). Пишется **здесь и только здесь**:
+        // это единственный момент, когда вылазка засчитана, — как деньги за
+        // продажу считает только `work_hauls`. Провал в журнал не идёт:
+        // «сходил и вернулся ни с чем» — не поступок, за который дают цель.
+        if !out.failed && !raids.0.contains(&def) {
+            raids.0.push(def);
+        }
+        // Номер выполнения (§12.349) — тем же условием, рядом с журналом.
+        if !out.failed {
+            tally.bump(def);
+        }
+        // Зачистка снимает очаг **целиком на полном успехе, а на неполном
+        // сбивает ступень** (§12.206). Провал не двигает ничего.
+        //
+        // Новой арифметики здесь нет: читается та же `out.share`, которой
+        // меряются добыча, известность, раны и репутация (инвариант 14), —
+        // просто у очага она читается ступенью, а не долей. Гриндом это не
+        // становится ровно потому, что очаг растёт, пока раненый отлёживается:
+        // отряд, сбивающий ступень медленнее, чем она возвращается, не
+        // выигрывает никогда — это гонка, а не терпение. Отсюда и то, что
+        // ступень сбивает **любой** неполный успех: доля уже назвала, чего
+        // отряд стоит, и второй порог поверх неё был бы четвёртым числом там,
+        // где хватает трёх.
+        //
+        // Породу сверяем **на месте**: пока отряд шёл, очаг могли зачистить
+        // с соседнего гаража, а на освободившийся участок могло сесть
+        // что-то другое. Снять чужой очаг «за компанию» значило бы отдать
+        // игроку работу, которой он не делал.
+        if let (Some(kind), Some(site)) = (rule.cleanses, site)
+            && !out.failed
+            && blights.at(site).is_some_and(|b| b.def == kind)
+        {
+            if out.share >= 100 {
+                // Земля выжжена на круг роста этой породы (§12.323).
+                let ward = blight_rules.0.get(kind).map_or(0, |b| b.grows);
+                blights.scorch(site, ward);
+            } else {
+                blights.knock(site);
+            }
+        }
+        // Репутация расходится **по сделанному** — тем же выражением, что и
+        // добыча с известностью (§12.43). Отсюда её главное свойство: у
+        // провала доля нулевая, значит провал не двигает репутацию вовсе.
+        // Сорванный налёт на Синдикат Синдикат не разозлил — базе просто
+        // нечего ему предъявить, и наказания поверх наказания не выходит
+        // (§12.23 уже забрал добычу, силы, снаряжение и кота).
+        //
+        // Заказчику вверх, пострадавшему вниз, и **ровно настолько же**:
+        // это и делает нейтралитет нулевым, а не бесплатным. Две зеркальные
+        // вылазки, взятые по очереди, оставляют базу там же, где нашли.
+        sway(&mut standing, &factions, rule, out.share);
+        // Добыча делится **по лапам на месте** (§12.351): каждая группа несёт
+        // свою долю на свой шлюз, остаток от деления — первой по столу.
+        // Опоздавшие разворачиваются с пройденного пустыми, а не ушедшие ещё
+        // группы распускаются.
+        let verdict = Verdict {
+            share: out.share,
+            failed: out.failed,
+        };
+        let mut order: Vec<(Entity, usize)> = here.clone();
+        order.sort_by_key(|&(e, _)| missions.get(e).map(|(_, m)| m.node).ok());
+        let mut cut: Vec<Vec<(usize, i32)>> = vec![Vec::new(); order.len()];
+        for &(item, got) in &loot {
+            let mut given = 0;
+            for (k, &(_, p)) in order.iter().enumerate() {
+                let part = got * p as i32 / paws.max(1) as i32;
+                cut[k].push((item, part));
+                given += part;
+            }
+            if let Some(last) = cut.first_mut().and_then(|c| c.last_mut()) {
+                last.1 += got - given;
+            }
+        }
+        for (k, &(party, _)) in order.iter().enumerate() {
+            if let Ok((_, mut m)) = missions.get_mut(party) {
+                m.verdict = Some(verdict);
+                m.haul = std::mem::take(&mut cut[k]);
+                m.left = m.back;
+                m.covered = 0;
+            }
+        }
+        let mut stay: Vec<Entity> = Vec::new();
+        for (party, mut m) in &mut missions {
+            if m.team != team || m.verdict.is_some() {
+                continue;
+            }
+            if m.road > 0 {
+                m.verdict = Some(verdict);
+                m.back = m.gone;
+                m.left = m.gone;
+                m.covered = 0;
+            } else {
+                stay.push(party);
+            }
+        }
+        for party in stay {
+            for (cat_e, s, ..) in crew.iter() {
+                if s.0 == party {
+                    commands.entity(cat_e).remove::<Squad>();
+                }
+            }
+            commands.entity(party).despawn();
+        }
+        teams.work.remove(&team);
+    }
+    teams.work.retain(|k, _| alive.contains(k));
 
     // Опыт дежурным — **один раз за тик**, за циклом: внутри него он
     // начислялся бы по разу на вылазку. Сидит у рации только тот, чей отряд в
