@@ -16661,9 +16661,13 @@ function squadHeadHtml(title, raid, node) {
   const lost = away ? commsLost(raid) : [];
   // Раскладка постоянна (§12.356): ничего не переносится, и высота шапки
   // одна у свёрнутого и развёрнутого отряда, с любым числом значков.
+  // Срок возвращения — первым во второй строке: в строке имени он
+  // обрезался многоточием.
+  const back = away ? `<i class="squad-back">через ${raid.left}</i>` : "";
   const line = empty
     ? '<i class="quiet">пуст</i>'
-    : squadStats(away, raid, node, guide) +
+    : back +
+      squadStats(away, raid, node, guide) +
       (crew.length && !guide ? '<i class="quiet">без проводника</i>' : "") +
       (lost.length ? `<i class="quiet">${esc(lost.join(" · "))}</i>` : "");
   // Раскладка прежнего блока сводки (§12.356): слева столбик силы — крупное
@@ -16774,7 +16778,7 @@ function crewGroups(sel) {
     const raid = missionsOut.find((m) => m.x === n.x && m.y === n.y);
     if (n.busy && raid) busy.push({ eta: eta(raid), groups });
     else idle.push(groups);
-    const status = n.busy ? ` · ${squadMark(raid)}${backIn(raid)}` : "";
+    const status = n.busy ? ` · ${squadMark(raid)}` : "";
     const folded = squadFolds.has(`${n.x},${n.y}`);
     // Свёрнутый отряд называет состав числом — иначе пустой и полный
     // выглядели бы одинаково.

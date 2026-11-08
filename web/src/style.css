@@ -865,6 +865,13 @@ main#stage.mode-cursor #mode-banner {
   white-space: nowrap;
   flex-shrink: 0;
 }
+/* Срок возвращения у отряда в поле — первым в строке значков, не сжимается. */
+.squad-line .squad-back {
+  font-style: normal;
+  white-space: nowrap;
+  flex-shrink: 0;
+  color: var(--accent);
+}
 .squad-line .stat-ic {
   gap: 3px;
 }
