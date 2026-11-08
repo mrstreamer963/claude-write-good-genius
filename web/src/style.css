@@ -865,13 +865,6 @@ main#stage.mode-cursor #mode-banner {
   white-space: nowrap;
   flex-shrink: 0;
 }
-/* Срок возвращения у отряда в поле — первым в строке значков, не сжимается. */
-.squad-line .squad-back {
-  font-style: normal;
-  white-space: nowrap;
-  flex-shrink: 0;
-  color: var(--accent);
-}
 .squad-line .stat-ic {
   gap: 3px;
 }
@@ -945,6 +938,10 @@ main#stage.mode-cursor #mode-banner {
   margin-top: 18px;
   font-size: 12px;
   color: var(--accent, #e0c060);
+}
+/* Заказ, стадия и срок над шапкой отряда в деле — вплотную к ней. */
+.crew-head.crew-mission + .squad-head {
+  margin-top: 4px;
 }
 .crew-head:first-child {
   margin-top: 0;

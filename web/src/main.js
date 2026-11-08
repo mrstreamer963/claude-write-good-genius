@@ -16664,11 +16664,9 @@ function squadHeadHtml(title, raid, node) {
   // одна у свёрнутого и развёрнутого отряда, с любым числом значков.
   // Срок возвращения — первым во второй строке: в строке имени он
   // обрезался многоточием.
-  const back = away ? `<i class="squad-back">через ${raid.left}</i>` : "";
   const line = empty
     ? '<i class="quiet">пуст</i>'
-    : back +
-      squadStats(away, raid, node, guide) +
+    : squadStats(away, raid, node, guide) +
       (crew.length && !guide ? '<i class="quiet">без проводника</i>' : "") +
       (lost.length ? `<i class="quiet">${esc(lost.join(" · "))}</i>` : "");
   // Раскладка прежнего блока сводки (§12.356): слева столбик силы — крупное
@@ -16779,7 +16777,15 @@ function crewGroups(sel) {
     const raid = missionsOut.find((m) => m.x === n.x && m.y === n.y);
     if (n.busy && raid) busy.push({ eta: eta(raid), groups });
     else idle.push(groups);
-    const status = n.busy ? ` · ${squadMark(raid)}` : "";
+    // У отряда в деле заказ, стадия и срок — подписью над шапкой, как у
+    // котов «Пошарить рядом»: в строке имени срок обрезался.
+    if (n.busy && raid)
+      groups.push({
+        key: `sqm${n.x},${n.y}`,
+        head: `${missionLabel(raid.def)} · ${squadMark(raid)}${backIn(raid)}`,
+        bare: true,
+        rows: [],
+      });
     const folded = squadFolds.has(`${n.x},${n.y}`);
     // Свёрнутый отряд называет состав числом — иначе пустой и полный
     // выглядели бы одинаково.
@@ -16791,7 +16797,7 @@ function crewGroups(sel) {
         y: n.y,
         on,
         folded,
-        html: squadHeadHtml(`${esc(n.name)}${count}${status}`, raid, n),
+        html: squadHeadHtml(`${esc(n.name)}${count}`, raid, n),
       },
       rows: [],
     });
@@ -16963,10 +16969,12 @@ function syncCrewRows(sel) {
       const head = mk(`head:${g.key}`, "cat-sub crew-head");
       head.classList.toggle("squad-crew", g.key.startsWith("sq"));
       head.classList.toggle("crew-section", !!g.section);
+      head.classList.toggle("squad-crew", g.key.startsWith("sq") && !g.bare);
+      head.classList.toggle("crew-mission", !!g.bare);
       if (head.textContent !== g.head) head.textContent = g.head;
       order.push(head);
     }
-    if (g.section) continue;
+    if (g.section || g.bare) continue;
     const list = mk(`list:${g.key}`, "crew-list");
     // Состав и радист отряда — с отступом под его шапкой (§12.353).
     list.classList.toggle("squad-crew", g.key.startsWith("sq"));
