@@ -500,6 +500,15 @@ onPanelClick(raidWinEl, ".crew-pick", (b) => {
   // Погашенная классом строка события мыши шлёт — тем и ценна (§12.121), —
   // поэтому отказ проверяем сами; причина написана в подсказке.
   if (b.classList.contains("off") || b.classList.contains("nearby-pick")) return;
+  // Выбран другой отряд — кот переходит в него, а не выпадает в свободные:
+  // `enlist` сам снимает прежнюю приписку (кот числится в одном отряде, §12.61).
+  const sel = raidHome ? null : raidWinAt;
+  const x = Number(b.dataset.x);
+  const y = Number(b.dataset.y);
+  if (sel && (sel.x !== x || sel.y !== y)) {
+    sendAction({ type: "enlist", id: b.dataset.id, x: sel.x, y: sel.y });
+    return;
+  }
   sendAction({
     type: b.dataset.in ? "dismiss" : "enlist",
     id: b.dataset.id,
