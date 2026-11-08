@@ -76,6 +76,22 @@ fn one_node_holds_one_operator() {
     assert_eq!(sim.duty_of("b"), None, "вдвоём у одной рации не сидят");
 }
 
+/// Отряду в деле радиста берут только из свободных: приписанный к отряду кот
+/// перешёл бы за рацию посреди вылазки — у ушедшего отряда состав заморожен.
+#[test]
+fn a_busy_squad_takes_its_operator_only_from_the_free() {
+    let (mut sim, m) = sim_with_comms(2, 200);
+    sim.launch(m, squad(&["a"]));
+    sim.tick_n(5);
+    assert!(sim.enlist("c", 2, 1), "состав дома правится");
+    assert!(
+        !sim.post_relay("c", 2, 1),
+        "кот из отряда радистом не садится"
+    );
+    assert_eq!(sim.post_of("c"), None);
+    assert!(sim.post_relay("b", 2, 1), "свободного сажают и в деле");
+}
+
 /// Ноль в `comms` значит «дежурить незачем», и раздатчик к узлу не зовёт даже
 /// приписанного. Тем же нулём механика выключена в чужих тестах.
 #[test]

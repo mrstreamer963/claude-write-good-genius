@@ -13517,7 +13517,9 @@ function syncRadioPop(at, pop) {
       ? `Не умеет «${lvl.name}» — радистом не сядет`
       : wounded.has(e.id)
         ? "Ранен"
-        : e.crew_x >= 0 && busyAt(e.crew_x, e.crew_y)
+        : node.busy && b !== 0
+          ? `«${node.name}» в деле — радиста берут только из свободных`
+          : e.crew_x >= 0 && busyAt(e.crew_x, e.crew_y)
           ? `«${nameAt(e.crew_x, e.crew_y)}» в деле — состав не переигрывают`
           : "";
     const meta = [];

@@ -6277,6 +6277,21 @@ impl Sim {
         if self.world.get::<Squad>(cat_e).is_some() {
             return false;
         }
+        // Отряд уже в деле — радиста ему берут только из свободных: боец или
+        // радист другого отряда перешёл бы сюда посреди чужой вылазки.
+        let node_busy = {
+            let mut q = self.world.query::<&Mission>();
+            q.iter(&self.world).any(|m| m.node == (x, y))
+        };
+        if node_busy
+            && (self.world.get::<Enlisted>(cat_e).is_some()
+                || self
+                    .world
+                    .get::<Posted>(cat_e)
+                    .is_some_and(|p| p.spot != (x, y)))
+        {
+            return false;
+        }
         self.world
             .entity_mut(cat_e)
             .remove::<Enlisted>()
