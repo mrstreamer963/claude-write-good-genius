@@ -9052,6 +9052,9 @@ function buildToolbar() {
       `${wikiMark(`structure:${d.id}`)}${glyph}<span>${d.label || d.id}</span>${costChips(new Map(d.cost.map(([it, n]) => [meta.items[it]?.id ?? it, n])))}`,
       () => {
         if (b.classList.contains("off")) return;
+        // Новость про клетки штампа гаснет кликом по штампу, как у тайла
+        // (§12.224, §12.358).
+        readNews("tile", structTiles(i));
         selectStructure(i, b);
       },
     );
@@ -10125,7 +10128,10 @@ function squadBounds(def) {
 // отряда вовсе, нет шлюза — отряд есть, но выйти ему некуда.
 function gateHint() {
   const named = (key, fallback) => {
-    const t = (meta?.palette ?? []).find((d) => d?.[key]);
+    const i = (meta?.palette ?? []).findIndex((d) => d?.[key]);
+    // Стол — внутренность штампа: называем то, что стоит в палитре (§12.358).
+    const st = structOfTile(i);
+    const t = st >= 0 ? meta.structures[st] : meta?.palette?.[i];
     return t?.label || t?.id || fallback;
   };
   if (gates === 0) {
@@ -11173,7 +11179,14 @@ function newsText(n) {
   if (n.kind === "tile") {
     // Закрытий у постройки не бывает по тому же доводу, что у рецепта (§12.18),
     // — но ветку пишем: молчаливое «i» объяснить было бы нечем.
-    const label = name(meta?.palette, n.def);
+    // Внутренность штампа называем **именем штампа** (§12.358): в палитре
+    // стоит он, а не его клетка, и «Стол брифинга» в ленте рядом с кнопкой
+    // «Место брифинга» читался двумя разными постройками.
+    const st = structOfTile(n.def);
+    const label =
+      st >= 0
+        ? name(meta?.structures, st)
+        : name(meta?.palette, n.def);
     // Постройку открыл пришедший кот с навыком (`mastered`) — причину называем
     // **навыком, а не именем**: учёным может прийти любой кандидат, и имя в
     // тексте разошлось бы с рулсетом на первой же правке.
@@ -11281,6 +11294,15 @@ function openNewsTarget(kind, def) {
   else if (kind === "tile") {
     if (topWindow()) closeAllWindows();
     openOnly("Постройка");
+    const st = structOfTile(def);
+    if (st >= 0) {
+      const sb = structButtons.find((t) => t.def === st)?.btn;
+      if (sb && !sb.hidden && !sb.classList.contains("off")) {
+        readNews("tile", structTiles(st));
+        if (buildStruct !== st) selectStructure(st, sb);
+      }
+      return;
+    }
     const btn = tileButtons.find((t) => t.def === def)?.btn;
     if (btn && !btn.hidden && !btn.classList.contains("off")) {
       readNews("tile", [def]);
@@ -11306,6 +11328,11 @@ function openNewsTarget(kind, def) {
 // словарь. Нет палитры (или записи в ней) — нет и значка «i».
 function newsWikiKey(n) {
   if (n.kind === "rule") return `rule:${autoKind(n.def)}`;
+  if (n.kind === "tile") {
+    const st = structOfTile(n.def);
+    const sid = st >= 0 ? meta?.structures?.[st]?.id : null;
+    if (sid) return `structure:${sid}`;
+  }
   const from = { raid: "missions", recruit: "recruits", topic: "research" };
   const list =
     n.kind === "tile"
@@ -11974,6 +12001,37 @@ function syncNewsMarks() {
   for (const { btn, def } of tileButtons) {
     btn.classList.toggle("fresh", fresh.has(def));
   }
+  for (const { btn, def } of structButtons) {
+    btn.classList.toggle(
+      "fresh",
+      structTiles(def).some((t) => fresh.has(t)),
+    );
+  }
+}
+
+// Чья внутренность этот тайл (§12.358): штамп без своей технологии, в чьей
+// форме он стоит, — то же правило, каким «Открывает:» темы называет объект
+// вместо его клеток (§12.287). Не внутренний тайл или ничей — `-1`.
+function structOfTile(def) {
+  const pal = meta?.palette ?? [];
+  if (!pal[def]?.internal) return -1;
+  return (meta?.structures ?? []).findIndex(
+    (d) => !d.tech && (d.shapes?.[0] ?? []).some(([, , ti]) => ti === def),
+  );
+}
+
+// Внутренние тайлы штампа, о которых лента может объявить (§12.358).
+function structTiles(st) {
+  const pal = meta?.palette ?? [];
+  const d = (meta?.structures ?? [])[st];
+  if (!d || d.tech) return [];
+  return [
+    ...new Set(
+      (d.shapes?.[0] ?? [])
+        .map(([, , ti]) => ti)
+        .filter((ti) => pal[ti]?.internal),
+    ),
+  ];
 }
 
 function mkRegistryHeads(list, locked) {
