@@ -502,7 +502,7 @@ onPanelClick(raidWinEl, ".crew-pick", (b) => {
   if (b.classList.contains("off") || b.classList.contains("nearby-pick")) return;
   // Выбран другой отряд — кот переходит в него, а не выпадает в свободные:
   // `enlist` сам снимает прежнюю приписку (кот числится в одном отряде, §12.61).
-  const sel = raidHome ? null : raidWinAt;
+  const sel = raidHome || nodeAt(raidWinAt?.x, raidWinAt?.y)?.busy ? null : raidWinAt;
   const x = Number(b.dataset.x);
   const y = Number(b.dataset.y);
   if (sel && (sel.x !== x || sel.y !== y)) {
