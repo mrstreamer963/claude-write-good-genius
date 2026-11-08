@@ -37,9 +37,9 @@ use crate::hauling::{HAND_HOLD, best_tiers, free_space, plan_spend, stock_grid, 
 use crate::jobs::{BUILD_WORK, Plan, build_spot, may_build, site_clutter, work_spot};
 use crate::map::{BaseMap, rect_cells};
 use crate::missions::{
-    Crew, capped_paws, crew_danger, crew_force, crew_traits, duration, exit_cells, faction_is_met,
-    gather_squad, guide_cut, guide_of, guide_value, nearest_exit, node_cells, node_count,
-    numbered_as, outcome, squad_label, squad_name_gate, sway, tidy_squad_name, travel,
+    Crew, crew_danger, crew_force, crew_traits, duration, exit_cells, faction_is_met, gather_squad,
+    guide_cut, guide_of, guide_value, nearest_exit, node_cells, node_count, numbered_as, outcome,
+    phase, squad_label, squad_name_gate, sway, tidy_squad_name, travel, way,
 };
 use crate::movement::note_clutter;
 use crate::movement::{Busy, is_stuck};
@@ -129,8 +129,6 @@ pub struct Sim {
     /// миру не нужно и в снимок партии не идёт. По нему ядро считает прогноз
     /// карточки тем же `node_snap`, что у отряда.
     pub(crate) nearby_pick: Vec<String>,
-    /// Отряды, отмеченные в сборную вылазку (§12.351): столы, для прогноза.
-    pub(crate) group_pick: Vec<(i32, i32)>,
     /// Подмена состава на время сборки прогноза «Пошарить» (§12.349):
     /// клетка-заглушка и коты. Прогноз отряда считают помощники по клетке
     /// стола (`roster_of`, `unfit_of`), и чтобы не заводить второй экземпляр
@@ -2064,7 +2062,6 @@ impl Sim {
         world.insert_resource(GoalHolds::default());
         world.insert_resource(Raids::default());
         world.insert_resource(RaidTally::default());
-        world.insert_resource(Teams::default());
         world.insert_resource(Crafted::default());
         world.insert_resource(Earned::default());
         // Фракции — такая же палитра, как предметы и параметры: в правилах от
@@ -2545,7 +2542,6 @@ impl Sim {
             news: rs.news,
             ruleset: fingerprint(ruleset_yaml),
             nearby_pick: Vec::new(),
-            group_pick: Vec::new(),
             crew_view: None,
         };
         // Разведанные участки (§12.320) — сразу, по доводу `note_seen` выше:
@@ -3283,18 +3279,6 @@ impl Sim {
         self.nearby_pick = units;
     }
 
-    /// Кого игрок собрал в сборную вылазку (§12.351): столы отрядов парами
-    /// `x, y` и свободные коты. Только для прогноза, мир не меняет.
-    pub fn set_group_pick(&mut self, nodes: Vec<i32>, units: Vec<String>) {
-        self.group_pick = nodes
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|p| (p[0], p[1]))
-            .collect();
-        self.nearby_pick = units;
-    }
-
     /// Отправить **свободных** котов (§12.349) — не записанных ни в один
     /// отряд и не взятых на вылазку — на **любой** заказ без стола брифинга и
     /// без слота вылазки, прямо к ближайшему шлюзу. Ворота заказа те же, что
@@ -3305,100 +3289,8 @@ impl Sim {
             &mut self.world,
             format!("scavenge {def} {} {site}", units.join(",")),
         );
-        self.send_group(def, Vec::new(), units, site)
-    }
-
-    /// Сборная вылазка (§12.351): на один заказ разом идут отряды со своих
-    /// столов (`nodes`) и свободные коты (`units`). Каждый отряд — своя
-    /// группа со своей дорогой и своим радистом, каждый свободный кот —
-    /// группа из одного, от ближайшего к нему шлюза. Работа на месте и исход
-    /// — общие (`run_missions`).
-    ///
-    /// Всё или ничего: не прошла одна группа — не уходит никто.
-    pub fn launch_group(
-        &mut self,
-        def: usize,
-        nodes: Vec<i32>,
-        units: Vec<String>,
-        site: i32,
-    ) -> bool {
-        note(
-            &mut self.world,
-            format!("launch_group {def} {nodes:?} {} {site}", units.join(",")),
-        );
-        let nodes: Vec<(i32, i32)> = nodes
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|p| (p[0], p[1]))
-            .collect();
-        self.send_group(def, nodes, units, site)
-    }
-
-    fn send_group(
-        &mut self,
-        def: usize,
-        nodes: Vec<(i32, i32)>,
-        mut units: Vec<String>,
-        site: i32,
-    ) -> bool {
-        let Some(rule) = self.world.resource::<MissionRules>().0.get(def).cloned() else {
-            return false;
-        };
-        units.sort();
-        units.dedup();
-        if nodes.is_empty() && units.is_empty() {
-            return false;
-        }
-        // «Пошарить» — заказ без отряда (§12.349).
-        if rule.nearby && !nodes.is_empty() {
-            return false;
-        }
-        // Пустой отряд не идёт (§12.352): он ничего не прибавит, а уходом
-        // занял бы свой стол на всю вылазку.
-        if !self.empty_squads(&nodes).is_empty() {
-            return false;
-        }
-        let aim = self.pick_aim(def, usize::try_from(site).ok());
-        // Двух вылазок по одному заказу не бывает (§12.59): сборная — одна.
-        if self.mission_on(def, aim).is_some() {
-            return false;
-        }
-        // Минимум за своим и возможности заказа — по всей вылазке, а не по
-        // группе: прибор несёт один, сбор образцов достаётся всем (§12.260).
-        let mut cats: Vec<Entity> = self.ready_crew(&units).iter().map(|&(e, _)| e).collect();
-        if cats.len() != units.len() {
-            return false;
-        }
-        for &(x, y) in &nodes {
-            let roster = self.roster_of(x, y);
-            cats.extend(self.node_crew(&roster).iter().map(|&(e, _)| e));
-        }
-        let need = if rule.rescue { rule.squad } else { 1 };
-        if cats.len() < need || !self.traits_of(&cats).covers(rule.abilities) {
-            return false;
-        }
-        let team = self.world.resource_mut::<Teams>().open(-1);
-        let mut ok = true;
-        for &(x, y) in &nodes {
-            ok = ok && self.launch_node_party(def, x, y, aim, Some(team));
-        }
-        for id in units {
-            ok = ok && self.launch_party(def, vec![id], None, aim, true, Some(team));
-        }
-        if !ok {
-            let mut q = self.world.query::<(Entity, &Mission)>();
-            let gone: Vec<Entity> = q
-                .iter(&self.world)
-                .filter(|(_, m)| m.team == team)
-                .map(|(e, _)| e)
-                .collect();
-            for e in gone {
-                self.disband(e);
-            }
-            self.world.resource_mut::<Teams>().work.remove(&team);
-        }
-        ok
+        let aim = usize::try_from(site).ok();
+        self.launch_at(def, units, None, aim, true)
     }
 
     /// Отправить в вылазку отряд, приписанный к гаражу `(x, y)` (§12.61,
@@ -3440,25 +3332,9 @@ impl Sim {
         // Правило автовылазки ждёт готовности по-прежнему (`squad_is_fit` в
         // `run_auto_raids`): оно принимает решение без присмотра и занимало бы
         // слот на всё время сна.
-        let aim = usize::try_from(site).ok();
-        self.launch_node_party(def, x, y, aim, None)
-    }
-
-    /// Отряд стола `(x, y)` как группа вылазки (§12.351): весь состав, и
-    /// правило автовылазки на другом заказе усыпляется (§12.72, §12.77).
-    fn launch_node_party(
-        &mut self,
-        def: usize,
-        x: i32,
-        y: i32,
-        aim: Option<usize>,
-        team: Option<u32>,
-    ) -> bool {
-        if !self.is_node_at(x, y) || !self.node_is_free(x, y) {
-            return false;
-        }
         let units = self.roster_of(x, y);
-        if !self.launch_party(def, units, Some((x, y)), aim, false, team) {
+        let aim = usize::try_from(site).ok();
+        if !self.launch_at(def, units, Some((x, y)), aim, false) {
             return false;
         }
         // Отправили этот узел **на другой** заказ — правило автовылазки
@@ -4026,7 +3902,6 @@ impl Sim {
             auto_fail,
             fit,
             unfit: self.unfit_of(x, y),
-            empty: Vec::new(),
             operator: self.operator_of(x, y),
             boost: self.boost_at(x, y),
             operator_boost: self.operator_boost_at(x, y),
@@ -4113,20 +3988,6 @@ impl Sim {
         ids
     }
 
-    /// Имена отрядов из списка, у которых нет ни одного кота в составе
-    /// (§12.352). Одно выражение на ворота `send_group` и прогноз «Идут».
-    pub(crate) fn empty_squads(&mut self, nodes: &[(i32, i32)]) -> Vec<String> {
-        let cells = self.node_cells_of();
-        let labels = self.squad_labels();
-        nodes
-            .iter()
-            .filter_map(|&(x, y)| {
-                let i = cells.iter().position(|&c| c == (x, y))?;
-                self.roster_of(x, y).is_empty().then(|| labels[i].clone())
-            })
-            .collect()
-    }
-
     /// Прогноз «Окрестностей» (§12.349): тот же `NodeSnap`, что у отряда
     /// стола, по отмеченным свободным котам — на все заказы разом. Состав на
     /// время сборки подменяется клеткой-заглушкой (`crew_view`).
@@ -4138,18 +3999,10 @@ impl Sim {
             .filter(|id| free.contains(id))
             .cloned()
             .collect();
-        // Отряды сборной вылазки (§12.351) идут в прогноз всем составом.
-        let mut picked = picked;
-        for (x, y) in self.group_pick.clone() {
-            if self.is_node_at(x, y) {
-                picked.extend(self.roster_of(x, y));
-            }
-        }
         self.crew_view = Some((NEARBY_AT, picked));
         let plan = self.outfit_plan();
-        let mut node = self.node_snap(NEARBY_AT.0, NEARBY_AT.1, String::new(), false, &plan);
+        let node = self.node_snap(NEARBY_AT.0, NEARBY_AT.1, String::new(), false, &plan);
         self.crew_view = None;
-        node.empty = self.empty_squads(&self.group_pick.clone());
         node
     }
 
@@ -4164,7 +4017,6 @@ impl Sim {
             .collect()
     }
 
-    #[cfg(test)]
     pub(crate) fn launch_at(
         &mut self,
         def: usize,
@@ -4173,14 +4025,15 @@ impl Sim {
         asked: Option<usize>,
         solo: bool,
     ) -> bool {
-        self.launch_party(def, units, node, asked, solo, None)
-    }
-
-    /// Куда идёт вылазка (§12.198, §12.315) — одно выражение на заявку,
-    /// правило автовылазки и сборную вылазку (§12.351): у всех групп одной
-    /// вылазки цель одна.
-    fn pick_aim(&mut self, def: usize, asked: Option<usize>) -> Option<usize> {
-        let rule = self.world.resource::<MissionRules>().0.get(def).cloned()?;
+        let Some(rule) = self.world.resource::<MissionRules>().0.get(def).cloned() else {
+            return false;
+        };
+        // «Пошарить» — заказ без отряда (§12.349): отряд и правило
+        // автовылазки на него не ставятся. Свободные коты без стола ходят на
+        // **любой** заказ, ворота у них те же, что у отряда.
+        if rule.nearby && !solo {
+            return false;
+        }
         // Куда идём (§12.198). Одно выражение на заявку игрока, на правило
         // автовылазки и на прогноз в панели: «куда пойдёт этот отряд» обязано
         // отвечаться одинаково всем троим (инвариант 14).
@@ -4205,62 +4058,6 @@ impl Sim {
             .find(|s| !taken.contains(s));
             aim = free.or(aim);
         }
-        aim
-    }
-
-    /// Срок до возвращения каждой группы (§12.351): дорога, что осталась,
-    /// плюс работа, что осталась у всей вылазки, по лапам всех её ушедших
-    /// групп. Одно выражение на снимок и тесты.
-    pub(crate) fn mission_etas(&mut self) -> Vec<(Entity, i32)> {
-        let mut q = self.world.query::<(Entity, &Mission)>();
-        let parts: Vec<(Entity, u32, usize, i32, bool, bool)> = q
-            .iter(&self.world)
-            .map(|(e, m)| (e, m.team, m.def, m.left, m.road > 0, m.verdict.is_none()))
-            .collect();
-        let mut squads = self.world.query_filtered::<&Squad, With<Away>>();
-        let away: Vec<Entity> = squads.iter(&self.world).map(|s| s.0).collect();
-        let rules = self.world.resource::<MissionRules>();
-        let teams = self.world.resource::<Teams>();
-        parts
-            .iter()
-            .map(|&(e, team, def, left, out, open)| {
-                if !(out && open) {
-                    return (e, left);
-                }
-                let paws = away
-                    .iter()
-                    .filter(|&&o| parts.iter().any(|p| p.0 == o && p.1 == team))
-                    .count();
-                let paws = rules.0.get(def).map_or(1, |r| capped_paws(r, paws).max(1)) as i32;
-                let work = teams.work.get(&team).map_or(0, |w| w.0.max(0));
-                (e, left + (work + paws - 1) / paws)
-            })
-            .collect()
-    }
-
-    /// Группа сборной вылазки (§12.351). `team` — номер вылазки, к которой
-    /// группа присоединяется; `None` — новая вылазка из одной группы. У
-    /// присоединяемой ворота заказа и минимум состава уже проверила
-    /// `launch_group` по всей вылазке.
-    pub(crate) fn launch_party(
-        &mut self,
-        def: usize,
-        units: Vec<String>,
-        node: Option<(i32, i32)>,
-        asked: Option<usize>,
-        solo: bool,
-        team: Option<u32>,
-    ) -> bool {
-        let Some(rule) = self.world.resource::<MissionRules>().0.get(def).cloned() else {
-            return false;
-        };
-        // «Пошарить» — заказ без отряда (§12.349): отряд и правило
-        // автовылазки на него не ставятся. Свободные коты без стола ходят на
-        // **любой** заказ, ворота у них те же, что у отряда.
-        if rule.nearby && !solo {
-            return false;
-        }
-        let aim = self.pick_aim(def, asked);
         // Ворота места, и их двое — по одному на каждый вид заказа (§12.198).
         // Заказ на зачистку без цели — это заказ, которого нет: очаг зачистили,
         // пока отряд собирался, и идти больше некуда. Обычный заказ на
@@ -4282,7 +4079,7 @@ impl Sim {
         // Одиночка (§12.349) слота не просит: стола у него нет. Второй на тот же
         // заказ разом не уходит — двух вылазок по одному заказу не бывает (§12.59).
         if (!solo && self.raids_running() >= self.node_count())
-            || (team.is_none() && self.mission_on(def, aim).is_some())
+            || self.mission_on(def, aim).is_some()
         {
             return false;
         }
@@ -4367,11 +4164,7 @@ impl Sim {
         // Исключение одно: **вылазка за своим**. Её минимумом меряется
         // обратимость плена (`rescue_is_possible`), и отпустить туда кого
         // угодно значило бы обещать возврат, не проверив его.
-        let need = if rule.rescue && team.is_none() {
-            rule.squad
-        } else {
-            1
-        };
+        let need = if rule.rescue { rule.squad } else { 1 };
         if crew.len() < need {
             return false;
         }
@@ -4379,7 +4172,7 @@ impl Sim {
         // то, что отряд несёт, — тем же `crew_traits`, каким снимок называет
         // недостающее.
         let cats: Vec<Entity> = crew.iter().map(|&(e, _)| e).collect();
-        if team.is_none() && !self.traits_of(&cats).covers(rule.abilities) {
+        if !self.traits_of(&cats).covers(rule.abilities) {
             return false;
         }
 
@@ -4405,10 +4198,6 @@ impl Sim {
                 None => return false,
             },
         };
-        let team = match team {
-            Some(t) => t,
-            None => self.world.resource_mut::<Teams>().open(-1),
-        };
         let mission_e = self.world.spawn(Mission {
             def,
             node,
@@ -4428,15 +4217,6 @@ impl Sim {
             abilities: 0,
             gather: 0,
             solo,
-            // Работу вылазке назначит первый ушедший (`run_missions`): до
-            // ухода не знать, какой прибор понесут.
-            team,
-            road: 0,
-            gone: 0,
-            arrived: false,
-            worked: 0,
-            back: 0,
-            haul: Vec::new(),
         });
         let mission_e = mission_e.id();
         // Спящие в `crew` теперь есть (§12.191) — их отсекает `ready` ниже, и
@@ -7839,7 +7619,6 @@ impl Sim {
                     .collect()
             };
             let active = self.abilities_active();
-            let etas = self.mission_etas();
             let mut q = self.world.query::<(Entity, &Mission)>();
             let rules = self.world.resource::<MissionRules>();
             for (e, m) in q.iter(&self.world) {
@@ -7893,6 +7672,10 @@ impl Sim {
                     0 => rule.map_or(0, |r| duration(r, paws, traits)),
                     frozen => frozen,
                 };
+                let road = match m.span {
+                    0 => rule.map_or(0, |r| travel(r, traits)),
+                    _ => m.travel,
+                };
                 // С §12.277 связь в силу не входит: она режет дорогу, и
                 // в снимок едет числом уже срезанных тиков (`comms`).
                 let comms = m.saved;
@@ -7909,19 +7692,12 @@ impl Sim {
                     out.share = v.share;
                     out.failed = v.failed;
                 }
-                // Срок до возвращения (§12.351): дорога, что осталась, плюс
-                // работа, которая осталась у всей вылазки, по лапам всех групп.
-                let left = etas
-                    .iter()
-                    .find(|&&(x, _)| x == e)
-                    .map_or(m.left, |&(_, l)| l);
                 missions.push(MissionSnap {
                     def: m.def,
                     x: m.node.0,
                     y: m.node.1,
-                    left,
-                    total: span.max(left),
-                    team: m.team,
+                    left: m.left,
+                    total: span,
                     squad: mine().map(|(_, id, ..)| id.clone()).collect(),
                     size: rule.map_or(0, |r| r.squad),
                     away: mine().any(|&(_, _, away, ..)| away),
@@ -7935,12 +7711,12 @@ impl Sim {
                     // стоящей на базе бригадой читается как поломка — ровно та
                     // же, из-за которой рядом живёт `resting`.
                     phase: match (rule, mine().any(|&(_, _, away, ..)| away)) {
-                        (Some(_), true) => m.stage().tag(),
+                        (Some(_), true) => phase(road, span, m.left).tag(),
                         _ => "",
                     },
                     // Где отряд на карте (§12.292) — тем же разложением срока.
                     way: match (rule, mine().any(|&(_, _, away, ..)| away)) {
-                        (Some(_), true) => m.way(),
+                        (Some(_), true) => way(road, span, m.left),
                         _ => 0,
                     },
                     // Ждать отряд может только на базе: за шлюзом не спят.

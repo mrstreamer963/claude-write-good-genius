@@ -42,7 +42,6 @@ mod skills;
 mod stats;
 mod structures;
 mod study;
-mod teams;
 mod tech_tree;
 mod terrain;
 mod things;
@@ -201,7 +200,6 @@ fn sim_from(rows: &[&str]) -> Sim {
     world.insert_resource(GoalHolds::default());
     world.insert_resource(Raids::default());
     world.insert_resource(RaidTally::default());
-    world.insert_resource(Teams::default());
     world.insert_resource(Crafted::default());
     world.insert_resource(Earned::default());
     world.insert_resource(ItemRules::default());
@@ -295,7 +293,6 @@ fn sim_from(rows: &[&str]) -> Sim {
         // Тесты сохранения работают на боевом `core.yaml`, где он настоящий.
         ruleset: 0,
         nearby_pick: Vec::new(),
-        group_pick: Vec::new(),
         crew_view: None,
     }
 }
@@ -2149,15 +2146,8 @@ impl Sim {
 
     /// Идёт ли вылазка по этому заказу и сколько ей осталось.
     fn raid_left(&mut self, def: usize) -> Option<i32> {
-        let mut q = self.world.query::<(Entity, &Mission)>();
-        let e = q
-            .iter(&self.world)
-            .find(|(_, m)| m.def == def)
-            .map(|(e, _)| e)?;
-        self.mission_etas()
-            .into_iter()
-            .find(|&(x, _)| x == e)
-            .map(|(_, l)| l)
+        let mut q = self.world.query::<&Mission>();
+        q.iter(&self.world).find(|m| m.def == def).map(|m| m.left)
     }
 
     /// Сделать предмет снаряжением: сколько силы он даёт отряду (§12.29).
@@ -3275,7 +3265,8 @@ impl Sim {
     }
 
     fn mission_left(&mut self) -> Option<i32> {
-        self.mission_etas().first().map(|&(_, l)| l)
+        let mut q = self.world.query::<&Mission>();
+        q.iter(&self.world).next().map(|m| m.left)
     }
 
     /// Где отряд сейчас (§12.168) — тем же выражением, каким стадию считает
@@ -3283,11 +3274,14 @@ impl Sim {
     /// и стадии тоже.
     fn mission_phase(&mut self) -> Option<&'static str> {
         let mut q = self.world.query::<&Mission>();
-        let m = q.iter(&self.world).next()?;
-        if m.road == 0 && m.span == 0 {
+        let (span, left, travel) = q
+            .iter(&self.world)
+            .next()
+            .map(|m| (m.span, m.left, m.travel))?;
+        if span == 0 {
             return None;
         }
-        Some(m.stage().tag())
+        Some(crate::missions::phase(travel, span, left).tag())
     }
 
     /// Докуда отряд дошёл по пути к месту, в тысячных (§12.292) — тем же
@@ -3295,11 +3289,14 @@ impl Sim {
     /// ещё не ушёл.
     fn mission_way(&mut self) -> Option<i32> {
         let mut q = self.world.query::<&Mission>();
-        let m = q.iter(&self.world).next()?;
-        if m.road == 0 && m.span == 0 {
+        let (span, left, travel) = q
+            .iter(&self.world)
+            .next()
+            .map(|m| (m.span, m.left, m.travel))?;
+        if span == 0 {
             return None;
         }
-        Some(m.way())
+        Some(crate::missions::way(travel, span, left))
     }
 
     /// Место брифинга миссии; `None` — миссии нет.

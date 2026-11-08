@@ -806,18 +806,6 @@ main#stage.mode-cursor #mode-banner {
   letter-spacing: 0.04em;
   font-size: 10px;
 }
-/* Выбранный заказ и блок «Идут» под ним (§12.351). */
-.raidwin-card[data-pick] {
-  cursor: pointer;
-}
-.raidwin-card.picked {
-  border-color: var(--accent);
-}
-.raid-group {
-  margin: -4px 0 10px 12px;
-  padding: 8px 10px;
-  border-left: 2px solid var(--accent);
-}
 /* Шапка отряда в общем списке штаба (§12.349): клик выбирает, кто идёт. */
 .squad-sel {
   width: 100%;
@@ -832,43 +820,10 @@ main#stage.mode-cursor #mode-banner {
   border-color: var(--accent);
   color: var(--accent);
 }
-/* Шапка отряда в «Идут» (§12.352): имя — выбор цели «+», «×» — убрать из
-   вылазки. Цель — акцент и тёплая заливка «в руках» (§12.225), прочие — обычные. */
-.squad-head {
-  display: flex;
-  gap: 4px;
-  margin-top: 12px;
-}
-.squad-head .squad-aim {
-  flex: 1;
-  justify-content: flex-start;
-  font-weight: 600;
-}
-/* Жёлтым — только цель «+»: в «Идут» и так стоят одни идущие, и общая
-   подсветка не отвечала ни на какой вопрос. */
-.squad-head .squad-aim.aim {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: #3e3c34;
-}
-.squad-aim-note {
-  margin-left: auto;
-  font-style: normal;
-  font-weight: 400;
-  font-size: 11px;
-  opacity: 0.8;
-}
-.squad-drop {
-  min-width: 28px;
-  justify-content: center;
-}
-/* Кто в отряде — с отступом под шапкой (§12.352): иначе состав читался
+/* Кто в отряде — с отступом под шапкой (§12.353): иначе состав читался
    отдельным списком, а шапка следующего отряда — ещё одной строкой. */
 .squad-crew {
   margin-left: 14px;
-}
-.squad-empty {
-  margin: 4px 0 0 2px;
 }
 .crew-add {
   align-self: center;
@@ -897,7 +852,7 @@ main#stage.mode-cursor #mode-banner {
 .raidwin-crew .crew-row:has(> .crew-pick:not(.off):hover) {
   border-color: #3b4560;
 }
-/* Рамки «в составе» нет (§12.352): кот стоит под шапкой своего отряда, и
+/* Рамки «в составе» нет (§12.353): кот стоит под шапкой своего отряда, и
    жёлтым каждой строки отряд говорил о себе второй раз — а цветом в списке
    говорят только причины (`idle`). */
 .raidwin-crew .crew-row:has(> .crew-pick.idle) {
