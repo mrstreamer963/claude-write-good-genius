@@ -364,6 +364,36 @@ fn unposting_frees_the_operator_at_once() {
     assert_eq!(sim.duty_of("c"), None, "и рацию кот оставил тем же тиком");
 }
 
+/// Снятый радист остаётся в отряде бойцом (§12.354): снята роль, а не
+/// место в отряде. Так же и прежний радист, уступивший рацию новому.
+#[test]
+fn an_unposted_operator_stays_in_the_squad() {
+    let (mut sim, _) = sim_with_comms(2, 60);
+    assert!(sim.post_relay("c", 2, 1));
+    assert_eq!(sim.enlisted_at("c"), None, "радист — не боец");
+
+    assert!(sim.unpost_relay("c"));
+    assert_eq!(sim.post_of("c"), None);
+    assert_eq!(sim.enlisted_at("c"), Some((2, 1)), "остался в отряде");
+
+    // Новый радист вытесняет прежнего — тот тоже возвращается в строй.
+    assert!(sim.post_relay("c", 2, 1));
+    assert!(sim.post_relay("b", 2, 1));
+    assert_eq!(sim.post_of("c"), None);
+    assert_eq!(sim.enlisted_at("c"), Some((2, 1)), "уступивший — боец");
+}
+
+/// Вычеркнуть радиста — как бойца: он уходит из отряда совсем, и с рации
+/// тоже (§12.354).
+#[test]
+fn dismissing_the_operator_frees_him() {
+    let (mut sim, _) = sim_with_comms(2, 60);
+    assert!(sim.post_relay("c", 2, 1));
+    assert!(sim.dismiss("c"));
+    assert_eq!(sim.post_of("c"), None, "с рации снят");
+    assert_eq!(sim.enlisted_at("c"), None, "и в отряд не вернулся");
+}
+
 /// В клетку без узла приписать нельзя: это не «молча ничего», а отказ.
 #[test]
 fn a_posting_needs_a_node() {

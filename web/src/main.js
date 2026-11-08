@@ -574,6 +574,11 @@ onPanelClick(raidWinEl, ".squad-fold", (b) => {
 onPanelClick(raidWinEl, ".nearby-pick", (b) => {
   if (b.classList.contains("off")) return;
   if (b.dataset.x != null) {
+    // Зачисленный в свёрнутый отряд — разворачиваем его (§12.353): иначе
+    // кот, по которому щёлкнули, просто исчез бы из списка.
+    if (squadFolds.delete(`${b.dataset.x},${b.dataset.y}`)) {
+      localStorage.setItem("sp-squad-fold", JSON.stringify([...squadFolds]));
+    }
     sendAction({
       type: "enlist",
       id: b.dataset.id,
@@ -4839,10 +4844,14 @@ function crewList(snap, x, y) {
       (mine || e.job !== "rest");
     // Гасим классом, а не `disabled` (§12.121): по выключенному элементу
     // браузер не шлёт событий мыши, и подсказка выше не показалась бы никогда.
+    // Радист — тоже член отряда (§12.354): клик по его строке, как по
+    // строке бойца, выводит из отряда (`dismiss` снимает и роль радиста).
+    const leave = mine || op;
+    const rowTip = tip || (op ? "Исключить из отряда: клик" : "");
     const pick =
       `<button class="tool crew-pick${mine ? " on" : ""}${idle ? " idle" : ""}${off ? " off" : ""}" data-id="${esc(e.id)}"` +
-      ` data-x="${x}" data-y="${y}"${mine ? ' data-in="1"' : ""}` +
-      `${tip ? ` data-tip="${esc(tip)}"` : ""}` +
+      ` data-x="${x}" data-y="${y}"${leave ? ' data-in="1"' : ""}` +
+      `${rowTip ? ` data-tip="${esc(rowTip)}"` : ""}` +
       ">" +
       portraitHtml(e.sprite, "crew-face", catFacts(e)) +
       // Текст строки — отдельной колонкой рядом с портретом: сама кнопка
@@ -4885,7 +4894,7 @@ function crewList(snap, x, y) {
     const gap = `<span class="tool crew-duty void" aria-hidden="true">${statGlyph("relay")}</span>`;
     if (!on && !e.may_relay) return { band, id: e.id, html: pick + gap + kit };
     const dutyTip = on
-      ? "Снять приписку к рации"
+      ? "Снять с рации — останется в отряде бойцом"
       : "Радист этого отряда: сядет за свободную рацию, когда отряд выйдет";
     const duty =
       `<button class="tool crew-duty${on ? " on" : ""}" data-id="${esc(e.id)}"` +

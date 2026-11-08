@@ -6268,6 +6268,8 @@ impl Sim {
             if on_duty {
                 cat.remove::<(Path, Stride)>();
             }
+            // Уступивший рацию остаётся в отряде бойцом (§12.354).
+            self.back_to_squad(e, (x, y));
         }
         // Радист и боец — роли взаимоисключающие (§12.278): радист остаётся
         // на базе, и числиться заодно в отряде, который уходит, ему нельзя.
@@ -6302,13 +6304,23 @@ impl Sim {
         let Some(cat_e) = found else {
             return false;
         };
-        if self.world.get::<Posted>(cat_e).is_none() {
+        let Some(spot) = self.world.get::<Posted>(cat_e).map(|p| p.spot) else {
             return false;
-        }
+        };
         self.world
             .entity_mut(cat_e)
             .remove::<(Posted, OnDuty, Path, Stride)>();
+        self.back_to_squad(cat_e, spot);
         true
+    }
+
+    /// Снятый радист остаётся в отряде бойцом (§12.354): радист — роль
+    /// внутри отряда, и снятие роли не значит ухода из него. Стол снесли или
+    /// кот уже подан в заявку — остаётся свободным.
+    fn back_to_squad(&mut self, cat_e: Entity, spot: (i32, i32)) {
+        if self.is_node_at(spot.0, spot.1) && self.world.get::<Squad>(cat_e).is_none() {
+            self.world.entity_mut(cat_e).insert(Enlisted { spot });
+        }
     }
 
     /// Зачислить кота в отряд гаража (§12.61, §12.152).
@@ -6367,10 +6379,19 @@ impl Sim {
         let Some(cat_e) = found else {
             return false;
         };
-        if self.world.get::<Enlisted>(cat_e).is_none() {
+        // Радист тоже член отряда (§12.354): вычеркнутый уходит из отряда
+        // целиком — и с рации, вместе с дежурством, как в `unpost_relay`.
+        let enlisted = self.world.get::<Enlisted>(cat_e).is_some();
+        let posted = self.world.get::<Posted>(cat_e).is_some();
+        if !enlisted && !posted {
             return false;
         }
-        self.world.entity_mut(cat_e).remove::<Enlisted>();
+        let on_duty = self.world.get::<OnDuty>(cat_e).is_some();
+        let mut cat = self.world.entity_mut(cat_e);
+        cat.remove::<(Enlisted, Posted)>();
+        if on_duty {
+            cat.remove::<(OnDuty, Path, Stride)>();
+        }
         true
     }
 
