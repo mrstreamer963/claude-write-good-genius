@@ -551,6 +551,24 @@ onPanelClick(raidWinEl, ".squad-sel", (b) => {
   if (!again && at >= 0) mapPick = at;
   renderRaidWindow();
 });
+// Свёрнутые отряды штаба (§12.353): ключ — клетка стола «x,y». Это вид, а не
+// мир, поэтому живёт в `localStorage` рядом с прочими настройками вида.
+const squadFolds = new Set(
+  (() => {
+    try {
+      return JSON.parse(localStorage.getItem("sp-squad-fold") ?? "[]");
+    } catch {
+      return [];
+    }
+  })(),
+);
+onPanelClick(raidWinEl, ".squad-fold", (b) => {
+  const key = `${b.dataset.x},${b.dataset.y}`;
+  if (squadFolds.has(key)) squadFolds.delete(key);
+  else squadFolds.add(key);
+  localStorage.setItem("sp-squad-fold", JSON.stringify([...squadFolds]));
+  renderRaidWindow();
+});
 // Свободный кот (§12.349, §12.353): выбран отряд — зачислить в него,
 // иначе отметить идти без отряда и отправить отмеченных.
 onPanelClick(raidWinEl, ".nearby-pick", (b) => {
@@ -16487,11 +16505,16 @@ function crewGroups(sel) {
     const on = sel === n;
     const raid = missionsOut.find((m) => m.x === n.x && m.y === n.y);
     const status = n.busy ? ` · ${squadMark(raid)}` : "";
+    const folded = squadFolds.has(`${n.x},${n.y}`);
+    // Свёрнутый отряд называет состав числом — иначе пустой и полный
+    // выглядели бы одинаково.
+    const count = folded ? ` · ${plural(n.crew.length, "кот", "кота", "котов")}` : "";
     groups.push({
       key: `sq${n.x},${n.y}`,
-      sel: { x: n.x, y: n.y, on, text: `${n.name}${status}` },
+      sel: { x: n.x, y: n.y, on, folded, text: `${n.name}${count}${status}` },
       rows: [],
     });
+    if (folded) continue;
     // Состав и радист — те же строки, что всегда (`crewList`); свободных и
     // чужих оттуда не берём: свободные стоят своей группой ниже, а чужие —
     // под своими шапками.
@@ -16581,13 +16604,32 @@ function syncCrewRows(sel) {
   const order = [];
   for (const g of groups) {
     if (g.sel) {
+      // Шапка — строка из двух кнопок (§12.353): стрелка сворачивает состав,
+      // имя выбирает отряд. Одной кнопкой на оба дела не обойтись: клик по
+      // имени уже занят выбором.
+      const head = mk(`shead:${g.key}`, "squad-head");
+      const fold = mk(`fold:${g.key}`, "tool squad-fold", "button");
+      fold.dataset.key = `fold@${g.sel.x},${g.sel.y}`;
+      fold.dataset.x = g.sel.x;
+      fold.dataset.y = g.sel.y;
+      // Шеврон рисуется один раз, а состояние — классом: поворот вниз у
+      // развёрнутого (глифы ▸/▾ в шрифте интерфейса выходили с точку).
+      if (!fold.firstChild)
+        fold.innerHTML =
+          '<svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">' +
+          '<path d="M4.5 2.5 8 6l-3.5 3.5" fill="none" stroke="currentColor"' +
+          ' stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+      fold.classList.toggle("open", !g.sel.folded);
+      const ftip = g.sel.folded ? "Развернуть состав" : "Свернуть состав";
+      if (fold.dataset.tip !== ftip) fold.dataset.tip = ftip;
       const b = mk(`sel:${g.key}`, "tool squad-sel", "button");
       b.dataset.key = `sel@${g.sel.x},${g.sel.y}`;
       b.dataset.x = g.sel.x;
       b.dataset.y = g.sel.y;
       b.classList.toggle("on", g.sel.on);
       if (b.textContent !== g.sel.text) b.textContent = g.sel.text;
-      order.push(b);
+      orderChildren(head, [fold, b]);
+      order.push(head);
       continue;
     }
     if (g.head) {

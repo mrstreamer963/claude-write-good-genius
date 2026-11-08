@@ -807,14 +807,31 @@ main#stage.mode-cursor #mode-banner {
   font-size: 10px;
 }
 /* Шапка отряда в общем списке штаба (§12.349): клик выбирает, кто идёт. */
-.squad-sel {
-  width: 100%;
+.squad-head {
+  display: flex;
+  gap: 4px;
   margin-top: 12px;
+}
+.squad-head:first-child {
+  margin-top: 0;
+}
+.squad-sel {
+  flex: 1;
   justify-content: flex-start;
   font-weight: 600;
 }
-.squad-sel:first-child {
-  margin-top: 0;
+/* Стрелка свёртки состава (§12.353) — слева от имени, как у раскрывающихся
+   разделов тулбара. */
+.squad-fold {
+  min-width: 28px;
+  justify-content: center;
+  color: var(--muted);
+}
+.squad-fold svg {
+  transition: transform 0.12s;
+}
+.squad-fold.open svg {
+  transform: rotate(90deg);
 }
 .squad-sel.on {
   border-color: var(--accent);
