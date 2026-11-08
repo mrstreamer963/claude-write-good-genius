@@ -16457,10 +16457,10 @@ function summaryHtml(raid, node) {
 // Сводка отряда в его шапке (§12.356): сила и значки-итоги справа от имени,
 // у каждого отряда, а не блоком над списком у одного выбранного. Числа те же,
 // что считала `summaryHtml`: сила из ядра, значки — `squadStats`.
-function squadHeadSum(raid, node) {
+function squadHeadHtml(title, raid, node) {
   const away = !!raid?.away;
   const crew = away ? raid.squad : (node.ready ?? []);
-  if (!away && !node.crew.length) return '<span class="squad-sum quiet">пуст</span>';
+  const empty = !away && !node.crew.length;
   const guide = (away ? raid.guide : node.guide) || "";
   const force = away ? raid.strength : (node.force ?? 0);
   const next =
@@ -16468,14 +16468,22 @@ function squadHeadSum(raid, node) {
       ? `<b class="next" data-tip="Станет, когда отряд наденет приписанное. Уйдёт отряд в том, что на нём сейчас">→ ${node.force_next}</b>`
       : "";
   const lost = away ? commsLost(raid) : [];
+  // Раскладка постоянна (§12.356): ничего не переносится, и высота шапки
+  // одна у свёрнутого и развёрнутого отряда, с любым числом значков.
+  const line = empty
+    ? '<i class="quiet">пуст</i>'
+    : squadStats(away, raid, node, guide) +
+      (crew.length && !guide ? '<i class="quiet">без проводника</i>' : "") +
+      (lost.length ? `<i class="quiet">${esc(lost.join(" · "))}</i>` : "");
+  // Две строки (§12.356): имя и сила — первой, значки — второй на всю ширину
+  // шапки. Сила справа от значков отнимала у них треть ширины, и четвёртый
+  // значок уже не помещался.
   return (
-    '<span class="squad-sum">' +
-    squadStats(away, raid, node, guide) +
-    (crew.length && !guide ? '<i class="quiet">без проводника</i>' : "") +
-    (lost.length ? `<i class="quiet">${esc(lost.join(" · "))}</i>` : "") +
-    `<b class="squad-force" data-tip="${esc(`Сила отряда. ${SQUAD_FORCE_RULE}`)}">${force}</b>` +
-    next +
-    "</span>"
+    `<span class="squad-title">${title}</span>` +
+    '<span class="squad-force">' +
+    `<i>сила отряда</i><b data-tip="${esc(SQUAD_FORCE_RULE)}">${empty ? 0 : force}</b>${next}` +
+    "</span>" +
+    `<span class="squad-line">${line}</span>`
   );
 }
 
@@ -16574,9 +16582,7 @@ function crewGroups(sel) {
         y: n.y,
         on,
         folded,
-        html:
-          `<span class="squad-title">${esc(n.name)}${count}${status}</span>` +
-          squadHeadSum(raid, n),
+        html: squadHeadHtml(`${esc(n.name)}${count}${status}`, raid, n),
       },
       rows: [],
     });
