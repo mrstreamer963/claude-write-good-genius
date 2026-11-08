@@ -16394,6 +16394,14 @@ function buildSiteGraph(holder) {
           raidHome = false;
         }
       }
+      // Участок без заказов — отправлять туда некого и не на что: выбор
+      // отряда и отметки свободных котов снимаются.
+      const orders = (meta?.missions ?? []).some((_, k) => shownRaid(k) && raidAtSite(k, i));
+      if (!orders) {
+        raidHome = true;
+        nearbyPick.clear();
+        syncNearbyPick();
+      }
       mapPick = i;
       mapHome = false;
       readNews(
