@@ -552,6 +552,7 @@ dossierEl.addEventListener("mousedown", (e) => {
 // Шапка отряда в общем списке (§12.349): выбрать его — пойдёт он; отметки
 // свободных снимаются, повторный клик снимает выбор.
 onPanelClick(raidWinEl, ".squad-sel", (b) => {
+  if (b.classList.contains("off")) return;
   const x = Number(b.dataset.x);
   const y = Number(b.dataset.y);
   const again = !raidHome && raidWinAt?.x === x && raidWinAt?.y === y;
@@ -16516,10 +16517,10 @@ function renderRaidWindow() {
   // свободный, иначе первый по порядку. Закрывать окно на снос нельзя: у базы
   // есть другие отряды, а если их нет — причина обязана быть названа словом
   // (§12.53), и говорит её сам штаб.
-  const node =
-    (raidWinAt && nodeAt(raidWinAt.x, raidWinAt.y)) ??
-    nodes.find((n) => !n.busy) ??
-    nodes[0];
+  // Отряд на вылазке выбранным не бывает: отправить его нельзя, а его
+  // вылазку показывает карточка над колонкой заказов. Все в деле — выбора нет.
+  const at = raidWinAt && nodeAt(raidWinAt.x, raidWinAt.y);
+  const node = (at && !at.busy ? at : null) ?? nodes.find((n) => !n.busy) ?? null;
   // Окрестности (§12.349): без столов окно другим не бывает, а со столами —
   // по выбору игрока. Пустое окно с одной причиной осталось рулсету, где
   // нет ни столов, ни заказа без отряда.
@@ -16784,6 +16785,7 @@ function crewGroups(sel) {
         x: n.x,
         y: n.y,
         on,
+        busy: n.busy,
         folded,
         html: squadHeadHtml(`${esc(n.name)}${count}${status}`, raid, n),
       },
@@ -16942,6 +16944,7 @@ function syncCrewRows(sel) {
       b.dataset.x = g.sel.x;
       b.dataset.y = g.sel.y;
       b.classList.toggle("on", g.sel.on);
+      b.classList.toggle("off", !!g.sel.busy);
       // Разметка шапки — только на изменении (§12.84), и сравнивается с
       // записанной строкой, а не с `innerHTML`: браузер сериализует его по-своему,
       // и сравнение с ним переписывало бы шапку каждым кадром.
