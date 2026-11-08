@@ -825,11 +825,6 @@ main#stage.mode-cursor #mode-banner {
 .squad-crew {
   margin-left: 14px;
 }
-.crew-add {
-  align-self: center;
-  min-width: 28px;
-  justify-content: center;
-}
 .crew-head:first-child {
   margin-top: 0;
 }

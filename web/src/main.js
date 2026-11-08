@@ -551,18 +551,19 @@ onPanelClick(raidWinEl, ".squad-sel", (b) => {
   if (!again && at >= 0) mapPick = at;
   renderRaidWindow();
 });
-// «+» у свободного кота — зачислить в выбранный отряд.
-onPanelClick(raidWinEl, ".crew-add", (b) =>
-  sendAction({
-    type: "enlist",
-    id: b.dataset.id,
-    x: Number(b.dataset.x),
-    y: Number(b.dataset.y),
-  }),
-);
-// «Пошарить рядом» (§12.349): отметить кота и отправить отмеченных.
+// Свободный кот (§12.349, §12.353): выбран отряд — зачислить в него,
+// иначе отметить идти без отряда и отправить отмеченных.
 onPanelClick(raidWinEl, ".nearby-pick", (b) => {
   if (b.classList.contains("off")) return;
+  if (b.dataset.x != null) {
+    sendAction({
+      type: "enlist",
+      id: b.dataset.id,
+      x: Number(b.dataset.x),
+      y: Number(b.dataset.y),
+    });
+    return;
+  }
   // Отметка свободного снимает выбор отряда: идут либо он, либо они.
   raidHome = true;
   const id = b.dataset.id;
@@ -16510,7 +16511,8 @@ function crewGroups(sel) {
       }
     }
   }
-  // Свободные: отметка — идёт без отряда; «+» — зачислить в выбранный отряд.
+  // Свободные (§12.353): выбран отряд — клик по коту зачисляет в него, как
+  // было до §12.349; отряд не выбран — клик отмечает кота идти без отряда.
   const free = lastSnap?.free ?? [];
   const cats = (lastSnap?.entities ?? [])
     .filter((e) => !(e.crew_x >= 0) && !(e.post_x >= 0 && nodeAt(e.post_x, e.post_y)))
@@ -16526,26 +16528,36 @@ function crewGroups(sel) {
     return jobLabel(e) || "";
   };
   const rows = cats.map((e) => {
-    const can = free.includes(e.id);
-    const on = can && nearbyPick.has(e.id);
     const note = why(e);
+    // Выбран отряд — строка зачисляет в него, иначе отмечает «без отряда».
+    const into = !!sel;
+    const can = into
+      ? !sel.busy && !e.away && !wounded.has(e.id)
+      : free.includes(e.id);
+    const on = !into && can && nearbyPick.has(e.id);
+    const tip = into
+      ? can
+        ? `Зачислить в «${sel.name}»`
+        : sel.busy
+          ? `«${sel.name}» в деле — зачислить нельзя`
+          : `Не зачислить: ${note || "занят"}`
+      : can
+        ? on
+          ? "Не пойдёт без отряда: клик"
+          : "Отметить: пойдёт без отряда"
+        : `Не пойдёт: ${note || "занят"}`;
     const pick =
       `<button class="tool crew-pick nearby-pick${on ? " on" : ""}${can ? "" : " off"}"` +
       ` data-key="npick@${esc(e.id)}" data-id="${esc(e.id)}"` +
-      ` data-tip="${esc(can ? (on ? "Не пойдёт без отряда: клик" : "Отметить: пойдёт без отряда") : `Не пойдёт: ${note || "занят"}`)}"` +
-      ">" +
+      (into ? ` data-x="${sel.x}" data-y="${sel.y}"` : "") +
+      ` data-tip="${esc(tip)}">` +
       portraitHtml(e.sprite, "crew-face", catFacts(e)) +
       '<span class="crew-text">' +
       `<span class="crew-id">${esc(e.id)}${guideMark(e, led, null, guide)}</span>` +
       fieldLine(e, led, null, guide) +
       `<i class="crew-note${can ? " quiet" : ""}">${note ? esc(note) : "&nbsp;"}</i>` +
       "</span></button>";
-    const add =
-      sel && !sel.busy && !e.away && !wounded.has(e.id)
-        ? `<button class="tool crew-add" data-key="add@${esc(e.id)}" data-id="${esc(e.id)}"` +
-          ` data-x="${sel.x}" data-y="${sel.y}" data-tip="${esc(`Зачислить в «${sel.name}»`)}">+</button>`
-        : "";
-    return { id: `free:${e.id}`, html: pick + add + gearSlots(e) };
+    return { id: `free:${e.id}`, html: pick + gearSlots(e) };
   });
   if (rows.length) groups.push({ key: "free", head: "Свободные коты · без отряда", rows });
   return groups;
