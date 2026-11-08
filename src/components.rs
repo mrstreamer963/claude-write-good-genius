@@ -2487,6 +2487,9 @@ pub(crate) struct MissionRule {
     /// Заказ без отряда (§12.349): ходят только свободные коты, без стола и
     /// слота; отряду и правилу автовылазки он не назначается.
     pub(crate) nearby: bool,
+    /// Тайл, который обязан когда-либо стоять на базе (§12.349); `None` —
+    /// ворот нет. Монотонно (`BaseMap::ever`): снос стола заказ не закрывает.
+    pub(crate) after: Option<i16>,
     /// Возможности, которые отряд обязан нести (§12.260), маской по палитре
     /// `abilities:`. Ноль — любой отряд.
     pub(crate) abilities: u64,
@@ -2532,8 +2535,10 @@ impl MissionRule {
 
     /// Открыт ли заказ по шкалам-воротам: известность и технология (§12.24,
     /// §12.260). Одно выражение на снимок, ленту и заявку.
-    pub(crate) fn unlocked(&self, fame: i32, techs: &Techs) -> bool {
-        fame >= self.requires && self.tech.as_deref().is_none_or(|t| techs.knows(t))
+    pub(crate) fn unlocked(&self, fame: i32, techs: &Techs, map: &crate::map::BaseMap) -> bool {
+        fame >= self.requires
+            && self.tech.as_deref().is_none_or(|t| techs.knows(t))
+            && self.after.is_none_or(|t| map.was_erected(t))
     }
 }
 

@@ -537,9 +537,34 @@ onPanelClick(dossierEl, ".slot-teach", teachFromSlot);
 dossierEl.addEventListener("mousedown", (e) => {
   if (!e.target.closest(".slot-pop, .dos-slot")) closeSlotPop();
 });
+// Шапка отряда в общем списке (§12.349): выбрать его — пойдёт он; отметки
+// свободных снимаются, повторный клик снимает выбор.
+onPanelClick(raidWinEl, ".squad-sel", (b) => {
+  const x = Number(b.dataset.x);
+  const y = Number(b.dataset.y);
+  const again = !raidHome && raidWinAt?.x === x && raidWinAt?.y === y;
+  raidHome = again;
+  raidWinAt = again ? null : { x, y };
+  nearbyPick.clear();
+  syncNearbyPick();
+  const at = nodeSite(x, y);
+  if (!again && at >= 0) mapPick = at;
+  renderRaidWindow();
+});
+// «+» у свободного кота — зачислить в выбранный отряд.
+onPanelClick(raidWinEl, ".crew-add", (b) =>
+  sendAction({
+    type: "enlist",
+    id: b.dataset.id,
+    x: Number(b.dataset.x),
+    y: Number(b.dataset.y),
+  }),
+);
 // «Пошарить рядом» (§12.349): отметить кота и отправить отмеченных.
 onPanelClick(raidWinEl, ".nearby-pick", (b) => {
   if (b.classList.contains("off")) return;
+  // Отметка свободного снимает выбор отряда: идут либо он, либо они.
+  raidHome = true;
   const id = b.dataset.id;
   if (nearbyPick.has(id)) nearbyPick.delete(id);
   else nearbyPick.add(id);
@@ -11275,6 +11300,11 @@ function renderNews(snap) {
   const span = meta?.news ?? 0;
   const want = liveNews(snap.news ?? []).filter((n) => {
     if (newsSeen.has(newsKey(n))) return false;
+    // Заказы тикером не объявляются (§12.350): их много и они открываются и
+    // закрываются вслед за картой — стопка превращалась в спам. О новом
+    // заказе говорят точка на двери «Вылазки», число на участке карты и
+    // группа «Только что открылись» в штабе.
+    if (n.kind === "raid") return false;
     // Ноль в рулсете значит «сами не гаснут» — тем же нулём, каким `day`
     // выключает календарь.
     return span <= 0 || snap.tick - n.at < span;
@@ -15690,132 +15720,6 @@ function syncNearbyPick() {
 let raidHome = false;
 
 
-// Левая колонка окрестностей (§12.349): кто пойдёт шарить. Выбор котов в окне
-// один — здесь; карточка справа отвечает только «куда и что принесут».
-// Свободные отмечаются кликом, остальные стоят тусклыми с причиной словом:
-// кот из отряда ходит с отрядом, и это должно быть видно, а не просто пропасть.
-function nearbyCrewHtml() {
-  const free = lastSnap?.free ?? [];
-  const cats = [...(lastSnap?.entities ?? [])].sort((a, b) =>
-    a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
-  );
-  // Занятие словом — **тем же выражением, что строка кота в отряде**
-  // (`crewList`): ранен · в плену · на вылазке · иначе `jobLabel` («идёт к
-  // шлюзу» и т. д.).
-  const why = (e) => {
-    if (wounded.has(e.id)) return "ранен";
-    if (e.captive) return "в плену";
-    if (e.away) return "на вылазке";
-    return jobLabel(e) || "";
-  };
-  // Карточка кота — **та же**, что в составе отряда (`crewList`): портрет,
-  // имя с компасом, строка характеристик (`fieldLine`), занятие и слоты
-  // (`gearSlots`). Проводник — лучший по реакции среди отмеченных, тем же
-  // правилом, что у отряда (§12.70).
-  const picked = cats.filter((e) => nearbyPick.has(e.id));
-  const led = Math.max(0, ...picked.map((e) => e.guide_step ?? 0));
-  const guide =
-    led > 0 ? (picked.find((e) => (e.guide_step ?? 0) === led)?.id ?? null) : null;
-  const rows = cats.map((e) => {
-    const can = free.includes(e.id);
-    const on = can && nearbyPick.has(e.id);
-    // Коту из отряда приписка — имя отряда у имени, как в штабе отряда;
-    // занятие под ним — обычное.
-    const squad =
-      e.crew_x >= 0 ? nodes.find((x) => x.x === e.crew_x && x.y === e.crew_y) : null;
-    const note = why(e);
-    const pick =
-      `<button class="tool crew-pick nearby-pick${on ? " on" : ""}${can ? "" : " off"}"` +
-      ` data-key="npick@${esc(e.id)}" data-id="${esc(e.id)}"` +
-      (can
-        ? ""
-        : ` data-tip="${esc(
-            squad
-              ? `В отряде «${squad.name}»: шарят только свободные`
-              : `Не пойдёт: ${why(e) || "занят"}`,
-          )}"`) +
-      ">" +
-      portraitHtml(e.sprite, "crew-face", catFacts(e)) +
-      '<span class="crew-text">' +
-      `<span class="crew-id">${esc(e.id)}${guideMark(e, led, null, guide)}` +
-      `${squad ? `<i class="crew-at"> · ${esc(squad.name)}</i>` : ""}</span>` +
-      fieldLine(e, led, null, guide) +
-      `<i class="crew-note${can ? " quiet" : ""}">${note ? esc(note) : "&nbsp;"}</i>` +
-      "</span></button>";
-    return { band: squad ? 1 : 0, html: `<div class="crew-row">${pick}${gearSlots(e)}</div>` };
-  });
-  // Две группы, как в штабе отряда: свои (свободные и шарящие) без
-  // подписи и «В других отрядах» — коты из отрядов сюда не ходят.
-  const list = (band) =>
-    rows
-      .filter((r) => r.band === band)
-      .map((r) => r.html)
-      .join("");
-  const own = list(0);
-  const other = list(1);
-  return (
-    (own ? `<div class="crew-list">${own}</div>` : "") +
-    (other
-      ? `<div class="cat-sub crew-head">В других отрядах · ${rows.filter((r) => r.band === 1).length}</div>` +
-        `<div class="crew-list">${other}</div>`
-      : "")
-  );
-}
-
-// Вкладка «Окрестности» (§12.349) — первой, пока есть «Пошарить». Вход в
-// окрестности — значок базы на карте, а вкладка нужна обратной дороге: при
-// одном отряде вкладок отрядов нет, и вернуться к нему было бы нечем.
-function homeTabHtml() {
-  if (!(meta?.missions ?? []).length) return "";
-  return (
-    `<button class="tool raidwin-tab${raidHome ? " on" : ""}" data-key="tab@home" data-home="1">` +
-    "Окрестности</button>"
-  );
-}
-
-function nodeTabsHtml(node) {
-  return nodes
-    .map(
-      (o) =>
-        `<button class="tool raidwin-tab${o === node && !raidHome ? " on" : ""}"` +
-        ` data-key="tab@${o.x},${o.y}" data-x="${o.x}" data-y="${o.y}">` +
-        `${esc(o.name)}${
-          o.busy
-            ? ` · ${squadMark(missionsOut.find((m) => m.x === o.x && m.y === o.y))}`
-            : ""
-        }</button>`,
-    )
-    .join("");
-}
-
-// Окно на окрестностях (§12.349): тот же каркас, что у отряда, но слева —
-// кто пойдёт шарить, справа — одна карточка, на карте выбрана база. Колонки
-// отряда (шапка, состав, правило, заказы) спрятаны, а не перестроены: смена
-// вкладки — пересборка каркаса, а внутри режима всё синхронизируется на месте.
-function renderHomeWindow() {
-  if (!raidUi || raidUi.at !== "home") buildRaidWindow("home");
-  setHtml(raidUi.title, '<span class="squad-name">Окрестности</span>');
-  const tabs = nodes.length ? homeTabHtml() + nodeTabsHtml(null) : "";
-  raidUi.tabs.hidden = !tabs;
-  setHtml(raidUi.tabs, tabs);
-  raidUi.sum.hidden = true;
-  raidUi.crew.hidden = true;
-  raidUi.nearbyCrew.hidden = false;
-  setHtml(raidUi.nearbyCrew, nearbyCrewHtml());
-  raidUi.rule.hidden = true;
-  raidUi.nearby.hidden = true;
-  // Колонка заказов — **та же**, что у отряда (`syncRaidCards`): все заказы,
-  // фильтр по участку на карте, идущие — карточками сверху. Свободные коты
-  // ходят без стола на любой заказ (§12.349).
-  raidUi.cards.hidden = false;
-  syncRaidCards(
-    missionsOut.filter((m) => m.solo),
-    outskirtsNode(),
-  );
-  syncRaidMap();
-  raidWinEl.hidden = false;
-}
-
 // Прогноз «Окрестностей» в форме узла отряда (§12.349): ядро считает его тем
 // же `NodeSnap` по отмеченным свободным котам, клетка — заглушка.
 function outskirtsNode() {
@@ -16225,6 +16129,7 @@ function buildSiteGraph(holder) {
       const now = raidWinAt ? `${raidWinAt.x},${raidWinAt.y}` : "";
       const [x, y] = list[(list.indexOf(now) + 1) % list.length].split(",").map(Number);
       raidWinAt = { x, y };
+      raidHome = false;
     };
     g.onmousedown = (e) => {
       // Неразведанный участок не выбирается (§12.320): колонке нечего о нём
@@ -16244,6 +16149,7 @@ function buildSiteGraph(holder) {
         if (list.length && !list.includes(now)) {
           const [x, y] = list[0].split(",").map(Number);
           raidWinAt = { x, y };
+          raidHome = false;
         }
       }
       mapPick = i;
@@ -16381,61 +16287,52 @@ function renderRaidWindow() {
     return;
   }
   if (!node) raidHome = true;
-  if (raidHome) {
-    renderHomeWindow();
-    return;
-  }
-  raidWinAt = { x: node.x, y: node.y };
-  const key = `${node.x},${node.y}`;
-  if (!raidUi || raidUi.at !== key) buildRaidWindow(key);
-  raidUi.sum.hidden = false;
-  raidUi.crew.hidden = false;
+  // Окно одно (§12.349): слева все коты — отряды группами и свободные, —
+  // справа заказы. Выбран отряд — идёт он, иначе идут отмеченные свободные.
+  const sel = raidHome ? null : node;
+  if (sel) raidWinAt = { x: sel.x, y: sel.y };
+  if (!raidUi) buildRaidWindow("one");
+  raidUi.tabs.hidden = true;
   raidUi.nearbyCrew.hidden = true;
-  raidUi.rule.hidden = false;
-  raidUi.cards.hidden = false;
   raidUi.nearby.hidden = true;
-  const n = nodes.indexOf(node);
-  const raid = missionsOut.find((m) => m.x === node.x && m.y === node.y);
+  raidUi.crew.hidden = false;
+  raidUi.cards.hidden = false;
+  raidUi.sum.hidden = !sel;
+  raidUi.rule.hidden = !sel;
+  const raid = sel
+    ? missionsOut.find((m) => m.x === sel.x && m.y === sel.y)
+    : null;
 
   // Имя отряда — дверь в его правку (§12.300). Пока игрок печатает, шапку не
   // трогаем: снимок затёр бы набранное, как подпись порога (§12.92).
-  if (!squadEdit) {
+  if (!sel) {
+    setHtml(raidUi.title, '<span class="squad-name">Вылазки</span>');
+  } else if (!squadEdit) {
+    const n = nodes.indexOf(sel);
     setHtml(
       raidUi.title,
-      `<span class="squad-name" data-key="name@${node.x},${node.y}"` +
-        ` data-tip="Переименовать отряд">${esc(node.name)}</span>` +
-        // Номер остаётся рядом с именем: им подписана плашка отряда на карте.
-        // Координат стола в шапке нет (§12.333): отряд узнают по имени и по
-        // плашке на карте, а не по клетке.
-        (node.named ? `<span class="cell-at">№ ${n + 1}</span>` : ""),
+      `<span class="squad-name" data-key="name@${sel.x},${sel.y}"` +
+        ` data-tip="Переименовать отряд">${esc(sel.name)}</span>` +
+        (sel.named ? `<span class="cell-at">№ ${n + 1}</span>` : ""),
     );
   }
 
-  // Вкладки узлов: перекинуть кота с отряда на отряд — это одно решение, и
-  // закрывать ради него окно незачем. При единственном узле вкладок нет — если
-  // только у базы нет окрестностей (§12.349): их вкладка стоит первой.
-  const home = homeTabHtml();
-  const tabs = nodes.length > 1 || home ? home + nodeTabsHtml(node) : "";
-  raidUi.tabs.hidden = !tabs;
-  setHtml(raidUi.tabs, tabs);
+  if (sel) {
+    setHtml(raidUi.sum, summaryHtml(raid, sel));
+    // Правило узла — строкой **над** списком заказов (§12.175).
+    setHtml(raidUi.rule, sel.auto >= 0 ? ruleRow(sel) : "");
+  }
+  syncCrewRows(sel);
 
-  setHtml(raidUi.sum, summaryHtml(raid, node));
-  syncCrewRows(node);
+  // Колонка заказов — одна: прогноз по выбранному отряду или по отмеченным
+  // свободным (`outskirtsNode`), сверху идущие вылазки выбранного.
+  syncRaidCards(
+    sel ? (raid ? [raid] : []) : missionsOut.filter((m) => m.solo),
+    sel ?? outskirtsNode(),
+  );
+  // Список вещей слота (§12.293) — один на всю колонку.
   syncSlotPop("raid");
-
-  // Правило узла — строкой **над** списком, а не первой карточкой в нём.
-  // Порядок заказов это лестница сложности (индекс в палитре = ступень), и
-  // вытащенная наверх карточка ломает и её чтение, и позиционную память —
-  // причём ровно та карточка, про которую уже всё решено. Со строкой видно то
-  // же самое, а список цел. У занятого узла строка стоит **тоже**: правило живёт
-  // на гараже и переживает вылазку (§12.175), и пропадающая строка говорила бы
-  // «правила нет» ровно тогда, когда оно работает. Кнопок в ней нет ни у того,
-  // ни у другого — значки стоят в карточке заказа.
-  setHtml(raidUi.rule, node.auto >= 0 ? ruleRow(node) : "");
-
-  syncRaidCards(raid ? [raid] : [], node);
-  // Карта — **после карточек**: прокрутка к выбранному участку ищет их узлы, и
-  // до первой синхронизации их ещё нет.
+  // Карта — **после карточек**: прокрутка к выбранному участку ищет их узлы.
   syncRaidMap();
   raidWinEl.hidden = false;
 }
@@ -16577,14 +16474,91 @@ function squadStats(away, raid, node, guide) {
 // Состав: заголовок группы и строка кота — свои узлы, а группы (§12.73) — это
 // порядок строк, поэтому кот, сменивший группу, переезжает **своим узлом**, а
 // не пересобирается заново.
-function syncCrewRows(node) {
-  const groups = crewList(lastSnap, node.x, node.y);
+// Левая колонка штаба — **один список на все вылазки** (§12.349): отряды
+// группами, под каждым шапка-переключатель, ниже свободные коты. На заказ
+// идёт либо выбранный отряд, либо отмеченные свободные — выбор одного снимает
+// другое. Отдельной вкладки у свободных нет: вкладка разводила одно окно на
+// две функции отрисовки, и они расходились молча (пропал список слота).
+// `sel` — выбранный отряд или `null` (идут отмеченные свободные).
+function crewGroups(sel) {
+  const groups = [];
+  for (const n of nodes) {
+    const on = sel === n;
+    const raid = missionsOut.find((m) => m.x === n.x && m.y === n.y);
+    const status = n.busy ? ` · ${squadMark(raid)}` : "";
+    groups.push({
+      key: `sq${n.x},${n.y}`,
+      sel: { x: n.x, y: n.y, on, text: `${n.name}${status}` },
+      rows: [],
+    });
+    // Состав и радист — те же строки, что всегда (`crewList`); свободных и
+    // чужих оттуда не берём: свободные стоят своей группой ниже, а чужие —
+    // под своими шапками.
+    for (const g of crewList(lastSnap, n.x, n.y)) {
+      if (g.head === "" || g.op) {
+        groups.push({
+          key: `sq${n.x},${n.y}:${g.op ? "op" : "crew"}`,
+          head: g.op
+            ? g.rows.length
+              ? g.head
+              : on
+                ? "Радист · не назначен — кнопка рации у кота, отряд уйдёт без связи"
+                : ""
+            : "",
+          rows: g.rows.map((r) => ({ id: `${n.x},${n.y}:${r.id}`, html: r.html })),
+        });
+      }
+    }
+  }
+  // Свободные: отметка — идёт без отряда; «+» — зачислить в выбранный отряд.
+  const free = lastSnap?.free ?? [];
+  const cats = (lastSnap?.entities ?? [])
+    .filter((e) => !(e.crew_x >= 0) && !(e.post_x >= 0 && nodeAt(e.post_x, e.post_y)))
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const picked = cats.filter((e) => nearbyPick.has(e.id));
+  const led = Math.max(0, ...picked.map((e) => e.guide_step ?? 0));
+  const guide =
+    led > 0 ? (picked.find((e) => (e.guide_step ?? 0) === led)?.id ?? null) : null;
+  const why = (e) => {
+    if (wounded.has(e.id)) return "ранен";
+    if (e.captive) return "в плену";
+    if (e.away) return "на вылазке";
+    return jobLabel(e) || "";
+  };
+  const rows = cats.map((e) => {
+    const can = free.includes(e.id);
+    const on = can && nearbyPick.has(e.id);
+    const note = why(e);
+    const pick =
+      `<button class="tool crew-pick nearby-pick${on ? " on" : ""}${can ? "" : " off"}"` +
+      ` data-key="npick@${esc(e.id)}" data-id="${esc(e.id)}"` +
+      ` data-tip="${esc(can ? (on ? "Не пойдёт без отряда: клик" : "Отметить: пойдёт без отряда") : `Не пойдёт: ${note || "занят"}`)}"` +
+      ">" +
+      portraitHtml(e.sprite, "crew-face", catFacts(e)) +
+      '<span class="crew-text">' +
+      `<span class="crew-id">${esc(e.id)}${guideMark(e, led, null, guide)}</span>` +
+      fieldLine(e, led, null, guide) +
+      `<i class="crew-note${can ? " quiet" : ""}">${note ? esc(note) : "&nbsp;"}</i>` +
+      "</span></button>";
+    const add =
+      sel && !sel.busy && !e.away && !wounded.has(e.id)
+        ? `<button class="tool crew-add" data-key="add@${esc(e.id)}" data-id="${esc(e.id)}"` +
+          ` data-x="${sel.x}" data-y="${sel.y}" data-tip="${esc(`Зачислить в «${sel.name}»`)}">+</button>`
+        : "";
+    return { id: `free:${e.id}`, html: pick + add + gearSlots(e) };
+  });
+  if (rows.length) groups.push({ key: "free", head: "Свободные коты · без отряда", rows });
+  return groups;
+}
+
+function syncCrewRows(sel) {
+  const groups = crewGroups(sel);
   const els = raidUi.crewEls;
   const keep = new Set();
-  const mk = (key, cls) => {
+  const mk = (key, cls, tag = "div") => {
     let el = els.get(key);
     if (!el) {
-      el = document.createElement("div");
+      el = document.createElement(tag);
       el.className = cls;
       els.set(key, el);
     }
@@ -16593,19 +16567,23 @@ function syncCrewRows(node) {
   };
 
   const order = [];
-  groups.forEach((g, gi) => {
-    // У места радиста счёта нет — оно одно; пустое называет, как его занять.
-    const text = g.op
-      ? g.rows.length
-        ? g.head
-        : "Радист · не назначен — кнопка рации у кота, отряд уйдёт без связи"
-      : g.head && `${g.head} · ${g.rows.length}`;
-    const list = mk(`list${gi}`, "crew-list");
-    if (text) {
-      const head = mk(`head${gi}`, "cat-sub crew-head");
-      if (head.textContent !== text) head.textContent = text;
+  for (const g of groups) {
+    if (g.sel) {
+      const b = mk(`sel:${g.key}`, "tool squad-sel", "button");
+      b.dataset.key = `sel@${g.sel.x},${g.sel.y}`;
+      b.dataset.x = g.sel.x;
+      b.dataset.y = g.sel.y;
+      b.classList.toggle("on", g.sel.on);
+      if (b.textContent !== g.sel.text) b.textContent = g.sel.text;
+      order.push(b);
+      continue;
+    }
+    if (g.head) {
+      const head = mk(`head:${g.key}`, "cat-sub crew-head");
+      if (head.textContent !== g.head) head.textContent = g.head;
       order.push(head);
     }
+    const list = mk(`list:${g.key}`, "crew-list");
     order.push(list);
     const rows = g.rows.map((r) => {
       const row = mk(`row:${r.id}`, "crew-row");
@@ -16613,7 +16591,7 @@ function syncCrewRows(node) {
       return row;
     });
     orderChildren(list, rows);
-  });
+  }
   orderChildren(raidUi.crew, order);
 
   for (const [key, el] of els) {

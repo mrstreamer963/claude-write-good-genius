@@ -1060,19 +1060,24 @@ fn an_unnamed_cleanup_skips_a_blight_already_taken() {
 }
 
 /// На старте боевой партии разведаны только участки с открытыми заказами:
-/// шахты и отстойник заказов не имеют вовсе, теплицы ждут технологии (§12.320).
+/// шахты и отстойник заказов не имеют вовсе, теплицы ждут технологии (§12.320),
+/// а свалка — стола брифинга (§12.349): до него наружу ходят только
+/// «Пошарить рядом».
 #[test]
 fn the_shipped_ruleset_starts_with_unexplored_sites() {
     let rs = shipped();
     let at = |id: &str| rs.sites.iter().position(|s| s.id == id).expect(id);
-    let sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
-    assert!(
-        sim.site_met(at("junkyard")),
-        "свалка с заказом разведана с нулевого тика"
-    );
-    for id in ["mines", "sump", "greenhouse"] {
+    let mut sim = Sim::new(include_str!("../../assets/rulesets/core.yaml")).expect("рулсет");
+    sim.without_timeline();
+    for id in ["junkyard", "mines", "sump", "greenhouse"] {
         assert!(!sim.site_met(at(id)), "«{id}» на старте в тумане");
     }
+    sim.add_squad();
+    sim.tick_n(1);
+    assert!(
+        sim.site_met(at("junkyard")),
+        "стол брифинга встал — свалка разведана"
+    );
 }
 
 /// Разведка переживает снимок, а снимок старше неё добирается по миру.
@@ -1083,6 +1088,8 @@ fn explored_sites_survive_a_save() {
     let mines = rs.sites.iter().position(|s| s.id == "mines").unwrap();
     let dump = rs.sites.iter().position(|s| s.id == "junkyard").unwrap();
     let mut live = Sim::new(core).expect("рулсет");
+    // Свалку открывает стол брифинга (§12.349).
+    live.add_squad();
     live.world.resource_mut::<SitesMet>().mark(mines);
 
     let json = live.save().expect("снимок");

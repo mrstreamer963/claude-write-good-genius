@@ -806,6 +806,25 @@ main#stage.mode-cursor #mode-banner {
   letter-spacing: 0.04em;
   font-size: 10px;
 }
+/* Шапка отряда в общем списке штаба (§12.349): клик выбирает, кто идёт. */
+.squad-sel {
+  width: 100%;
+  margin-top: 12px;
+  justify-content: flex-start;
+  font-weight: 600;
+}
+.squad-sel:first-child {
+  margin-top: 0;
+}
+.squad-sel.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.crew-add {
+  align-self: center;
+  min-width: 28px;
+  justify-content: center;
+}
 .crew-head:first-child {
   margin-top: 0;
 }

@@ -345,6 +345,7 @@ impl Sim {
             unlocked: rule.unlocked(
                 self.world.resource::<Fame>().0,
                 self.world.resource::<Techs>(),
+                self.world.resource::<BaseMap>(),
             ),
             welcome: self.world.resource::<Standing>().covers(&rule.needs),
             met: self.world.resource::<RaidsMet>().met(def),
@@ -2193,6 +2194,10 @@ impl Sim {
                     tech: (!m.tech.is_empty()).then(|| m.tech.clone()),
                     once: m.once,
                     nearby: m.nearby,
+                    after: (!m.after.is_empty())
+                        .then(|| rs.tiles.iter().position(|t| t.id == m.after))
+                        .flatten()
+                        .map(|i| i as i16),
                     abilities: ability_mask(&m.abilities),
                     yields: m
                         .yields
@@ -3928,6 +3933,7 @@ impl Sim {
             if !rule.unlocked(
                 self.world.resource::<Fame>().0,
                 self.world.resource::<Techs>(),
+                self.world.resource::<BaseMap>(),
             ) {
                 continue;
             }
@@ -4083,6 +4089,7 @@ impl Sim {
         if !rule.unlocked(
             self.world.resource::<Fame>().0,
             self.world.resource::<Techs>(),
+            self.world.resource::<BaseMap>(),
         ) {
             return false;
         }

@@ -599,7 +599,11 @@ fn the_shipped_ruleset_never_locks_its_way_back() {
         "«Пошарить» требует больше одного кота — одиночка без стола не пойдёт",
     );
     assert!(
-        rule.unlocked(0, sim.world.resource::<Techs>()),
+        rule.unlocked(
+            0,
+            sim.world.resource::<Techs>(),
+            sim.world.resource::<crate::map::BaseMap>(),
+        ),
         "«Пошарить» закрыто воротами",
     );
     assert!(
