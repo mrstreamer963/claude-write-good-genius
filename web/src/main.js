@@ -16475,14 +16475,13 @@ function squadHeadHtml(title, raid, node) {
     : squadStats(away, raid, node, guide) +
       (crew.length && !guide ? '<i class="quiet">без проводника</i>' : "") +
       (lost.length ? `<i class="quiet">${esc(lost.join(" · "))}</i>` : "");
-  // Две строки (§12.356): имя и сила — первой, значки — второй на всю ширину
-  // шапки. Сила справа от значков отнимала у них треть ширины, и четвёртый
-  // значок уже не помещался.
+  // Раскладка прежнего блока сводки (§12.356): слева столбик силы — крупное
+  // число и подпись под ним, справа имя отряда и под ним значки.
   return (
-    `<span class="squad-title">${title}</span>` +
     '<span class="squad-force">' +
-    `<i>сила отряда</i><b data-tip="${esc(SQUAD_FORCE_RULE)}">${empty ? 0 : force}</b>${next}` +
-    "</span>" +
+    `<b data-tip="${esc(SQUAD_FORCE_RULE)}">${empty ? 0 : force}${next}</b>` +
+    "<i>сила отряда</i></span>" +
+    `<span class="squad-title">${title}</span>` +
     `<span class="squad-line">${line}</span>`
   );
 }
@@ -16676,9 +16675,10 @@ function syncCrewRows(sel) {
   const order = [];
   for (const g of groups) {
     if (g.sel) {
-      // Шапка — строка из двух кнопок (§12.353): стрелка сворачивает состав,
-      // имя выбирает отряд. Одной кнопкой на оба дела не обойтись: клик по
-      // имени уже занят выбором.
+      // Шапка — две кнопки (§12.353): стрелка сворачивает состав, имя выбирает
+      // отряд. Одной кнопкой на оба дела не обойтись: клик по имени уже занят
+      // выбором. Стрелка маленькая и стоит поверх шапки в правом верхнем углу
+      // (§12.356), а шапка — на всю ширину.
       const head = mk(`shead:${g.key}`, "squad-head");
       const fold = mk(`fold:${g.key}`, "tool squad-fold", "button");
       fold.dataset.key = `fold@${g.sel.x},${g.sel.y}`;

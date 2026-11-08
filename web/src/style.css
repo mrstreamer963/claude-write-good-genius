@@ -807,9 +807,11 @@ main#stage.mode-cursor #mode-banner {
   font-size: 10px;
 }
 /* Шапка отряда в общем списке штаба (§12.349): клик выбирает, кто идёт. */
+/* Шапка на всю ширину (§12.356), шеврон свёртки — маленький, в правом верхнем
+   углу поверх неё: соседним узлом, потому что кнопка в кнопке недопустима. */
 .squad-head {
+  position: relative;
   display: flex;
-  gap: 4px;
   margin-top: 12px;
 }
 .squad-head:first-child {
@@ -820,25 +822,30 @@ main#stage.mode-cursor #mode-banner {
   min-width: 0;
   height: 56px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   grid-template-rows: auto auto;
   align-content: center;
-  align-items: baseline;
-  gap: 2px 10px;
+  align-items: center;
+  gap: 3px 12px;
   font-weight: 600;
   text-align: left;
 }
-/* Шапка отряда (§12.356): имя и сила первой строкой, значки второй — на всю
-   ширину. Высота постоянная: ничего не переносится. */
+/* Шапка отряда (§12.356) — раскладкой прежнего блока сводки: столбик силы
+   слева на обе строки, справа имя и под ним значки. Высота постоянная:
+   ничего не переносится. */
 .squad-title,
 .squad-line {
+  grid-column: 2;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Место под шеврон свёртки — в строке имени: строке значков ширина нужнее. */
+.squad-title {
+  padding-right: 18px;
+}
 .squad-line {
-  grid-column: 1 / -1;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -866,14 +873,17 @@ main#stage.mode-cursor #mode-banner {
   font-style: normal;
 }
 .squad-force {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  line-height: 1;
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 52px;
+  line-height: 1.1;
 }
 .squad-force b {
   color: var(--accent);
-  font-size: 22px;
+  font-size: 24px;
   font-variant-numeric: tabular-nums;
 }
 .squad-force i {
@@ -883,15 +893,30 @@ main#stage.mode-cursor #mode-banner {
   font-weight: 400;
 }
 .squad-force b.next {
+  margin-left: 4px;
   color: var(--muted);
   font-size: 13px;
 }
 /* Стрелка свёртки состава (§12.353) — слева от имени, как у раскрывающихся
    разделов тулбара. */
 .squad-fold {
-  min-width: 28px;
+  position: absolute;
+  z-index: 1;
+  right: 6px;
+  top: 7px;
+  width: 18px;
+  height: 18px;
+  min-width: 0;
+  padding: 0;
   justify-content: center;
+  align-items: center;
+  border-color: transparent;
+  background: none;
   color: var(--muted);
+}
+.squad-fold:hover {
+  color: var(--text, #e6e8ee);
+  border-color: var(--line);
 }
 .squad-fold svg {
   transition: transform 0.12s;
