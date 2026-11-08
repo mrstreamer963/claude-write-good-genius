@@ -933,6 +933,12 @@ main#stage.mode-cursor #mode-banner {
 .squad-crew {
   margin-left: 14px;
 }
+/* Раздел списка штаба: «Свободны» · «На вылазках». */
+.crew-head.crew-section {
+  margin-top: 18px;
+  font-size: 12px;
+  color: var(--accent, #e0c060);
+}
 .crew-head:first-child {
   margin-top: 0;
 }

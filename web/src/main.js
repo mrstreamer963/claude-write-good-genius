@@ -16754,6 +16754,12 @@ function squadStats(away, raid, node, guide) {
 // другое. Отдельной вкладки у свободных нет: вкладка разводила одно окно на
 // две функции отрисовки, и они расходились молча (пропал список слота).
 // `sel` — выбранный отряд или `null` (идут отмеченные свободные).
+// Когда вернутся: у ушедших — остаток, тем же числом, что в
+// карточке идущей вылазки («вернутся через N»); у собирающихся срока ещё нет.
+function backIn(m) {
+  return m?.away ? ` · через ${m.left}` : "";
+}
+
 function crewGroups(sel) {
   // Порядок списка: сперва то, что можно отправить, — отряды дома и свободные
   // коты, — ниже занятые вылазкой, по остатку до возвращения: кто вернётся
@@ -16767,7 +16773,7 @@ function crewGroups(sel) {
     const raid = missionsOut.find((m) => m.x === n.x && m.y === n.y);
     if (n.busy && raid) busy.push({ eta: eta(raid), groups });
     else idle.push(groups);
-    const status = n.busy ? ` · ${squadMark(raid)}` : "";
+    const status = n.busy ? ` · ${squadMark(raid)}${backIn(raid)}` : "";
     const folded = squadFolds.has(`${n.x},${n.y}`);
     // Свёрнутый отряд называет состав числом — иначе пустой и полный
     // выглядели бы одинаково.
@@ -16874,14 +16880,24 @@ function crewGroups(sel) {
       groups: [
         {
           key: `out${m.def}`,
-          head: `${missionLabel(m.def)} · ${squadMark(m)}`,
+          head: `${missionLabel(m.def)} · ${squadMark(m)}${backIn(m)}`,
           rows: r,
         },
       ],
     });
   }
   busy.sort((a, b) => a.eta - b.eta);
-  return [...idle.flat(), ...freeGroups, ...busy.flatMap((b) => b.groups)];
+  // Два раздела словом (свободны · на вылазках): без них граница между
+  // «можно отправить» и «вернутся» читалась только по порядку.
+  const out = [];
+  const home = [...idle.flat(), ...freeGroups];
+  if (home.length) out.push({ key: "sec-home", head: "Свободны", section: true, rows: [] }, ...home);
+  if (busy.length)
+    out.push(
+      { key: "sec-out", head: "На вылазках", section: true, rows: [] },
+      ...busy.flatMap((b) => b.groups),
+    );
+  return out;
 }
 
 function syncCrewRows(sel) {
@@ -16940,9 +16956,11 @@ function syncCrewRows(sel) {
     if (g.head) {
       const head = mk(`head:${g.key}`, "cat-sub crew-head");
       head.classList.toggle("squad-crew", g.key.startsWith("sq"));
+      head.classList.toggle("crew-section", !!g.section);
       if (head.textContent !== g.head) head.textContent = g.head;
       order.push(head);
     }
+    if (g.section) continue;
     const list = mk(`list:${g.key}`, "crew-list");
     // Состав и радист отряда — с отступом под его шапкой (§12.353).
     list.classList.toggle("squad-crew", g.key.startsWith("sq"));
